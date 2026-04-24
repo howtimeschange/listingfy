@@ -1,0 +1,9 @@
+{
+  "name": "shein-listing-mvp",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "shein:probe": "node scripts/shein_probe.mjs",
+    "shein:metadata:sync": "node scripts/shein_metadata_sync.mjs"
+  }
+}
