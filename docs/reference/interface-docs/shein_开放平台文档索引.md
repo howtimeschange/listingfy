@@ -1,0 +1,302 @@
+# SHEIN 开放平台文档索引
+
+- 抓取时间：2026-04-17T10:35:00.717716+08:00
+- 入口：`https://open.sheincorp.com/documents/system/dad0d1c7-be76-4b03-a735-4e23f012bdd9`
+- 发现方式：Chrome `9222` CDP 直连浏览器，先定位前端 store 与详情页接口，再批量抓取公开接口
+- 系统文档：55
+- API 分类：16，API 文档：173
+- Webhook 分类：1，Webhook 文档：17
+- 总文档数：245
+
+## 系统文档分组统计
+
+- `开发入门 / 开发指南（必看）`: 1
+- `开发入门 / 开发者账号类型介绍`: 1
+- `开发入门 / 店铺授权应用手册`: 1
+- `开发入门 / 签名规则`: 1
+- `开发入门 / API调用说明文档`: 1
+- `开发入门 / 事件回调接入说明`: 1
+- `开发入门 / 测试工具介绍`: 1
+- `开发入门 / 常见名词说明`: 1
+- `解决方案 / 解决方案介绍`: 1
+- `解决方案 / 应用类型介绍`: 1
+- `解决方案 / 自运营解决方案`: 16
+- `解决方案 / 半托管解决方案`: 15
+- `解决方案 / 全托管解决方案`: 14
+
+## API 分类统计
+
+- `密钥`: 1
+- `商品`: 40
+- `Feed API`: 6
+- `商品合规`: 12
+- `客单`: 17
+- `退货退款`: 3
+- `采购单`: 18
+- `库存和销量`: 5
+- `定制商品`: 5
+- `财务`: 6
+- `面料`: 6
+- `物流`: 11
+- `店铺`: 3
+- `MES`: 16
+- `认证仓`: 4
+- `MDP印染`: 20
+
+## Webhook 分类统计
+
+- `Webhook`: 17
+
+## 系统文档列表
+
+- `dad0d1c7-be76-4b03-a735-4e23f012bdd9` 开发入门 / 开发指南（必看）
+- `9a4f4c71-96b2-467e-967b-6bc6315b3dbd` 开发入门 / 开发者账号类型介绍
+- `2169474d-1d4a-41a9-b9fd-427f63f54a63` 开发入门 / 店铺授权应用手册 - 为确保用户数据安全，开放平台提供了通过API授权获取密钥的方式，以避免数据泄漏
+- `856bd098-bcbc-459a-816e-e1ec2545568e` 开发入门 / 签名规则
+- `49b797df-016e-40eb-882b-ab9bbaa8c630` 开发入门 / API调用说明文档
+- `3b13b1c5-525a-4758-a2b1-056bde083e2c` 开发入门 / 事件回调接入说明
+- `c6d9b460-0d53-4a3c-90f6-2713d11d43bd` 开发入门 / 测试工具介绍
+- `4f5b2c46-839d-4dd2-80e5-65722a060759` 开发入门 / 常见名词说明
+- `efc12d67-1c00-452d-8907-30eecd93106a` 解决方案 / 解决方案介绍
+- `26f9ca95-ba44-4da0-9024-90752ceecbec` 解决方案 / 应用类型介绍
+- `75b69837-b5f4-4f48-b444-8bf0d8b843be` 解决方案 / 自运营解决方案 / 自运营模式接入指南
+- `165b51da-c8dd-43b6-a885-4aed2c7fa582` 解决方案 / 自运营解决方案 / 商品发布-自运营
+- `8ca3c2b9-be6d-4d68-8166-5a25f57bad75` 解决方案 / 自运营解决方案 / 商品编辑-自运营
+- `424039e8-4657-454a-a4cb-781938a42622` 解决方案 / 自运营解决方案 / 商品属性 - 本文旨在帮助开发者们了解和熟悉在创建商品时需要必填的属性如何设置，以及平台的相关要求。
+- `a0f9bf6a-bc89-4a6d-a25f-385cca93f866` 解决方案 / 自运营解决方案 / 商品自定义属性值
+- `4d96fc8f-4913-4211-8630-5d81e7fcc010` 解决方案 / 自运营解决方案 / 商品图片 - 介绍商品发布、查询场景中的商品图片使用方式
+- `a4c9a5c4-75db-4f99-bbaf-0e47b34bda80` 解决方案 / 自运营解决方案 / 商品证书 - 该解决方案用于上传商品证书，适用于管理自主运营、代运营和半托管商家的证书管理
+- `af751fbf-0a24-484a-98fe-377654bd62d7` 解决方案 / 自运营解决方案 / 商品合规
+- `105b8e3e-5e33-43fe-8848-a9e54fe7c7ea` 解决方案 / 自运营解决方案 / 合规证书-警告语
+- `04fdafe8-9bb7-4fac-bf47-b1f45c859371` 解决方案 / 自运营解决方案 / 商品批量处理
+- `b86df826-638d-4128-9f5e-c7b20d8cf28e` 解决方案 / 自运营解决方案 / ERP订单履约方案 - 该解决方案适用于具有系统对接能力、有订单履约需求的开发者
+- `e2cc7bc5-c043-4c9c-95f6-13b7fe040994` 解决方案 / 自运营解决方案 / 平台指定物流履约（墨西哥市场）
+- `14ea81f8-7c58-4111-9cc9-ecdf23541493` 解决方案 / 自运营解决方案 / 平台指定物流履约（巴西市场）
+- `7039b56b-69c7-43b1-a706-50d418d723e8` 解决方案 / 自运营解决方案 / 超限拆包服务 - 本方案适用于具有系统对接能力的卖家，基于API/消息的形式对接平台揽收的客单
+- `949a61a4-bb8b-4683-922a-8755e079b394` 解决方案 / 自运营解决方案 / 客单退货退款服务 - 适用于商家通过OpenAPI管理退货单
+- `14b4ecf0-8e51-4cfc-bdcb-d4bd26c8e9ae` 解决方案 / 自运营解决方案 / 订单换货场景说明
+- `3609ce46-f50e-49ef-8314-d9ea0172fa1e` 解决方案 / 半托管解决方案 / 半托管模式接入指南
+- `115a679e-f21f-44e1-84db-466a5d0730eb` 解决方案 / 半托管解决方案 / 商品发布-半托管
+- `512f42f9-80c5-4753-b23d-c8fdf648a1a4` 解决方案 / 半托管解决方案 / 商品编辑-半托管
+- `424039e8-4657-454a-a4cb-781938a42622` 解决方案 / 半托管解决方案 / 商品属性 - 本文旨在帮助开发者们了解和熟悉在创建商品时需要必填的属性如何设置，以及平台的相关要求。
+- `a0f9bf6a-bc89-4a6d-a25f-385cca93f866` 解决方案 / 半托管解决方案 / 商品自定义属性值
+- `4d96fc8f-4913-4211-8630-5d81e7fcc010` 解决方案 / 半托管解决方案 / 商品图片 - 介绍商品发布、查询场景中的商品图片使用方式
+- `a4c9a5c4-75db-4f99-bbaf-0e47b34bda80` 解决方案 / 半托管解决方案 / 商品证书 - 该解决方案用于上传商品证书，适用于管理自主运营、代运营和半托管商家的证书管理
+- `af751fbf-0a24-484a-98fe-377654bd62d7` 解决方案 / 半托管解决方案 / 商品合规
+- `105b8e3e-5e33-43fe-8848-a9e54fe7c7ea` 解决方案 / 半托管解决方案 / 合规证书-警告语
+- `b86df826-638d-4128-9f5e-c7b20d8cf28e` 解决方案 / 半托管解决方案 / ERP订单履约方案 - 该解决方案适用于具有系统对接能力、有订单履约需求的开发者
+- `e2cc7bc5-c043-4c9c-95f6-13b7fe040994` 解决方案 / 半托管解决方案 / 平台指定物流履约（墨西哥市场）
+- `14ea81f8-7c58-4111-9cc9-ecdf23541493` 解决方案 / 半托管解决方案 / 平台指定物流履约（巴西市场）
+- `7039b56b-69c7-43b1-a706-50d418d723e8` 解决方案 / 半托管解决方案 / 超限拆包服务 - 本方案适用于具有系统对接能力的卖家，基于API/消息的形式对接平台揽收的客单
+- `949a61a4-bb8b-4683-922a-8755e079b394` 解决方案 / 半托管解决方案 / 客单退货退款服务 - 适用于商家通过OpenAPI管理退货单
+- `14b4ecf0-8e51-4cfc-bdcb-d4bd26c8e9ae` 解决方案 / 半托管解决方案 / 订单换货场景说明
+- `495d5251-5c71-4b67-8b6f-c7973b01fd12` 解决方案 / 全托管解决方案 / 全托管模式接入指南
+- `99154fa1-77d5-4b48-9253-cfff1d2a60ce` 解决方案 / 全托管解决方案 / 商品发布-全托管
+- `cb90cf21-d604-4f35-a12d-ef7706dd2ac4` 解决方案 / 全托管解决方案 / 商品编辑-全托管
+- `424039e8-4657-454a-a4cb-781938a42622` 解决方案 / 全托管解决方案 / 商品属性 - 本文旨在帮助开发者们了解和熟悉在创建商品时需要必填的属性如何设置，以及平台的相关要求。
+- `a0f9bf6a-bc89-4a6d-a25f-385cca93f866` 解决方案 / 全托管解决方案 / 商品自定义属性值
+- `4d96fc8f-4913-4211-8630-5d81e7fcc010` 解决方案 / 全托管解决方案 / 商品图片 - 介绍商品发布、查询场景中的商品图片使用方式
+- `a4c9a5c4-75db-4f99-bbaf-0e47b34bda80` 解决方案 / 全托管解决方案 / 商品证书 - 该解决方案用于上传商品证书，适用于管理自主运营、代运营和半托管商家的证书管理
+- `af751fbf-0a24-484a-98fe-377654bd62d7` 解决方案 / 全托管解决方案 / 商品合规
+- `105b8e3e-5e33-43fe-8848-a9e54fe7c7ea` 解决方案 / 全托管解决方案 / 合规证书-警告语
+- `a880d468-3c56-4dee-b8d6-5c6ff8be756f` 解决方案 / 全托管解决方案 / 备货履约
+- `fe87780a-a3c4-46c3-a1bc-0e80bc5dea7b` 解决方案 / 全托管解决方案 / 库存管理-全托管 - 该方案适用于修改 代运营（又名全托管、简易平台）和SHEIN自营商家的库存数量
+- `689a45fd-95c4-485d-bd30-e16e3ffbf163` 解决方案 / 全托管解决方案 / 定制业务接入解决方案 - 用于指引开发者接入个性化定制商品的业务
+- `ba0cb66d-aad2-40d2-bd59-58da2b676711` 解决方案 / 全托管解决方案 / 备货至海外仓解决方案
+- `af751fbf-0a24-484a-98fe-377654bd62d7` 解决方案 / 全托管解决方案 / 商品合规
+
+## API 文档列表
+
+- `3001520` `POST` `/open-api/auth/get-by-token` `密钥` 获取openKeyId和secretKey | modes=自运营,全托管,SHEIN自营,半托管,POP | qps=40 | errors=11 | faqs=9
+- `3001676` `POST` `/open-api/goods/product/publishOrEdit` `商品` 商品发布/编辑 | modes=自运营,全托管,半托管 | qps=40 | errors=117 | faqs=51
+- `3001589` `GET` `/open-api/goods/product/check-publish-permission` `商品` 确认店铺是否可发品 | modes=自运营,全托管,半托管 | qps=40 | errors=0 | faqs=0
+- `3001380` `POST` `/open-api/goods/product/check-edit-permission` `商品` 确认商品是否可编辑 | modes=自运营,全托管,半托管 | qps=40 | errors=0 | faqs=0
+- `3001517` `POST` `/open-api/goods/product/partialEdit` `商品` 商品部分编辑 | modes=自运营,全托管,半托管 | qps=40 | errors=0 | faqs=1
+- `3001368` `POST` `/open-api/goods/query-document-state` `商品` 查询商品审核状态 | modes=自运营,全托管,半托管,POP | qps=70 | errors=0 | faqs=0
+- `3001239` `POST` `/open-api/openapi-business-backend/product/query` `商品` 商品列表接口 | modes=自运营,全托管,半托管,POP | qps=100 | errors=3 | faqs=8
+- `3001548` `POST` `/open-api/goods/spu-info` `商品` spu商品详情查询(新) | modes=自运营,全托管,半托管,POP | qps=100 | errors=7 | faqs=11
+- `3001634` `POST` `/open-api/goods/searchProduct` `商品` 商品综合查询 | modes=自运营,全托管,半托管,POP | qps=20 | errors=0 | faqs=0
+- `3001085` `POST` `/open-api/openapi-business-backend/product/full-detail` `商品` sku商品详情查询（即将作废） | modes=自运营,全托管,半托管,POP | qps=60 | errors=0 | faqs=4
+- `3001594` `POST` `/open-api/goods/query-category-tree` `商品` 店铺查商品末级分类 | modes=自运营,全托管,半托管,POP | qps=40 | errors=0 | faqs=3
+- `3001482` `POST` `/open-api/goods/query-attribute-template` `商品` 店铺查可选属性 | modes=自运营,全托管,半托管 | qps=80 | errors=0 | faqs=11
+- `3001369` `POST` `/open-api/goods/get-custom-attribute-permission-config` `商品` 查询是否支持自定义属性值 | modes=自运营,全托管,SHEIN自营,半托管 | qps=40 | errors=0 | faqs=1
+- `3001483` `POST` `/open-api/goods/add-custom-attribute-value` `商品` 添加自定义属性值 | modes=- | qps=40 | errors=9 | faqs=3
+- `3001366` `POST` `/open-api/goods/get-associated-attribute-rules` `商品` 查询关联属性填写规则 | modes=自运营,全托管,半托管 | qps=60 | errors=0 | faqs=0
+- `3001595` `POST` `/open-api/goods/query-publish-fill-in-standard` `商品` 商品发布字段规范（含默认语种） | modes=自运营,全托管,半托管 | qps=40 | errors=0 | faqs=3
+- `3001437` `POST` `/open-api/goods/product/check-supplierSku-repeated` `商品` 查询商家sku是否已存在 | modes=自运营,全托管,半托管 | qps=60 | errors=0 | faqs=0
+- `3001363` `POST` `/open-api/goods/image-category-suggestion` `商品` 图文识别推荐类目 | modes=自运营,全托管,半托管 | qps=20 | errors=0 | faqs=2
+- `3001360` `POST` `/open-api/goods/transform-pic` `商品` 图片链接转换 | modes=自运营,全托管,半托管 | qps=60 | errors=6 | faqs=2
+- `3001359` `POST` `/open-api/goods/upload-pic` `商品` 本地图片上传 | modes=自运营,全托管,半托管 | qps=20 | errors=12 | faqs=4
+- `3001249` `POST` `/open-api/goods/query-site-list` `商品` 查询店铺站点和币种信息（新） | modes=自运营,全托管,半托管,POP | qps=40 | errors=0 | faqs=2
+- `3001250` `POST` `/open-api/goods/query-brand-list` `商品` 店铺查品牌列表 | modes=自运营,全托管,半托管 | qps=40 | errors=0 | faqs=1
+- `3001407` `POST` `/open-api/openapi-business-backend/product/price/save` `商品` 更新商品售价 | modes=自运营 | qps=40 | errors=10 | faqs=7
+- `3001315` `POST` `/open-api/goods/update-cost` `商品` 更新供货价 | modes=全托管,半托管 | qps=20 | errors=5 | faqs=1
+- `3001544` `POST` `/open-api/goods/query-shelf-quota` `商品` 获取店铺上架额度 | modes=自运营,半托管,POP | qps=40 | errors=0 | faqs=0
+- `3001253` `POST` `/open-api/goods/modify-skc-shelf` `商品` 商品上下架 | modes=自运营,半托管,POP | qps=40 | errors=16 | faqs=4
+- `3001254` `POST` `/open-api/openapi-business-backend/site/query` `商品` 查询店铺站点和站点币种（旧） | modes=自运营,全托管,半托管,POP | qps=- | errors=0 | faqs=0
+- `3001255` `GET` `/open-api/goods-brand/whole-brands` `商品` 查询全量品牌信息 | modes=- | qps=- | errors=0 | faqs=0
+- `3001513` `POST` `/open-api/goods/query-ip-list` `商品` 获取店铺可用IP列表 | modes=自运营,全托管,半托管 | qps=40 | errors=0 | faqs=0
+- `3001560` `POST` `/open-api/goods/discuss/query-discuss-list` `商品` 获取议价单列表 | modes=全托管,半托管 | qps=10 | errors=0 | faqs=0
+- `3001614` `POST` `/open-api/goods/discuss/process-discuss` `商品` 处理议价单 | modes=全托管,半托管 | qps=10 | errors=0 | faqs=0
+- `3001444` `POST` `/open-api/goods/discuss/upload-discuss-file` `商品` 上传议价单文件 | modes=全托管,半托管 | qps=10 | errors=0 | faqs=0
+- `3001179` `POST` `/open-api/goods/get-certificate-rule` `商品` 查询商品证书要求和审核状态 | modes=自运营,全托管,半托管,POP | qps=40 | errors=3 | faqs=0
+- `3001476` `POST` `/open-api/goods/certificate/get-all-certificate-type-list-v2` `商品` 查询证书所需上传资料（新） | modes=自运营,全托管,半托管,POP | qps=20 | errors=0 | faqs=0
+- `3001180` `POST` `/open-api/goods/upload-certificate-file` `商品` 上传证书文件 | modes=自运营,全托管,半托管,POP | qps=40 | errors=2 | faqs=0
+- `3001477` `POST` `/open-api/goods/save-or-update-certificate-pool` `商品` 商品证书池创建/编辑 | modes=自运营,全托管,半托管,POP | qps=40 | errors=4 | faqs=0
+- `3001182` `POST` `/open-api/goods/save-or-update-supplier-certificate` `商品` 店铺证书池创建/编辑 | modes=自运营,全托管,半托管,POP | qps=40 | errors=5 | faqs=0
+- `3001183` `POST` `/open-api/goods/save-certificate-pool-skc-bind` `商品` SKC绑定商品证书池 | modes=自运营,全托管,半托管,POP | qps=40 | errors=1 | faqs=0
+- `3001485` `POST` `/open-api/goods/batch-skc-size` `商品` 商品接口-根据条码批量获取SKC与尺码 | modes=全托管,SHEIN自营 | qps=60 | errors=0 | faqs=0
+- `3001486` `GET` `/open-api/goods/number-list` `商品` 商品接口-全量查询SKC/SKU/设计款号关系列表 | modes=全托管,SHEIN自营 | qps=120 | errors=0 | faqs=0
+- `3001259` `POST` `/open-api/goods/revoke-product` `商品` 商品撤回 | modes=自运营,全托管,半托管 | qps=20 | errors=0 | faqs=0
+- `3001229` `POST` `/open-api/sem/feed/createFeedDocument` `Feed API` 创建Feed文件 | modes=自运营 | qps=- | errors=0 | faqs=0
+- `3001226` `GET` `/open-api/sem/feed/getFeedDocument` `Feed API` 查询Feed文件 | modes=自运营 | qps=- | errors=0 | faqs=0
+- `3001227` `POST` `/open-api/sem/feed/uploadDocumentContent` `Feed API` 上传Feed文件 | modes=自运营 | qps=- | errors=0 | faqs=0
+- `3001230` `POST` `/open-api/sem/feed/createFeed` `Feed API` 创建Feed任务 | modes=自运营 | qps=- | errors=0 | faqs=0
+- `3001234` `GET` `/open-api/sem/feed/getFeed` `Feed API` 查看Feed任务 | modes=自运营 | qps=- | errors=0 | faqs=0
+- `3001233` `POST` `/open-api/sem/feed/cancelFeed` `Feed API` 取消Feed任务 | modes=自运营 | qps=- | errors=0 | faqs=0
+- `3001487` `POST` `/open-api/goods-compliance/agency-list` `商品合规` 查询代理公司列表 | modes=自运营,全托管,半托管,POP | qps=20 | errors=0 | faqs=1
+- `3001170` `POST` `/open-api/goods-compliance/skc-agency-detail` `商品合规` 查询SKC的代理公司绑定要求 | modes=自运营,全托管,半托管,POP | qps=20 | errors=0 | faqs=1
+- `3001172` `POST` `/open-api/goods-compliance/save-skc-agency` `商品合规` 绑定SKC和代理公司 | modes=自运营,全托管,半托管,POP | qps=20 | errors=0 | faqs=1
+- `3001394` `POST` `/open-api/goods-compliance/skc-label-list` `商品合规` 查询SKC的实拍图要求 | modes=自运营,全托管,半托管,POP | qps=20 | errors=0 | faqs=1
+- `3001174` `GET` `/open-api/goods-quality/environmental-label-rule/material-quality-tree-v2` `商品合规` 获取全量环保耗材信息（新） | modes=自运营,全托管,半托管 | qps=40 | errors=0 | faqs=1
+- `3001373` `POST` `/open-api/goods-compliance/get-label-template` `商品合规` 查询SKC可用的标签模板 | modes=自运营,全托管,半托管,POP | qps=20 | errors=0 | faqs=1
+- `3001385` `POST` `/open-api/goods-compliance/label-print` `商品合规` 打印合规标签 | modes=自运营,全托管,SHEIN自营,半托管,POP | qps=20 | errors=3 | faqs=3
+- `3001176` `POST` `/open-api/goods-compliance/upload-skc-label-picture` `商品合规` 上传实拍图图片 | modes=自运营,全托管,半托管,POP | qps=20 | errors=0 | faqs=1
+- `3001399` `POST` `/open-api/goods-compliance/skc-save-label` `商品合规` 绑定SKC和实拍图 | modes=自运营,全托管,半托管,POP | qps=20 | errors=0 | faqs=1
+- `3001576` `POST` `/open-api/goods-compliance/query-warning-certificate-rules` `商品合规` 查询警告语证书的填写规则 | modes=自运营,全托管,半托管,POP | qps=40 | errors=0 | faqs=0
+- `3001577` `POST` `/open-api/goods-compliance/query-skc-warning-status` `商品合规` 查询SKC的警告语绑定状态 | modes=自运营,全托管,半托管,POP | qps=40 | errors=0 | faqs=0
+- `3001578` `POST` `/open-api/goods-compliance/update-skc-warning-certificate` `商品合规` 更新SKC的警告语 | modes=自运营,全托管,半托管,POP | qps=40 | errors=0 | faqs=0
+- `3001269` `POST` `/open-api/order/order-list` `客单` 请求订单列表 | modes=自运营,半托管 | qps=100 | errors=5 | faqs=18
+- `3001619` `POST` `/open-api/order/order-detail` `客单` 请求订单详情 | modes=自运营,半托管 | qps=300 | errors=5 | faqs=29
+- `3001466` `POST` `/open-api/order/export-address` `客单` 导出地址接口 | modes=自运营,半托管 | qps=300 | errors=1 | faqs=4
+- `3001598` `POST` `/open-api/order/express-channel` `客单` 商家维度查渠道信息 | modes=自运营,半托管 | qps=50 | errors=17 | faqs=4
+- `3001274` `POST` `/open-api/order/import-batch-multiple-express` `客单` 批量上传运单号 | modes=自运营,半托管 | qps=100 | errors=26 | faqs=14
+- `3001335` `POST` `/open-api/gsp/warehouse-address` `客单` 查询仓库地址 | modes=自运营,半托管 | qps=80 | errors=0 | faqs=1
+- `3001629` `POST` `/open-api/gsp/available-shipping-warehouse` `客单` 查询订单可用发货仓库 | modes=自运营,半托管 | qps=50 | errors=0 | faqs=0
+- `3001655` `POST` `/open-api/gsp/order-mapping-channels` `客单` 查询订单可用物流信息 | modes=自运营,半托管 | qps=20 | errors=25 | faqs=1
+- `3001600` `POST` `/open-api/gsp/place-express-order` `客单` 在线下单 | modes=自运营,半托管 | qps=80 | errors=35 | faqs=3
+- `3001601` `POST` `/open-api/gsp/check-express-order` `客单` 查询下单结果 | modes=自运营,半托管 | qps=80 | errors=3 | faqs=1
+- `3001602` `POST` `/open-api/gsp/switch-self-shipping` `客单` 切换导出地址发货 | modes=自运营,半托管 | qps=80 | errors=9 | faqs=0
+- `3001527` `POST` `/open-api/order/sync-invoice-info` `客单` 回传发票信息 | modes=自运营 | qps=100 | errors=6 | faqs=1
+- `3001603` `POST` `/open-api/order/print-express-info` `客单` 打印面单接口 | modes=自运营,半托管 | qps=20 | errors=13 | faqs=2
+- `3001604` `GET` `/open-api/gsp/logistics-track` `客单` 客单物流轨迹查询 | modes=自运营,半托管 | qps=80 | errors=1 | faqs=1
+- `3001415` `POST` `/open-api/order/confirm-no-stock` `客单` 确认无货接口 | modes=自运营,半托管 | qps=40 | errors=6 | faqs=5
+- `3001279` `POST` `/open-api/order/unpacking-group-remove` `客单` 取消超限拆分包裹 | modes=自运营,半托管 | qps=40 | errors=3 | faqs=0
+- `3001280` `POST` `/open-api/order/unpacking-group-confirm` `客单` 确认超限拆分包裹 | modes=自运营,半托管 | qps=40 | errors=2 | faqs=0
+- `3001281` `POST` `/open-api/return-order/list` `退货退款` 查询退货单列表 | modes=自运营,半托管 | qps=100 | errors=0 | faqs=1
+- `3001282` `POST` `/open-api/return-order/details` `退货退款` 退货单详情查询 | modes=自运营,半托管 | qps=40 | errors=0 | faqs=2
+- `3001283` `POST` `/open-api/return-order/sign-return-order` `退货退款` 退货单签收 | modes=自运营,半托管 | qps=40 | errors=2 | faqs=1
+- `3001651` `GET` `/open-api/order/purchase-order-infos` `采购单` 获取采购单信息 | modes=自运营,全托管,SHEIN自营,半托管,POP | qps=50 | errors=13 | faqs=13
+- `3001489` `GET` `/open-api/order/get-mothe-child-orders` `采购单` JIT母单及子单对应关系查询接口 | modes=全托管,SHEIN自营,POP | qps=40 | errors=0 | faqs=3
+- `3001654` `GET` `/open-api/shipping/basic` `采购单` 发货基本信息查询接口 | modes=自运营,全托管,SHEIN自营,半托管,POP | qps=50 | errors=4 | faqs=3
+- `3001340` `POST` `/open-api/shipping/express-company-list-v2` `采购单` 物流产品查询 | modes=自运营,全托管,SHEIN自营,半托管,POP | qps=50 | errors=0 | faqs=0
+- `3001312` `POST` `/open-api/openapi-business-backend/purchase-estimated-fee` `采购单` 查shein合作物流预估运费 | modes=全托管,SHEIN自营,POP | qps=50 | errors=0 | faqs=0
+- `3001647` `POST` `/open-api/pfmp/shipping/thirdPartyAndChannelList` `采购单` ​查询货代信息 | modes=- | qps=50 | errors=0 | faqs=0
+- `3001646` `GET` `/open-api/shipping/warehouse` `采购单` 收货仓信息查询 | modes=自运营,全托管,SHEIN自营,半托管,POP | qps=20 | errors=13 | faqs=0
+- `3001652` `POST` `/open-api/shipping/orderToShipping` `采购单` 创建发货单 | modes=自运营,全托管,SHEIN自营,半托管,POP | qps=20 | errors=18 | faqs=13
+- `3001645` `GET` `/open-api/shipping/delivery` `采购单` 查询发货单列表 | modes=自运营,全托管,SHEIN自营,半托管,POP | qps=100 | errors=2 | faqs=2
+- `3001650` `POST` `/open-api/shipping/modify-delivery-order-info` `采购单` 修改和取消发货单订单 | modes=自运营,全托管,SHEIN自营,半托管,POP | qps=100 | errors=22 | faqs=0
+- `3001293` `POST` `/open-api/shipping/delivery/print-package` `采购单` 发货单维度打印面单 | modes=自运营,全托管,SHEIN自营,半托管,POP | qps=100 | errors=5 | faqs=0
+- `3001653` `POST` `/open-api/goods/print-barcode` `采购单` 商品打印条码 | modes=全托管,SHEIN自营 | qps=15 | errors=11 | faqs=4
+- `3001537` `POST` `/open-api/idms/create-order` `采购单` 手工下备货单 | modes=自运营,全托管,半托管 | qps=50 | errors=0 | faqs=0
+- `3001294` `POST` `/open-api/idms/review-orders` `采购单` 备货单审核列表 | modes=自运营,全托管,半托管 | qps=50 | errors=0 | faqs=0
+- `3001443` `POST` `/open-api/openapi-business-backend/stock-goods-list` `采购单` 查询商品备货信息列表 | modes=自运营,全托管,半托管 | qps=40 | errors=0 | faqs=0
+- `3001659` `POST` `/open-api/order/print-package` `采购单` 打印箱唛或包裹面单 | modes=- | qps=30 | errors=5 | faqs=2
+- `3001300` `GET` `/open-api/shipping/express-company-list` `采购单` 物流公司信息查询（即将废弃） | modes=- | qps=30 | errors=0 | faqs=0
+- `3001660` `GET` `/open-api/order/storage-receiver-info` `采购单` 查询SHEIN仓库的收件信息 | modes=- | qps=50 | errors=0 | faqs=0
+- `3001301` `GET` `/open-api/msc/warehouse/list` `库存和销量` 商家仓库列表查询(自主运营和半托管模式) | modes=自运营,半托管 | qps=- | errors=0 | faqs=5
+- `3001302` `POST` `/open-api/stock/stock-query` `库存和销量` 库存查询 | modes=自运营,全托管,SHEIN自营,半托管,POP | qps=- | errors=8 | faqs=8
+- `3001543` `POST` `/open-api/gsp/goods/change-inventory` `库存和销量` 修改库存接口(自主运营和半托管模式) | modes=自运营,半托管 | qps=50 | errors=10 | faqs=16
+- `3001304` `POST` `/open-api/goods/stock-update` `库存和销量` 全托管/SHEIN自营商家库存更新 | modes=全托管,SHEIN自营,POP | qps=100 | errors=7 | faqs=0
+- `3001305` `POST` `/open-api/goods/query-sku-sales` `库存和销量` 根据SKU查询销量 | modes=全托管,半托管,POP | qps=- | errors=5 | faqs=0
+- `3001668` `GET` `/open-api/ccst/v1/custom-infos` `定制商品` 获取定制数据 | modes=全托管,半托管 | qps=50 | errors=7 | faqs=0
+- `3001672` `POST` `/open-api/ccst/v1/composite/task` `定制商品` 创建⽣产模板任务 | modes=全托管,半托管 | qps=50 | errors=6 | faqs=0
+- `3001670` `GET` `/open-api/ccst/v1/custom-info/templates` `定制商品` 获取模版数据 | modes=全托管,半托管 | qps=50 | errors=0 | faqs=0
+- `3001671` `GET` `/open-api/ccst/v1/composite/queryTask` `定制商品` 查询任务结果 | modes=全托管,半托管 | qps=50 | errors=0 | faqs=1
+- `3001665` `POST` `/open-api/ccst/v1/custom-info/queryAddCartInfo` `定制商品` 查询加车结构信息 | modes=全托管,半托管 | qps=50 | errors=0 | faqs=0
+- `3001626` `POST` `/open-api/finance/report-list` `财务` 报账单列表 | modes=全托管,POP | qps=50 | errors=6 | faqs=0
+- `3001674` `POST` `/open-api/finance/report-sales-detail` `财务` 报账单销售款收支明细 | modes=全托管,POP | qps=50 | errors=2 | faqs=1
+- `3001628` `POST` `/open-api/finance/report-adjustment-detail` `财务` 报账单补扣款收支明细 | modes=全托管,POP | qps=50 | errors=2 | faqs=1
+- `3001625` `POST` `/open-api/finance/report-order-list` `财务` 查询报账单列表 | modes=自运营,半托管 | qps=20 | errors=0 | faqs=0
+- `3001631` `POST` `/open-api/finance/get-check-order-list` `财务` 查询对账单列表 | modes=自运营,半托管 | qps=20 | errors=3 | faqs=1
+- `3001621` `GET` `/open-api/finance/get-check-order-detail` `财务` 查询对账单详情 | modes=自运营,半托管 | qps=20 | errors=3 | faqs=1
+- `3000493` `POST` `/open-api/material/in-inventory` `面料` 供应商库存-入库同步接口 | modes=- | qps=- | errors=0 | faqs=0
+- `3000489` `POST` `/open-api/material/out-inventory` `面料` 供应商库存-出库同步接口 | modes=- | qps=- | errors=0 | faqs=0
+- `3000492` `POST` `/open-api/material/receive-cloth-report` `面料` 供应商质检-验布报告 | modes=- | qps=- | errors=0 | faqs=0
+- `3000490` `POST` `/open-api/material/sales-order-deliver-info` `面料` 供应商订单-发货信息 | modes=- | qps=- | errors=0 | faqs=0
+- `3000491` `POST` `/open-api/material/sync-inventory` `面料` 供应商库存-库存同步接口 | modes=- | qps=- | errors=0 | faqs=0
+- `3001378` `POST` `/open-api/material/mesCreateAddSupp` `面料` 发起快速加供任务 | modes=- | qps=- | errors=0 | faqs=0
+- `3000496` `POST` `/open-api/cargo/express-website-message` `物流` 物流商网点回调接口 | modes=- | qps=- | errors=0 | faqs=0
+- `3000505` `POST` `/open-api/cargo/logistics-trajectory-callback` `物流` 【新】物流轨迹回调 | modes=- | qps=- | errors=0 | faqs=0
+- `3001045` `POST` `/open-api/cargo/platenum-callback` `物流` 车牌信息回调 | modes=- | qps=- | errors=0 | faqs=0
+- `3000498` `POST` `/open-api/cargo/qc-outside-cancel-sf-express` `物流` 顺丰运单未揽收包裹明细回调接口 | modes=- | qps=- | errors=0 | faqs=0
+- `3000928` `POST` `/open-api/cargo/weight-callback` `物流` 【新】物流重量回调 | modes=- | qps=- | errors=0 | faqs=0
+- `3001498` `GET` `/open-api/order/express-infos` `物流` 物流接口-获取快递公司信息 | modes=- | qps=- | errors=0 | faqs=0
+- `3000499` `POST` `/open-api/cargo/express-notify` `物流` 物流商接口-物流商运单回调 | modes=- | qps=- | errors=0 | faqs=0
+- `3000501` `POST` `/open-api/cargo/track-notify` `物流` 物流商推送轨迹数据-统一接口 | modes=- | qps=- | errors=0 | faqs=0
+- `3000502` `POST` `/open-api/cargo/track-notify-trackingmore` `物流` 物流商推送轨迹数据-trackingmore | modes=- | qps=- | errors=0 | faqs=0
+- `3000503` `POST` `/open-api/cargo/quote-return` `物流` 上传结算异常举证 | modes=- | qps=- | errors=0 | faqs=0
+- `3000504` `POST` `/open-api/cargo/timeout-cancel-reason-return` `物流` 揽收超时/取消运单原因回传 | modes=- | qps=- | errors=0 | faqs=0
+- `3001499` `POST` `/open-api/openapi-business-backend/query-store-info` `店铺` 查询店铺信息 | modes=自运营,全托管,半托管,POP | qps=10 | errors=0 | faqs=2
+- `3001144` `POST` `/open-api/ssls/announcement/get-anno-list` `店铺` 查询公告列表 | modes=- | qps=- | errors=0 | faqs=0
+- `3001145` `POST` `/open-api/ssls/announcement/get-anno-detail` `店铺` 获取公告详情 | modes=- | qps=- | errors=0 | faqs=0
+- `3000507` `POST` `/open-api/mes/get-purchase-info` `MES` MES-FAC-002 采购信息接口 | modes=- | qps=- | errors=0 | faqs=0
+- `3000508` `POST` `/open-api/mes/get-material-info` `MES` MES-FAC-003 领料信息接口 | modes=- | qps=- | errors=0 | faqs=0
+- `3000509` `POST` `/open-api/mes/get-second-precess` `MES` MES-FAC-004 二次工艺接口 | modes=- | qps=- | errors=0 | faqs=0
+- `3000510` `POST` `/open-api/mes/get-big-goods-bom` `MES` MES-FAC-005 大货bom接口 | modes=- | qps=- | errors=0 | faqs=0
+- `3000511` `POST` `/open-api/mes/bundle-info` `MES` 扎信息查询接口 | modes=- | qps=- | errors=0 | faqs=0
+- `3000512` `POST` `/open-api/mes/material-anomalous/list` `MES` 查询物料异常详细接口 | modes=- | qps=- | errors=0 | faqs=0
+- `3000513` `POST` `/open-api/mes/purchase-detail-info-list` `MES` 查询采购单详细接口 | modes=- | qps=- | errors=0 | faqs=0
+- `3000514` `POST` `/open-api/mes/query-produce-order-ids` `MES` 按时间查询生产制单号 | modes=- | qps=- | errors=0 | faqs=0
+- `3000515` `POST` `/open-api/mes/deliver-order/list` `MES` 查询发货单信息 | modes=- | qps=- | errors=0 | faqs=0
+- `3000522` `POST` `/open-api/mes/order-inventory-surplus/list` `MES` 查询供应商尾货 | modes=- | qps=- | errors=0 | faqs=0
+- `3000521` `POST` `/open-api/mes/get-produce-order-info` `MES` 查询生产订单 | modes=- | qps=- | errors=0 | faqs=0
+- `3000520` `POST` `/open-api/mes/get-order-info` `MES` MES-FAC-001 订单数据获取接口 | modes=- | qps=- | errors=0 | faqs=0
+- `3000519` `POST` `/open-api/mes/order-inventory-surplus/update` `MES` 更新供应商尾货 | modes=- | qps=- | errors=0 | faqs=0
+- `3000518` `POST` `/open-api/mes/sew-end` `MES` 车缝完工 | modes=- | qps=- | errors=0 | faqs=0
+- `3000517` `POST` `/open-api/mes/end-cut-bed` `MES` 裁床完成 | modes=- | qps=- | errors=0 | faqs=0
+- `3000516` `POST` `/open-api/mes/query-produce-order-info-by-id` `MES` 根据订单号查询订单信息 | modes=- | qps=- | errors=0 | faqs=0
+- `3001262` `POST` `/open-api/order/openapi/auth/order/express-upload` `认证仓` 认证仓调用-上传物流运单接口 | modes=- | qps=- | errors=0 | faqs=1
+- `3001263` `POST` `/open-api/order/openapi/auth/order/outbound-result` `认证仓` 认证仓调用-回调出库单创建结果接口 | modes=- | qps=- | errors=0 | faqs=1
+- `3001264` `POST` `/open-api/order/openapi/auth/order/outbound-cancel` `认证仓` 认证仓调用-作废出库单接口 | modes=- | qps=- | errors=0 | faqs=1
+- `3001265` `POST` `/open-api/lsps-java/auth/entity-change` `认证仓` 认证仓调用-接收认证仓服务商仓库渠道变更接口 | modes=- | qps=- | errors=0 | faqs=1
+- `3001429` `POST` `/open-api/mdp/get-order-info-list` `MDP印染` 获取大货订单信息 | modes=- | qps=- | errors=0 | faqs=0
+- `3001421` `POST` `/open-api/mdp/product/print-task/begin` `MDP印染` 提供更新MDP打印任务开始 | modes=- | qps=- | errors=0 | faqs=0
+- `3001422` `POST` `/open-api/mdp/product/print-task/finish` `MDP印染` 提供更新MDP打印任务完成 | modes=- | qps=- | errors=0 | faqs=0
+- `3001420` `POST` `/open-api/mdp/product/schedule/allocation-confirm` `MDP印染` 提供扫码排产创建波次 | modes=- | qps=- | errors=0 | faqs=0
+- `3001419` `POST` `/open-api/mdp/product/transfer-print-task/begin` `MDP印染` 提供更新MDP转印任务开始 | modes=- | qps=- | errors=0 | faqs=0
+- `3001418` `POST` `/open-api/mdp/product/transfer-print-task/finish` `MDP印染` 提供更新MDP转印任务结束 | modes=- | qps=- | errors=0 | faqs=0
+- `3001427` `POST` `/open-api/mdp/order/customer-requirement/create-customer-requirement` `MDP印染` 创建待补全审核的客户需求 | modes=- | qps=- | errors=0 | faqs=0
+- `3001426` `POST` `/open-api/mdp/order/customer-requirement/get-factory-customer-list` `MDP印染` 根据印花厂code获取客户信息 | modes=- | qps=- | errors=0 | faqs=0
+- `3001425` `POST` `/open-api/mdp/order/customer-requirement/get-factory-list` `MDP印染` 根据名称获取可用的印花厂 | modes=- | qps=- | errors=0 | faqs=0
+- `3001424` `POST` `/open-api/mdp/order/goods/reenter-order-info` `MDP印染` 给外部供应商调用- 重录订单米数和裁片 | modes=- | qps=- | errors=0 | faqs=0
+- `3001467` `POST` `/open-api/mdp/order/goods/sync-order-info` `MDP印染` 给外部供应商调用- 同步订单信息（状态，发货） | modes=- | qps=- | errors=0 | faqs=0
+- `3001417` `POST` `/open-api/mdp/wx-mini-program/login` `MDP印染` 微信小程序登陆 | modes=- | qps=- | errors=0 | faqs=0
+- `3001430` `POST` `/open-api/mdp/hangcard/operate` `MDP印染` 挂卡聚合操作（上架or出库or移位） | modes=- | qps=- | errors=0 | faqs=0
+- `3001431` `POST` `/open-api/mdp/hang-card/add-or-update` `MDP印染` 新增或更新挂卡信息 | modes=- | qps=- | errors=0 | faqs=0
+- `3001432` `POST` `/open-api/mdp/basic-configure/production-equipment/get-print-equipmentList` `MDP印染` 获取打印设备列表  | modes=- | qps=- | errors=0 | faqs=0
+- `3001433` `POST` `/open-api/mdp/basic-configure/production-equipment/add-or-cancel-equipment-exception` `MDP印染` 添加或取消设备异常 | modes=- | qps=- | errors=0 | faqs=0
+- `3001434` `POST` `/open-api/mdp/order/goods/external/receive-external-erp-complete-order` `MDP印染` 接收外部ERP完结订单 | modes=- | qps=- | errors=0 | faqs=0
+- `3001469` `POST` `/open-api/mdp/process/get-process-develop-info-list` `MDP印染` 提供外部ERP版料任务查询接口 | modes=- | qps=- | errors=0 | faqs=0
+- `3001470` `POST` `/open-api/mdp/order/external/get-order-log-list` `MDP印染` 外部查询操作日志（供小程序调用） | modes=- | qps=- | errors=0 | faqs=0
+- `3001474` `POST` `/open-api/mdp/flower/get-pattern-dev-page-list` `MDP印染` 提供外部ERP花型开发分页查询接口 | modes=- | qps=- | errors=0 | faqs=0
+
+## Webhook 文档列表
+
+- `3000910` `POST` `/product_document_receive_status_notice` 商品接收通知 | modes=自运营,全托管,SHEIN自营,半托管,POP | errors=0 | faqs=0
+- `3001449` `POST` `/product_document_audit_status_notice_all_channels` 商品发布公文审核通知（全渠道） | modes=自运营,全托管,半托管,POP | errors=0 | faqs=0
+- `3001450` `POST` `/product_document_audit_status_notice` 商品审核通知 | modes=自运营,全托管,SHEIN自营,半托管,POP | errors=0 | faqs=0
+- `3000912` `POST` `/product_price_audit_status_notice` 商品涨价审批结果通知 | modes=自运营,POP | errors=0 | faqs=0
+- `3000804` `POST` `/product_prices_abnormal_notice` 商品价格异常通知 | modes=自运营,POP | errors=0 | faqs=0
+- `3000848` `POST` `/product_shelves_notice` 商品上下架通知 | modes=自运营,半托管,POP | errors=0 | faqs=0
+- `3001061` `POST` `/product_quota_change_notice` 商品额度变动通知 | modes=自运营,全托管,半托管,POP | errors=0 | faqs=0
+- `3001442` `POST` `/order_push_notice` 订单同步通知 | modes=自运营,半托管 | errors=0 | faqs=0
+- `3001461` `POST` `/logistics_order_result_notice` SHEIN合作物流单下单通知 | modes=自运营,半托管 | errors=0 | faqs=0
+- `3000914` `POST` `/return_order_push_notice` 退货单同步通知 | modes=自运营,半托管 | errors=0 | faqs=0
+- `3001082` `POST` `/invoice_status_notice` cte开票通知 | modes=自运营 | errors=0 | faqs=0
+- `3001435` `POST` `/purchase_order_notice` 采购单通知 | modes=全托管,POP | errors=0 | faqs=0
+- `3001441` `POST` `/delivery_modify_notice` 发货单变更通知 | modes=全托管,SHEIN自营,POP | errors=0 | faqs=0
+- `3001048` `POST` `/out_of_stock_notice` 推送缺货需求库存数（新） | modes=全托管,SHEIN自营,POP | errors=0 | faqs=0
+- `3001068` `POST` `/inventory_warning_notice` SKU库存预警通知 | modes=自运营 | errors=0 | faqs=0
+- `3001104` `POST` `/product_compliance_change_notice` 商品合规信息失效通知 | modes=自运营,全托管,半托管,POP | errors=0 | faqs=0
+- `3001503` `POST` `/authorization_change_notice` 店铺授权关系变更通知 | modes=自运营,全托管,SHEIN自营,半托管,POP | errors=0 | faqs=0

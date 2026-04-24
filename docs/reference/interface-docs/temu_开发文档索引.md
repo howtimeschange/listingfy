@@ -1,0 +1,287 @@
+# Temu 开发文档索引
+
+- 抓取时间：2026-04-17T10:18:26.136880+08:00
+- 入口：`https://agentpartner.temu.com/document?cataId=875198836203`
+- 连接方式：Chrome `9222` CDP，按 crawshrimp 的 `http://127.0.0.1:9222/json -> webSocketDebuggerUrl` 方式直连
+- 目录数：47
+- 文档数：229
+- 可访问详情：229
+- 失败：0
+- 接口文档：184
+- 自由文档：45
+
+## 分组统计
+
+- `文档中心 / API文档 / 【必读】PA网关`: 1
+- `文档中心 / API文档 / 货品API组`: 13
+- `文档中心 / API文档 / 货品API组-PA`: 10
+- `文档中心 / API文档 / 库存管理API组`: 6
+- `文档中心 / API文档 / 库存管理API组-PA`: 6
+- `文档中心 / API文档 / 图片处理API组`: 5
+- `文档中心 / API文档 / 图片处理API组-PA`: 8
+- `文档中心 / API文档 / 说明书API组`: 5
+- `文档中心 / API文档 / 说明书API组-PA`: 2
+- `文档中心 / API文档 / 类目属性API组`: 11
+- `文档中心 / API文档 / 类目属性API组-PA`: 7
+- `文档中心 / API文档 / 视频上传API组`: 3
+- `文档中心 / API文档 / 尺码表API组`: 7
+- `文档中心 / API文档 / 尺码表API组-PA`: 1
+- `文档中心 / API文档 / 商品模特试穿API组`: 4
+- `文档中心 / API文档 / 寄样/质检/退货API组`: 7
+- `文档中心 / API文档 / 备货及发货API组`: 22
+- `文档中心 / API文档 / 运单标签&箱唛`: 4
+- `文档中心 / API文档 / 商品条码API组-PA`: 3
+- `文档中心 / API文档 / 销售API组`: 1
+- `文档中心 / API文档 / 活动API组`: 6
+- `文档中心 / API文档 / 活动API组-PA`: 7
+- `文档中心 / API文档 / 基础API组`: 2
+- `文档中心 / API文档 / 基础API组-PA`: 1
+- `文档中心 / API文档 / 编辑API组`: 10
+- `文档中心 / API文档 / 编辑API组-PA`: 8
+- `文档中心 / API文档 / 申报价/核价/调价API组`: 8
+- `文档中心 / API文档 / 申报价/核价/调价API组-PA`: 7
+- `文档中心 / API文档 / JIT组`: 5
+- `文档中心 / API文档 / JIT组-PA`: 1
+- `文档中心 / API文档 / 全托广告API组-PA`: 9
+- `文档中心 / API文档 / 全托管库存API组-PA`: 2
+- `文档中心 / 开发者文档 / 开发指南`: 6
+- `文档中心 / 开发者文档 / 调用流程`: 2
+- `文档中心 / 开发者文档 / 数据字典`: 12
+- `文档中心 / 开发者文档 / 常见问题`: 1
+- `文档中心 / 开发者文档 / 入驻流程`: 1
+- `学习中心 / 协议中心 / 最新通知`: 9
+- `学习中心 / 协议中心 / 协议列表`: 4
+- `学习中心 / 协议中心 / 规则列表`: 1
+- `学习中心 / 系统操作指南 / 系统操作指南`: 1
+
+## 文档列表
+
+- `161805618337` `freeDocument` 文档中心 / API文档 / 【必读】PA网关 / PA网关调用说明
+- `108302801700` `interfaceDocument` 文档中心 / API文档 / 货品API组 / bg.goods.add - 上传供应商货品
+- `110402515056` `interfaceDocument` 文档中心 / API文档 / 货品API组 / bg.goods.topselling.soldout.get - 批量查询爆款售罄商品
+- `110405441306` `interfaceDocument` 文档中心 / API文档 / 货品API组 / bg.product.search - 查询货品生命周期状态
+- `110406566352` `interfaceDocument` 文档中心 / API文档 / 货品API组 / bg.goods.brand.get - 货品品牌查询
+- `110407127642` `interfaceDocument` 文档中心 / API文档 / 货品API组 / bg.goods.suggest.supplyprice.get - 查询建议申报参考价
+- `120885531484` `interfaceDocument` 文档中心 / API文档 / 货品API组 / bg.goods.detail.get - 商品详情查询接口
+- `132421233122` `interfaceDocument` 文档中心 / API文档 / 货品API组 / bg.goods.list.get - 商品列表查询
+- `135566320486` `interfaceDocument` 文档中心 / API文档 / 货品API组 / bg.goods.migrate - 货品搬运接口
+- `137663009988` `interfaceDocument` 文档中心 / API文档 / 货品API组 / bg.goods.warehouse.list.get - 根据站点查询可绑定的发货仓库信息接口
+- `138711264446` `interfaceDocument` 文档中心 / API文档 / 货品API组 / bg.logistics.template.get - 查询运费模板列表
+- `143954790074` `interfaceDocument` 文档中心 / API文档 / 货品API组 / bg.goods.file.upload - 货品文件上传接口
+- `153393468811` `interfaceDocument` 文档中心 / API文档 / 货品API组 / bg.goods.customs.property.check - 货品清关属性校验接口
+- `141857142324` `freeDocument` 文档中心 / API文档 / 货品API组 / 货品发布样例
+- `156537470491` `interfaceDocument` 文档中心 / API文档 / 货品API组-PA / bg.glo.goods.add - 上传供应商货品
+- `157585341445` `interfaceDocument` 文档中心 / API文档 / 货品API组-PA / bg.glo.goods.list.get - 商品列表查询
+- `156538658038` `interfaceDocument` 文档中心 / API文档 / 货品API组-PA / bg.glo.goods.detail.get - 商品详情查询接口
+- `157586975688` `interfaceDocument` 文档中心 / API文档 / 货品API组-PA / bg.glo.goods.migrate - 货品搬运接口
+- `157587563331` `interfaceDocument` 文档中心 / API文档 / 货品API组-PA / bg.glo.goods.topselling.soldout.get - 批量查询爆款售罄商品
+- `163881944601` `interfaceDocument` 文档中心 / API文档 / 货品API组-PA / bg.btg.goods.stock.warehouse.list.get - 根据站点查询可绑定的发货仓库信息接口
+- `163894066011` `interfaceDocument` 文档中心 / API文档 / 货品API组-PA / bg.glo.product.search - 查询货品生命周期状态
+- `163899668794` `interfaceDocument` 文档中心 / API文档 / 货品API组-PA / bg.glo.best.seller.invitation.query - best seller招标单查询
+- `161806406099` `interfaceDocument` 文档中心 / API文档 / 货品API组-PA / bg.glo.logistics.template.get - 查询运费模板列表
+- `164926016288` `interfaceDocument` 文档中心 / API文档 / 货品API组-PA / bg.glo.goods.brand.get - 货品品牌查询
+- `110407765974` `interfaceDocument` 文档中心 / API文档 / 库存管理API组 / bg.virtualinventoryjit.get - 虚拟库存查询
+- `110409775099` `interfaceDocument` 文档中心 / API文档 / 库存管理API组 / bg.virtualinventoryjit.edit - 虚拟库存编辑
+- `110410336935` `interfaceDocument` 文档中心 / API文档 / 库存管理API组 / bg.goods.quantity.get - OpenApi查询半托管商品销售库存
+- `110410907452` `interfaceDocument` 文档中心 / API文档 / 库存管理API组 / bg.goods.quantity.update - OpenApi半托管销售库存更新接口
+- `110412826576` `interfaceDocument` 文档中心 / API文档 / 库存管理API组 / bg.goods.warehouse.list.get - 根据站点查询可绑定的发货仓库信息接口
+- `110413571162` `interfaceDocument` 文档中心 / API文档 / 库存管理API组 / bg.goods.routestock.add - 半托管新增路由绑定及库存填写接口
+- `163878133721` `interfaceDocument` 文档中心 / API文档 / 库存管理API组-PA / bg.btg.goods.stock.route.add - 半托管新增路由绑定及库存填写接口
+- `161784456967` `interfaceDocument` 文档中心 / API文档 / 库存管理API组-PA / bg.btg.goods.stock.quantity.update - OpenApi半托管销售库存更新接口
+- `161784807632` `interfaceDocument` 文档中心 / API文档 / 库存管理API组-PA / bg.btg.goods.stock.quantity.get - OpenApi查询半托管商品销售库存
+- `161788826370` `interfaceDocument` 文档中心 / API文档 / 库存管理API组-PA / bg.btg.goods.stock.warehouse.list.get - 根据站点查询可绑定的发货仓库信息接口
+- `163893273550` `interfaceDocument` 文档中心 / API文档 / 库存管理API组-PA / bg.qtg.stock.virtualinventoryjit.get - 虚拟库存查询
+- `161800521047` `interfaceDocument` 文档中心 / API文档 / 库存管理API组-PA / bg.qtg.stock.virtualinventoryjit.edit - 虚拟库存编辑
+- `110417602731` `interfaceDocument` 文档中心 / API文档 / 图片处理API组 / bg.compliancepicture.get - 批量识别牛皮癣图片
+- `110419825724` `interfaceDocument` 文档中心 / API文档 / 图片处理API组 / bg.algo.dimension.image.check - 尺寸图校验
+- `110421115702` `interfaceDocument` 文档中心 / API文档 / 图片处理API组 / bg.algo.dimension.image.check.result - 尺寸图校验结果查询
+- `110423929296` `interfaceDocument` 文档中心 / API文档 / 图片处理API组 / bg.algo.image.translate.result - 商品图片翻译接口查询
+- `110422855741` `interfaceDocument` 文档中心 / API文档 / 图片处理API组 / bg.algo.image.translate - 商品图片翻译
+- `161798192947` `interfaceDocument` 文档中心 / API文档 / 图片处理API组-PA / bg.goods.image.upload.global - bas64图片上传-global
+- `163889547917` `interfaceDocument` 文档中心 / API文档 / 图片处理API组-PA / bg.goods.texttopicture.add.global - 文字转图片-global
+- `163890793237` `interfaceDocument` 文档中心 / API文档 / 图片处理API组-PA / bg.glo.picturecompression.get - 高清图片压缩处理
+- `161798982727` `interfaceDocument` 文档中心 / API文档 / 图片处理API组-PA / bg.glo.colorimageurl.get - 色块图获取
+- `161799777381` `interfaceDocument` 文档中心 / API文档 / 图片处理API组-PA / bg.glo.fancy.image.cm2in - 图片中cm转inch
+- `163894906159` `interfaceDocument` 文档中心 / API文档 / 图片处理API组-PA / bg.compliancepicture.get.global - 批量识别牛皮癣图片
+- `163895659721` `interfaceDocument` 文档中心 / API文档 / 图片处理API组-PA / bg.algo.image.translate.global - 商品图片翻译
+- `163896836398` `interfaceDocument` 文档中心 / API文档 / 图片处理API组-PA / bg.algo.image.translate.result.global - 商品图片翻译接口查询
+- `110425240212` `interfaceDocument` 文档中心 / API文档 / 说明书API组 / bg.goods.instructions.upload - 文件上传接口
+- `110426288314` `interfaceDocument` 文档中心 / API文档 / 说明书API组 / bg.goods.instructionslanguages.get - 说明书语种查询信息
+- `110427097167` `interfaceDocument` 文档中心 / API文档 / 说明书API组 / bg.goods.instructionstranslation.get - 说明书翻译接口
+- `110427776732` `interfaceDocument` 文档中心 / API文档 / 说明书API组 / bg.goods.translationresult.get - 查询说明书翻译结果
+- `133470614111` `interfaceDocument` 文档中心 / API文档 / 说明书API组 / bg.goods.catsmandatory.get - 类目必填信息接口
+- `157593801811` `interfaceDocument` 文档中心 / API文档 / 说明书API组-PA / bg.glo.goods.edit.guide.file - 编辑货品说明书
+- `167022429916` `interfaceDocument` 文档中心 / API文档 / 说明书API组-PA / bg.glo.goods.instructions.upload - 文件上传接口
+- `110430695856` `interfaceDocument` 文档中心 / API文档 / 类目属性API组 / bg.goods.cats.get - 货品类目查询
+- `110431556557` `interfaceDocument` 文档中心 / API文档 / 类目属性API组 / bg.goods.attrs.get - 货品模板查询
+- `110432749383` `interfaceDocument` 文档中心 / API文档 / 类目属性API组 / bg.goods.parentspec.get - 查询父规格列表
+- `110433208117` `interfaceDocument` 文档中心 / API文档 / 类目属性API组 / bg.goods.spec.create - 创建规格
+- `110435680586` `interfaceDocument` 文档中心 / API文档 / 类目属性API组 / bg.goods.category.match - 新增建品类目映射
+- `110437041433` `interfaceDocument` 文档中心 / API文档 / 类目属性API组 / bg.goods.category.mapping - 查询中文类目映射接口
+- `110438602787` `interfaceDocument` 文档中心 / API文档 / 类目属性API组 / bg.goods.attribute.mapping - 内外属性映射
+- `145003263291` `interfaceDocument` 文档中心 / API文档 / 类目属性API组 / bg.goods.accessories.get - 货品包装清单类型查询
+- `153391464522` `interfaceDocument` 文档中心 / API文档 / 类目属性API组 / bg.vehicle.library.prop.dependency.query - 货品车型库属性值查询
+- `154439743997` `interfaceDocument` 文档中心 / API文档 / 类目属性API组 / bg.vehicle.library.query - 货品车型库模板查询
+- `153397295225` `interfaceDocument` 文档中心 / API文档 / 类目属性API组 / bg.glo.goods.photorecommendationcategory.get - 外部商品图片映射temu类目
+- `157594687713` `interfaceDocument` 文档中心 / API文档 / 类目属性API组-PA / bg.glo.goods.catsmandatory.get - 类目必填信息接口
+- `159685336883` `interfaceDocument` 文档中心 / API文档 / 类目属性API组-PA / bg.goods.redress.correctrecord.query - 查询商品类目纠正列表
+- `159685938183` `interfaceDocument` 文档中心 / API文档 / 类目属性API组-PA / bg.goods.redress.optionalcategory.correct - 纠正商品类目
+- `161801901563` `interfaceDocument` 文档中心 / API文档 / 类目属性API组-PA / bg.glo.goods.parentspec.get - 查询父规格列表
+- `163900526394` `interfaceDocument` 文档中心 / API文档 / 类目属性API组-PA / bg.glo.goods.spec.create - 创建规格
+- `161803420551` `interfaceDocument` 文档中心 / API文档 / 类目属性API组-PA / bg.glo.goods.accessories.get - 货品包装清单类型查询
+- `165974209566` `interfaceDocument` 文档中心 / API文档 / 类目属性API组-PA / bg.goods.attribute.mapping.global - 内外属性映射
+- `154444274397` `interfaceDocument` 文档中心 / API文档 / 视频上传API组 / bg.goods.video.upload.sign.get.global - 查询视频上传sign接口-global
+- `154445387103` `interfaceDocument` 文档中心 / API文档 / 视频上传API组 / bg.goods.big.video.upload.result.get.global - 查询视频转码结果接口-global
+- `149198083286` `freeDocument` 文档中心 / API文档 / 视频上传API组 / 视频上传流程
+- `110446553021` `interfaceDocument` 文档中心 / API文档 / 尺码表API组 / bg.goods.sizecharts.get - 查询尺码表模板
+- `110448505388` `interfaceDocument` 文档中心 / API文档 / 尺码表API组 / bg.goods.sizecharts.template.create - 创建尺码表货品模板
+- `110449030124` `interfaceDocument` 文档中心 / API文档 / 尺码表API组 / bg.goods.sizecharts.class.get - 查询尺码分类接口
+- `110450351642` `interfaceDocument` 文档中心 / API文档 / 尺码表API组 / bg.goods.sizecharts.create - 新增尺码表接口
+- `110451116743` `interfaceDocument` 文档中心 / API文档 / 尺码表API组 / bg.goods.sizecharts.settings.get - 查询尺码模板规则
+- `110452286733` `interfaceDocument` 文档中心 / API文档 / 尺码表API组 / bg.goods.imagesizechart.get - 图片提取尺码表
+- `110453239603` `interfaceDocument` 文档中心 / API文档 / 尺码表API组 / bg.goods.sizecharts.meta.get - 查询尺码表元信息
+- `156543856261` `interfaceDocument` 文档中心 / API文档 / 尺码表API组-PA / bg.glo.goods.size.template.edit - 编辑货品尺码表
+- `110442427975` `interfaceDocument` 文档中心 / API文档 / 商品模特试穿API组 / bg.modelinfo.get - 模特信息查询
+- `110443629462` `interfaceDocument` 文档中心 / API文档 / 商品模特试穿API组 / bg.modelcats.get - 可添加模特类目查询
+- `110445265368` `interfaceDocument` 文档中心 / API文档 / 商品模特试穿API组 / bg.modelinfo.add - 新增模特信息
+- `110445591901` `interfaceDocument` 文档中心 / API文档 / 商品模特试穿API组 / bg.modelinfo.edit - 编辑模特信息
+- `110454758264` `interfaceDocument` 文档中心 / API文档 / 寄样/质检/退货API组 / bg.refund.returnpackage.get - 退货包裹查询接口
+- `110455629859` `interfaceDocument` 文档中心 / API文档 / 寄样/质检/退货API组 / bg.refund.returnpackagedetail.get - 退货包裹详情查询
+- `110456992584` `interfaceDocument` 文档中心 / API文档 / 寄样/质检/退货API组 / bg.refund.returnpackagelist.get - 退供包裹明细列表
+- `110457222771` `interfaceDocument` 文档中心 / API文档 / 寄样/质检/退货API组 / bg.goods.qualityinspection.get - 质检列表查询
+- `110458731481` `interfaceDocument` 文档中心 / API文档 / 寄样/质检/退货API组 / bg.goods.qualityinspectiondetail.get - 质检结果详情查看
+- `132423940200` `interfaceDocument` 文档中心 / API文档 / 寄样/质检/退货API组 / bg.sample.order.get - 寄样单查询
+- `132424831566` `interfaceDocument` 文档中心 / API文档 / 寄样/质检/退货API组 / bg.sample.send - 寄样发货
+- `110460846091` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.shiporder.staging.get - 查询发货台接口
+- `110462180030` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.shiporderv3.create - 创建发货单接口v3
+- `110462747906` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.shiporder.staging.add - 加入发货台接口
+- `110463344890` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.shiporder.cancel - 发货单取消
+- `110464367715` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.shiporderv2.get - 查询发货单v2
+- `110465747497` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.mall.address.add - 卖家发货地址创建
+- `110467273278` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.mall.address.get - 卖家地址查询
+- `110467904554` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.logistics.company.get - 快递公司查询
+- `110469268084` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.shiporder.packing.send - 装箱发货接口
+- `110469926009` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.shiporder.packing.match - 装箱发货校验
+- `110472527079` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.shiporder.package.get - 发货包裹查询
+- `133470004041` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.shiporder.package.edit - 发货包裹编辑
+- `110473437344` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.shiporder.receiveaddressv2.get - 大仓收货地址查询v2
+- `110473878324` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.shiporder.logisticsorder.match - 物流单号与可用物流公司校验
+- `110475194321` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.shiporder.logistics.get - 自行委托三方物流公司查询接口
+- `110476307899` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.shiporder.logistics.change - 修改物流接口
+- `110477283380` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.purchaseorderv2.get - 采购单查询v2
+- `110478086971` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.purchaseorder.apply - 采购备货申请
+- `119837142216` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.shiporderv3.logisticsmatch.get - 平台推荐物流商匹配接口V3
+- `154448632227` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.purchaseorder.edit - 修改备货单下单数量
+- `159683986650` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.predict.volume.get - 获取预估体积
+- `163898646605` `interfaceDocument` 文档中心 / API文档 / 备货及发货API组 / bg.purchaseorder.cancel - 批量取消待接单的备货单
+- `142907503232` `interfaceDocument` 文档中心 / API文档 / 运单标签&箱唛 / bg.logistics.boxmarkinfo.get - 箱唛查询
+- `161790420507` `interfaceDocument` 文档中心 / API文档 / 运单标签&箱唛 / bg.shiporder.express.note.get - 物流运单标签获取
+- `142906383832` `freeDocument` 文档中心 / API文档 / 运单标签&箱唛 / 箱唛打印说明
+- `163885777959` `freeDocument` 文档中心 / API文档 / 运单标签&箱唛 / 运单标签打印说明
+- `163884783129` `freeDocument` 文档中心 / API文档 / 商品条码API组-PA / 条码打印说明
+- `157588780560` `interfaceDocument` 文档中心 / API文档 / 商品条码API组-PA / bg.glo.goods.custom.label.get - 定制品商品条码查询
+- `156539068659` `interfaceDocument` 文档中心 / API文档 / 商品条码API组-PA / bg.glo.goods.labelv2.get - 商品条码查询V2
+- `110482379690` `interfaceDocument` 文档中心 / API文档 / 销售API组 / bg.goods.salesv2.get - 销售管理分仓组数据查询接口
+- `128228362562` `interfaceDocument` 文档中心 / API文档 / 活动API组 / bg.marketing.activity.list.get - 查询活动列表
+- `128227304852` `interfaceDocument` 文档中心 / API文档 / 活动API组 / bg.marketing.activity.detail.get - 查询活动详情
+- `128225196698` `interfaceDocument` 文档中心 / API文档 / 活动API组 / bg.marketing.activity.product.get - 查询活动商品
+- `128230009462` `interfaceDocument` 文档中心 / API文档 / 活动API组 / bg.marketing.activity.session.list.get - 查询活动场次列表
+- `128226714122` `interfaceDocument` 文档中心 / API文档 / 活动API组 / bg.marketing.activity.enroll.submit - 活动报名提交
+- `135565663340` `interfaceDocument` 文档中心 / API文档 / 活动API组 / bg.marketing.activity.enroll.list.get - 查询活动报名记录
+- `161789751076` `freeDocument` 文档中心 / API文档 / 活动API组-PA / 仅自研应用特殊申请通过后使用
+- `157597196095` `interfaceDocument` 文档中心 / API文档 / 活动API组-PA / bg.marketing.activity.detail.get.global - 查询活动详情
+- `156545880224` `interfaceDocument` 文档中心 / API文档 / 活动API组-PA / bg.marketing.activity.list.get.global - 查询活动列表
+- `156546883031` `interfaceDocument` 文档中心 / API文档 / 活动API组-PA / bg.marketing.activity.product.get.global - 查询活动商品
+- `156548140039` `interfaceDocument` 文档中心 / API文档 / 活动API组-PA / bg.marketing.activity.session.list.get.global - 查询活动场次列表
+- `156548639609` `interfaceDocument` 文档中心 / API文档 / 活动API组-PA / bg.marketing.activity.enroll.list.get.global - 查询活动报名记录
+- `156549712777` `interfaceDocument` 文档中心 / API文档 / 活动API组-PA / bg.marketing.activity.enroll.submit.global - 活动报名提交
+- `114596062546` `interfaceDocument` 文档中心 / API文档 / 基础API组 / bg.mall.info.get - 查询当前token对应店铺类型信息
+- `114597179588` `interfaceDocument` 文档中心 / API文档 / 基础API组 / bg.open.accesstoken.info.get - 查询当前token对应授权信息
+- `161780397596` `interfaceDocument` 文档中心 / API文档 / 基础API组-PA / bg.open.accesstoken.info.get.global - 查询当前token对应授权信息-global
+- `131371264628` `interfaceDocument` 文档中心 / API文档 / 编辑API组 / bg.goods.update - 货品更新接口
+- `131372855744` `interfaceDocument` 文档中心 / API文档 / 编辑API组 / bg.goods.edit - 货品编辑
+- `131373481358` `interfaceDocument` 文档中心 / API文档 / 编辑API组 / bg.goods.edit.sensitive.attr - 编辑货品敏感品属性
+- `131374205013` `interfaceDocument` 文档中心 / API文档 / 编辑API组 / bg.goods.edit.task.apply - 发起货品修改单
+- `131375097508` `interfaceDocument` 文档中心 / API文档 / 编辑API组 / bg.goods.edit.task.submit - 提交货品修改单
+- `132421808984` `interfaceDocument` 文档中心 / API文档 / 编辑API组 / bg.goods.edit.pictures.submit - 修改商品素材
+- `132422925747` `interfaceDocument` 文档中心 / API文档 / 编辑API组 / bg.goodslogistics.template.edit - 编辑商品运费模板
+- `133468826840` `interfaceDocument` 文档中心 / API文档 / 编辑API组 / bg.goods.edit.property - 编辑货品属性
+- `132427617587` `interfaceDocument` 文档中心 / API文档 / 编辑API组 / bg.goods.edit.guide.file - 编辑货品说明书
+- `150246653502` `interfaceDocument` 文档中心 / API文档 / 编辑API组 / bg.goods.add.property - 新增货品属性
+- `157589832189` `interfaceDocument` 文档中心 / API文档 / 编辑API组-PA / bg.glo.goods.edit.task.submit - 提交货品修改单
+- `157591481042` `interfaceDocument` 文档中心 / API文档 / 编辑API组-PA / bg.glo.goods.edit.sensitive.attr - 编辑货品敏感品属性
+- `157592415729` `interfaceDocument` 文档中心 / API文档 / 编辑API组-PA / bg.glo.goods.edit.pictures.submit - 修改商品素材
+- `156540724785` `interfaceDocument` 文档中心 / API文档 / 编辑API组-PA / bg.glo.goods.update - 货品更新接口
+- `156541111659` `interfaceDocument` 文档中心 / API文档 / 编辑API组-PA / bg.glo.goods.add.property - 新增货品属性
+- `157593309420` `interfaceDocument` 文档中心 / API文档 / 编辑API组-PA / bg.glo.goods.edit.property - 编辑货品属性
+- `156542282370` `interfaceDocument` 文档中心 / API文档 / 编辑API组-PA / bg.glo.goodslogistics.template.edit - 编辑商品运费模板
+- `164927145021` `interfaceDocument` 文档中心 / API文档 / 编辑API组-PA / bg.glo.goods.edit.task.apply - 发起货品修改单
+- `134517245320` `interfaceDocument` 文档中心 / API文档 / 申报价/核价/调价API组 / bg.goods.price.list.get - 货品供货价查询
+- `132428745890` `interfaceDocument` 文档中心 / API文档 / 申报价/核价/调价API组 / bg.price.review.page.query - 分页查询核价单
+- `134517883876` `interfaceDocument` 文档中心 / API文档 / 申报价/核价/调价API组 / bg.price.review.confirm - 同意核价单建议价
+- `134518927673` `interfaceDocument` 文档中心 / API文档 / 申报价/核价/调价API组 / bg.price.review.reject - 不同意核价单建议价（并给出新的申报价）
+- `134520592633` `interfaceDocument` 文档中心 / API文档 / 申报价/核价/调价API组 / bg.semi.adjust.price.page.query - 分页查询半托管调价单
+- `134521523476` `interfaceDocument` 文档中心 / API文档 / 申报价/核价/调价API组 / bg.semi.adjust.price.batch.review - 半托管批量确认/拒绝调价单
+- `140808409141` `interfaceDocument` 文档中心 / API文档 / 申报价/核价/调价API组 / bg.full.adjust.price.batch.review - 全托管批量确认/拒绝调价单
+- `140809402726` `interfaceDocument` 文档中心 / API文档 / 申报价/核价/调价API组 / bg.full.adjust.price.page.query - 分页查询全托管调价单
+- `163883025113` `freeDocument` 文档中心 / API文档 / 申报价/核价/调价API组-PA / 仅自研应用单独申请后调用
+- `157596488384` `interfaceDocument` 文档中心 / API文档 / 申报价/核价/调价API组-PA / bg.glo.goods.price.list.get - 货品供货价查询
+- `163878891213` `interfaceDocument` 文档中心 / API文档 / 申报价/核价/调价API组-PA / bg.semi.adjust.price.batch.review.order - 半托管批量确认/拒绝调价单
+- `163880165860` `interfaceDocument` 文档中心 / API文档 / 申报价/核价/调价API组-PA / bg.semi.adjust.price.page.query.order - 分页查询半托管调价单
+- `161785878790` `interfaceDocument` 文档中心 / API文档 / 申报价/核价/调价API组-PA / bg.semi.price.review.page.query.order - 分页查询半托管核价单
+- `161787103136` `interfaceDocument` 文档中心 / API文档 / 申报价/核价/调价API组-PA / bg.semi.price.review.confirm.order - 半托管同意核价单建议价
+- `163881680541` `interfaceDocument` 文档中心 / API文档 / 申报价/核价/调价API组-PA / bg.semi.price.review.reject.order - 半托管不同意核价单建议价（并给出新的申报价）
+- `147108234583` `interfaceDocument` 文档中心 / API文档 / JIT组 / bg.jitmode.activate - 打开JIT
+- `148152598703` `interfaceDocument` 文档中心 / API文档 / JIT组 / bg.virtualinventoryjit.get - 虚拟库存查询
+- `148153613363` `interfaceDocument` 文档中心 / API文档 / JIT组 / bg.virtualinventoryjit.edit - 虚拟库存编辑
+- `148154426303` `interfaceDocument` 文档中心 / API文档 / JIT组 / bg.virtualinventoryjit.rule.sign - jit预售规则签署接口
+- `147109024522` `interfaceDocument` 文档中心 / API文档 / JIT组 / bg.virtualinventoryjit.rule.get - jit预售规则查询接口
+- `157597976402` `interfaceDocument` 文档中心 / API文档 / JIT组-PA / bg.glo.jitmode.activate - 打开JIT
+- `163886381789` `interfaceDocument` 文档中心 / API文档 / 全托广告API组-PA / bg.glo.searchrec.ad.create - 创建广告接口
+- `161796712401` `interfaceDocument` 文档中心 / API文档 / 全托广告API组-PA / bg.glo.searchrec.ad.modify - 修改广告接口
+- `163888079686` `interfaceDocument` 文档中心 / API文档 / 全托广告API组-PA / bg.glo.searchrec.ad.batch.modify - 批量修改广告接口
+- `161791102930` `interfaceDocument` 文档中心 / API文档 / 全托广告API组-PA / bg.glo.searchrec.ad.roas.pred - 广告投资回报率查询接口
+- `161792757842` `interfaceDocument` 文档中心 / API文档 / 全托广告API组-PA / bg.glo.searchrec.ad.detail.query - 广告投放状态查询接口
+- `161793957243` `interfaceDocument` 文档中心 / API文档 / 全托广告API组-PA / bg.glo.searchrec.ad.goods.create.query - 广告商品可创建查询接口
+- `163889199468` `interfaceDocument` 文档中心 / API文档 / 全托广告API组-PA / bg.glo.searchrec.ad.log.query - 操作日志查询接口
+- `161794700469` `interfaceDocument` 文档中心 / API文档 / 全托广告API组-PA / bg.glo.searchrec.ad.reports.goods.query - 广告商品投放数据效果（商品维度）
+- `161795303147` `interfaceDocument` 文档中心 / API文档 / 全托广告API组-PA / bg.glo.searchrec.ad.reports.mall.query - 整体投放数据效果（店铺维度）
+- `161804410664` `interfaceDocument` 文档中心 / API文档 / 全托管库存API组-PA / bg.qtg.stock.virtualinventoryjit.get - 虚拟库存查询
+- `163901654814` `interfaceDocument` 文档中心 / API文档 / 全托管库存API组-PA / bg.qtg.stock.virtualinventoryjit.edit - 虚拟库存编辑
+- `129273750890` `freeDocument` 文档中心 / 开发者文档 / 开发指南 / 签名规则
+- `129276807107` `freeDocument` 文档中心 / 开发者文档 / 开发指南 / 鉴权信息
+- `132429173222` `freeDocument` 文档中心 / 开发者文档 / 开发指南 / 自研专属接口
+- `141858478483` `freeDocument` 文档中心 / 开发者文档 / 开发指南 / 分区说明
+- `132420401064` `freeDocument` 文档中心 / 开发者文档 / 开发指南 / 接口列表
+- `130322504140` `freeDocument` 文档中心 / 开发者文档 / 开发指南 / 基本信息
+- `129279166501` `freeDocument` 文档中心 / 开发者文档 / 调用流程 / 全托履约流程
+- `129278535668` `freeDocument` 文档中心 / 开发者文档 / 调用流程 / 货品发布流程
+- `150248517406` `freeDocument` 文档中心 / 开发者文档 / 数据字典 / 尺码表分类
+- `127177168942` `freeDocument` 文档中心 / 开发者文档 / 数据字典 / 发品-省份枚举值
+- `153400122150` `freeDocument` 文档中心 / 开发者文档 / 数据字典 / 部分类目模特信息必填
+- `139759717684` `freeDocument` 文档中心 / 开发者文档 / 数据字典 / 定制品定制工艺层级关系
+- `126128279515` `freeDocument` 文档中心 / 开发者文档 / 数据字典 / 半托管站点列表
+- `132430304308` `freeDocument` 文档中心 / 开发者文档 / 数据字典 / 货品名称长度限制规则
+- `134523592060` `freeDocument` 文档中心 / 开发者文档 / 数据字典 / （单码）鞋类尺码&脚长映射配置
+- `159682943373` `freeDocument` 文档中心 / 开发者文档 / 数据字典 / （双码）鞋类尺码&脚长映射配置
+- `161781232534` `freeDocument` 文档中心 / 开发者文档 / 数据字典 / 车型库必填类目
+- `151293979205` `freeDocument` 文档中心 / 开发者文档 / 数据字典 / 支持底板套板的类目
+- `154442717054` `freeDocument` 文档中心 / 开发者文档 / 数据字典 / 半托管sku分类&净含量必填叶子类目
+- `156551928165` `freeDocument` 文档中心 / 开发者文档 / 数据字典 / 承诺发货时效说明
+- `114595649140` `freeDocument` 文档中心 / 开发者文档 / 常见问题 / 常见问题
+- `136614434571` `freeDocument` 文档中心 / 开发者文档 / 入驻流程 / 入驻流程说明
+- `157603932572` `freeDocument` 学习中心 / 协议中心 / 最新通知 / 《服务市场服务协议（服务商版）》更新生效通知
+- `157608743694` `freeDocument` 学习中心 / 协议中心 / 最新通知 / 《开发者协议》更新生效通知
+- `158636608251` `freeDocument` 学习中心 / 协议中心 / 最新通知 / 《服务市场违规处理规则（服务商版）》更新生效通知
+- `157602757771` `freeDocument` 学习中心 / 协议中心 / 最新通知 / 《服务市场服务协议（服务商版）》更新公示通知
+- `157607629635` `freeDocument` 学习中心 / 协议中心 / 最新通知 / 《开发者协议》更新公示通知
+- `157607162247` `freeDocument` 学习中心 / 协议中心 / 最新通知 / 《服务市场违规处理规则（服务商版）》更新公示通知
+- `157601465263` `freeDocument` 学习中心 / 协议中心 / 最新通知 / 《服务市场服务协议（服务商版）》更新意见征集
+- `158637750572` `freeDocument` 学习中心 / 协议中心 / 最新通知 / 《开发者协议》更新意见征集
+- `157605378472` `freeDocument` 学习中心 / 协议中心 / 最新通知 / 《服务市场违规处理规则（服务商版）》更新意见征集
+- `156557486956` `freeDocument` 学习中心 / 协议中心 / 协议列表 / 开发者协议 V1.1
+- `156558085025` `freeDocument` 学习中心 / 协议中心 / 协议列表 / 服务市场服务协议（服务商版）V1.1
+- `153393029619` `freeDocument` 学习中心 / 协议中心 / 协议列表 / Temu Partner Platform私隱政策聲明（中國香港）
+- `154440569899` `freeDocument` 学习中心 / 协议中心 / 协议列表 / Temu Partner Platform隐私政策
+- `157600876092` `freeDocument` 学习中心 / 协议中心 / 规则列表 / 服务市场违规处理规则（服务商版）v1.1
+- `116694701939` `freeDocument` 学习中心 / 系统操作指南 / 系统操作指南 / 合作伙伴平台操作指南
