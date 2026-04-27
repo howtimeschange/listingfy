@@ -3,4 +3,8 @@
 .env.*
 *.log
 tmp/
+data/*.sqlite
+data/*.sqlite-*
+data/*.db
+data/*.db-*
 data/shein-metadata/

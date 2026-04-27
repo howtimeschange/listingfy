@@ -86,12 +86,24 @@ data/shein-metadata/20260424T113417Z/
 
 ## 下一步
 
-1. 接数据库，创建 `channel_category` 和 `channel_attribute_template`。
-2. 将 `categories.flat.jsonl`、`publish-standards.jsonl`、`attribute-templates.jsonl`、`required-attributes.jsonl` 的导入逻辑落到服务层。
+1. Phase 1 已开始：接数据库，创建 SHEIN 元数据表和导入脚本。
+2. 将 `categories.flat.jsonl`、`publish-standards.jsonl`、`attribute-templates.jsonl`、`required-attributes.jsonl` 导入本地数据库。
 3. 做 `MDM 小类 -> SHEIN 末级类目` 映射规则维护。
 4. 接 Excel 导入：观远 BI 毛重、尺码转换、包装规则、低倍率清单。
 5. 生成 SHEIN listing 草稿，并用已同步的必填属性和图片规则做发布前校验。
 6. 构造 `publishOrEdit` payload，先实现测试/预览，再进入真实发布。
+
+## 2026-04-27 Phase 1 补充
+
+已新增本地 SQLite 数据库迁移、SHEIN 元数据导入服务和查询脚本：
+
+- `db/migrations/001_shein_metadata.sql`
+- `scripts/db_migrate.mjs`
+- `scripts/shein_metadata_import.mjs`
+- `scripts/shein_metadata_query.mjs`
+- `docs/phase1-shein-metadata-database.md`
+
+默认数据库为 `data/app.sqlite`，不提交 Git。导入后可以查询 SHEIN 叶子类目、类目发布字段、图片规则、必填属性和属性枚举。
 
 ## 风险和注意事项
 
