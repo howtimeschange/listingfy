@@ -2,6 +2,56 @@
 
 日期：2026-04-27
 
+## 0. 项目地址与文件索引
+
+项目根目录：
+
+```text
+/Users/xingyicheng/Documents/New project
+```
+
+建议从本文档开始看，再按下面路径进入具体文件：
+
+| 类型 | 文件/目录 | 用途 |
+| --- | --- | --- |
+| 当前进度 | `/Users/xingyicheng/Documents/New project/docs/project-progress-2026-04-27.md` | 最新项目状态、已完成内容、下一步动作 |
+| PRD | `/Users/xingyicheng/Documents/New project/docs/prd-shein-fullmanaged-listing-mvp.md` | 业务目标、MVP 范围、用户角色、验收标准 |
+| 技术规格 | `/Users/xingyicheng/Documents/New project/docs/spec-shein-fullmanaged-listing-mvp.md` | 数据模型、发布流程、接口适配、实施分期 |
+| Phase 1 数据库 | `/Users/xingyicheng/Documents/New project/docs/phase1-shein-metadata-database.md` | SHEIN 元数据入库、查询命令、表结构说明 |
+| SHEIN 联调记录 | `/Users/xingyicheng/Documents/New project/docs/shein-openapi-live-probe-2026-04-24.md` | 已调通接口、店铺类目、样例类目和属性模板 |
+| 元数据同步说明 | `/Users/xingyicheng/Documents/New project/docs/shein-metadata-sync-task.md` | SHEIN 元数据同步任务和输出文件说明 |
+| 接口参考文档 | `/Users/xingyicheng/Documents/New project/docs/reference/interface-docs/` | SHEIN、TEMU、MDM、深绘离线参考资料 |
+| 数据库迁移 | `/Users/xingyicheng/Documents/New project/db/migrations/` | SQLite 迁移，后续可迁移到 PostgreSQL |
+| SHEIN 客户端 | `/Users/xingyicheng/Documents/New project/scripts/lib/shein_client.mjs` | SHEIN 签名、请求、重试、验签头 |
+| 数据库 helper | `/Users/xingyicheng/Documents/New project/scripts/lib/sqlite_db.mjs` | 本地 SQLite 打开、迁移、事务工具 |
+| 接口探查脚本 | `/Users/xingyicheng/Documents/New project/scripts/shein_probe.mjs` | 单接口调试 |
+| 元数据同步脚本 | `/Users/xingyicheng/Documents/New project/scripts/shein_metadata_sync.mjs` | 调 SHEIN 接口生成本地元数据文件 |
+| 元数据导入脚本 | `/Users/xingyicheng/Documents/New project/scripts/shein_metadata_import.mjs` | 把元数据文件导入 `data/app.sqlite` |
+| 元数据查询脚本 | `/Users/xingyicheng/Documents/New project/scripts/shein_metadata_query.mjs` | 查询类目、字段、图片规则、属性和枚举 |
+| npm 命令 | `/Users/xingyicheng/Documents/New project/package.json` | 项目可运行命令 |
+| 本地数据库 | `/Users/xingyicheng/Documents/New project/data/app.sqlite` | 已忽略，不提交 Git |
+| SHEIN 元数据文件 | `/Users/xingyicheng/Documents/New project/data/shein-metadata/20260424T113417Z/` | 已忽略，不提交 Git |
+
+常用命令：
+
+```bash
+cd "/Users/xingyicheng/Documents/New project"
+npm run db:migrate
+npm run shein:metadata:import
+npm run shein:metadata:query
+npm run shein:metadata:query -- --search '女童（大）T恤'
+npm run shein:metadata:query -- --category-id 2013
+```
+
+当前最近提交：
+
+```text
+4d60f65 Add architecture and UI planning doc
+759b2b3 Update project progress for 2026-04-27
+30b77b7 Refine SHEIN category mapping dimensions
+ceaf170 Add SHEIN metadata database import
+```
+
 ## 1. 项目定位
 
 本项目第一阶段定位为 SHEIN 全托管上新中台。目标不是替代完整 ERP，而是把 MDM、深绘、Excel 人工规则、图片补齐、价格确认、SHEIN 发布校验和发布追踪串成一个可审计、可回溯、可批量操作的发品工作台。
