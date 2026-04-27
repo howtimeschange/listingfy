@@ -318,17 +318,25 @@ create table package_rule (
 ```
 
 ```sql
-create table channel_category_mapping_rule (
+create table mdm_shein_category_mapping_rule (
   id bigserial primary key,
   import_batch_id bigint references business_import_batch(id),
-  platform varchar(32) not null default 'SHEIN',
-  channel_account_id bigint,
-  local_category_l3_code varchar(64),
-  local_category_l3_name varchar(128),
-  platform_category_id varchar(128) not null,
-  product_type_id varchar(128),
+  mdm_middle_category_code varchar(64),
+  mdm_middle_category_name varchar(128) not null,
+  mdm_small_category_code varchar(64),
+  mdm_small_category_name varchar(128) not null,
+  gender_code varchar(64),
+  gender_name varchar(128),
+  age_group_code varchar(64),
+  age_group_name varchar(128),
+  match_mode varchar(32) not null default 'EXACT',
+  match_key varchar(512) not null,
+  shein_category_id bigint not null,
+  shein_product_type_id bigint not null,
   priority int not null default 100,
   status varchar(32) not null default 'ACTIVE',
+  source varchar(32) not null default 'MANUAL',
+  dimension_payload jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -339,7 +347,7 @@ create table channel_category_mapping_rule (
 - `product_weight_import` 第一版承接观远 BI 毛重 Excel。
 - `size_conversion_rule` 承接 SHEIN 尺码转换表。
 - `package_rule` 承接包装尺寸和包装类型规则，界面支持增删改查和批量应用。
-- `channel_category_mapping_rule` 承接 MDM 小类到 SHEIN 末级类目的业务规则。
+- `mdm_shein_category_mapping_rule` 承接 MDM 中类、小类、性别、年龄段到 SHEIN 末级类目的组合业务规则；SHEIN 目标必须同时保存 `category_id` 和 `product_type_id`。
 
 ### 3.7 价格规则
 
@@ -670,7 +678,7 @@ MVP 需要实现以下 SHEIN 接口调用：
 3. 调用 `/open-api/goods/query-category-tree` 获取当前店铺可发布类目树，写入 `channel_category`。
 4. 对可发布叶子类目调用 `/open-api/goods/query-publish-fill-in-standard`，保存默认语种、币种、图片要求和发布字段规范。
 5. 对可发布叶子类目调用 `/open-api/goods/query-attribute-template`，保存必填属性、枚举值和可填写范围。
-6. 在界面维护 `MDM 小类 -> SHEIN 末级类目` 映射，写入 `channel_category_mapping_rule`。
+6. 在界面维护 `MDM 中类 + 小类 + 性别 + 年龄段 -> SHEIN 末级类目` 映射，写入 `mdm_shein_category_mapping_rule`。
 7. 用一个款号生成草稿并构造 payload，验证类目、属性、尺码、图片和价格字段能完整落到 SHEIN 结构。
 
 接口探查结论：
@@ -1034,7 +1042,7 @@ SHEIN 第一版可以将 `prepareSizeChart` 合并到 `buildPublishPayload`；TE
 - 调用鉴权接口。
 - 同步当前店铺可发布类目树。
 - 同步叶子类目的发布字段规范、属性模板、枚举值和可填写范围。
-- 维护 MDM 小类到 SHEIN 末级类目的映射规则。
+- 维护 MDM 中类、小类、性别、年龄段到 SHEIN 末级类目的组合映射规则。
 - 用样例款号构造发布 payload，不要求真实发布。
 
 ### Phase 1: 数据底座

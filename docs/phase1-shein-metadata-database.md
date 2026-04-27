@@ -72,9 +72,36 @@ npm run shein:metadata:query -- --product-type-id 9738 --attribute-id 87
 | `channel_attribute` | 属性明细 |
 | `channel_attribute_value` | 属性枚举值 |
 | `channel_required_attribute` | 类目维度必填属性 |
-| `mdm_shein_category_mapping_rule` | MDM 小类到 SHEIN 末级类目的人工映射规则 |
+| `mdm_shein_category_mapping_rule` | MDM 中类 + 小类 + 性别 + 年龄段到 SHEIN 末级类目的组合映射规则 |
 | `v_shein_leaf_category` | SHEIN 叶子类目查询视图 |
 | `v_shein_category_required_attribute` | 类目必填属性查询视图 |
+
+## 类目映射规则
+
+SHEIN 末级类目的映射不是单纯的 MDM 小类一对一关系。第一版规则按以下维度综合匹配：
+
+| 维度 | 字段 |
+| --- | --- |
+| MDM 中类 | `mdm_middle_category_code`、`mdm_middle_category_name` |
+| MDM 小类 | `mdm_small_category_code`、`mdm_small_category_name` |
+| 性别 | `gender_code`、`gender_name` |
+| 年龄段 | `age_group_code`、`age_group_name` |
+| SHEIN 目标 | `shein_category_id`、`shein_product_type_id` |
+
+匹配策略：
+
+- `match_mode=EXACT` 表示四个业务维度精确命中，作为常规规则。
+- `match_mode=FALLBACK` 用于历史兼容或少量兜底规则，按 `priority` 决定优先级。
+- `match_key` 保存归一化后的组合键，后续 Excel 导入时用于幂等更新。
+- 同一个有效 `EXACT` 组合只允许指向一个 SHEIN 末级类目。
+
+后续 Excel 导入模板建议至少包含这些列：
+
+```text
+MDM中类编码, MDM中类名称, MDM小类编码, MDM小类名称,
+性别编码, 性别名称, 年龄段编码, 年龄段名称,
+SHEIN末级类目ID, SHEIN product_type_id, 优先级, 状态, 备注
+```
 
 ## 当前导入范围
 
@@ -110,7 +137,7 @@ channel_required_attribute: 8733
 
 ## 下一步
 
-1. 给 `mdm_shein_category_mapping_rule` 增加 Excel 导入和批量维护接口。
+1. 给 `mdm_shein_category_mapping_rule` 增加 Excel 导入和批量维护接口，导入维度按 MDM 中类、小类、性别、年龄段组合匹配。
 2. 接 MDM/深绘数据入库，形成 SPU/SKC/SKU 主数据。
 3. 基于 `channel_category` 和 `channel_required_attribute` 生成 SHEIN listing 草稿校验结果。
 4. 做发布 payload 预览接口，把必填字段、图片规则和属性枚举直接展示给运营确认。

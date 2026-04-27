@@ -88,7 +88,7 @@ data/shein-metadata/20260424T113417Z/
 
 1. Phase 1 已开始：接数据库，创建 SHEIN 元数据表和导入脚本。
 2. 将 `categories.flat.jsonl`、`publish-standards.jsonl`、`attribute-templates.jsonl`、`required-attributes.jsonl` 导入本地数据库。
-3. 做 `MDM 小类 -> SHEIN 末级类目` 映射规则维护。
+3. 做 `MDM 中类 + 小类 + 性别 + 年龄段 -> SHEIN 末级类目` 组合映射规则维护。
 4. 接 Excel 导入：观远 BI 毛重、尺码转换、包装规则、低倍率清单。
 5. 生成 SHEIN listing 草稿，并用已同步的必填属性和图片规则做发布前校验。
 6. 构造 `publishOrEdit` payload，先实现测试/预览，再进入真实发布。
@@ -104,6 +104,8 @@ data/shein-metadata/20260424T113417Z/
 - `docs/phase1-shein-metadata-database.md`
 
 默认数据库为 `data/app.sqlite`，不提交 Git。导入后可以查询 SHEIN 叶子类目、类目发布字段、图片规则、必填属性和属性枚举。
+
+类目映射规则已修正为组合维度：MDM 中类、小类、性别、年龄段共同决定 SHEIN 末级类目，不按 MDM 小类一对一处理。
 
 ## 风险和注意事项
 
