@@ -6,6 +6,7 @@ node_modules/
 dist/
 .vite/
 tmp/
+docs/reference/integration-handoffs/private/
 data/*.sqlite
 data/*.sqlite-*
 data/*.db

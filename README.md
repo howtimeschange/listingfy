@@ -100,6 +100,7 @@ npm run lint
 - `docs/prd-shein-fullmanaged-listing-mvp.md`：产品需求。虽然文件名以 SHEIN MVP 命名，但文档中明确产品方向为商品中台 + 平台刊登中台 + ERP 能力演进，并预留 TEMU 等多平台适配。
 - `docs/spec-shein-fullmanaged-listing-mvp.md`：技术规格。核心原则是不让商品模型绑定 SHEIN，平台差异通过 `channel_*`、`listing_*`、`platform_identity` 和适配器隔离。
 - `docs/phase1-shein-metadata-database.md`：Phase 1 数据库说明。
+- `docs/reference/integration-handoffs/`：MDM、深绘等外部系统对接交接资料的脱敏版本；原始交接文件只保存在本地忽略目录。
 - `docs/shein-openapi-live-probe-2026-04-24.md`：SHEIN OpenAPI 联调记录。
 - `docs/shein-metadata-sync-task.md`：元数据同步任务说明。
 
