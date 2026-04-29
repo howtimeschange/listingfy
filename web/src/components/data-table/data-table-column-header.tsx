@@ -22,7 +22,7 @@ export function DataTableColumnHeader<TData, TValue>({
     <Button
       variant="ghost"
       size="sm"
-      className={cn("-ml-3 h-8", className)}
+      className={cn("-ml-3 h-8 rounded-lg px-3 text-xs uppercase tracking-[0.65px]", className)}
       onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
     >
       {title}

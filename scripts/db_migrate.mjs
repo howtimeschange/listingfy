@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 
 import path from "node:path";
+import { loadLocalEnv } from "./lib/local_env.mjs";
 import { DEFAULT_DB_PATH, applyMigrations, openDatabase } from "./lib/sqlite_db.mjs";
+
+loadLocalEnv();
 
 function parseArgs(argv) {
   const args = {

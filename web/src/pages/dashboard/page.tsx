@@ -11,6 +11,7 @@ import {
 import { api } from "@/lib/api-client"
 import { formatNumber, formatDateTime } from "@/lib/format"
 import { PageContainer } from "@/components/layout/page-container"
+import { PageHeader } from "@/components/layout/page-header"
 import { StatCard } from "@/components/stat-card"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -45,22 +46,30 @@ export default function DashboardPage() {
 
   return (
     <PageContainer className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">工作台</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          SHEIN 全托管上新中台
-        </p>
-      </div>
+      <PageHeader
+        title="工作台"
+        description="SHEIN 全托管上新中台。把平台元数据、商品档案、规则和发布流程收束成一个清晰可追踪的操作面。"
+      >
+        <Button asChild>
+          <Link to="/product-archives">
+            商品档案
+            <ArrowRight className="size-4" />
+          </Link>
+        </Button>
+        <Button asChild variant="outline">
+          <Link to="/shein-metadata">浏览元数据</Link>
+        </Button>
+      </PageHeader>
 
       {/* KPI cards */}
       {isLoading ? (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
             <Skeleton key={i} className="h-24" />
           ))}
         </div>
       ) : summary ? (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
           <StatCard
             title="SHEIN 叶子类目"
             value={formatNumber(
@@ -122,19 +131,19 @@ export default function DashboardPage() {
       {summary && summary.roots.length > 0 && (
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="text-base">SHEIN 根类目概览</CardTitle>
+            <CardTitle>SHEIN 根类目概览</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
+            <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-6">
               {summary.roots.map((root) => (
                 <div
                   key={root.root_category_name}
-                  className="flex items-center justify-between rounded border px-3 py-2"
+                  className="flex items-center justify-between rounded-2xl border bg-background px-4 py-3 transition-colors hover:border-input hover:bg-accent/35"
                 >
-                  <span className="text-sm truncate">
+                  <span className="truncate text-sm font-medium">
                     {root.root_category_name}
                   </span>
-                  <span className="text-xs text-muted-foreground tabular-nums ml-2 shrink-0">
+                  <span className="ml-2 shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
                     {root.leaf_count}
                   </span>
                 </div>
@@ -159,19 +168,24 @@ function QuickLink({
   to: string
 }) {
   return (
-    <Card className="hover:border-primary/50 transition-colors">
-      <CardContent className="py-4 px-4">
+    <Card className="group hover:border-input hover:bg-accent/20">
+      <CardContent className="px-5 py-5">
         <div className="flex items-start gap-3">
-          <div className="rounded bg-primary/10 p-2">
-            <Icon className="size-4 text-primary" />
+          <div className="flex size-10 items-center justify-center rounded-full bg-[var(--brand-light)] text-[var(--brand-deep)]">
+            <Icon className="size-4" />
           </div>
           <div className="flex-1 min-w-0">
-            <h3 className="text-sm font-medium">{title}</h3>
-            <p className="text-xs text-muted-foreground mt-0.5">
+            <h3 className="text-base font-medium tracking-[-0.1px]">{title}</h3>
+            <p className="mt-1 text-sm leading-5 text-muted-foreground">
               {description}
             </p>
           </div>
-          <Button variant="ghost" size="icon" className="size-8 shrink-0" asChild>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="shrink-0 opacity-80 group-hover:bg-background group-hover:opacity-100"
+            asChild
+          >
             <Link to={to}>
               <ArrowRight className="size-4" />
             </Link>

@@ -22,18 +22,18 @@ export function DataTablePagination<TData>({
   table,
 }: DataTablePaginationProps<TData>) {
   return (
-    <div className="flex items-center justify-between px-2">
+    <div className="flex flex-col gap-3 px-1 sm:flex-row sm:items-center sm:justify-between">
       <div className="text-sm text-muted-foreground tabular-nums">
         共 {table.getFilteredRowModel().rows.length} 条
       </div>
-      <div className="flex items-center gap-6 lg:gap-8">
+      <div className="flex flex-wrap items-center gap-4 lg:gap-6">
         <div className="flex items-center gap-2">
-          <p className="text-sm">每页</p>
+          <p className="text-sm text-muted-foreground">每页</p>
           <Select
             value={`${table.getState().pagination.pageSize}`}
             onValueChange={(value) => table.setPageSize(Number(value))}
           >
-            <SelectTrigger className="h-8 w-[70px]">
+            <SelectTrigger className="h-8 w-[78px]">
               <SelectValue
                 placeholder={table.getState().pagination.pageSize}
               />
@@ -47,7 +47,7 @@ export function DataTablePagination<TData>({
             </SelectContent>
           </Select>
         </div>
-        <div className="text-sm tabular-nums">
+        <div className="text-sm tabular-nums text-muted-foreground">
           第 {table.getState().pagination.pageIndex + 1} /{" "}
           {table.getPageCount()} 页
         </div>

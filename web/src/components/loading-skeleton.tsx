@@ -8,9 +8,9 @@ interface LoadingSkeletonProps {
 
 export function LoadingSkeleton({ rows = 5, className }: LoadingSkeletonProps) {
   return (
-    <div className={cn("space-y-3 p-4", className)}>
+    <div className={cn("space-y-3 p-5", className)}>
       {Array.from({ length: rows }).map((_, i) => (
-        <Skeleton key={i} className="h-4 w-full" />
+        <Skeleton key={i} className="h-5 w-full" />
       ))}
     </div>
   )

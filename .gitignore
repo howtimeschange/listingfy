@@ -1,6 +1,7 @@
 .DS_Store
 .env
 .env.*
+!.env.example
 *.log
 node_modules/
 dist/
@@ -12,3 +13,4 @@ data/*.sqlite-*
 data/*.db
 data/*.db-*
 data/shein-metadata/
+data/deepdraw-content/

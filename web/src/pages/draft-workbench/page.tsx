@@ -1,10 +1,10 @@
-import { PageContainer } from "@/components/layout/page-container"
+import { ComingSoonPage } from "@/components/layout/coming-soon-page"
 
 export default function DraftWorkbenchPage() {
   return (
-    <PageContainer>
-      <h1 className="text-2xl font-semibold tracking-tight">草稿工作台</h1>
-      <p className="text-sm text-muted-foreground mt-1">功能开发中…</p>
-    </PageContainer>
+    <ComingSoonPage
+      title="草稿工作台"
+      description="集中编辑平台刊登草稿、补齐字段并进入校验流程。"
+    />
   )
 }

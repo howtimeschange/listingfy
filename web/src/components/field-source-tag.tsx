@@ -16,7 +16,7 @@ export function FieldSourceTag({ source, className }: FieldSourceTagProps) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium border",
+        "inline-flex items-center rounded-full border px-2 py-0.5 font-mono text-[10px] font-medium uppercase tracking-[0.6px]",
         TONE_CLASSES[tone],
         className,
       )}

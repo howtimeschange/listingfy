@@ -11,6 +11,8 @@
     "shein:metadata:sync": "node scripts/shein_metadata_sync.mjs",
     "shein:metadata:import": "NODE_OPTIONS=--no-warnings=ExperimentalWarning node scripts/shein_metadata_import.mjs",
     "shein:metadata:query": "NODE_OPTIONS=--no-warnings=ExperimentalWarning node scripts/shein_metadata_query.mjs",
+    "deepdraw:sync": "node scripts/deepdraw_product_sync.mjs",
+    "deepdraw:import": "NODE_OPTIONS=--no-warnings=ExperimentalWarning node scripts/deepdraw_content_import.mjs",
     "web:dev": "npm --prefix web run dev",
     "web:server": "npm --prefix web run server:dev"
   }

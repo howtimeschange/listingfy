@@ -1,10 +1,10 @@
-import { PageContainer } from "@/components/layout/page-container"
+import { ComingSoonPage } from "@/components/layout/coming-soon-page"
 
 export default function SyncTasksPage() {
   return (
-    <PageContainer>
-      <h1 className="text-2xl font-semibold tracking-tight">同步任务</h1>
-      <p className="text-sm text-muted-foreground mt-1">功能开发中…</p>
-    </PageContainer>
+    <ComingSoonPage
+      title="同步任务"
+      description="查看 MDM、深绘和平台元数据同步任务的执行状态。"
+    />
   )
 }

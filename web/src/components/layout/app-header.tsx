@@ -22,6 +22,7 @@ const PATH_LABELS: Record<string, string> = {
   "price-rules": "价格规则",
   "low-rate-list": "低倍率清单",
   "shein-metadata": "SHEIN 元数据",
+  "product-archives": "商品档案",
   "mdm-products": "MDM 商品主数据",
   "deepdraw-content": "深绘内容包",
   "image-library": "图片素材库",
@@ -37,13 +38,15 @@ export function AppHeader() {
   const pageLabel = PATH_LABELS[pageKey] ?? pageKey
 
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-b bg-card px-4">
+    <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur-xl md:px-6">
       <SidebarTrigger className="-ml-1" />
-      <Separator orientation="vertical" className="mr-2 h-4" />
+      <Separator orientation="vertical" className="h-4" />
       <Breadcrumb>
         <BreadcrumbList>
           <BreadcrumbItem>
-            <BreadcrumbPage>{pageLabel}</BreadcrumbPage>
+            <BreadcrumbPage className="text-sm font-medium">
+              {pageLabel}
+            </BreadcrumbPage>
           </BreadcrumbItem>
         </BreadcrumbList>
       </Breadcrumb>

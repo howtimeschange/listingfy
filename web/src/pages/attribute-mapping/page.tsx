@@ -1,10 +1,10 @@
-import { PageContainer } from "@/components/layout/page-container"
+import { ComingSoonPage } from "@/components/layout/coming-soon-page"
 
 export default function AttributeMappingPage() {
   return (
-    <PageContainer>
-      <h1 className="text-2xl font-semibold tracking-tight">属性映射</h1>
-      <p className="text-sm text-muted-foreground mt-1">功能开发中…</p>
-    </PageContainer>
+    <ComingSoonPage
+      title="属性映射"
+      description="维护平台属性与内部商品字段的映射关系，后续将承接批量校验和自动补全。"
+    />
   )
 }

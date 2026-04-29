@@ -102,15 +102,15 @@ export const FIELD_SOURCE_TONES: Record<FieldSource, StatusToneClass> = {
 // Tone → Tailwind class
 export const TONE_CLASSES: Record<StatusToneClass, string> = {
   draft:
-    "bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-200",
+    "bg-[#fafafa] text-[#666666] border-[rgba(0,0,0,0.08)]",
   pending:
-    "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950 dark:text-blue-300",
+    "bg-[#eef5ff] text-[#3772cf] border-[#d7e5fb]",
   processing:
-    "bg-violet-50 text-violet-700 border-violet-200 dark:bg-violet-950 dark:text-violet-300",
+    "bg-[#d4fae8] text-[#0fa76e] border-[#b9f4d8]",
   warning:
-    "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300",
+    "bg-[#fff8e8] text-[#c37d0d] border-[#f4ddb3]",
   error:
-    "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300",
+    "bg-[#fff1f1] text-[#d45656] border-[#f1cccc]",
   success:
-    "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300",
+    "bg-[#d4fae8] text-[#0fa76e] border-[#b9f4d8]",
 }

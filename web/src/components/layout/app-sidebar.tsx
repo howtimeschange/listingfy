@@ -13,12 +13,14 @@ import {
   DollarSign,
   TrendingDown,
   Database,
+  Archive,
   Boxes,
   FileText,
   ImagePlus,
   KeyRound,
   RefreshCw,
   ScrollText,
+  Sparkles,
 } from "lucide-react"
 import {
   Sidebar,
@@ -71,6 +73,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "数据中心",
     items: [
       { label: "SHEIN 元数据", to: "/shein-metadata", icon: Database },
+      { label: "商品档案", to: "/product-archives", icon: Archive },
       { label: "MDM 商品主数据", to: "/mdm-products", icon: Boxes },
       { label: "深绘内容包", to: "/deepdraw-content", icon: FileText },
       { label: "图片素材库", to: "/image-library", icon: ImagePlus },
@@ -90,22 +93,26 @@ export function AppSidebar() {
   const { pathname } = useLocation()
 
   return (
-    <Sidebar collapsible="icon">
-      <SidebarHeader className="border-b px-4 py-3">
+    <Sidebar collapsible="icon" className="border-r border-sidebar-border bg-sidebar/95">
+      <SidebarHeader className="border-b px-4 py-4">
         <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded bg-primary text-primary-foreground text-sm font-semibold">
-            S
+          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-[0_1px_2px_rgba(0,0,0,0.06)]">
+            <Sparkles className="size-4" />
           </div>
           <div className="flex flex-col leading-tight group-data-[collapsible=icon]:hidden">
-            <span className="text-sm font-semibold">Listingfy</span>
-            <span className="text-xs text-muted-foreground">Listing Platform</span>
+            <span className="text-sm font-semibold tracking-[-0.1px]">Listingfy</span>
+            <span className="font-mono text-[10px] uppercase tracking-[0.6px] text-muted-foreground">
+              Listing Platform
+            </span>
           </div>
         </div>
       </SidebarHeader>
-      <SidebarContent>
+      <SidebarContent className="px-2 py-3">
         {NAV_GROUPS.map((group) => (
-          <SidebarGroup key={group.label}>
-            <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+          <SidebarGroup key={group.label} className="px-0 py-2">
+            <SidebarGroupLabel className="h-7 px-3 font-mono text-[10px] uppercase tracking-[0.6px] text-muted-foreground">
+              {group.label}
+            </SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
                 {group.items.map((item) => {
@@ -118,6 +125,7 @@ export function AppSidebar() {
                         asChild
                         isActive={active}
                         tooltip={item.label}
+                        className="h-9 rounded-lg px-3 text-[14px] font-medium data-[active=true]:bg-[var(--brand-light)] data-[active=true]:text-foreground"
                       >
                         <NavLink
                           to={item.to}

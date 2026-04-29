@@ -1,10 +1,16 @@
 import path from "node:path"
 import Database from "better-sqlite3"
+import { loadLocalEnv } from "../../scripts/lib/local_env.mjs"
+
+const localEnv = loadLocalEnv()
+const projectRoot = localEnv.filePath
+  ? path.dirname(localEnv.filePath)
+  : path.resolve(process.cwd(), "..")
 
 // Web server is at <root>/web/server, db is at <root>/data/app.sqlite
 const DB_PATH = process.env.APP_DB_PATH
-  ? path.resolve(process.env.APP_DB_PATH)
-  : path.resolve(process.cwd(), "..", "data", "app.sqlite")
+  ? path.resolve(projectRoot, process.env.APP_DB_PATH)
+  : path.resolve(projectRoot, "data", "app.sqlite")
 
 let _db: Database.Database | null = null
 

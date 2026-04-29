@@ -1,5 +1,5 @@
-import { useState } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useEffect, useState } from "react"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Database,
   ChevronRight,
@@ -9,18 +9,33 @@ import {
   ImageIcon,
   Tags,
   ListChecks,
+  Loader2,
+  RefreshCw,
 } from "lucide-react"
+import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { formatNumber, formatDateTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { useDebounce } from "@/hooks/use-debounce"
 import { PageContainer } from "@/components/layout/page-container"
+import { PageHeader } from "@/components/layout/page-header"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Label } from "@/components/ui/label"
+import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   Sheet,
@@ -70,6 +85,27 @@ interface MetadataSummary {
   latest_batch: SyncBatch | null
   counts: Record<string, number>
   roots: RootSummary[]
+}
+
+interface MetadataSyncJob {
+  id: string
+  status: "queued" | "running" | "completed" | "failed"
+  stage: "queued" | "sync" | "import" | "completed" | "failed"
+  options: {
+    roots: string[]
+    limitLeaves: number | null
+    standardConcurrency: number
+    attributeConcurrency: number
+    skipStandards: boolean
+    skipAttributes: boolean
+    skipAttributeValues: boolean
+  }
+  total_count: number
+  completed_count: number
+  failed_count: number
+  source_dir: string | null
+  logs: string[]
+  error: string | null
 }
 
 interface CategoryNode {
@@ -166,6 +202,12 @@ interface AttributeValue {
   color: string | null
 }
 
+const badgeTone = {
+  required: "border-[#f1cccc] bg-[#fff1f1] text-[#d45656]",
+  info: "border-[#d7e5fb] bg-[#eef5ff] text-[#3772cf]",
+  success: "border-[#b9f4d8] bg-[#d4fae8] text-[#0fa76e]",
+}
+
 // --- API hooks ---
 
 function useSummary() {
@@ -223,19 +265,200 @@ export default function SheinMetadataPage() {
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null)
   const [selectedAttribute, setSelectedAttribute] = useState<AttributeRow | null>(null)
   const [searchText, setSearchText] = useState("")
+  const [syncRoots, setSyncRoots] = useState("")
+  const [limitLeaves, setLimitLeaves] = useState("")
+  const [standardConcurrency, setStandardConcurrency] = useState("12")
+  const [attributeConcurrency, setAttributeConcurrency] = useState("8")
+  const [skipStandards, setSkipStandards] = useState(false)
+  const [skipAttributes, setSkipAttributes] = useState(false)
+  const [skipAttributeValues, setSkipAttributeValues] = useState(false)
+  const [syncJobId, setSyncJobId] = useState<string | null>(null)
   const debouncedSearch = useDebounce(searchText, 300)
+  const queryClient = useQueryClient()
 
   const { data: summary, isLoading: summaryLoading } = useSummary()
+  const { data: syncJob } = useQuery<MetadataSyncJob>({
+    queryKey: ["metadata", "sync-jobs", syncJobId],
+    queryFn: () => api.get(`/metadata/sync-jobs/${syncJobId}`),
+    enabled: Boolean(syncJobId),
+    refetchInterval: (query) => {
+      const job = query.state.data
+      return job && ["queued", "running"].includes(job.status) ? 1500 : false
+    },
+    refetchOnWindowFocus: false,
+  })
+
+  const syncMutation = useMutation({
+    mutationFn: () =>
+      api.post<MetadataSyncJob>("/metadata/sync-jobs", {
+        roots: syncRoots,
+        limitLeaves: limitLeaves.trim() ? Number(limitLeaves) : null,
+        standardConcurrency: Number(standardConcurrency),
+        attributeConcurrency: Number(attributeConcurrency),
+        skipStandards,
+        skipAttributes,
+        skipAttributeValues,
+      }),
+    onSuccess: (result) => {
+      setSyncJobId(result.id)
+      toast.success("SHEIN 元数据同步已启动")
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "同步启动失败")
+    },
+  })
+
+  useEffect(() => {
+    if (syncJob?.status === "completed") {
+      void queryClient.invalidateQueries({ queryKey: ["metadata"] })
+    }
+  }, [queryClient, syncJob?.status])
+
+  const syncProgress = syncJob
+    ? Math.round((syncJob.completed_count / Math.max(syncJob.total_count, 1)) * 100)
+    : 0
+  const syncInFlight = syncJob
+    ? ["queued", "running"].includes(syncJob.status)
+    : false
+  const syncStageText = syncJob
+    ? ({
+        queued: "排队中",
+        sync: "同步中",
+        import: "导入中",
+        completed: "已完成",
+        failed: "失败",
+      }[syncJob.stage])
+    : null
 
   return (
-    <PageContainer className="flex flex-col gap-4 p-4">
+    <PageContainer className="flex flex-col gap-6">
+      <PageHeader
+        title="SHEIN 元数据"
+        description="浏览 SHEIN 类目树、发布字段、图片规则和属性模板，作为刊登草稿与发布校验的规则来源。"
+      >
+        <Dialog>
+          <DialogTrigger asChild>
+            <Button type="button" variant="outline">
+              <RefreshCw className="size-4" />
+              同步元数据
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>同步元数据</DialogTitle>
+              <DialogDescription>
+                触发 SHEIN 类目树、发布标准和属性模板同步，同步完成后会自动导入当前数据库。
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="metadata-sync-roots">根类目筛选</Label>
+                <Input
+                  id="metadata-sync-roots"
+                  value={syncRoots}
+                  onChange={(event) => setSyncRoots(event.target.value)}
+                  placeholder="留空同步全部；可填 儿童,婴儿 或类目 ID"
+                />
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="space-y-2">
+                  <Label htmlFor="metadata-limit-leaves">叶子类目上限</Label>
+                  <Input
+                    id="metadata-limit-leaves"
+                    value={limitLeaves}
+                    onChange={(event) => setLimitLeaves(event.target.value)}
+                    inputMode="numeric"
+                    placeholder="不限"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="metadata-standard-concurrency">发布标准并发</Label>
+                  <Input
+                    id="metadata-standard-concurrency"
+                    value={standardConcurrency}
+                    onChange={(event) => setStandardConcurrency(event.target.value)}
+                    inputMode="numeric"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="metadata-attribute-concurrency">属性模板并发</Label>
+                  <Input
+                    id="metadata-attribute-concurrency"
+                    value={attributeConcurrency}
+                    onChange={(event) => setAttributeConcurrency(event.target.value)}
+                    inputMode="numeric"
+                  />
+                </div>
+              </div>
+              <div className="grid gap-2 text-sm sm:grid-cols-3">
+                <Label className="rounded-xl border p-3 font-normal">
+                  <Checkbox
+                    checked={skipStandards}
+                    onCheckedChange={(checked) => setSkipStandards(checked === true)}
+                  />
+                  跳过发布标准
+                </Label>
+                <Label className="rounded-xl border p-3 font-normal">
+                  <Checkbox
+                    checked={skipAttributes}
+                    onCheckedChange={(checked) => setSkipAttributes(checked === true)}
+                  />
+                  跳过属性模板
+                </Label>
+                <Label className="rounded-xl border p-3 font-normal">
+                  <Checkbox
+                    checked={skipAttributeValues}
+                    onCheckedChange={(checked) => setSkipAttributeValues(checked === true)}
+                  />
+                  不导入枚举值
+                </Label>
+              </div>
+              <Button
+                type="button"
+                onClick={() => syncMutation.mutate()}
+                disabled={syncMutation.isPending || syncInFlight}
+                className="w-full sm:w-auto"
+              >
+                {syncMutation.isPending ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="size-4" />
+                )}
+                启动同步
+              </Button>
+              {syncJob ? (
+                <div className="space-y-3 rounded-2xl border bg-muted/40 p-4">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-medium">任务状态：{syncStageText}</span>
+                    <span className="text-muted-foreground">
+                      {syncJob.completed_count}/{syncJob.total_count}
+                    </span>
+                  </div>
+                  <Progress value={syncProgress} />
+                  <div className="text-xs text-muted-foreground">
+                    {syncJob.source_dir ? `输出目录：${syncJob.source_dir}` : "等待开始"}
+                    {syncJob.error ? `；错误：${syncJob.error}` : ""}
+                  </div>
+                  {syncJob.logs.length ? (
+                    <div className="max-h-32 overflow-auto rounded-xl bg-background p-3 font-mono text-xs text-muted-foreground">
+                      {syncJob.logs.slice(-8).map((line, index) => (
+                        <div key={`${line}-${index}`}>{line}</div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </DialogContent>
+        </Dialog>
+      </PageHeader>
       {/* Summary header */}
       <SummaryHeader summary={summary} loading={summaryLoading} />
 
       {/* Main content: left tree + right detail */}
-      <div className="flex gap-4 flex-1 min-h-0">
+      <div className="flex min-h-0 flex-col gap-4 xl:flex-row">
         {/* Left: category tree */}
-        <div className="w-[320px] shrink-0 flex flex-col gap-3">
+        <div className="flex shrink-0 flex-col gap-3 xl:w-[340px]">
           <SearchBox value={searchText} onChange={setSearchText} />
           {debouncedSearch.length >= 2 ? (
             <SearchResults
@@ -261,7 +484,7 @@ export default function SheinMetadataPage() {
         </div>
 
         {/* Right: detail */}
-        <div className="flex-1 min-w-0">
+        <div className="min-w-0 flex-1">
           {selectedCategoryId ? (
             <CategoryDetailPanel
               categoryId={selectedCategoryId}
@@ -269,7 +492,7 @@ export default function SheinMetadataPage() {
               onSelectAttribute={setSelectedAttribute}
             />
           ) : (
-            <Card className="h-full flex items-center justify-center">
+            <Card className="flex min-h-[460px] items-center justify-center">
               <EmptyState message="从左侧选择一个叶子类目查看详情" />
             </Card>
           )}
@@ -302,7 +525,7 @@ function SummaryHeader({
   const totalLeaves = summary.roots.reduce((s, r) => s + r.leaf_count, 0)
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
       <StatCard
         title="叶子类目"
         value={formatNumber(totalLeaves)}
@@ -338,12 +561,12 @@ function SearchBox({
 }) {
   return (
     <div className="relative">
-      <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
+      <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
       <Input
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="搜索类目名称或路径…"
-        className="pl-8 h-9"
+        className="h-10 pl-9"
       />
     </div>
   )
@@ -361,12 +584,14 @@ function SearchResults({
   const { data, isLoading } = useCategorySearch(query)
 
   return (
-    <Card className="flex-1 min-h-0">
-      <CardHeader className="py-2 px-3">
-        <CardTitle className="text-xs text-muted-foreground">搜索结果</CardTitle>
+    <Card className="min-h-0 flex-1">
+      <CardHeader className="px-4 py-3">
+        <CardTitle className="font-mono text-xs uppercase tracking-[0.6px] text-muted-foreground">
+          搜索结果
+        </CardTitle>
       </CardHeader>
-      <ScrollArea className="h-[calc(100vh-320px)]">
-        <div className="px-1 pb-2">
+      <ScrollArea className="h-[420px] xl:h-[calc(100vh-390px)]">
+        <div className="px-2 pb-3">
           {isLoading ? (
             <div className="space-y-2 p-2">
               {Array.from({ length: 5 }).map((_, i) => (
@@ -383,14 +608,14 @@ function SearchResults({
                 key={cat.category_id}
                 onClick={() => onSelect(cat.category_id)}
                 className={cn(
-                  "w-full text-left px-3 py-1.5 rounded text-sm hover:bg-accent transition-colors",
+                  "w-full rounded-xl px-3 py-2 text-left text-sm transition-colors hover:bg-accent/60",
                   selectedId === cat.category_id && "bg-accent font-medium",
                 )}
               >
                 <div className="flex items-center gap-1.5">
                   <span className="truncate">{cat.category_name}</span>
                   {cat.last_category === 1 && (
-                    <Badge variant="outline" className="text-[10px] px-1 py-0 shrink-0">
+                    <Badge variant="outline" className="shrink-0 px-1 py-0 text-[10px]">
                       叶子
                     </Badge>
                   )}
@@ -419,12 +644,14 @@ function CategoryTree({
   onSelectCategory: (id: number) => void
 }) {
   return (
-    <Card className="flex-1 min-h-0">
-      <CardHeader className="py-2 px-3">
-        <CardTitle className="text-xs text-muted-foreground">类目树</CardTitle>
+    <Card className="min-h-0 flex-1">
+      <CardHeader className="px-4 py-3">
+        <CardTitle className="font-mono text-xs uppercase tracking-[0.6px] text-muted-foreground">
+          类目树
+        </CardTitle>
       </CardHeader>
-      <ScrollArea className="h-[calc(100vh-320px)]">
-        <div className="px-1 pb-2">
+      <ScrollArea className="h-[420px] xl:h-[calc(100vh-390px)]">
+        <div className="px-2 pb-3">
           {roots.map((root) => (
             <RootGroup
               key={root.root_category_name}
@@ -468,7 +695,7 @@ function RootGroup({
 
   return (
     <Collapsible open={isOpen} onOpenChange={onToggle}>
-      <CollapsibleTrigger className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-sm hover:bg-accent transition-colors">
+      <CollapsibleTrigger className="flex w-full items-center gap-1.5 rounded-xl px-3 py-2 text-sm transition-colors hover:bg-accent/60">
         <ChevronRight
           className={cn(
             "size-3.5 shrink-0 transition-transform",
@@ -477,7 +704,7 @@ function RootGroup({
         />
         <FolderTree className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="truncate font-medium">{root.root_category_name}</span>
-        <Badge variant="secondary" className="ml-auto text-[10px] px-1 py-0">
+        <Badge variant="secondary" className="ml-auto px-1.5 py-0 text-[10px]">
           {root.leaf_count}
         </Badge>
       </CollapsibleTrigger>
@@ -495,7 +722,7 @@ function RootGroup({
                 key={cat.category_id}
                 onClick={() => onSelectCategory(cat.category_id)}
                 className={cn(
-                  "flex w-full items-center gap-1 rounded px-2 py-1 text-xs hover:bg-accent transition-colors text-left",
+                  "flex w-full items-center gap-1 rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent/60",
                   selectedCategoryId === cat.category_id &&
                     "bg-accent font-medium",
                 )}
@@ -529,7 +756,7 @@ function CategoryDetailPanel({
 
   if (isLoading) {
     return (
-      <Card className="p-4 space-y-3">
+      <Card className="space-y-3 p-5">
         <Skeleton className="h-6 w-48" />
         <Skeleton className="h-4 w-full" />
         <Skeleton className="h-4 w-3/4" />
@@ -548,13 +775,15 @@ function CategoryDetailPanel({
     <div className="flex flex-col gap-4">
       {/* Category info header */}
       <Card>
-        <CardContent className="py-4 px-4">
-          <div className="flex items-start justify-between">
+        <CardContent className="px-5 py-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <h2 className="text-lg font-semibold">{category.category_name}</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">{category.path}</p>
+              <h2 className="text-2xl font-semibold leading-[1.2] tracking-[-0.24px]">
+                {category.category_name}
+              </h2>
+              <p className="mt-2 text-sm text-muted-foreground">{category.path}</p>
             </div>
-            <div className="flex gap-2 text-xs">
+            <div className="flex flex-wrap gap-2 text-xs">
               <Badge variant="outline">ID: {category.category_id}</Badge>
               <Badge variant="outline">
                 商品类型: {category.product_type_id}
@@ -643,7 +872,7 @@ function FieldsPanel({ data }: { data: CategoryDetail }) {
 
   return (
     <div className="space-y-3">
-      <div className="flex gap-2 text-xs text-muted-foreground">
+      <div className="flex flex-wrap gap-2 font-mono text-xs uppercase tracking-[0.6px] text-muted-foreground">
         <span>可见字段: {visible_fields.length}</span>
         <span>|</span>
         <span>必填字段: {required_fields.length}</span>
@@ -651,8 +880,8 @@ function FieldsPanel({ data }: { data: CategoryDetail }) {
 
       {Array.from(modules.entries()).map(([module, fields]) => (
         <Card key={module}>
-          <CardHeader className="py-2 px-4">
-            <CardTitle className="text-sm">{module}</CardTitle>
+          <CardHeader className="px-4 py-3">
+            <CardTitle className="text-base">{module}</CardTitle>
           </CardHeader>
           <CardContent className="px-0 py-0">
             <Table>
@@ -673,7 +902,7 @@ function FieldsPanel({ data }: { data: CategoryDetail }) {
                       {f.required === 1 ? (
                         <Badge
                           variant="outline"
-                          className="text-[10px] bg-red-50 text-red-700 border-red-200"
+                          className={cn("text-[10px]", badgeTone.required)}
                         >
                           必填
                         </Badge>
@@ -683,7 +912,7 @@ function FieldsPanel({ data }: { data: CategoryDetail }) {
                     </TableCell>
                     <TableCell className="py-1.5">
                       {f.show === 1 ? (
-                        <span className="text-xs text-emerald-600">可见</span>
+                        <span className="text-xs text-[#0fa76e]">可见</span>
                       ) : (
                         <span className="text-xs text-muted-foreground">隐藏</span>
                       )}
@@ -714,7 +943,7 @@ function PictureConfigPanel({ data }: { data: CategoryDetail }) {
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+      <div className="flex flex-wrap gap-4 font-mono text-xs uppercase tracking-[0.6px] text-muted-foreground">
         <span>图片方案: {pictureMode}</span>
         <span>图片字段: {picture_config.length}</span>
         <span>必填图片组: {requiredCount}</span>
@@ -911,7 +1140,7 @@ function PictureRequirementBadge({
     return (
       <Badge
         variant="outline"
-        className="text-[10px] bg-red-50 text-red-700 border-red-200"
+        className={cn("text-[10px]", badgeTone.required)}
       >
         必填
       </Badge>
@@ -975,7 +1204,7 @@ function AttributeTemplatePanel({
 
   return (
     <div className="space-y-3">
-      <div className="flex gap-4 text-xs text-muted-foreground">
+      <div className="flex flex-wrap gap-4 font-mono text-xs uppercase tracking-[0.6px] text-muted-foreground">
         <span>商品类型 ID: {ptData.template.product_type_id}</span>
         <span>属性总数: {ptData.template.attr_count}</span>
         <span>必填: {ptData.template.required_count}</span>
@@ -1021,7 +1250,7 @@ function AttributeTemplatePanel({
                     {attr.is_required === 1 ? (
                       <Badge
                         variant="outline"
-                        className="text-[10px] bg-red-50 text-red-700 border-red-200 px-1"
+                        className={cn("px-1 text-[10px]", badgeTone.required)}
                       >
                         是
                       </Badge>
@@ -1033,7 +1262,7 @@ function AttributeTemplatePanel({
                     {attr.is_sale_attribute === 1 ? (
                       <Badge
                         variant="outline"
-                        className="text-[10px] bg-blue-50 text-blue-700 border-blue-200 px-1"
+                        className={cn("px-1 text-[10px]", badgeTone.info)}
                       >
                         是
                       </Badge>
@@ -1045,7 +1274,7 @@ function AttributeTemplatePanel({
                     {attr.is_size_attribute === 1 ? (
                       <Badge
                         variant="outline"
-                        className="text-[10px] bg-violet-50 text-violet-700 border-violet-200 px-1"
+                        className={cn("px-1 text-[10px]", badgeTone.success)}
                       >
                         是
                       </Badge>
@@ -1124,7 +1353,7 @@ function AttributeValuesSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-[min(760px,calc(100vw-2rem))] gap-0 p-0 sm:max-w-none">
         <SheetHeader className="border-b px-5 py-4">
-          <SheetTitle className="pr-8 text-base">
+          <SheetTitle className="pr-8">
             {attribute ? `${attribute.attribute_name} 枚举值` : "属性枚举值"}
           </SheetTitle>
           <SheetDescription>
@@ -1155,7 +1384,7 @@ function AttributeValuesSheet({
           ) : (
             <ScrollArea className="h-full">
               <div className="px-5 py-4">
-                <div className="overflow-hidden rounded-md border">
+                <div className="overflow-hidden rounded-2xl border">
                   <AttributeValuesTable values={values} />
                 </div>
               </div>
@@ -1197,7 +1426,7 @@ function AttributeValuesTable({ values }: { values: AttributeValue[] }) {
             </TableCell>
             <TableCell className="py-1.5 text-xs">
               {v.is_black === 1 ? (
-                <span className="text-red-600">禁用</span>
+                <span className="text-[#d45656]">禁用</span>
               ) : (
                 "—"
               )}
@@ -1206,7 +1435,7 @@ function AttributeValuesTable({ values }: { values: AttributeValue[] }) {
               {v.color ? (
                 <div className="flex items-center gap-1">
                   <div
-                    className="size-3 rounded-sm border"
+                    className="size-3 rounded border"
                     style={{ backgroundColor: v.color }}
                   />
                   <span className="text-[10px]">{v.color}</span>
@@ -1237,7 +1466,7 @@ function RequiredAttributesPanel({
 
   return (
     <div className="space-y-3">
-      <div className="flex gap-4 text-xs text-muted-foreground">
+      <div className="flex flex-wrap gap-4 font-mono text-xs uppercase tracking-[0.6px] text-muted-foreground">
         <span>必填属性: {required_attributes.length}</span>
         <span>|</span>
         <span>销售属性: {sale_attributes.length}</span>
@@ -1251,8 +1480,8 @@ function RequiredAttributesPanel({
 
       {required_attributes.length > 0 && (
         <Card>
-          <CardHeader className="py-2 px-4">
-            <CardTitle className="text-sm">必填属性</CardTitle>
+          <CardHeader className="px-4 py-3">
+            <CardTitle className="text-base">必填属性</CardTitle>
           </CardHeader>
           <CardContent className="px-0 py-0">
             <Table>
@@ -1291,7 +1520,7 @@ function RequiredAttributesPanel({
                       {attr.attribute_status === 3 ? (
                         <Badge
                           variant="outline"
-                          className="text-[10px] bg-red-50 text-red-700 border-red-200 px-1"
+                          className={cn("px-1 text-[10px]", badgeTone.required)}
                         >
                           强制
                         </Badge>
@@ -1316,8 +1545,8 @@ function RequiredAttributesPanel({
 
       {sale_attributes.length > 0 && (
         <Card>
-          <CardHeader className="py-2 px-4">
-            <CardTitle className="text-sm">销售属性</CardTitle>
+          <CardHeader className="px-4 py-3">
+            <CardTitle className="text-base">销售属性</CardTitle>
           </CardHeader>
           <CardContent className="px-0 py-0">
             <Table>

@@ -1,7 +1,48 @@
+import { spawn } from "node:child_process"
+import { randomUUID } from "node:crypto"
+import path from "node:path"
 import { Hono } from "hono"
-import { getDb } from "../db"
+import { HTTPException } from "hono/http-exception"
+import { DB_FILE, getDb } from "../db"
 
 const metadata = new Hono()
+
+const PROJECT_ROOT =
+  path.basename(process.cwd()) === "web"
+    ? path.resolve(process.cwd(), "..")
+    : process.cwd()
+
+const METADATA_SYNC_STAGES = ["sync", "import"] as const
+
+type MetadataSyncStage = "queued" | "sync" | "import" | "completed" | "failed"
+
+type MetadataSyncJob = {
+  id: string
+  status: "queued" | "running" | "completed" | "failed"
+  stage: MetadataSyncStage
+  options: MetadataSyncOptions
+  total_count: number
+  completed_count: number
+  failed_count: number
+  source_dir: string | null
+  manifest: unknown | null
+  import_summary: unknown | null
+  logs: string[]
+  error: string | null
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+type MetadataSyncOptions = {
+  roots: string[]
+  limitLeaves: number | null
+  standardConcurrency: number
+  attributeConcurrency: number
+  skipStandards: boolean
+  skipAttributes: boolean
+  skipAttributeValues: boolean
+}
 
 type PictureConfigRow = {
   field_key: string
@@ -25,6 +66,257 @@ type PictureRequirement = {
     is_true: number | null
   }>
   note: string | null
+}
+
+const metadataSyncJobs = new Map<string, MetadataSyncJob>()
+const metadataSyncPending: MetadataSyncJob[] = []
+let metadataSyncRunning = false
+let metadataSyncScheduled = false
+
+function timestampForPath(date = new Date()) {
+  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")
+}
+
+function snapshotJob(job: MetadataSyncJob) {
+  return {
+    ...job,
+    options: {
+      ...job.options,
+      roots: [...job.options.roots],
+    },
+    logs: [...job.logs],
+  }
+}
+
+function readPositiveInteger(
+  value: unknown,
+  fallback: number,
+  { min = 1, max = 1000 } = {},
+) {
+  const number = Number(value ?? fallback)
+  if (!Number.isFinite(number)) return fallback
+  return Math.max(min, Math.min(max, Math.floor(number)))
+}
+
+function readLimitLeaves(value: unknown) {
+  if (value === undefined || value === null || value === "") return null
+  return readPositiveInteger(value, 1, { min: 1, max: 100000 })
+}
+
+function readRoots(value: unknown) {
+  const values = Array.isArray(value)
+    ? value
+    : String(value ?? "").split(/[\n,，;；]+/)
+
+  const seen = new Set<string>()
+  const roots: string[] = []
+  for (const item of values) {
+    const root = String(item ?? "").trim()
+    if (!root || seen.has(root)) continue
+    seen.add(root)
+    roots.push(root)
+  }
+  return roots
+}
+
+function readMetadataSyncOptions(body: Record<string, unknown>): MetadataSyncOptions {
+  return {
+    roots: readRoots(body.roots),
+    limitLeaves: readLimitLeaves(body.limitLeaves),
+    standardConcurrency: readPositiveInteger(body.standardConcurrency, 12, { max: 32 }),
+    attributeConcurrency: readPositiveInteger(body.attributeConcurrency, 8, { max: 32 }),
+    skipStandards: Boolean(body.skipStandards),
+    skipAttributes: Boolean(body.skipAttributes),
+    skipAttributeValues: Boolean(body.skipAttributeValues),
+  }
+}
+
+function appendJobLog(job: MetadataSyncJob, stage: string, chunk: Buffer | string) {
+  const text = chunk.toString()
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  for (const line of lines) {
+    job.logs.push(`[${stage}] ${line}`)
+  }
+
+  if (job.logs.length > 120) {
+    job.logs.splice(0, job.logs.length - 120)
+  }
+}
+
+function parseJsonOutput(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+}
+
+function nodeOptionsEnv() {
+  return [process.env.NODE_OPTIONS, "--no-warnings=ExperimentalWarning"]
+    .filter(Boolean)
+    .join(" ")
+}
+
+function runNodeScript(
+  job: MetadataSyncJob,
+  stage: (typeof METADATA_SYNC_STAGES)[number],
+  args: string[],
+) {
+  return new Promise<string>((resolve, reject) => {
+    const child = spawn(process.execPath, args, {
+      cwd: PROJECT_ROOT,
+      env: {
+        ...process.env,
+        NODE_OPTIONS: nodeOptionsEnv(),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    let stdout = ""
+    let stderr = ""
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString()
+    })
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString()
+      appendJobLog(job, stage, chunk)
+    })
+    child.on("error", reject)
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve(stdout)
+        return
+      }
+      reject(new Error(stderr.trim() || `${args[0]} exited with code ${code}`))
+    })
+  })
+}
+
+function relativeSourceDir(sourceDir: string) {
+  return path.relative(PROJECT_ROOT, sourceDir)
+}
+
+async function runMetadataSyncJob(job: MetadataSyncJob) {
+  const outputDir = path.join(
+    PROJECT_ROOT,
+    "data",
+    "shein-metadata",
+    `web-${timestampForPath()}-${job.id.slice(0, 8)}`,
+  )
+  job.source_dir = relativeSourceDir(outputDir)
+
+  const syncArgs = [
+    "scripts/shein_metadata_sync.mjs",
+    "--out",
+    outputDir,
+    "--standard-concurrency",
+    String(job.options.standardConcurrency),
+    "--attribute-concurrency",
+    String(job.options.attributeConcurrency),
+  ]
+  if (job.options.roots.length) {
+    syncArgs.push("--roots", job.options.roots.join(","))
+  }
+  if (job.options.limitLeaves !== null) {
+    syncArgs.push("--limit-leaves", String(job.options.limitLeaves))
+  }
+  if (job.options.skipStandards) {
+    syncArgs.push("--skip-standards")
+  }
+  if (job.options.skipAttributes) {
+    syncArgs.push("--skip-attributes")
+  }
+
+  job.stage = "sync"
+  appendJobLog(job, "sync", `Writing metadata to ${job.source_dir}`)
+  const syncOutput = await runNodeScript(job, "sync", syncArgs)
+  job.manifest = parseJsonOutput(syncOutput)
+  job.completed_count += 1
+
+  const importArgs = [
+    "scripts/shein_metadata_import.mjs",
+    "--source",
+    outputDir,
+    "--db",
+    DB_FILE,
+  ]
+  if (job.options.skipAttributeValues) {
+    importArgs.push("--skip-attribute-values")
+  }
+
+  job.stage = "import"
+  appendJobLog(job, "import", `Importing metadata into ${DB_FILE}`)
+  const importOutput = await runNodeScript(job, "import", importArgs)
+  job.import_summary = parseJsonOutput(importOutput)
+  job.completed_count += 1
+}
+
+async function processMetadataSyncQueue() {
+  metadataSyncScheduled = false
+  if (metadataSyncRunning) return
+  metadataSyncRunning = true
+
+  while (metadataSyncPending.length > 0) {
+    const job = metadataSyncPending.shift()
+    if (!job) continue
+
+    job.status = "running"
+    job.started_at = new Date().toISOString()
+
+    try {
+      await runMetadataSyncJob(job)
+      job.status = "completed"
+      job.stage = "completed"
+    } catch (error) {
+      job.status = "failed"
+      job.stage = "failed"
+      job.failed_count = 1
+      job.error = error instanceof Error ? error.message : String(error)
+      appendJobLog(job, "error", job.error)
+    } finally {
+      job.finished_at = new Date().toISOString()
+    }
+  }
+
+  metadataSyncRunning = false
+}
+
+function enqueueMetadataSyncJob(options: MetadataSyncOptions) {
+  const job: MetadataSyncJob = {
+    id: randomUUID(),
+    status: "queued",
+    stage: "queued",
+    options,
+    total_count: METADATA_SYNC_STAGES.length,
+    completed_count: 0,
+    failed_count: 0,
+    source_dir: null,
+    manifest: null,
+    import_summary: null,
+    logs: [],
+    error: null,
+    created_at: new Date().toISOString(),
+    started_at: null,
+    finished_at: null,
+  }
+
+  metadataSyncJobs.set(job.id, job)
+  metadataSyncPending.push(job)
+
+  if (!metadataSyncScheduled) {
+    metadataSyncScheduled = true
+    queueMicrotask(() => {
+      void processMetadataSyncQueue()
+    })
+  }
+
+  return snapshotJob(job)
 }
 
 const MAIN_DETAIL_IMAGE_RULE = {
@@ -199,6 +491,22 @@ metadata.get("/summary", (c) => {
   `).all(platform) as Array<{ root_category_name: string; leaf_count: number }>
 
   return c.json({ latest_batch: latestBatch, counts, roots })
+})
+
+// GET /api/metadata/sync-jobs/:jobId
+metadata.get("/sync-jobs/:jobId", (c) => {
+  const job = metadataSyncJobs.get(c.req.param("jobId"))
+  if (!job) {
+    throw new HTTPException(404, { message: "Metadata sync job not found" })
+  }
+  return c.json(snapshotJob(job))
+})
+
+// POST /api/metadata/sync-jobs
+metadata.post("/sync-jobs", async (c) => {
+  const body = await c.req.json().catch(() => ({})) as Record<string, unknown>
+  const job = enqueueMetadataSyncJob(readMetadataSyncOptions(body))
+  return c.json(job, 202)
 })
 
 // GET /api/metadata/categories/search?q=keyword&limit=20

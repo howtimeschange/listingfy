@@ -20,7 +20,7 @@ export function DataTableToolbar<TData>({
 
   return (
     <div className="flex items-center justify-between">
-      <div className="flex flex-1 items-center gap-2">
+      <div className="flex flex-1 flex-wrap items-center gap-2">
         {searchKey && (
           <Input
             placeholder={searchPlaceholder}
@@ -30,7 +30,7 @@ export function DataTableToolbar<TData>({
             onChange={(e) =>
               table.getColumn(searchKey)?.setFilterValue(e.target.value)
             }
-            className="h-8 w-[200px] lg:w-[280px]"
+            className="h-9 w-[220px] lg:w-[300px]"
           />
         )}
         {children}
@@ -39,7 +39,7 @@ export function DataTableToolbar<TData>({
             variant="ghost"
             size="sm"
             onClick={() => table.resetColumnFilters()}
-            className="h-8 px-2 lg:px-3"
+            className="h-9 px-3"
           >
             重置
             <X className="ml-1 size-3.5" />

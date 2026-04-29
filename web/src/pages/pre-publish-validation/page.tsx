@@ -1,10 +1,10 @@
-import { PageContainer } from "@/components/layout/page-container"
+import { ComingSoonPage } from "@/components/layout/coming-soon-page"
 
 export default function PrePublishValidationPage() {
   return (
-    <PageContainer>
-      <h1 className="text-2xl font-semibold tracking-tight">发布校验</h1>
-      <p className="text-sm text-muted-foreground mt-1">功能开发中…</p>
-    </PageContainer>
+    <ComingSoonPage
+      title="发布校验"
+      description="在提交平台前检查类目、属性、图片、价格和账号配置。"
+    />
   )
 }

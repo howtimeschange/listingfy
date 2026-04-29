@@ -63,7 +63,7 @@ export function ImportDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent>
+      <DialogContent className="rounded-3xl">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description && (
@@ -73,16 +73,16 @@ export function ImportDialog({
         <div
           {...getRootProps()}
           className={cn(
-            "flex flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed p-8 cursor-pointer transition-colors",
+            "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed p-8 transition-colors",
             isDragActive
-              ? "border-primary bg-primary/5"
-              : "border-muted-foreground/25 hover:border-primary/50",
+              ? "border-[var(--brand)] bg-[var(--brand-light)]"
+              : "border-input hover:border-[var(--brand)] hover:bg-muted",
           )}
         >
           <input {...getInputProps()} />
           {file ? (
             <div className="flex items-center gap-2">
-              <FileSpreadsheet className="size-5 text-emerald-600" />
+              <FileSpreadsheet className="size-5 text-[var(--brand-deep)]" />
               <span className="text-sm">{file.name}</span>
               <Button
                 variant="ghost"

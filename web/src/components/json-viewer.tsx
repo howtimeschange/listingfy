@@ -19,11 +19,11 @@ export function JsonViewer({
   const [open, setOpen] = useState(defaultOpen)
 
   return (
-    <div className={cn("rounded border", className)}>
+    <div className={cn("overflow-hidden rounded-2xl border bg-card", className)}>
       <Button
         variant="ghost"
         size="sm"
-        className="w-full justify-start gap-1 h-8 rounded-none"
+        className="h-9 w-full justify-start gap-1 rounded-none px-3"
         onClick={() => setOpen(!open)}
       >
         <ChevronRight
@@ -32,10 +32,12 @@ export function JsonViewer({
             open && "rotate-90",
           )}
         />
-        <span className="text-xs font-medium">{label}</span>
+        <span className="font-mono text-xs font-medium uppercase tracking-[0.6px]">
+          {label}
+        </span>
       </Button>
       {open && (
-        <pre className="overflow-auto bg-muted/50 p-3 text-xs leading-relaxed max-h-[400px]">
+        <pre className="max-h-[400px] overflow-auto border-t bg-muted/50 p-4 font-mono text-xs leading-relaxed">
           {JSON.stringify(data, null, 2)}
         </pre>
       )}

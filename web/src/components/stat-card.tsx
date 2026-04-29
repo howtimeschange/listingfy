@@ -18,15 +18,19 @@ export function StatCard({
   className,
 }: StatCardProps) {
   return (
-    <Card className={cn("py-4", className)}>
-      <CardContent className="px-4">
+    <Card className={cn("py-5", className)}>
+      <CardContent className="px-5">
         <div className="flex items-center justify-between">
-          <p className="text-sm text-muted-foreground">{title}</p>
-          {Icon && <Icon className="size-4 text-muted-foreground" />}
+          <p className="text-[13px] font-medium uppercase tracking-[0.65px] text-muted-foreground">
+            {title}
+          </p>
+          {Icon && <Icon className="size-4 text-[var(--brand-deep)]" />}
         </div>
-        <p className="mt-1 text-2xl font-semibold tabular-nums">{value}</p>
+        <p className="mt-2 text-2xl font-semibold leading-tight tracking-[-0.24px] tabular-nums">
+          {value}
+        </p>
         {description && (
-          <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{description}</p>
         )}
       </CardContent>
     </Card>

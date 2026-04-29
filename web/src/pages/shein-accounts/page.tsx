@@ -1,10 +1,10 @@
-import { PageContainer } from "@/components/layout/page-container"
+import { ComingSoonPage } from "@/components/layout/coming-soon-page"
 
 export default function SheinAccountsPage() {
   return (
-    <PageContainer>
-      <h1 className="text-2xl font-semibold tracking-tight">SHEIN 账号</h1>
-      <p className="text-sm text-muted-foreground mt-1">功能开发中…</p>
-    </PageContainer>
+    <ComingSoonPage
+      title="SHEIN 账号"
+      description="管理店铺账号、授权状态、接口密钥和发布身份。"
+    />
   )
 }

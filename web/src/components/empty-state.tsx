@@ -1,16 +1,18 @@
-import { Inbox } from "lucide-react"
+import { Inbox, type LucideIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 interface EmptyStateProps {
   message?: string
   className?: string
   children?: React.ReactNode
+  icon?: LucideIcon
 }
 
 export function EmptyState({
   message = "暂无数据",
   className,
   children,
+  icon: Icon = Inbox,
 }: EmptyStateProps) {
   return (
     <div
@@ -19,7 +21,9 @@ export function EmptyState({
         className,
       )}
     >
-      <Inbox className="size-10 mb-3" />
+      <div className="mb-4 flex size-12 items-center justify-center rounded-full border bg-[var(--brand-light)] text-[var(--brand-deep)]">
+        <Icon className="size-5" />
+      </div>
       <p className="text-sm">{message}</p>
       {children}
     </div>

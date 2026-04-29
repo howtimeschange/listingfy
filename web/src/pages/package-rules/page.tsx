@@ -1,10 +1,10 @@
-import { PageContainer } from "@/components/layout/page-container"
+import { ComingSoonPage } from "@/components/layout/coming-soon-page"
 
 export default function PackageRulesPage() {
   return (
-    <PageContainer>
-      <h1 className="text-2xl font-semibold tracking-tight">包装规则</h1>
-      <p className="text-sm text-muted-foreground mt-1">功能开发中…</p>
-    </PageContainer>
+    <ComingSoonPage
+      title="包装规则"
+      description="维护重量、体积、包装方式等发布所需规则。"
+    />
   )
 }

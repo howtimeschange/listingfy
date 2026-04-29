@@ -19,6 +19,8 @@
 | `mdm_spu_batch_save_api.md` | batch_save_api | SPU | SPU 批量保存接口 |
 | `mdm_sku_batch_save_api.md` | batch_save_api | SKU | SKU 批量保存接口 |
 | `mdm_common_token_guide.md` | token_guide | common | Token 获取与表单组件说明，两个原始 docx 已去重合并 |
+| `mdm_dev_openapi_probe_2026-04-29.md` | integration_probe | common | MDM 测试环境开放接口联调记录 |
+| `mdm_prod_openapi_probe_2026-04-29.md` | integration_probe | common | MDM 正式环境开放接口联调记录 |
 
 ## 原始文件映射
 

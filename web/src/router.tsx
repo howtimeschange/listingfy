@@ -16,9 +16,14 @@ import PackageRulesPage from "@/pages/package-rules/page"
 import PriceRulesPage from "@/pages/price-rules/page"
 import LowRateListPage from "@/pages/low-rate-list/page"
 import SheinMetadataPage from "@/pages/shein-metadata/page"
+import ProductArchivesPage from "@/pages/product-archives/page"
+import ProductArchiveDetailPage from "@/pages/product-archives/[spuCode]/page"
 import MdmProductsPage from "@/pages/mdm-products/page"
+import MdmProductDetailPage from "@/pages/mdm-products/[spuCode]/page"
 import DeepDrawContentPage from "@/pages/deepdraw-content/page"
+import DeepdrawContentDetailPage from "@/pages/deepdraw-content/[spuCode]/page"
 import ImageLibraryPage from "@/pages/image-library/page"
+import ImageLibraryDetailPage from "@/pages/image-library/[assetId]/page"
 import SheinAccountsPage from "@/pages/shein-accounts/page"
 import SyncTasksPage from "@/pages/sync-tasks/page"
 import OperationLogsPage from "@/pages/operation-logs/page"
@@ -45,9 +50,14 @@ export const router = createBrowserRouter([
       { path: "price-rules", element: <PriceRulesPage /> },
       { path: "low-rate-list", element: <LowRateListPage /> },
       { path: "shein-metadata", element: <SheinMetadataPage /> },
+      { path: "product-archives", element: <ProductArchivesPage /> },
+      { path: "product-archives/:spuCode", element: <ProductArchiveDetailPage /> },
       { path: "mdm-products", element: <MdmProductsPage /> },
+      { path: "mdm-products/:spuCode", element: <MdmProductDetailPage /> },
       { path: "deepdraw-content", element: <DeepDrawContentPage /> },
+      { path: "deepdraw-content/:spuCode", element: <DeepdrawContentDetailPage /> },
       { path: "image-library", element: <ImageLibraryPage /> },
+      { path: "image-library/:assetId", element: <ImageLibraryDetailPage /> },
       { path: "shein-accounts", element: <SheinAccountsPage /> },
       { path: "sync-tasks", element: <SyncTasksPage /> },
       { path: "operation-logs", element: <OperationLogsPage /> },

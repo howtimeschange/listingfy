@@ -5,9 +5,9 @@ import { AppHeader } from "./app-header"
 
 export function AppLayout() {
   return (
-    <SidebarProvider>
+    <SidebarProvider className="bg-transparent">
       <AppSidebar />
-      <SidebarInset>
+      <SidebarInset className="bg-transparent">
         <AppHeader />
         <main className="flex flex-1 flex-col overflow-hidden">
           <Outlet />

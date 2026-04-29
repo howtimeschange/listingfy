@@ -1,10 +1,10 @@
-import { PageContainer } from "@/components/layout/page-container"
+import { ComingSoonPage } from "@/components/layout/coming-soon-page"
 
 export default function ListingBatchesPage() {
   return (
-    <PageContainer>
-      <h1 className="text-2xl font-semibold tracking-tight">上新批次</h1>
-      <p className="text-sm text-muted-foreground mt-1">功能开发中…</p>
-    </PageContainer>
+    <ComingSoonPage
+      title="上新批次"
+      description="组织批量上新范围、生成刊登草稿并跟踪批次级进度。"
+    />
   )
 }

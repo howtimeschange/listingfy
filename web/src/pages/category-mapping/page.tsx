@@ -1,10 +1,10 @@
-import { PageContainer } from "@/components/layout/page-container"
+import { ComingSoonPage } from "@/components/layout/coming-soon-page"
 
 export default function CategoryMappingPage() {
   return (
-    <PageContainer>
-      <h1 className="text-2xl font-semibold tracking-tight">类目映射规则</h1>
-      <p className="text-sm text-muted-foreground mt-1">功能开发中…</p>
-    </PageContainer>
+    <ComingSoonPage
+      title="类目映射规则"
+      description="管理 MDM 类目到平台叶子类目的映射，为草稿生成和发布校验提供规则底座。"
+    />
   )
 }

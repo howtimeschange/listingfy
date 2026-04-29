@@ -8,7 +8,12 @@ interface PageContainerProps {
 
 export function PageContainer({ children, className }: PageContainerProps) {
   return (
-    <div className={cn("flex-1 overflow-auto p-6", className)}>
+    <div
+      className={cn(
+        "min-w-0 flex-1 overflow-auto px-4 py-6 md:px-8 md:py-8",
+        className,
+      )}
+    >
       {children}
     </div>
   )

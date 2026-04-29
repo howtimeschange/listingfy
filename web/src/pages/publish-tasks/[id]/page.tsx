@@ -1,10 +1,10 @@
-import { PageContainer } from "@/components/layout/page-container"
+import { ComingSoonPage } from "@/components/layout/coming-soon-page"
 
 export default function PublishTaskDetailPage() {
   return (
-    <PageContainer>
-      <h1 className="text-2xl font-semibold tracking-tight">发布任务详情</h1>
-      <p className="text-sm text-muted-foreground mt-1">功能开发中…</p>
-    </PageContainer>
+    <ComingSoonPage
+      title="发布任务详情"
+      description="查看平台提交 payload、回执、失败原因和重试记录。"
+    />
   )
 }
