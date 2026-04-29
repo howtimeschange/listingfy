@@ -1,0 +1,118 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --radius: 0.375rem;
+
+  --background: oklch(0.985 0.002 247.839);
+  --foreground: oklch(0.145 0.017 247.839);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0.017 247.839);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0.017 247.839);
+  --primary: oklch(0.546 0.191 262.881);
+  --primary-foreground: oklch(0.985 0.002 247.839);
+  --secondary: oklch(0.959 0.006 247.839);
+  --secondary-foreground: oklch(0.227 0.032 264.052);
+  --muted: oklch(0.959 0.006 247.839);
+  --muted-foreground: oklch(0.553 0.023 247.839);
+  --accent: oklch(0.959 0.006 247.839);
+  --accent-foreground: oklch(0.227 0.032 264.052);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0.002 247.839);
+  --border: oklch(0.906 0.009 247.839);
+  --input: oklch(0.906 0.009 247.839);
+  --ring: oklch(0.546 0.191 262.881);
+
+  --chart-1: oklch(0.546 0.191 262.881);
+  --chart-2: oklch(0.637 0.172 156.568);
+  --chart-3: oklch(0.672 0.164 46.568);
+  --chart-4: oklch(0.627 0.212 332.881);
+  --chart-5: oklch(0.546 0.213 26.568);
+
+  --sidebar: oklch(0.985 0.002 247.839);
+  --sidebar-foreground: oklch(0.145 0.017 247.839);
+  --sidebar-primary: oklch(0.546 0.191 262.881);
+  --sidebar-primary-foreground: oklch(0.985 0.002 247.839);
+  --sidebar-accent: oklch(0.959 0.006 247.839);
+  --sidebar-accent-foreground: oklch(0.227 0.032 264.052);
+  --sidebar-border: oklch(0.906 0.009 247.839);
+  --sidebar-ring: oklch(0.546 0.191 262.881);
+
+  /* Semantic status colors */
+  --status-success: #22C55E;
+  --status-warning: #F59E0B;
+  --status-error: #DC2626;
+  --status-processing: #7C3AED;
+  --status-draft: #94A3B8;
+  --status-pending: #2563EB;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Tabular nums for data columns */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.dark {
+  --sidebar: hsl(240 5.9% 10%);
+  --sidebar-foreground: hsl(240 4.8% 95.9%);
+  --sidebar-primary: hsl(224.3 76.3% 48%);
+  --sidebar-primary-foreground: hsl(0 0% 100%);
+  --sidebar-accent: hsl(240 3.7% 15.9%);
+  --sidebar-accent-foreground: hsl(240 4.8% 95.9%);
+  --sidebar-border: hsl(240 3.7% 15.9%);
+  --sidebar-ring: hsl(217.2 91.2% 59.8%);
+}

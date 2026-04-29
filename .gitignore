@@ -2,6 +2,9 @@
 .env
 .env.*
 *.log
+node_modules/
+dist/
+.vite/
 tmp/
 data/*.sqlite
 data/*.sqlite-*
