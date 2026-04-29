@@ -1,6 +1,6 @@
 export const DEFAULT_AI_BASE_URL = "https://api.1xm.ai/v1";
 export const DEFAULT_AI_MODEL = "gemini-3-flash-preview";
-export const DEFAULT_AI_TIMEOUT_MS = 45000;
+export const DEFAULT_AI_TIMEOUT_MS = 120000;
 
 function readEnv(name, fallback = undefined) {
   const value = process.env[name];
@@ -39,7 +39,7 @@ function compactGroup(group) {
       skc_code: item.skc_code ?? "",
       color_code: item.color_code ?? "",
       color_name: item.color_name ?? "",
-      tmall_model_image_url: item.tmall_model_image_url ?? null,
+      tmall_color_image_url: item.tmall_color_image_url ?? item.tmall_model_image_url ?? null,
     }))
     : [];
 
@@ -101,7 +101,7 @@ export function buildCategoryMatchPrompt({ groups, candidates }) {
               spu_code: "输入 examples.skc_examples[].spu_code",
               skc_code: "输入 examples.skc_examples[].skc_code",
               color_name: "输入 examples.skc_examples[].color_name",
-              model_gender: "从 TMALL 款色模特图判断：男童 | 女童 | 中性 | 未知",
+              model_gender: "从 TMALL 款色图判断：男童 | 女童 | 中性 | 未知",
               confidence: "0 到 1 的数字",
               primary: {
                 category_id: "该 SKC 建议的 SHEIN category_id",
@@ -138,9 +138,9 @@ export function buildCategoryMatchPrompt({ groups, candidates }) {
       "只能从候选 SHEIN 类目 candidates 中选择 primary 和 alternatives，不能编造 category_id 或 product_type_id。",
       "MDM 小类优先级高于深绘类目；深绘类目优先级高于标题关键词。",
       "同一个 SPU 下不同 SKC/款色可能需要映射到不同 SHEIN 类目，尤其是 MDM 性别为中性、男女童或空值时。",
-      "判断中性或男女分叉类目时，必须结合 examples.skc_examples 的 TMALL 款色模特图和颜色；如果款色图显示女童模特，优先女童类目；显示男童模特，优先男童类目。",
+      "判断中性或男女分叉类目时，必须结合 examples.skc_examples 的 TMALL COLOR_BLOCK/COLOR 款色图和颜色；如果款色图显示女童模特，优先女童类目；显示男童模特，优先男童类目。",
       "当同一组合内 SKC 图片或颜色导致男女类目不同，应设置 split_by_skc=true，并在 skc_suggestions 中逐条给出 SKC 级建议。",
-      "如果 SKC 缺少 tmall_model_image_url，只能基于文字字段保守判断，并在 risks 或 skc_suggestions.reasons 中说明缺少模特图，不要给过高置信度。",
+      "如果 SKC 缺少 tmall_color_image_url，只能基于文字字段保守判断，并在 risks 或 skc_suggestions.reasons 中说明缺少 TMALL 款色图，不要给过高置信度。",
       "幼童且尺码范围覆盖 073-130 或 080-130 时，优先考虑 SHEIN 女童（小）/男童（小），不要默认选择女童（大）/男童（大）。",
       "不要因为标题包含“宝宝/婴儿”就直接选择婴儿根类目；只有年龄段、尺码范围、深绘类目共同支持时才把婴儿类目作为首选。",
       "性别为中性、男女童、空值时，如果 SHEIN 候选类目按男女分叉，status 应设为 AMBIGUOUS，并给出男女两侧候选。",
@@ -163,7 +163,7 @@ export function buildCategoryMatchMessages({ groups, candidates }) {
   for (const group of groups) {
     const skcExamples = Array.isArray(group.skc_examples) ? group.skc_examples : [];
     for (const example of skcExamples) {
-      const url = compactText(example.tmall_model_image_url, 2000);
+      const url = compactText(example.tmall_color_image_url ?? example.tmall_model_image_url, 2000);
       if (!url || seenUrls.has(url)) continue;
       seenUrls.add(url);
       imageParts.push({

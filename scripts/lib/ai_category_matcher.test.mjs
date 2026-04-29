@@ -22,7 +22,7 @@ test("resolveAiConfig reads the configured OpenAI-compatible provider", () => {
       baseUrl: "https://api.1xm.ai/v1",
       model: "gemini-3-flash-preview",
       apiKey: "test-key",
-      timeoutMs: 45000,
+      timeoutMs: 120000,
     });
   } finally {
     if (previousBaseUrl === undefined) delete process.env.AI_BASE_URL;
@@ -53,7 +53,7 @@ test("buildCategoryMatchPrompt includes guardrails and compact candidate context
             spu_code: "208226111038",
             skc_code: "20822611103800388",
             color_name: "蓝色调00388",
-            tmall_model_image_url: "https://example.test/model-blue.jpg",
+            tmall_color_image_url: "https://example.test/color-blue.jpg",
           },
         ],
       },
@@ -81,7 +81,7 @@ test("buildCategoryMatchPrompt includes guardrails and compact candidate context
   assert.match(prompt, /同一个 SPU 下不同 SKC/);
   assert.match(prompt, /skc_suggestions/);
   assert.match(prompt, /20822611103800388/);
-  assert.match(prompt, /https:\/\/example\.test\/model-blue\.jpg/);
+  assert.match(prompt, /https:\/\/example\.test\/color-blue\.jpg/);
   assert.match(prompt, /女童（小）连衣裙/);
   assert.match(prompt, /连衣裙\|梭织连衣裙\|女\|幼童/);
 });
@@ -100,13 +100,13 @@ test("buildCategoryMatchMessages attaches TMALL model images for visual judgemen
             spu_code: "208226103201",
             skc_code: "20822610320100313",
             color_name: "白黄色调00313",
-            tmall_model_image_url: "https://example.test/model-yellow.jpg",
+            tmall_color_image_url: "https://example.test/color-yellow.jpg",
           },
           {
             spu_code: "208226103201",
             skc_code: "20822610320100316",
             color_name: "白红色调00316",
-            tmall_model_image_url: null,
+            tmall_color_image_url: null,
           },
         ],
       },
@@ -118,7 +118,7 @@ test("buildCategoryMatchMessages attaches TMALL model images for visual judgemen
   assert.equal(messages[0].role, "user");
   assert.equal(messages[0].content.length, 2);
   assert.equal(messages[0].content[1].type, "image_url");
-  assert.equal(messages[0].content[1].image_url.url, "https://example.test/model-yellow.jpg");
+  assert.equal(messages[0].content[1].image_url.url, "https://example.test/color-yellow.jpg");
 });
 
 test("parseAiCategoryMatchResponse extracts suggestions from fenced JSON", () => {

@@ -44,6 +44,19 @@ interface MdmSpu {
   listing_title_en: string | null
   shein_spu_code: string | null
   shein_category_name: string | null
+  matched_category_rule_id: number | null
+  matched_category_rule_source: string | null
+  matched_category_match_key: string | null
+  matched_shein_category_id: number | null
+  matched_shein_product_type_id: number | null
+  matched_shein_category_name: string | null
+  matched_shein_category_path: string | null
+  suggested_category_suggestion_id: number | null
+  suggested_category_rule_source: string | null
+  suggested_shein_category_id: number | null
+  suggested_shein_product_type_id: number | null
+  suggested_shein_category_name: string | null
+  suggested_shein_category_path: string | null
   old_style_code: string | null
   deepdraw_info_status: string | null
   brand_code: string | null
@@ -786,6 +799,9 @@ export default function ProductArchiveDetailPage() {
               <CardContent className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 <InfoItem label="SHEIN SPU" value={data.spu?.shein_spu_code} />
                 <InfoItem label="SHEIN 分类" value={data.spu?.shein_category_name} />
+                <InfoItem label="规则匹配类目" value={data.spu?.matched_shein_category_name} />
+                <InfoItem label="映射规则来源" value={data.spu?.matched_category_rule_source} />
+                <InfoItem label="AI 建议类目" value={data.spu?.suggested_shein_category_name} />
                 <InfoItem label="老款号" value={data.spu?.old_style_code} />
                 <InfoItem label="深绘已有信息" value={data.spu?.deepdraw_info_status} />
                 <InfoItem label="中文标题" value={data.spu?.listing_title_cn ?? data.content_package?.title} />

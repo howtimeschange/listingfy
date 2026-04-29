@@ -44,6 +44,32 @@ test("product archive pages expose key SHEIN upload-readiness fields", async () 
   assert.match(detailPage, /尺码表/);
 });
 
+test("product archive pages expose category mapping rule results next to MDM SHEIN fields", async () => {
+  const [listPage, detailPage, route] = await Promise.all([
+    readFile(PAGE_FILE, "utf8"),
+    readFile(DETAIL_PAGE_FILE, "utf8"),
+    readFile(ROUTE_FILE, "utf8"),
+  ]);
+
+  assert.match(route, /matched_shein_category_id/);
+  assert.match(route, /matched_shein_category_name/);
+  assert.match(route, /matched_category_rule_source/);
+  assert.match(route, /left join mdm_shein_category_mapping_rule matched_rule/);
+  assert.match(route, /left join v_shein_leaf_category matched_category/);
+  assert.match(route, /mdm_shein_category_ai_suggestion ai_suggestion/);
+  assert.match(route, /suggested_shein_category_name/);
+  assert.match(listPage, /matched_shein_category_name/);
+  assert.match(listPage, /suggested_shein_category_name/);
+  assert.match(listPage, /matched_category_rule_source/);
+  assert.match(listPage, /映射规则/);
+  assert.match(listPage, /AI 建议/);
+  assert.match(detailPage, /matched_shein_category_name/);
+  assert.match(detailPage, /suggested_shein_category_name/);
+  assert.match(detailPage, /matched_category_rule_source/);
+  assert.match(detailPage, /规则匹配类目/);
+  assert.match(detailPage, /AI 建议类目/);
+});
+
 test("product archive detail page tolerates older API responses without size tables", async () => {
   const detailPage = await readFile(DETAIL_PAGE_FILE, "utf8");
 

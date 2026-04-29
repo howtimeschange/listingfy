@@ -206,6 +206,19 @@ const listSelect = `
     spu.listing_title_en,
     spu.shein_spu_code,
     spu.shein_category_name,
+    matched_rule.id as matched_category_rule_id,
+    matched_rule.source as matched_category_rule_source,
+    matched_rule.match_key as matched_category_match_key,
+    matched_rule.shein_category_id as matched_shein_category_id,
+    matched_rule.shein_product_type_id as matched_shein_product_type_id,
+    matched_category.category_name as matched_shein_category_name,
+    matched_category.path as matched_shein_category_path,
+    ai_suggestion.id as suggested_category_suggestion_id,
+    ai_suggestion.source as suggested_category_rule_source,
+    ai_suggestion.shein_category_id as suggested_shein_category_id,
+    ai_suggestion.shein_product_type_id as suggested_shein_product_type_id,
+    suggested_category.category_name as suggested_shein_category_name,
+    suggested_category.path as suggested_shein_category_path,
     spu.old_style_code,
     spu.deepdraw_info_status,
     spu.brand_name as mdm_brand_name,
@@ -271,6 +284,45 @@ const listSelect = `
   from product_codes c
   left join product_spu spu on spu.spu_code = c.spu_code
   left join product_content_package pkg on pkg.spu_code = c.spu_code
+  left join mdm_shein_category_mapping_rule matched_rule
+    on matched_rule.status = 'ACTIVE'
+    and (
+      (
+        matched_rule.match_mode = 'EXACT'
+        and matched_rule.match_key = (
+          coalesce(spu.middle_class_name, '') || '|' ||
+          coalesce(spu.subclass_name, '') || '|' ||
+          coalesce(spu.gender_name, '') || '|' ||
+          coalesce(spu.age_group_name, '')
+        )
+      )
+      or (
+        matched_rule.match_mode = 'FALLBACK'
+        and matched_rule.mdm_small_category_name = coalesce(spu.subclass_name, '')
+      )
+    )
+  left join v_shein_leaf_category matched_category
+    on matched_category.category_id = matched_rule.shein_category_id
+    and matched_category.product_type_id = matched_rule.shein_product_type_id
+  left join (
+    select
+      id,
+      match_key,
+      shein_category_id,
+      shein_product_type_id,
+      'AI 建议' as source
+    from mdm_shein_category_ai_suggestion ai_suggestion
+    where ai_suggestion.review_status = 'PENDING'
+  ) ai_suggestion
+    on ai_suggestion.match_key = (
+      coalesce(spu.middle_class_name, '') || '|' ||
+      coalesce(spu.subclass_name, '') || '|' ||
+      coalesce(spu.gender_name, '') || '|' ||
+      coalesce(spu.age_group_name, '')
+    )
+  left join v_shein_leaf_category suggested_category
+    on suggested_category.category_id = ai_suggestion.shein_category_id
+    and suggested_category.product_type_id = ai_suggestion.shein_product_type_id
 `
 
 function listWhere({
@@ -418,7 +470,64 @@ productArchives.get("/:spuCode", (c) => {
   const spuCode = c.req.param("spuCode")
 
   const spu = (db.prepare(`
-    select * from product_spu where spu_code = ?
+    select
+      spu.*,
+      matched_rule.id as matched_category_rule_id,
+      matched_rule.source as matched_category_rule_source,
+      matched_rule.match_key as matched_category_match_key,
+      matched_rule.shein_category_id as matched_shein_category_id,
+      matched_rule.shein_product_type_id as matched_shein_product_type_id,
+      matched_category.category_name as matched_shein_category_name,
+      matched_category.path as matched_shein_category_path,
+      ai_suggestion.id as suggested_category_suggestion_id,
+      ai_suggestion.source as suggested_category_rule_source,
+      ai_suggestion.shein_category_id as suggested_shein_category_id,
+      ai_suggestion.shein_product_type_id as suggested_shein_product_type_id,
+      suggested_category.category_name as suggested_shein_category_name,
+      suggested_category.path as suggested_shein_category_path
+    from product_spu spu
+    left join mdm_shein_category_mapping_rule matched_rule
+      on matched_rule.status = 'ACTIVE'
+      and (
+        (
+          matched_rule.match_mode = 'EXACT'
+          and matched_rule.match_key = (
+            coalesce(spu.middle_class_name, '') || '|' ||
+            coalesce(spu.subclass_name, '') || '|' ||
+            coalesce(spu.gender_name, '') || '|' ||
+            coalesce(spu.age_group_name, '')
+          )
+        )
+        or (
+          matched_rule.match_mode = 'FALLBACK'
+          and matched_rule.mdm_small_category_name = coalesce(spu.subclass_name, '')
+        )
+      )
+    left join v_shein_leaf_category matched_category
+      on matched_category.category_id = matched_rule.shein_category_id
+      and matched_category.product_type_id = matched_rule.shein_product_type_id
+    left join (
+      select
+        id,
+        match_key,
+        shein_category_id,
+        shein_product_type_id,
+        'AI 建议' as source
+      from mdm_shein_category_ai_suggestion ai_suggestion
+      where ai_suggestion.review_status = 'PENDING'
+    ) ai_suggestion
+      on ai_suggestion.match_key = (
+        coalesce(spu.middle_class_name, '') || '|' ||
+        coalesce(spu.subclass_name, '') || '|' ||
+        coalesce(spu.gender_name, '') || '|' ||
+        coalesce(spu.age_group_name, '')
+      )
+    left join v_shein_leaf_category suggested_category
+      on suggested_category.category_id = ai_suggestion.shein_category_id
+      and suggested_category.product_type_id = ai_suggestion.shein_product_type_id
+    where spu.spu_code = ?
+    order by matched_rule.priority asc, matched_rule.id desc
+    limit 1
   `).get(spuCode) as SourceRow | undefined) ?? null
 
   const contentPackage = (db.prepare(`

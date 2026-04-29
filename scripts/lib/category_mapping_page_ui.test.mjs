@@ -6,6 +6,10 @@ import test from "node:test";
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const PAGE_FILE = path.join(PROJECT_ROOT, "web/src/pages/category-mapping/page.tsx");
 const ROUTE_FILE = path.join(PROJECT_ROOT, "web/server/routes/category-mapping.ts");
+const AI_SUGGESTION_MIGRATION_FILE = path.join(
+  PROJECT_ROOT,
+  "db/migrations/006_category_ai_suggestions.sql",
+);
 
 test("category mapping page exposes an AI batch review workspace", async () => {
   const page = await readFile(PAGE_FILE, "utf8");
@@ -35,10 +39,10 @@ test("category mapping AI grouping keeps one suggestion per match key", async ()
 
   assert.match(route, /group_concat\(distinct pkg\.title\)/);
   assert.match(route, /skc_examples/);
-  assert.match(route, /tmall_model_image_url/);
+  assert.match(route, /tmall_color_image_url/);
   assert.match(route, /asset\.place = 'TMALL'/);
-  assert.match(route, /asset\.asset_type = 'MAIN'/);
-  assert.match(route, /asset\.picture_type = 'HOME'/);
+  assert.match(route, /asset\.asset_type = 'COLOR_BLOCK'/);
+  assert.match(route, /asset\.picture_type = 'COLOR'/);
   assert.doesNotMatch(route, /group by[\s\S]*pkg\.title,/);
   assert.doesNotMatch(route, /group by[\s\S]*spu\.model_name,/);
   assert.doesNotMatch(route, /group by[\s\S]*spu\.spec_range,/);
@@ -48,9 +52,26 @@ test("category mapping page shows SKC examples and TMALL color images in AI revi
   const page = await readFile(PAGE_FILE, "utf8");
 
   assert.match(page, /skc_examples/);
-  assert.match(page, /tmall_model_image_url/);
+  assert.match(page, /tmall_color_image_url/);
   assert.match(page, /SKC 款色判断/);
   assert.match(page, /同款不同色/);
   assert.match(page, /split_by_skc/);
   assert.match(page, /<SkcImageStrip/);
+});
+
+test("category mapping AI suggestions are persisted and loaded after navigation", async () => {
+  const [page, route, migration] = await Promise.all([
+    readFile(PAGE_FILE, "utf8"),
+    readFile(ROUTE_FILE, "utf8"),
+    readFile(AI_SUGGESTION_MIGRATION_FILE, "utf8"),
+  ]);
+
+  assert.match(migration, /create table if not exists mdm_shein_category_ai_suggestion/);
+  assert.match(route, /mdm_shein_category_ai_suggestion/);
+  assert.match(route, /persistAiSuggestions/);
+  assert.match(route, /listPersistedAiSuggestions/);
+  assert.match(route, /categoryMapping\.get\("\/ai-suggestions"/);
+  assert.match(page, /usePersistedAiSuggestions/);
+  assert.match(page, /suggestionsQuery/);
+  assert.match(page, /\["category-mapping", "ai-suggestions"\]/);
 });

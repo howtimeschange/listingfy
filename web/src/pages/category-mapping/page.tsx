@@ -87,7 +87,7 @@ interface SkcExample {
   color_code: string | null
   color_name: string | null
   mdm_image_url: string | null
-  tmall_model_image_url: string | null
+  tmall_color_image_url: string | null
 }
 
 interface SheinCategoryCandidate {
@@ -152,6 +152,13 @@ function useUnmappedGroups() {
   return useQuery<UnmappedGroupsResponse>({
     queryKey: ["category-mapping", "unmapped-groups"],
     queryFn: () => api.get("/category-mapping/unmapped-groups?limit=80"),
+  })
+}
+
+function usePersistedAiSuggestions() {
+  return useQuery<AiSuggestionsResponse>({
+    queryKey: ["category-mapping", "ai-suggestions"],
+    queryFn: () => api.get("/category-mapping/ai-suggestions?limit=60"),
   })
 }
 
@@ -275,9 +282,9 @@ function SkcImageStrip({
             className="w-[96px] shrink-0 overflow-hidden rounded-lg border bg-background"
           >
             <div className="relative h-[112px] w-full bg-muted">
-              {example.tmall_model_image_url ? (
+              {example.tmall_color_image_url ? (
                 <img
-                  src={example.tmall_model_image_url}
+                  src={example.tmall_color_image_url}
                   alt={`${example.skc_code} TMALL 款色图`}
                   className="h-full w-full object-cover"
                   loading="lazy"
@@ -292,7 +299,7 @@ function SkcImageStrip({
                 variant="outline"
                 className="absolute left-1 top-1 max-w-[88px] truncate bg-background/90 px-1.5 py-0 text-[10px]"
               >
-                {example.tmall_model_image_url ? "TMALL 模特图" : "缺模特图"}
+                {example.tmall_color_image_url ? "TMALL 款色图" : "缺款色图"}
               </Badge>
             </div>
             <div className="space-y-1 p-2">
@@ -419,6 +426,7 @@ export default function CategoryMappingPage() {
   const debouncedSearch = useDebounce(searchText, 300)
   const rulesQuery = useCategoryRules(debouncedSearch)
   const groupsQuery = useUnmappedGroups()
+  const suggestionsQuery = usePersistedAiSuggestions()
   const aiMutation = useCategoryMatchSuggestions()
 
   const confirmMutation = useMutation({
@@ -446,13 +454,14 @@ export default function CategoryMappingPage() {
 
   const rules = rulesQuery.data?.rules ?? []
   const groups = groupsQuery.data?.groups ?? []
-  const suggestions = aiMutation.data?.suggestions ?? []
+  const suggestions = aiMutation.data?.suggestions ?? suggestionsQuery.data?.suggestions ?? []
   const highConfidenceCount = suggestions.filter((item) => item.confidence >= 0.8 && item.status === "READY").length
   const ambiguousCount = suggestions.filter((item) => item.status === "AMBIGUOUS" || item.confidence < 0.8).length
 
   const handleRunAi = () => {
     aiMutation.mutate(undefined, {
       onSuccess: (result) => {
+        queryClient.setQueryData(["category-mapping", "ai-suggestions"], result)
         toast.success(`AI 已生成 ${result.suggestions.length} 条类目建议`)
       },
       onError: (error) => {
@@ -498,7 +507,7 @@ export default function CategoryMappingPage() {
             {aiMutation.isPending ? (
               <div className="space-y-4 rounded-2xl border bg-muted/30 p-5">
                 <div className="flex items-center justify-between text-sm">
-                  <span>正在整理 MDM/深绘字段并请求 AI 服务</span>
+                  <span>正在整理 MDM/深绘字段、TMALL 款色图并请求 AI 服务，可能需要 1-2 分钟</span>
                   <span>gemini-3-flash-preview</span>
                 </div>
                 <Progress value={58} />

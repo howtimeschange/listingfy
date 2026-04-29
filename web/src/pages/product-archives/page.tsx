@@ -58,6 +58,19 @@ interface ProductArchiveItem {
   listing_title_en: string | null
   shein_spu_code: string | null
   shein_category_name: string | null
+  matched_category_rule_id: number | null
+  matched_category_rule_source: string | null
+  matched_category_match_key: string | null
+  matched_shein_category_id: number | null
+  matched_shein_product_type_id: number | null
+  matched_shein_category_name: string | null
+  matched_shein_category_path: string | null
+  suggested_category_suggestion_id: number | null
+  suggested_category_rule_source: string | null
+  suggested_shein_category_id: number | null
+  suggested_shein_product_type_id: number | null
+  suggested_shein_category_name: string | null
+  suggested_shein_category_path: string | null
   old_style_code: string | null
   deepdraw_info_status: string | null
   mdm_brand_code: string | null
@@ -498,7 +511,16 @@ export default function ProductArchivesPage() {
                     </div>
                     <div>
                       <div className="text-xs text-muted-foreground">SHEIN 类目</div>
-                      <div>{item.shein_category_name ?? item.deepdraw_category_name ?? "—"}</div>
+                      <div>{item.matched_shein_category_name ?? item.suggested_shein_category_name ?? item.shein_category_name ?? item.deepdraw_category_name ?? "—"}</div>
+                      {item.matched_shein_category_name ? (
+                        <div className="text-xs text-muted-foreground">
+                          映射规则：{item.matched_category_rule_source ?? "—"}
+                        </div>
+                      ) : item.suggested_shein_category_name ? (
+                        <div className="text-xs text-muted-foreground">
+                          AI 建议：{item.suggested_category_rule_source ?? "—"}
+                        </div>
+                      ) : null}
                     </div>
                     <div>
                       <div className="text-xs text-muted-foreground">图片</div>
@@ -583,7 +605,16 @@ export default function ProductArchivesPage() {
                         </div>
                       </TableCell>
                       <TableCell className="text-sm">
-                        <div>{item.shein_category_name ?? "待补 SHEIN 类目"}</div>
+                        <div>{item.matched_shein_category_name ?? item.suggested_shein_category_name ?? item.shein_category_name ?? "待补 SHEIN 类目"}</div>
+                        {item.matched_shein_category_name ? (
+                          <div className="text-xs text-muted-foreground">
+                            映射规则：{item.matched_category_rule_source ?? "—"}
+                          </div>
+                        ) : item.suggested_shein_category_name ? (
+                          <div className="text-xs text-muted-foreground">
+                            AI 建议：{item.suggested_category_rule_source ?? "—"}
+                          </div>
+                        ) : null}
                         <div className="text-muted-foreground">
                           老款号：{item.old_style_code ?? "—"}
                         </div>

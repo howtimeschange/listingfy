@@ -64,7 +64,7 @@ type SkcExample = {
   color_code: string | null
   color_name: string | null
   mdm_image_url: string | null
-  tmall_model_image_url: string | null
+  tmall_color_image_url: string | null
 }
 
 function normalizeText(value: unknown) {
@@ -99,6 +99,17 @@ function parseJsonArray(value: unknown) {
     return Array.isArray(parsed) ? parsed : []
   } catch {
     return []
+  }
+}
+
+function parseJsonObject(value: unknown) {
+  if (value && typeof value === "object") return value as Record<string, unknown>
+  if (typeof value !== "string" || !value) return {}
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {}
+  } catch {
+    return {}
   }
 }
 
@@ -235,12 +246,12 @@ function listSkcExamplesForGroup(
           and asset.skc_code = skc.skc_code
           and asset.source_kind = 'PICTURE'
           and asset.place = 'TMALL'
-          and asset.asset_type = 'MAIN'
-          and asset.picture_type = 'HOME'
+          and asset.asset_type = 'COLOR_BLOCK'
+          and asset.picture_type = 'COLOR'
           and coalesce(asset.normalized_url, '') <> ''
         order by coalesce(asset.sort_no, 999999), asset.id
         limit 1
-      ) as tmall_model_image_url
+      ) as tmall_color_image_url
     from product_skc skc
     join product_spu spu on spu.id = skc.spu_id
     where spu.spu_code in (${placeholders})
@@ -302,6 +313,91 @@ function enrichSuggestions({
     ...suggestion,
     group: groupByKey.get(String(suggestion.match_key)) ?? null,
   }))
+}
+
+function persistAiSuggestions({
+  db,
+  groups,
+  suggestions,
+  provider,
+}: {
+  db: ReturnType<typeof getDb>
+  groups: UnmappedGroup[]
+  suggestions: Array<Record<string, unknown>>
+  provider?: unknown
+}) {
+  const groupByKey = new Map(groups.map((group) => [group.match_key, group]))
+  const stmt = db.prepare(`
+    insert into mdm_shein_category_ai_suggestion (
+      match_key,
+      status,
+      confidence,
+      shein_category_id,
+      shein_product_type_id,
+      payload_json,
+      group_payload_json,
+      provider_payload_json,
+      review_status,
+      updated_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    on conflict(match_key) do update set
+      status = excluded.status,
+      confidence = excluded.confidence,
+      shein_category_id = excluded.shein_category_id,
+      shein_product_type_id = excluded.shein_product_type_id,
+      payload_json = excluded.payload_json,
+      group_payload_json = excluded.group_payload_json,
+      provider_payload_json = excluded.provider_payload_json,
+      review_status = case
+        when mdm_shein_category_ai_suggestion.review_status = 'CONFIRMED' then 'CONFIRMED'
+        else 'PENDING'
+      end,
+      updated_at = excluded.updated_at
+  `)
+
+  for (const suggestion of suggestions) {
+    const matchKey = String(suggestion.match_key ?? "")
+    if (!matchKey) continue
+    const primary = parseJsonObject(suggestion.primary)
+    stmt.run(
+      matchKey,
+      String(suggestion.status ?? "READY"),
+      Number(suggestion.confidence ?? 0),
+      primary.category_id ?? null,
+      primary.product_type_id ?? null,
+      JSON.stringify(suggestion),
+      JSON.stringify(groupByKey.get(matchKey) ?? null),
+      JSON.stringify(provider ?? {}),
+    )
+  }
+}
+
+function listPersistedAiSuggestions(db: ReturnType<typeof getDb>, limit: number) {
+  const rows = db.prepare(`
+    select *
+    from mdm_shein_category_ai_suggestion
+    where review_status = 'PENDING'
+    order by updated_at desc, id desc
+    limit ?
+  `).all(limit) as Array<Record<string, unknown>>
+
+  const suggestions = rows.map((row) => {
+    const suggestion = parseJsonObject(row.payload_json)
+    const group = parseJsonObject(row.group_payload_json)
+    return {
+      ...suggestion,
+      persisted_id: row.id,
+      review_status: row.review_status,
+      group,
+    }
+  })
+
+  return {
+    groups: suggestions.map((item) => item.group).filter(Boolean),
+    candidates: [],
+    suggestions,
+  }
 }
 
 // GET /api/category-mapping/rules
@@ -449,6 +545,13 @@ categoryMapping.get("/category-candidates", (c) => {
   return c.json({ candidates })
 })
 
+// GET /api/category-mapping/ai-suggestions - load persisted AI review suggestions
+categoryMapping.get("/ai-suggestions", (c) => {
+  const db = getDb()
+  const limit = readLimit(c.req.query("limit"), 30, 100)
+  return c.json(listPersistedAiSuggestions(db, limit))
+})
+
 // POST /api/category-mapping/ai-suggestions - ask AI to recommend SHEIN categories for unmapped groups
 categoryMapping.post("/ai-suggestions", async (c) => {
   const db = getDb()
@@ -474,13 +577,20 @@ categoryMapping.post("/ai-suggestions", async (c) => {
   }
 
   const result = await callAiCategoryMatcher({ groups, candidates })
+  const suggestions = enrichSuggestions({
+    groups,
+    suggestions: result.suggestions as unknown as Array<Record<string, unknown>>,
+  })
+  persistAiSuggestions({
+    db,
+    groups,
+    suggestions,
+    provider: result.provider,
+  })
   return c.json({
     groups,
     candidates,
-    suggestions: enrichSuggestions({
-      groups,
-      suggestions: result.suggestions as unknown as Array<Record<string, unknown>>,
-    }),
+    suggestions,
     provider: result.provider,
   })
 })
@@ -560,6 +670,13 @@ categoryMapping.post("/ai-suggestions/confirm", async (c) => {
     note,
     dimensionPayload,
   )
+
+  db.prepare(`
+    update mdm_shein_category_ai_suggestion
+    set review_status = 'CONFIRMED',
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where match_key = ?
+  `).run(matchKey)
 
   return c.json({
     ok: true,
