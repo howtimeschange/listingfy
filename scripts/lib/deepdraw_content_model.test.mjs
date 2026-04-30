@@ -189,7 +189,7 @@ test("extractDeepdrawContentRows maps body into SPU-SKC-SKU content rows", () =>
 });
 
 test("importDeepdrawPayloads persists structured content tables idempotently", () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "listingfy-deepdraw-"));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "listingify-deepdraw-"));
   const db = openDatabase(path.join(tmpDir, "app.sqlite"), { configureJournal: false });
   try {
     applyMigrations(db);

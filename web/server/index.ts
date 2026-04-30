@@ -13,9 +13,21 @@ import businessRules from "./routes/business-rules"
 import sheinProducts from "./routes/shein-products"
 import prePublish from "./routes/pre-publish"
 import publishTasks from "./routes/publish-tasks"
-import { DB_FILE } from "./db"
+import listingBatches from "./routes/listing-batches"
+import auth from "./routes/auth"
+import users from "./routes/users"
+import platformIntegrations from "./routes/platform-integrations"
+import system from "./routes/system"
+import { applyPendingMigrations, DB_FILE, getDb } from "./db"
+import { ensureAdminUser, requireAuth } from "./lib/auth"
+import { ensurePlatformIntegrationBootstrap } from "./lib/platform-config"
 
 loadLocalEnv()
+
+const db = getDb()
+const appliedMigrations = applyPendingMigrations(db)
+const adminSeeded = ensureAdminUser(db)
+const sheinConfigSeeded = ensurePlatformIntegrationBootstrap(db)
 
 const app = new Hono()
 
@@ -23,9 +35,21 @@ app.use("*", cors())
 app.use("*", logger)
 app.onError(errorHandler)
 
-app.get("/", (c) => c.json({ name: "listingfy-api", status: "ok", db: DB_FILE }))
+app.get("/", (c) => c.json({ name: "listingify-api", status: "ok", db: DB_FILE }))
 app.get("/api/health", (c) => c.json({ ok: true, ts: Date.now() }))
 
+app.use("/api/*", async (c, next) => {
+  if (c.req.path === "/api/auth/login" || c.req.path === "/api/health") {
+    await next()
+    return
+  }
+  await requireAuth(c, next)
+})
+
+app.route("/api/auth", auth)
+app.route("/api/users", users)
+app.route("/api/platform-integrations", platformIntegrations)
+app.route("/api/system", system)
 app.route("/api/metadata", metadata)
 app.route("/api/category-mapping", categoryMapping)
 app.route("/api/product-archives", productArchives)
@@ -36,9 +60,13 @@ app.route("/api/business-rules", businessRules)
 app.route("/api/shein-products", sheinProducts)
 app.route("/api/pre-publish", prePublish)
 app.route("/api/publish-tasks", publishTasks)
+app.route("/api/listing-batches", listingBatches)
 
 const port = Number(process.env.PORT ?? 3001)
 console.log(`API server listening on http://localhost:${port}`)
 console.log(`Database: ${DB_FILE}`)
+if (appliedMigrations.length) console.log(`Applied migrations: ${appliedMigrations.join(", ")}`)
+if (adminSeeded) console.log("Seeded default admin user")
+if (sheinConfigSeeded) console.log("Migrated SHEIN env credentials into platform_integration")
 
 serve({ fetch: app.fetch, port })

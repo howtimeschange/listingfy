@@ -5,7 +5,6 @@ import {
   ShieldCheck,
   Send,
   GitBranch,
-  Tags,
   Ruler,
   Box,
   DollarSign,
@@ -15,10 +14,12 @@ import {
   Boxes,
   FileText,
   ImagePlus,
-  KeyRound,
+  PackagePlus,
+  PlugZap,
   RefreshCw,
   ScrollText,
   Sparkles,
+  UserCog,
 } from "lucide-react"
 import {
   Sidebar,
@@ -32,11 +33,13 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
 import { cn } from "@/lib/utils"
+import { useAuth } from "@/lib/auth-context"
 
 type NavItem = {
   label: string
   to: string
   icon: typeof LayoutDashboard
+  permission?: string
 }
 
 type NavGroup = {
@@ -48,45 +51,47 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: "上新工作",
     items: [
-      { label: "工作台", to: "/dashboard", icon: LayoutDashboard },
-      { label: "SHEIN 商品分桶", to: "/shein-products", icon: ShoppingBag },
-      { label: "SHEIN 发布草稿箱", to: "/pre-publish-validation", icon: ShieldCheck },
-      { label: "发布任务", to: "/publish-tasks", icon: Send },
+      { label: "工作台", to: "/dashboard", icon: LayoutDashboard, permission: "DASHBOARD_READ" },
+      { label: "上新批次", to: "/listing-batches", icon: PackagePlus, permission: "LISTING_READ" },
+      { label: "SHEIN 商品分桶", to: "/shein-products", icon: ShoppingBag, permission: "LISTING_READ" },
+      { label: "SHEIN 发布草稿箱", to: "/pre-publish-validation", icon: ShieldCheck, permission: "LISTING_READ" },
+      { label: "发布任务", to: "/publish-tasks", icon: Send, permission: "LISTING_READ" },
     ],
   },
   {
     label: "规则中心",
     items: [
-      { label: "类目映射", to: "/category-mapping", icon: GitBranch },
-      { label: "属性映射", to: "/attribute-mapping", icon: Tags },
-      { label: "SHEIN 尺码转换", to: "/size-conversion", icon: Ruler },
-      { label: "包装规则", to: "/package-rules", icon: Box },
-      { label: "价格规则", to: "/price-rules", icon: DollarSign },
-      { label: "SHEIN 低倍率清单", to: "/low-rate-list", icon: TrendingDown },
+      { label: "类目映射", to: "/category-mapping", icon: GitBranch, permission: "RULE_READ" },
+      { label: "SHEIN 尺码转换", to: "/size-conversion", icon: Ruler, permission: "RULE_READ" },
+      { label: "包装规则", to: "/package-rules", icon: Box, permission: "RULE_READ" },
+      { label: "价格规则", to: "/price-rules", icon: DollarSign, permission: "RULE_READ" },
+      { label: "SHEIN 低倍率清单", to: "/low-rate-list", icon: TrendingDown, permission: "RULE_READ" },
     ],
   },
   {
     label: "数据中心",
     items: [
-      { label: "SHEIN 元数据", to: "/shein-metadata", icon: Database },
-      { label: "商品档案", to: "/product-archives", icon: Archive },
-      { label: "MDM 商品主数据", to: "/mdm-products", icon: Boxes },
-      { label: "深绘内容包", to: "/deepdraw-content", icon: FileText },
-      { label: "图片素材库", to: "/image-library", icon: ImagePlus },
+      { label: "SHEIN 元数据", to: "/shein-metadata", icon: Database, permission: "DATA_READ" },
+      { label: "商品档案", to: "/product-archives", icon: Archive, permission: "DATA_READ" },
+      { label: "MDM 商品主数据", to: "/mdm-products", icon: Boxes, permission: "DATA_READ" },
+      { label: "深绘内容包", to: "/deepdraw-content", icon: FileText, permission: "DATA_READ" },
+      { label: "图片素材库", to: "/image-library", icon: ImagePlus, permission: "DATA_READ" },
     ],
   },
   {
     label: "系统管理",
     items: [
-      { label: "SHEIN 账号", to: "/shein-accounts", icon: KeyRound },
-      { label: "同步任务", to: "/sync-tasks", icon: RefreshCw },
-      { label: "操作日志", to: "/operation-logs", icon: ScrollText },
+      { label: "平台对接", to: "/platform-integrations", icon: PlugZap, permission: "PLATFORM_CONFIG" },
+      { label: "用户管理", to: "/users", icon: UserCog, permission: "USER_ADMIN" },
+      { label: "同步任务", to: "/sync-tasks", icon: RefreshCw, permission: "SYNC_READ" },
+      { label: "操作日志", to: "/operation-logs", icon: ScrollText, permission: "OPERATION_LOG_READ" },
     ],
   },
 ]
 
 export function AppSidebar() {
   const { pathname } = useLocation()
+  const { hasPermission } = useAuth()
 
   return (
     <Sidebar collapsible="icon" className="border-r border-sidebar-border bg-sidebar/95">
@@ -96,7 +101,7 @@ export function AppSidebar() {
             <Sparkles className="size-4" />
           </div>
           <div className="flex flex-col leading-tight group-data-[collapsible=icon]:hidden">
-            <span className="text-sm font-semibold tracking-[-0.1px]">Listingfy</span>
+            <span className="text-sm font-semibold tracking-[-0.1px]">Listingify</span>
             <span className="font-mono text-[10px] uppercase tracking-[0.6px] text-muted-foreground">
               Listing Platform
             </span>
@@ -104,43 +109,47 @@ export function AppSidebar() {
         </div>
       </SidebarHeader>
       <SidebarContent className="px-2 py-3">
-        {NAV_GROUPS.map((group) => (
-          <SidebarGroup key={group.label} className="px-0 py-2">
-            <SidebarGroupLabel className="h-7 px-3 font-mono text-[10px] uppercase tracking-[0.6px] text-muted-foreground">
-              {group.label}
-            </SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {group.items.map((item) => {
-                  const active =
-                    pathname === item.to || pathname.startsWith(`${item.to}/`)
-                  const Icon = item.icon
-                  return (
-                    <SidebarMenuItem key={item.to}>
-                      <SidebarMenuButton
-                        asChild
-                        isActive={active}
-                        tooltip={item.label}
-                        className="h-9 rounded-lg px-3 text-[14px] font-medium data-[active=true]:bg-[var(--brand-light)] data-[active=true]:text-foreground"
-                      >
-                        <NavLink
-                          to={item.to}
-                          className={cn(
-                            "flex items-center gap-2",
-                            active && "font-medium",
-                          )}
+        {NAV_GROUPS.map((group) => {
+          const visibleItems = group.items.filter((item) => !item.permission || hasPermission(item.permission))
+          if (visibleItems.length === 0) return null
+          return (
+            <SidebarGroup key={group.label} className="px-0 py-2">
+              <SidebarGroupLabel className="h-7 px-3 font-mono text-[10px] uppercase tracking-[0.6px] text-muted-foreground">
+                {group.label}
+              </SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {visibleItems.map((item) => {
+                    const active =
+                      pathname === item.to || pathname.startsWith(`${item.to}/`)
+                    const Icon = item.icon
+                    return (
+                      <SidebarMenuItem key={item.to}>
+                        <SidebarMenuButton
+                          asChild
+                          isActive={active}
+                          tooltip={item.label}
+                          className="h-9 rounded-lg px-3 text-[14px] font-medium data-[active=true]:bg-[var(--brand-light)] data-[active=true]:text-foreground"
                         >
-                          <Icon className="size-4 shrink-0" />
-                          <span className="truncate whitespace-nowrap">{item.label}</span>
-                        </NavLink>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  )
-                })}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        ))}
+                          <NavLink
+                            to={item.to}
+                            className={cn(
+                              "flex items-center gap-2",
+                              active && "font-medium",
+                            )}
+                          >
+                            <Icon className="size-4 shrink-0" />
+                            <span className="truncate whitespace-nowrap">{item.label}</span>
+                          </NavLink>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    )
+                  })}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          )
+        })}
       </SidebarContent>
     </Sidebar>
   )

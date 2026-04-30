@@ -229,7 +229,7 @@ DANGDANG, TMALL, KUAISHOU, PDD, ALIBABA, JD, VIP, HAOYK, DOUYIN
 
 当前样例出现的图片类型：
 
-| 深绘图片类型 | 含义判断 | Listingfy 初始归类建议 |
+| 深绘图片类型 | 含义判断 | Listingify 初始归类建议 |
 | --- | --- | --- |
 | `HOME` | 渠道主图/展示图 | `MAIN` 或 `DETAIL`，按 SHEIN 图片位再筛选 |
 | `HOME_SUBSIDIARY` | 主图辅图 | `DETAIL` |

@@ -1,3 +1,4 @@
+import fs from "node:fs"
 import path from "node:path"
 import Database from "better-sqlite3"
 import { loadLocalEnv } from "../../scripts/lib/local_env.mjs"
@@ -23,6 +24,39 @@ export function getDb(): Database.Database {
   db.pragma("foreign_keys = ON")
   _db = db
   return db
+}
+
+export function applyPendingMigrations(db = getDb()): string[] {
+  const migrationsDir = path.resolve(projectRoot, "db", "migrations")
+  db.exec(`
+    create table if not exists schema_migration (
+      version text primary key,
+      applied_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+  `)
+  const applied = new Set(
+    (db.prepare("select version from schema_migration").all() as Array<{ version: string }>)
+      .map((row) => row.version),
+  )
+  const migrations = fs.readdirSync(migrationsDir)
+    .filter((file) => file.endsWith(".sql"))
+    .sort()
+  const appliedNow: string[] = []
+  for (const file of migrations) {
+    if (applied.has(file)) continue
+    const sql = fs.readFileSync(path.join(migrationsDir, file), "utf8")
+    db.exec("begin immediate")
+    try {
+      db.exec(sql)
+      db.prepare("insert into schema_migration(version) values (?)").run(file)
+      db.exec("commit")
+      appliedNow.push(file)
+    } catch (error) {
+      db.exec("rollback")
+      throw error
+    }
+  }
+  return appliedNow
 }
 
 export function closeDb(): void {

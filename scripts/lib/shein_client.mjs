@@ -57,15 +57,29 @@ export function decryptSecretKey(encryptedSecretKey, appSecretKey) {
 }
 
 export function headersForOpenApi(path, method = "POST") {
-  const openKeyId = requireEnv("SHEIN_OPEN_KEY_ID");
-  const secretKey = requireEnv("SHEIN_SECRET_KEY");
+  return headersForOpenApiCredentials(path, {
+    method,
+    openKeyId: requireEnv("SHEIN_OPEN_KEY_ID"),
+    secretKey: requireEnv("SHEIN_SECRET_KEY"),
+    language: readEnv("SHEIN_LANGUAGE", "zh-cn"),
+  });
+}
+
+export function headersForOpenApiCredentials(path, {
+  method = "POST",
+  openKeyId,
+  secretKey,
+  language = readEnv("SHEIN_LANGUAGE", "zh-cn"),
+} = {}) {
+  if (!openKeyId) throw new Error("Missing required SHEIN credential: openKeyId");
+  if (!secretKey) throw new Error("Missing required SHEIN credential: secretKey");
   const { timestamp, signature } = createSignature(openKeyId, secretKey, path);
   const headers = {
     "Content-Type": "application/json;charset=UTF-8",
     "x-lt-openKeyId": openKeyId,
     "x-lt-timestamp": timestamp,
     "x-lt-signature": signature,
-    language: readEnv("SHEIN_LANGUAGE", "zh-cn"),
+    language,
   };
   if (method === "GET") {
     delete headers["Content-Type"];
@@ -110,6 +124,40 @@ export async function requestShein(path, { method = "POST", body, appAuth = fals
   };
 }
 
+export async function requestSheinWithCredentials(path, {
+  method = "POST",
+  body,
+  baseUrl = TEST_BASE_URL,
+  credentials,
+} = {}) {
+  const effectiveBaseUrl = credentials?.baseUrl || baseUrl;
+  const url = new URL(path, effectiveBaseUrl);
+  const headers = headersForOpenApiCredentials(path, {
+    method,
+    openKeyId: credentials?.openKeyId,
+    secretKey: credentials?.secretKey,
+    language: credentials?.language || readEnv("SHEIN_LANGUAGE", "zh-cn"),
+  });
+  const normalizedBody = normalizeBody(body);
+  const response = await fetch(url, {
+    method,
+    headers,
+    body: method === "GET" ? undefined : normalizedBody,
+  });
+  const text = await response.text();
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    payload = text;
+  }
+  return {
+    status: response.status,
+    ok: response.ok,
+    payload,
+  };
+}
+
 export function isRetryableSheinResult(result) {
   const code = result?.payload?.code;
   return result?.status >= 500 || code === "openapi00006";
@@ -124,6 +172,23 @@ export async function requestSheinWithRetry(path, options = {}) {
   let lastResult;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     lastResult = await requestShein(path, requestOptions);
+    if (!isRetryableSheinResult(lastResult) || attempt === retries) {
+      return lastResult;
+    }
+    await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)));
+  }
+  return lastResult;
+}
+
+export async function requestSheinWithCredentialsAndRetry(path, options = {}) {
+  const {
+    retries = 3,
+    retryDelayMs = 1000,
+    ...requestOptions
+  } = options;
+  let lastResult;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    lastResult = await requestSheinWithCredentials(path, requestOptions);
     if (!isRetryableSheinResult(lastResult) || attempt === retries) {
       return lastResult;
     }

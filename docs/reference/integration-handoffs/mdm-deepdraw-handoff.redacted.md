@@ -22,7 +22,7 @@
 
 ### 接口用途
 
-从 MDM 查询商品主数据，用于后续形成 Listingfy 内部 `SPU -> SKC -> SKU` 主数据。
+从 MDM 查询商品主数据，用于后续形成 Listingify 内部 `SPU -> SKC -> SKU` 主数据。
 
 ### 环境
 
@@ -147,4 +147,4 @@ vendor/deepdraw-sdk/
 2. 新增 DeepDraw 内容包同步配置，按商品编码拉取并做限流。
 3. 将凭据配置在 `.env` 或部署密钥管理中，本仓库只保留变量名。
 4. 同步任务保存原始 payload、同步批次、来源时间和 source hash。
-5. 将 MDM 主数据和 DeepDraw 内容包统一映射到 Listingfy 的 `product_spu`、`product_skc`、`product_sku`、`product_content_package`、`product_asset` 等模型。
+5. 将 MDM 主数据和 DeepDraw 内容包统一映射到 Listingify 的 `product_spu`、`product_skc`、`product_sku`、`product_content_package`、`product_asset` 等模型。

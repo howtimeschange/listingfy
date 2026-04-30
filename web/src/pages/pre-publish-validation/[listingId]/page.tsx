@@ -10,7 +10,9 @@ import {
   FileClock,
   FolderTree,
   FolderUp,
+  FilterX,
   ImageIcon,
+  Images,
   Languages,
   Layers3,
   Loader2,
@@ -21,6 +23,7 @@ import {
   Sparkles,
   Upload,
   MoreHorizontal,
+  Trash2,
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
@@ -197,13 +200,61 @@ interface SaleAttribute {
 interface ListingAsset {
   id: number
   skc_code: string | null
+  source_type: string
   asset_type: string
   image_sort: number
   local_path: string | null
   source_url: string | null
+  platform_url?: string | null
+  width: number | null
+  height: number | null
+  file_size?: number | null
   status: string
+  transform_status?: string | null
+  transform_error?: string | null
+  transformed_at?: string | null
   confirmed: number
   note: string | null
+  raw_payload_json?: string | null
+}
+
+interface ImageCandidate {
+  id: number
+  source_kind: string | null
+  place: string | null
+  spu_code: string | null
+  skc_code: string | null
+  asset_type: string | null
+  picture_type: string | null
+  module_name: string | null
+  normalized_url: string
+  preview_url: string
+  file_name: string | null
+  width: number | null
+  height: number | null
+  file_size: number | null
+  sort_no: number | null
+  recommended_asset_type: string
+  compliance: {
+    compliant: boolean
+    status: "PASS" | "WARN" | "FAIL"
+    reasons: string[]
+    file_size_limit_bytes: number | null
+  }
+}
+
+interface ImageCandidateList {
+  items: ImageCandidate[]
+  pagination: {
+    total: number
+    limit: number
+    offset: number
+  }
+  source_places: Array<{
+    source_place: string
+    count: number
+  }>
+  requirement: ImageRequirement
 }
 
 interface ListingDetail {
@@ -263,6 +314,8 @@ interface ListingDetail {
     cost_price: number | null
     currency: string | null
     selected_for_publish: number
+    price_confirmed?: number | null
+    price_confirmed_at?: string | null
   }>
   assets: ListingAsset[]
   sale_attributes: SaleAttribute[]
@@ -341,11 +394,28 @@ type SkuCommercialDraft = {
   packageHeightCm: string
 }
 
+type SkuBatchFillDraft = SkuCommercialDraft & {
+  packageWeightG: string
+}
+
 type ImageUploadParams = {
   file: File
   skcCode?: string | null
   requirement: ImageRequirement
 }
+
+type ImageLibraryPickerState = {
+  requirement: ImageRequirement
+  skcCode?: string | null
+} | null
+
+const IMAGE_SOURCE_KIND_OPTIONS = [
+  { value: "PICTURE", label: "商品图" },
+  { value: "DETAIL_SCREENSHOT", label: "商详截图" },
+  { value: "DETAIL_MODULE", label: "商详模块" },
+]
+
+const DEFAULT_IMAGE_SOURCE_PLACES = ["TMALL", "VIP"]
 
 const statusClass: Record<FillField["status"], string> = {
   READY: "border-[#b9f4d8] bg-[#d4fae8] text-[#0fa76e]",
@@ -371,6 +441,45 @@ function useCategoryTree(parentCategoryId: number | null, search: string) {
   return useQuery<{ items: CategoryTreeItem[] }>({
     queryKey: ["pre-publish", "categoryTree", parentCategoryId, search.trim()],
     queryFn: () => api.get(query),
+  })
+}
+
+function useImageCandidates(
+  listingId: string | undefined,
+  picker: ImageLibraryPickerState,
+  search: string,
+  onlyCompliant: boolean,
+  sourceKinds: string[],
+  sourcePlaces: string[],
+) {
+  return useQuery<ImageCandidateList>({
+    queryKey: [
+      "pre-publish",
+      "draft",
+      listingId,
+      "image-candidates",
+      picker?.requirement.requirement_key,
+      picker?.skcCode ?? "",
+      search.trim(),
+      onlyCompliant,
+      sourceKinds.join(","),
+      sourcePlaces.join(","),
+    ],
+    queryFn: () => {
+      if (!picker) throw new Error("missing image picker state")
+      const params = new URLSearchParams({
+        requirement_key: picker.requirement.requirement_key,
+        limit: "160",
+        offset: "0",
+      })
+      if (picker.skcCode) params.set("skc_code", picker.skcCode)
+      if (search.trim()) params.set("q", search.trim())
+      if (onlyCompliant) params.set("only_compliant", "1")
+      if (sourceKinds.length) params.set("source_kinds", sourceKinds.join(","))
+      if (sourcePlaces.length) params.set("source_places", sourcePlaces.join(","))
+      return api.get(`/pre-publish/drafts/${listingId}/image-candidates?${params.toString()}`)
+    },
+    enabled: Boolean(listingId && picker),
   })
 }
 
@@ -583,6 +692,69 @@ function assetSrc(asset: ListingAsset) {
   return `/api/pre-publish/assets/${asset.id}/file`
 }
 
+function formatDimensions(width?: number | null, height?: number | null) {
+  if (!width || !height) return "尺寸未知"
+  return `${width} x ${height}`
+}
+
+function formatBytes(value?: number | null) {
+  if (!value) return "大小未知"
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${(value / 1024 / 1024).toFixed(2)} MB`
+}
+
+function sourceKindLabel(value?: string | null) {
+  switch (value) {
+    case "PICTURE":
+      return "商品图"
+    case "DETAIL_SCREENSHOT":
+      return "商详截图"
+    case "DETAIL_MODULE":
+      return "商详模块"
+    case "IMAGE_LIBRARY":
+      return "素材库"
+    case "MANUAL_UPLOAD":
+      return "人工上传"
+    case "MANUAL_FOLDER_IMPORT":
+      return "本地目录"
+    case "SOURCE_FALLBACK":
+      return "源图补齐"
+    default:
+      return value || "未知来源"
+  }
+}
+
+function sourcePlaceLabel(value?: string | null) {
+  const text = String(value ?? "").trim().toUpperCase()
+  switch (text) {
+    case "TMALL":
+      return "TMALL 天猫"
+    case "TAOBAO":
+      return "TAOBAO 淘宝"
+    case "JD":
+      return "JD 京东"
+    case "VIP":
+      return "VIP 唯品会"
+    case "PDD":
+      return "PDD 拼多多"
+    case "DOUYIN":
+      return "抖音"
+    case "KUAISHOU":
+      return "快手"
+    case "XIAOHONGSHU":
+      return "小红书"
+    case "ALIBABA":
+      return "1688"
+    default:
+      return text || "未知平台"
+  }
+}
+
+function assetRawPayload(asset: ListingAsset) {
+  return parsePayload(asset.raw_payload_json)
+}
+
 function skcImageForSku(
   sku: ListingDetail["skus"][number],
   skcs: ListingDetail["skcs"],
@@ -602,6 +774,44 @@ function requirementStatusLabel(requirement: ImageRequirement, checklist?: Listi
   if (!item) return requirement.required === 1 ? "待补齐" : "可选"
   if (item.status === "READY") return item.required ? "已满足" : "可选"
   return "缺失"
+}
+
+const IMAGE_ASSET_TYPE_OPTIONS = [
+  "MAIN",
+  "DETAIL",
+  "DETAIL_BACK",
+  "SQUARE",
+  "COLOR_BLOCK",
+  "COLOR",
+]
+
+function assetTypeLabel(value: string | null | undefined) {
+  switch (value) {
+    case "MAIN":
+      return "主图"
+    case "DETAIL":
+      return "细节图"
+    case "DETAIL_BACK":
+      return "背面/细节图"
+    case "SQUARE":
+      return "方形图"
+    case "COLOR_BLOCK":
+      return "色块图"
+    case "COLOR":
+      return "颜色图"
+    default:
+      return value || "未分类"
+  }
+}
+
+function assetMatchesImageRequirement(asset: ListingAsset, requirement: ImageRequirement) {
+  return requirement.asset_types.includes(asset.asset_type)
+}
+
+function complianceClass(status: ImageCandidate["compliance"]["status"]) {
+  if (status === "PASS") return "border-[#b9f4d8] bg-[#f4fff9] text-[#0f8a5f]"
+  if (status === "WARN") return "border-[#f4ddb3] bg-[#fff8e8] text-[#8a5a08]"
+  return "border-[#f1cccc] bg-[#fff1f1] text-[#d45656]"
 }
 
 function findPublishSizeMatch(
@@ -757,6 +967,470 @@ function ImageRequirementTable({
   )
 }
 
+function DraftAssetCard({
+  asset,
+  onUpdate,
+  onDelete,
+  pending,
+}: {
+  asset: ListingAsset
+  onUpdate: (assetId: number, values: { asset_type: string; image_sort: number; confirmed: number; note: string }) => void
+  onDelete: (assetId: number) => void
+  pending: boolean
+}) {
+  const [assetType, setAssetType] = useState(asset.asset_type)
+  const [imageSort, setImageSort] = useState(String(asset.image_sort ?? 1))
+  const [confirmed, setConfirmed] = useState(Number(asset.confirmed ?? 0) === 1)
+  const [note, setNote] = useState(asset.note ?? "")
+  const rawPayload = assetRawPayload(asset)
+
+  // Keep the editable asset form aligned when the selected asset row changes.
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    setAssetType(asset.asset_type)
+    setImageSort(String(asset.image_sort ?? 1))
+    setConfirmed(Number(asset.confirmed ?? 0) === 1)
+    setNote(asset.note ?? "")
+  }, [asset])
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  return (
+    <div className="grid gap-3 rounded border bg-background p-2">
+      <div className="grid gap-2 sm:grid-cols-[112px_minmax(0,1fr)]">
+        <div className="overflow-hidden rounded border bg-muted">
+          <img
+            src={assetSrc(asset)}
+            alt={`${asset.skc_code || "SPU"} ${asset.asset_type}`}
+            className="aspect-square h-full w-full object-cover"
+            loading="lazy"
+            referrerPolicy="no-referrer"
+          />
+        </div>
+        <div className="min-w-0 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="outline">{sourceKindLabel(asset.source_type)}</Badge>
+            <Badge variant="outline">{assetTypeLabel(asset.asset_type)}</Badge>
+            <Badge
+              variant="outline"
+              className={Number(asset.confirmed ?? 0) === 1
+                ? "border-[#b9f4d8] bg-[#f4fff9] text-[#0f8a5f]"
+                : "border-[#f4ddb3] bg-[#fff8e8] text-[#8a5a08]"}
+            >
+              {Number(asset.confirmed ?? 0) === 1 ? "已确认" : "待确认"}
+            </Badge>
+          </div>
+          <div className="grid gap-1 text-xs text-muted-foreground">
+            <span>{formatDimensions(asset.width, asset.height)} · {formatBytes(asset.file_size)}</span>
+            <span className="truncate">SKC：{asset.skc_code || "SPU"} · 排序 {asset.image_sort}</span>
+            {rawPayload.product_asset_id ? <span>素材库 ID：{String(rawPayload.product_asset_id)}</span> : null}
+            {asset.transform_error ? <span className="text-destructive">{asset.transform_error}</span> : null}
+          </div>
+        </div>
+      </div>
+      <div className="grid gap-2 md:grid-cols-[160px_90px_minmax(0,1fr)_auto] md:items-end">
+        <Label className="grid gap-1 text-xs text-muted-foreground">
+          图片类型
+          <Select value={assetType} onValueChange={setAssetType}>
+            <SelectTrigger className="h-9 bg-white">
+              <SelectValue placeholder="图片类型" />
+            </SelectTrigger>
+            <SelectContent>
+              {IMAGE_ASSET_TYPE_OPTIONS.map((option) => (
+                <SelectItem key={option} value={option}>{assetTypeLabel(option)}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Label>
+        <Label className="grid gap-1 text-xs text-muted-foreground">
+          排序
+          <Input type="number" value={imageSort} onChange={(event) => setImageSort(event.target.value)} className="h-9" />
+        </Label>
+        <Label className="grid gap-1 text-xs text-muted-foreground">
+          备注
+          <Input value={note} onChange={(event) => setNote(event.target.value)} className="h-9" placeholder="图片说明" />
+        </Label>
+        <div className="flex items-center justify-end gap-2">
+          <label className="flex items-center gap-2 whitespace-nowrap text-sm">
+            <Checkbox checked={confirmed} onCheckedChange={(value) => setConfirmed(Boolean(value))} />
+            确认
+          </label>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => onUpdate(asset.id, {
+              asset_type: assetType,
+              image_sort: Number(imageSort || asset.image_sort || 1),
+              confirmed: confirmed ? 1 : 0,
+              note,
+            })}
+            disabled={pending}
+          >
+            {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : <Save className="mr-1 size-3" />}
+            保存
+          </Button>
+          <ConfirmDialog
+            title="删除草稿图片"
+            description="只会从当前发布草稿移除这张图片，不会删除图片素材库或本地源文件。"
+            confirmLabel="删除"
+            variant="destructive"
+            onConfirm={() => onDelete(asset.id)}
+            trigger={(
+              <Button type="button" size="icon" variant="outline" disabled={pending}>
+                <Trash2 className="size-4" />
+              </Button>
+            )}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ImageRequirementManager({
+  requirements,
+  assets,
+  checklist,
+  skcCode,
+  onUpload,
+  uploadingKey,
+  onOpenLibrary,
+  onUpdateAsset,
+  onDeleteAsset,
+  pending,
+}: {
+  requirements: ImageRequirement[]
+  assets: ListingAsset[]
+  checklist?: ListingDetail["image_checklist"][number]
+  skcCode?: string | null
+  onUpload?: (params: ImageUploadParams) => void
+  uploadingKey?: string | null
+  onOpenLibrary: (params: { requirement: ImageRequirement; skcCode?: string | null }) => void
+  onUpdateAsset: (assetId: number, values: { asset_type: string; image_sort: number; confirmed: number; note: string }) => void
+  onDeleteAsset: (assetId: number) => void
+  pending: boolean
+}) {
+  const visible = requirements.filter((requirement) => requirement.show !== 0)
+  if (visible.length === 0) return <EmptyState icon={ImageIcon} message="当前类目未返回图片规则" />
+  return (
+    <div className="space-y-3">
+      {visible.map((requirement) => {
+        const status = requirementStatusLabel(requirement, checklist)
+        const matchedAssets = assets.filter((asset) => assetMatchesImageRequirement(asset, requirement))
+        const key = imageUploadKey(requirement.requirement_key, skcCode)
+        const uploading = uploadingKey === key
+        return (
+          <div key={`${skcCode || "SPU"}-${requirement.requirement_key}`} className="rounded border p-3">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h4 className="text-sm font-semibold">{requirement.name}</h4>
+                  <Badge variant={status === "缺失" ? "destructive" : "outline"}>{status}</Badge>
+                  <Badge variant="outline">{requirement.level}</Badge>
+                  <Badge variant="outline">{requirement.required === 1 ? "必填" : "可选/条件"}</Badge>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {requirement.count_rule} · {requirement.dimension_rule} · {requirement.size_rule}
+                </p>
+                {requirement.note ? <p className="mt-1 text-xs text-muted-foreground">{requirement.note}</p> : null}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onOpenLibrary({ requirement, skcCode })}
+                >
+                  <Images className="mr-1 size-3" />
+                  素材库选图
+                </Button>
+                {onUpload ? (
+                  <Button asChild variant="outline" size="sm">
+                    <Label className={cn("cursor-pointer", uploading && "pointer-events-none opacity-60")}>
+                      {uploading ? <Loader2 className="mr-1 size-3 animate-spin" /> : <Upload className="mr-1 size-3" />}
+                      本地上传
+                      <Input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        disabled={uploading}
+                        onChange={(event) => {
+                          const file = event.target.files?.[0]
+                          event.currentTarget.value = ""
+                          if (!file) return
+                          onUpload({ file, skcCode, requirement })
+                        }}
+                      />
+                    </Label>
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+            <div className="mt-3">
+              {matchedAssets.length ? (
+                <div className="grid gap-3">
+                  {matchedAssets.map((asset) => (
+                    <DraftAssetCard
+                      key={asset.id}
+                      asset={asset}
+                      onUpdate={onUpdateAsset}
+                      onDelete={onDeleteAsset}
+                      pending={pending}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded border border-dashed p-4 text-sm text-muted-foreground">
+                  当前字段还没有选择/上传图片。
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function ImageLibraryPickerDialog({
+  listingId,
+  picker,
+  onOpenChange,
+  onSelect,
+  pending,
+}: {
+  listingId: string | undefined
+  picker: ImageLibraryPickerState
+  onOpenChange: (open: boolean) => void
+  onSelect: (asset: ImageCandidate) => void
+  pending: boolean
+}) {
+  const [search, setSearch] = useState("")
+  const [onlyCompliant, setOnlyCompliant] = useState(false)
+  const [selectedSourceKinds, setSelectedSourceKinds] = useState<string[]>(["PICTURE"])
+  const [selectedSourcePlaces, setSelectedSourcePlaces] = useState<string[]>(DEFAULT_IMAGE_SOURCE_PLACES)
+  const { data, isLoading } = useImageCandidates(
+    listingId,
+    picker,
+    search,
+    onlyCompliant,
+    selectedSourceKinds,
+    selectedSourcePlaces,
+  )
+  const sourcePlaceOptions = data?.source_places?.length
+    ? data.source_places.map((item) => ({ value: item.source_place, label: sourcePlaceLabel(item.source_place), count: item.count }))
+    : DEFAULT_IMAGE_SOURCE_PLACES.map((place) => ({ value: place, label: sourcePlaceLabel(place), count: 0 }))
+
+  const pickerResetKey = picker
+    ? `${picker.requirement.requirement_key}:${picker.skcCode ?? ""}`
+    : ""
+
+  // Reset picker filters for each new image requirement/SKC target.
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (picker) {
+      setSearch("")
+      setOnlyCompliant(false)
+      setSelectedSourceKinds(["PICTURE"])
+      setSelectedSourcePlaces(DEFAULT_IMAGE_SOURCE_PLACES)
+    }
+  }, [picker, pickerResetKey])
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  function toggleSourceKind(value: string) {
+    setSelectedSourceKinds((current) => {
+      const next = current.includes(value)
+        ? current.filter((item) => item !== value)
+        : [...current, value]
+      return next.length ? next : ["PICTURE"]
+    })
+  }
+
+  function toggleSourcePlace(value: string) {
+    setSelectedSourcePlaces((current) => {
+      const next = current.includes(value)
+        ? current.filter((item) => item !== value)
+        : [...current, value]
+      return next.length ? next : DEFAULT_IMAGE_SOURCE_PLACES
+    })
+  }
+
+  return (
+    <Dialog open={Boolean(picker)} onOpenChange={onOpenChange}>
+      <DialogContent className="grid max-h-[calc(100vh-48px)] w-[min(1680px,calc(100vw-72px))] max-w-none grid-rows-[auto_minmax(0,1fr)_auto] gap-4 overflow-hidden p-6 sm:max-w-[min(1680px,calc(100vw-72px))]">
+        <DialogHeader className="pr-10">
+          <DialogTitle>从图片素材库选择</DialogTitle>
+          <DialogDescription>
+            {picker ? `${picker.skcCode || "SPU"} · ${picker.requirement.name} · ${picker.requirement.dimension_rule}` : "选择当前草稿关联素材"}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="min-h-0 space-y-3 overflow-hidden">
+          <div className="grid gap-2">
+            <div className="flex items-center gap-2 overflow-x-auto rounded border bg-muted/30 px-3 py-2">
+              <span className="shrink-0 text-xs font-medium text-muted-foreground">图片类型</span>
+              {IMAGE_SOURCE_KIND_OPTIONS.map((option) => (
+                <label key={option.value} className="flex shrink-0 items-center gap-2 rounded-full border bg-background px-3 py-1.5 text-sm">
+                  <Checkbox
+                    checked={selectedSourceKinds.includes(option.value)}
+                    onCheckedChange={() => toggleSourceKind(option.value)}
+                  />
+                  {option.label}
+                </label>
+              ))}
+              <span className="shrink-0 text-xs text-muted-foreground">默认只看商品图；商详截图、商详模块需手动勾选。</span>
+            </div>
+            <div className="flex items-center gap-2 overflow-x-auto rounded border bg-muted/30 px-3 py-2">
+              <span className="shrink-0 text-xs font-medium text-muted-foreground">来源平台</span>
+              {sourcePlaceOptions.map((option) => (
+                <label key={option.value} className="flex shrink-0 items-center gap-2 rounded-full border bg-background px-3 py-1.5 text-sm">
+                  <Checkbox
+                    checked={selectedSourcePlaces.includes(option.value)}
+                    onCheckedChange={() => toggleSourcePlace(option.value)}
+                  />
+                  {option.label}
+                  {option.count ? <span className="text-xs text-muted-foreground">{option.count}</span> : null}
+                </label>
+              ))}
+              <span className="shrink-0 text-xs text-muted-foreground">默认勾选 TMALL 与 VIP 唯品会。</span>
+            </div>
+          </div>
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div className="relative w-full xl:max-w-[560px]">
+              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="搜索文件名、图片类型、模块名"
+                className="h-10 pl-9"
+              />
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant={onlyCompliant ? "default" : "outline"}
+                onClick={() => setOnlyCompliant(true)}
+                className="h-10 whitespace-nowrap"
+              >
+                <FilterX className="mr-2 size-4" />
+                一键剔除不符合尺寸/大小
+              </Button>
+              <Button type="button" variant="outline" onClick={() => setOnlyCompliant(false)} className="h-10 whitespace-nowrap">
+                显示全部候选
+              </Button>
+            </div>
+          </div>
+          <ScrollArea className="h-[calc(100vh-390px)] min-h-[360px] rounded border">
+            {isLoading ? (
+              <div className="p-8 text-center text-sm text-muted-foreground">正在读取素材库...</div>
+            ) : data?.items.length ? (
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4 p-4">
+                {data.items.map((asset) => (
+                  <div key={asset.id} className="flex min-h-0 flex-col overflow-hidden rounded-lg border bg-background">
+                    <div className="aspect-square bg-muted/70 p-2">
+                      <img
+                        src={asset.preview_url || asset.normalized_url}
+                        alt={asset.file_name ?? asset.asset_type ?? "素材库图片"}
+                        className="h-full w-full rounded object-contain"
+                        loading="lazy"
+                        referrerPolicy="no-referrer"
+                      />
+                    </div>
+                    <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Badge variant="outline">{sourcePlaceLabel(asset.place)}</Badge>
+                        <Badge variant="outline">{sourceKindLabel(asset.source_kind)}</Badge>
+                        <Badge variant="outline">{assetTypeLabel(asset.recommended_asset_type)}</Badge>
+                        <Badge variant="outline" className={complianceClass(asset.compliance.status)}>
+                          {asset.compliance.status === "PASS" ? "符合" : asset.compliance.status === "WARN" ? "待确认" : "不符合"}
+                        </Badge>
+                      </div>
+                      <div className="grid gap-1 text-xs text-muted-foreground">
+                        <span>{formatDimensions(asset.width, asset.height)} · {formatBytes(asset.file_size)}</span>
+                        <span className="truncate">{asset.skc_code || asset.module_name || asset.place || asset.file_name || `#${asset.id}`}</span>
+                        {asset.compliance.reasons.length ? (
+                          <span className={asset.compliance.status === "FAIL" ? "line-clamp-2 text-destructive" : "line-clamp-2"}>
+                            {asset.compliance.reasons.join("；")}
+                          </span>
+                        ) : null}
+                      </div>
+                      <Button
+                        type="button"
+                        className="mt-auto w-full whitespace-nowrap"
+                        size="sm"
+                        onClick={() => onSelect(asset)}
+                        disabled={pending}
+                      >
+                        {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : <ImageIcon className="mr-1 size-3" />}
+                        选入草稿
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState message="当前款没有匹配的素材候选" icon={Images} />
+            )}
+          </ScrollArea>
+        </div>
+        <DialogFooter className="pt-1">
+          <DialogClose asChild>
+            <Button variant="outline">关闭</Button>
+          </DialogClose>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function SkuBatchFillBar({
+  skus,
+  selectedSkuIds,
+  onApply,
+}: {
+  skus: ListingDetail["skus"]
+  selectedSkuIds: Set<number>
+  onApply: (skuIds: number[], values: SkuBatchFillDraft) => void
+}) {
+  const [draft, setDraft] = useState<SkuBatchFillDraft>({
+    costPrice: "",
+    currency: "CNY",
+    packageWeightG: "",
+    packageLengthCm: "",
+    packageWidthCm: "",
+    packageHeightCm: "",
+  })
+  const selectedIds = skus.filter((sku) => selectedSkuIds.has(sku.id)).map((sku) => sku.id)
+  const allIds = skus.map((sku) => sku.id)
+  const hasValue = Object.entries(draft).some(([key, value]) => key === "currency" ? value && value !== "CNY" : Boolean(value))
+
+  function update(key: keyof SkuBatchFillDraft, value: string) {
+    setDraft((prev) => ({ ...prev, [key]: value }))
+  }
+
+  return (
+    <div className="rounded border bg-muted/30 p-3">
+      <div className="grid gap-2 md:grid-cols-6">
+        <Input type="number" value={draft.costPrice} onChange={(event) => update("costPrice", event.target.value)} placeholder="供货价" className="h-9" />
+        <Input value={draft.currency} onChange={(event) => update("currency", event.target.value)} placeholder="币种" className="h-9" />
+        <Input type="number" value={draft.packageWeightG} onChange={(event) => update("packageWeightG", event.target.value)} placeholder="SKU毛重/g" className="h-9" />
+        <Input type="number" value={draft.packageLengthCm} onChange={(event) => update("packageLengthCm", event.target.value)} placeholder="包装长/cm" className="h-9" />
+        <Input type="number" value={draft.packageWidthCm} onChange={(event) => update("packageWidthCm", event.target.value)} placeholder="包装宽/cm" className="h-9" />
+        <Input type="number" value={draft.packageHeightCm} onChange={(event) => update("packageHeightCm", event.target.value)} placeholder="包装高/cm" className="h-9" />
+      </div>
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+        <span>只填有值的字段；批量填充后仍需点击页面顶部“保存草稿”落库。</span>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" size="sm" disabled={!hasValue || selectedIds.length === 0} onClick={() => onApply(selectedIds, draft)}>
+            填充已勾选尺码（{selectedIds.length}）
+          </Button>
+          <Button type="button" variant="outline" size="sm" disabled={!hasValue || allIds.length === 0} onClick={() => onApply(allIds, draft)}>
+            填充当前 SKC 全部尺码
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function CategoryTreeDialog({
   open,
   onOpenChange,
@@ -898,6 +1572,7 @@ export default function PrePublishDraftDetailPage() {
   const [folderPath, setFolderPath] = useState("/Users/xingyicheng/Downloads/20112210410530435")
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false)
   const [imageImportDialogOpen, setImageImportDialogOpen] = useState(false)
+  const [imageLibraryPicker, setImageLibraryPicker] = useState<ImageLibraryPickerState>(null)
   const [uploadingImageKey, setUploadingImageKey] = useState<string | null>(null)
 
   const fields = useMemo(
@@ -951,6 +1626,8 @@ export default function PrePublishDraftDetailPage() {
     || data?.listing.platform_category_path?.includes("套装"),
   )
 
+  // Seed local edit state from the loaded draft detail before the user edits it.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!data) return
     setManualValues(Object.fromEntries(fields.map((field) => [field.key, toInputValue(field.value)])))
@@ -974,6 +1651,7 @@ export default function PrePublishDraftDetailPage() {
       return [skc.id, payload.attribute_value_id ? String(payload.attribute_value_id) : String(payload.attribute_value ?? "")]
     })))
   }, [data, fields])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   function buildSaveDraftPayload() {
     return {
@@ -1034,6 +1712,40 @@ export default function PrePublishDraftDetailPage() {
         [key]: value,
       },
     }))
+  }
+
+  function applySkuBatchFill(skuIds: number[], values: SkuBatchFillDraft) {
+    if (skuIds.length === 0) return
+    const idSet = new Set(skuIds)
+    if (values.packageWeightG) {
+      setSkuWeightValues((prev) => {
+        const next = { ...prev }
+        for (const skuId of idSet) next[skuId] = values.packageWeightG
+        return next
+      })
+    }
+    setSkuCommercialValues((prev) => {
+      const next = { ...prev }
+      for (const skuId of idSet) {
+        const current = next[skuId] ?? {
+          costPrice: "",
+          currency: "CNY",
+          packageLengthCm: "",
+          packageWidthCm: "",
+          packageHeightCm: "",
+        }
+        next[skuId] = {
+          ...current,
+          costPrice: values.costPrice || current.costPrice,
+          currency: values.currency || current.currency,
+          packageLengthCm: values.packageLengthCm || current.packageLengthCm,
+          packageWidthCm: values.packageWidthCm || current.packageWidthCm,
+          packageHeightCm: values.packageHeightCm || current.packageHeightCm,
+        }
+      }
+      return next
+    })
+    toast.success(`已批量填充 ${skuIds.length} 个 SKU，保存草稿后生效`)
   }
 
   const saveDraftMutation = useMutation({
@@ -1162,6 +1874,45 @@ export default function PrePublishDraftDetailPage() {
       toast.error(message)
     },
     onSettled: () => setUploadingImageKey(null),
+  })
+
+  const addLibraryImageMutation = useMutation({
+    mutationFn: ({ asset, picker }: { asset: ImageCandidate; picker: NonNullable<ImageLibraryPickerState> }) =>
+      api.post(`/pre-publish/drafts/${listingId}/images/from-library`, {
+        asset_id: asset.id,
+        skc_code: picker.skcCode ?? null,
+        requirement_key: picker.requirement.requirement_key,
+        asset_type: asset.recommended_asset_type,
+      }),
+    onSuccess: () => {
+      toast.success("已从素材库选入草稿图片")
+      queryClient.invalidateQueries({ queryKey: ["pre-publish", "draft", listingId] })
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "素材库选图失败"
+      toast.error(message)
+    },
+  })
+
+  const updateImageAssetMutation = useMutation({
+    mutationFn: ({ assetId, values }: {
+      assetId: number
+      values: { asset_type: string; image_sort: number; confirmed: number; note: string }
+    }) => api.patch(`/pre-publish/drafts/${listingId}/images/${assetId}`, values),
+    onSuccess: () => {
+      toast.success("草稿图片已更新")
+      queryClient.invalidateQueries({ queryKey: ["pre-publish", "draft", listingId] })
+    },
+    onError: () => toast.error("更新草稿图片失败"),
+  })
+
+  const deleteImageAssetMutation = useMutation({
+    mutationFn: (assetId: number) => api.delete(`/pre-publish/drafts/${listingId}/images/${assetId}`),
+    onSuccess: () => {
+      toast.success("草稿图片已删除")
+      queryClient.invalidateQueries({ queryKey: ["pre-publish", "draft", listingId] })
+    },
+    onError: () => toast.error("删除草稿图片失败"),
   })
 
   const snapshotMutation = useMutation({
@@ -1348,6 +2099,19 @@ export default function PrePublishDraftDetailPage() {
         pending={updateCategoryMutation.isPending}
       />
 
+      <ImageLibraryPickerDialog
+        listingId={listingId}
+        picker={imageLibraryPicker}
+        onOpenChange={(open) => {
+          if (!open) setImageLibraryPicker(null)
+        }}
+        onSelect={(asset) => {
+          if (!imageLibraryPicker) return
+          addLibraryImageMutation.mutate({ asset, picker: imageLibraryPicker })
+        }}
+        pending={addLibraryImageMutation.isPending}
+      />
+
       <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
         <div className="space-y-6">
           <Card>
@@ -1518,10 +2282,15 @@ export default function PrePublishDraftDetailPage() {
                   <ImageIcon className="size-4 text-muted-foreground" />
                   <h3 className="text-sm font-semibold">图片规则</h3>
                 </div>
-                <ImageRequirementTable
+                <ImageRequirementManager
                   requirements={spuImageRequirements}
+                  assets={data.assets.filter((asset) => !asset.skc_code)}
                   onUpload={(params) => uploadImageMutation.mutate(params)}
                   uploadingKey={uploadingImageKey}
+                  onOpenLibrary={(params) => setImageLibraryPicker(params)}
+                  onUpdateAsset={(assetId, values) => updateImageAssetMutation.mutate({ assetId, values })}
+                  onDeleteAsset={(assetId) => deleteImageAssetMutation.mutate(assetId)}
+                  pending={updateImageAssetMutation.isPending || deleteImageAssetMutation.isPending}
                 />
               </div>
               <FieldGroupsTable
@@ -1648,28 +2417,20 @@ export default function PrePublishDraftDetailPage() {
                               图片已确认
                             </label>
                           </div>
-                          <ImageRequirementTable
+                          <ImageRequirementManager
                             requirements={skcImageRequirements}
+                            assets={group.assets}
                             checklist={checklist}
                             skcCode={group.skc.skc_code}
                             onUpload={(params) => uploadImageMutation.mutate(params)}
                             uploadingKey={uploadingImageKey}
+                            onOpenLibrary={(params) => setImageLibraryPicker(params)}
+                            onUpdateAsset={(assetId, values) => updateImageAssetMutation.mutate({ assetId, values })}
+                            onDeleteAsset={(assetId) => deleteImageAssetMutation.mutate(assetId)}
+                            pending={updateImageAssetMutation.isPending || deleteImageAssetMutation.isPending}
                           />
                           {checklist?.missing?.length ? (
                             <p className="text-xs text-destructive">缺：{checklist.missing.join("、")}</p>
-                          ) : null}
-                          {group.assets.length > 0 ? (
-                            <div className="grid gap-3 sm:grid-cols-3">
-                              {group.assets.map((asset) => (
-                                <div key={asset.id} className="rounded border p-2">
-                                  <img src={assetSrc(asset)} alt={`${asset.skc_code || ""} ${asset.asset_type}`} className="h-32 w-full rounded object-cover" />
-                                  <div className="mt-2 flex items-center justify-between gap-2 text-xs">
-                                    <span className="font-mono">{asset.skc_code || "-"}</span>
-                                    <Badge variant="outline">{asset.asset_type}</Badge>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
                           ) : null}
                         </div>
 
@@ -1684,6 +2445,11 @@ export default function PrePublishDraftDetailPage() {
                               发布全部尺码（{selectedSizeCount}/{group.skus.length}）
                             </label>
                           </div>
+                          <SkuBatchFillBar
+                            skus={group.skus}
+                            selectedSkuIds={selectedSkuIds}
+                            onApply={applySkuBatchFill}
+                          />
                           <div className="overflow-auto rounded border">
                             <Table>
                               <TableHeader>
@@ -1692,10 +2458,11 @@ export default function PrePublishDraftDetailPage() {
                                   <TableHead className="min-w-24">SKC 款色图</TableHead>
                                   <TableHead className="min-w-48">MDM SKU</TableHead>
                                   <TableHead>商品档案尺码</TableHead>
-                                  <TableHead className="min-w-40">SHEIN 发布尺码</TableHead>
-                                  <TableHead className="min-w-28">供货价</TableHead>
-                                  <TableHead className="min-w-24">SKU 毛重/g</TableHead>
-                                  <TableHead className="min-w-[270px]">包装长/宽/高 cm</TableHead>
+                                      <TableHead className="min-w-40">SHEIN 发布尺码</TableHead>
+                                      <TableHead className="min-w-28">供货价</TableHead>
+                                      <TableHead className="min-w-24">价格确认</TableHead>
+                                      <TableHead className="min-w-24">SKU 毛重/g</TableHead>
+                                      <TableHead className="min-w-[270px]">包装长/宽/高 cm</TableHead>
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
@@ -1770,6 +2537,16 @@ export default function PrePublishDraftDetailPage() {
                                             className="w-16"
                                           />
                                         </div>
+                                      </TableCell>
+                                      <TableCell>
+                                        <Badge
+                                          variant="outline"
+                                          className={Number(sku.price_confirmed ?? 0) === 1
+                                            ? "border-[#b9f4d8] bg-[#f4fff9] text-[#0f8a5f]"
+                                            : "border-[#f4ddb3] bg-[#fff8e8] text-[#8a5a08]"}
+                                        >
+                                          {Number(sku.price_confirmed ?? 0) === 1 ? "已确认" : "保存后确认"}
+                                        </Badge>
                                       </TableCell>
                                       <TableCell>
                                         <Input

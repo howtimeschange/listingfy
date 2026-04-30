@@ -6,7 +6,7 @@ import test from "node:test";
 import { loadLocalEnv } from "./local_env.mjs";
 
 test("loadLocalEnv reads .env.local from the project root without overriding existing env", () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "listingfy-env-"));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "listingify-env-"));
   const projectDir = path.join(tmpDir, "project");
   const childDir = path.join(projectDir, "web", "server");
   fs.mkdirSync(childDir, { recursive: true });

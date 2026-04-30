@@ -9,7 +9,7 @@ MDM 当前提供两个开放查询接口：
 - SPU 查询：`/demdm-api/open/api/v2/selectApi/SAP_SPU`
 - SKU 查询：`/demdm-api/open/api/v2/selectApi/SKU_LIST`
 
-接口中没有独立 SKC 查询接口。SKC 需要从 SKU 查询结果中按 `SKC_CODE` 聚合生成，因此 Listingfy 内部商品主数据层级定义为：
+接口中没有独立 SKC 查询接口。SKC 需要从 SKU 查询结果中按 `SKC_CODE` 聚合生成，因此 Listingify 内部商品主数据层级定义为：
 
 ```mermaid
 erDiagram

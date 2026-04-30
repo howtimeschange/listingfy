@@ -94,7 +94,7 @@ const skuRows = [
 ];
 
 test("importMdmProductRows upserts SPU and derives SKC from SKU rows idempotently", () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "listingfy-mdm-"));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "listingify-mdm-"));
   const db = openDatabase(path.join(tmpDir, "app.sqlite"), { configureJournal: false });
   try {
     applyMigrations(db);

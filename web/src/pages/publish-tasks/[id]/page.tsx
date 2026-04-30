@@ -1,6 +1,7 @@
-import { Link, useParams } from "react-router"
-import { ArrowLeft, ExternalLink, FileJson, Send } from "lucide-react"
-import { useQuery } from "@tanstack/react-query"
+import { Link, useNavigate, useParams } from "react-router"
+import { ArrowLeft, ExternalLink, FileJson, RefreshCw, RotateCcw, Send } from "lucide-react"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { PageContainer } from "@/components/layout/page-container"
@@ -80,6 +81,10 @@ const STATUS_LABELS: Record<string, string> = {
   PENDING_CONFIRM: "待确认",
   PUBLISHING: "发布中",
   PUBLISH_SUBMITTED: "已提交平台",
+  UNDER_REVIEW: "审核中",
+  APPROVED: "审核通过",
+  PARTIALLY_APPROVED: "部分通过",
+  REJECTED: "审核驳回",
   PUBLISH_FAILED: "发布失败",
   SUBMITTED: "已提交",
   FAILED: "失败",
@@ -90,10 +95,19 @@ function statusLabel(status: string) {
 }
 
 function statusClass(status: string) {
-  if (status.includes("FAILED")) return "border-[#f1cccc] bg-[#fff1f1] text-[#d45656]"
-  if (status.includes("SUBMITTED")) return "border-[#b9f4d8] bg-[#d4fae8] text-[#0fa76e]"
+  if (status.includes("FAILED") || status === "REJECTED") return "border-[#f1cccc] bg-[#fff1f1] text-[#d45656]"
+  if (status.includes("SUBMITTED") || status === "APPROVED") return "border-[#b9f4d8] bg-[#d4fae8] text-[#0fa76e]"
+  if (status === "UNDER_REVIEW" || status === "PARTIALLY_APPROVED") return "border-[#ead7ff] bg-[#f7f0ff] text-[#7c3ec5]"
   if (status.includes("PUBLISHING")) return "border-[#d7e5fb] bg-[#eef5ff] text-[#3772cf]"
   return "border-[#e7dccd] bg-[#f7f2eb] text-[#7f684c]"
+}
+
+function canSyncStatus(status: string) {
+  return ["PUBLISH_SUBMITTED", "SUBMITTED", "UNDER_REVIEW", "PARTIALLY_APPROVED"].includes(status)
+}
+
+function canRetry(status: string) {
+  return ["PUBLISH_FAILED", "FAILED", "REJECTED", "PARTIALLY_APPROVED"].includes(status)
 }
 
 function prettyJson(value: unknown) {
@@ -117,7 +131,26 @@ function usePublishTaskDetail(id: string | undefined) {
 
 export default function PublishTaskDetailPage() {
   const { id } = useParams()
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { data, isLoading } = usePublishTaskDetail(id)
+  const syncMutation = useMutation({
+    mutationFn: () => api.post<{ status: string }>(`/publish-tasks/${id}/sync-status`),
+    onSuccess: (result) => {
+      toast.success(`审核状态已同步：${statusLabel(result.status)}`)
+      queryClient.invalidateQueries({ queryKey: ["publish-tasks"] })
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "同步审核状态失败"),
+  })
+  const retryMutation = useMutation({
+    mutationFn: () => api.post<{ listing_id: number; redirect_to: string }>(`/publish-tasks/${id}/retry`),
+    onSuccess: (result) => {
+      toast.success("已生成重提版本，回到草稿修正后可重新发布")
+      queryClient.invalidateQueries({ queryKey: ["publish-tasks"] })
+      navigate(result.redirect_to || `/pre-publish-validation/${result.listing_id}`)
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "生成重提版本失败"),
+  })
 
   if (isLoading) {
     return <PageContainer><div className="py-16 text-center text-sm text-muted-foreground">加载发布任务...</div></PageContainer>
@@ -147,6 +180,26 @@ export default function PublishTaskDetailPage() {
             打开发布草稿
           </Link>
         </Button>
+        {canSyncStatus(task.status) ? (
+          <Button
+            variant="outline"
+            onClick={() => syncMutation.mutate()}
+            disabled={syncMutation.isPending}
+          >
+            <RefreshCw className={syncMutation.isPending ? "mr-2 size-4 animate-spin" : "mr-2 size-4"} />
+            同步审核状态
+          </Button>
+        ) : null}
+        {canRetry(task.status) ? (
+          <Button
+            variant="outline"
+            onClick={() => retryMutation.mutate()}
+            disabled={retryMutation.isPending}
+          >
+            <RotateCcw className="mr-2 size-4" />
+            生成重提版本
+          </Button>
+        ) : null}
       </PageHeader>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">

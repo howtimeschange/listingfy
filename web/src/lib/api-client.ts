@@ -18,6 +18,7 @@ async function request<T>(
 ): Promise<T> {
   const url = `${BASE_URL}${path}`
   const res = await fetch(url, {
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...options?.headers,

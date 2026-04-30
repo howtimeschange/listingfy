@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react"
 import { Link } from "react-router"
-import { ArrowRight, RefreshCw, Search, Send } from "lucide-react"
-import { useQuery } from "@tanstack/react-query"
+import { ArrowRight, RefreshCw, RotateCcw, Search, Send } from "lucide-react"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { ServerPagination } from "@/components/server-pagination"
@@ -77,20 +78,36 @@ const STATUS_LABELS: Record<string, string> = {
   PENDING_CONFIRM: "待确认",
   PUBLISHING: "发布中",
   PUBLISH_SUBMITTED: "已提交平台",
+  UNDER_REVIEW: "审核中",
+  APPROVED: "审核通过",
+  PARTIALLY_APPROVED: "部分通过",
+  REJECTED: "审核驳回",
   PUBLISH_FAILED: "发布失败",
   SUBMITTED: "已提交",
   FAILED: "失败",
 }
+
+const ACTION_COLUMN_CLASS =
+  "sticky right-0 z-10 w-[220px] min-w-[220px] bg-card shadow-[-16px_0_20px_-20px_rgba(0,0,0,0.7)]"
 
 function statusLabel(status: string) {
   return STATUS_LABELS[status] ?? status
 }
 
 function statusClass(status: string) {
-  if (status.includes("FAILED")) return "border-[#f1cccc] bg-[#fff1f1] text-[#d45656]"
-  if (status.includes("SUBMITTED")) return "border-[#b9f4d8] bg-[#d4fae8] text-[#0fa76e]"
+  if (status.includes("FAILED") || status === "REJECTED") return "border-[#f1cccc] bg-[#fff1f1] text-[#d45656]"
+  if (status.includes("SUBMITTED") || status === "APPROVED") return "border-[#b9f4d8] bg-[#d4fae8] text-[#0fa76e]"
+  if (status === "UNDER_REVIEW" || status === "PARTIALLY_APPROVED") return "border-[#ead7ff] bg-[#f7f0ff] text-[#7c3ec5]"
   if (status.includes("PUBLISHING")) return "border-[#d7e5fb] bg-[#eef5ff] text-[#3772cf]"
   return "border-[#e7dccd] bg-[#f7f2eb] text-[#7f684c]"
+}
+
+function canSyncStatus(status: string) {
+  return ["PUBLISH_SUBMITTED", "SUBMITTED", "UNDER_REVIEW", "PARTIALLY_APPROVED"].includes(status)
+}
+
+function canRetry(status: string) {
+  return ["PUBLISH_FAILED", "FAILED", "REJECTED", "PARTIALLY_APPROVED"].includes(status)
 }
 
 function toggleValue(values: string[], value: string) {
@@ -156,6 +173,7 @@ function usePublishTaskFilters() {
 }
 
 export default function PublishTasksPage() {
+  const queryClient = useQueryClient()
   const [search, setSearch] = useState("")
   const [statusFilter, setStatusFilter] = useState<string[]>([])
   const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
@@ -166,6 +184,24 @@ export default function PublishTasksPage() {
   })
   const { data: filters } = usePublishTaskFilters()
   const items = data?.items ?? []
+  const syncMutation = useMutation({
+    mutationFn: (taskId: number) => api.post<{ status: string }>(`/publish-tasks/${taskId}/sync-status`),
+    onSuccess: (result) => {
+      toast.success(`审核状态已同步：${statusLabel(result.status)}`)
+      queryClient.invalidateQueries({ queryKey: ["publish-tasks"] })
+      queryClient.invalidateQueries({ queryKey: ["pre-publish"] })
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "同步审核状态失败"),
+  })
+  const retryMutation = useMutation({
+    mutationFn: (taskId: number) => api.post<{ listing_id: number }>(`/publish-tasks/${taskId}/retry`),
+    onSuccess: () => {
+      toast.success("已生成重提版本，请回到草稿修正后重新发布")
+      queryClient.invalidateQueries({ queryKey: ["publish-tasks"] })
+      queryClient.invalidateQueries({ queryKey: ["pre-publish"] })
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "生成重提版本失败"),
+  })
   const statusSummary = useMemo(() => {
     const byStatus = data?.summary.by_status ?? {}
     return [
@@ -221,7 +257,7 @@ export default function PublishTasksPage() {
         </CardHeader>
         <CardContent>
           <div className="overflow-hidden rounded-lg border">
-            <Table>
+            <Table className="min-w-[1420px]">
               <TableHeader>
                 <TableRow>
                   <TableHead>任务</TableHead>
@@ -230,7 +266,7 @@ export default function PublishTasksPage() {
                   <TableHead>平台回执</TableHead>
                   <TableHead>失败信息</TableHead>
                   <TableHead>时间</TableHead>
-                  <TableHead className="text-right">操作</TableHead>
+                  <TableHead className={`${ACTION_COLUMN_CLASS} z-20 text-right`}>操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -297,13 +333,37 @@ export default function PublishTasksPage() {
                         <div>创建：{formatDateTime(item.created_at)}</div>
                         <div>完成：{formatDateTime(item.finished_at)}</div>
                       </TableCell>
-                      <TableCell className="text-right">
-                        <Button asChild variant="ghost" size="sm">
-                          <Link to={`/publish-tasks/${item.id}`}>
-                            查看详情
-                            <ArrowRight className="ml-1 size-4" />
-                          </Link>
-                        </Button>
+                      <TableCell className={`${ACTION_COLUMN_CLASS} text-right`}>
+                        <div className="flex justify-end gap-1">
+                          {canSyncStatus(item.status) ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => syncMutation.mutate(item.id)}
+                              disabled={syncMutation.isPending}
+                            >
+                              <RefreshCw className="mr-1 size-4" />
+                              同步
+                            </Button>
+                          ) : null}
+                          {canRetry(item.status) ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => retryMutation.mutate(item.id)}
+                              disabled={retryMutation.isPending}
+                            >
+                              <RotateCcw className="mr-1 size-4" />
+                              重提
+                            </Button>
+                          ) : null}
+                          <Button asChild variant="ghost" size="sm">
+                            <Link to={`/publish-tasks/${item.id}`}>
+                              详情
+                              <ArrowRight className="ml-1 size-4" />
+                            </Link>
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))

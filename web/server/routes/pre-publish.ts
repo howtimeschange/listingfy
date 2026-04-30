@@ -4,8 +4,12 @@ import { Hono } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { DB_FILE, getDb } from "../db"
 import { resolveAiConfig } from "../../../scripts/lib/ai_category_matcher.mjs"
-import { headersForOpenApi, readEnv, requestSheinWithRetry } from "../../../scripts/lib/shein_client.mjs"
+import {
+  headersForOpenApiCredentials,
+  requestSheinWithCredentialsAndRetry,
+} from "../../../scripts/lib/shein_client.mjs"
 import { refreshBucketProduct } from "./shein-products"
+import { resolveSheinCredentials, type SheinCredentials } from "../lib/platform-config"
 
 const prePublish = new Hono()
 
@@ -225,15 +229,6 @@ function nowIso() {
 
 function uniqueStrings(values: unknown[]) {
   return Array.from(new Set(values.map(normalizeText).filter(Boolean)))
-}
-
-function buildMatchKey(row: SourceRow) {
-  return [
-    normalizeText(row.middle_class_name),
-    normalizeText(row.subclass_name),
-    normalizeText(row.gender_name),
-    normalizeText(row.age_group_name),
-  ].join("|")
 }
 
 function buildScopeKey({
@@ -461,18 +456,6 @@ function bucketReadinessRows(
     rows,
     total: Number(total.count ?? 0),
   }
-}
-
-function countProductRows(db: ReturnType<typeof getDb>, q?: string, batchSearch?: string) {
-  const { clauses, params } = productListFilter(q, batchSearch)
-  const row = db.prepare(`
-    select count(distinct spu.id) as count
-    from product_spu spu
-    left join product_content_package pkg on pkg.spu_code = spu.spu_code
-    left join product_skc skc on skc.spu_id = spu.id
-    where ${clauses.join(" and ")}
-  `).get(...params) as { count: number }
-  return Number(row.count ?? 0)
 }
 
 function getProductFields(db: ReturnType<typeof getDb>, contentPackageId: unknown) {
@@ -2023,6 +2006,7 @@ function upsertListingChildren(db: ReturnType<typeof getDb>, listingId: number, 
       const packageHeight = asPositiveNumber(existingSku?.package_height_cm) ?? pkg.height
       const finalCostPrice = asPositiveNumber(existingSku?.cost_price) ?? costPrice
       const finalCurrency = normalizeText(existingSku?.currency) || "CNY"
+      const priceConfirmed = finalCostPrice ? 1 : 0
       skuInsert.run(
         Number(listingSkc.id),
         mdmSkus.length ? asNumber(sku.id) : null,
@@ -2039,6 +2023,20 @@ function upsertListingChildren(db: ReturnType<typeof getDb>, listingId: number, 
         finalCostPrice,
         finalCurrency,
       )
+      db.prepare(`
+        update listing_sku
+        set price_confirmed = case
+            when price_confirmed = 1 then 1
+            else ?
+          end,
+          price_confirmed_at = case
+            when price_confirmed = 1 then price_confirmed_at
+            when ? = 1 then strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            else price_confirmed_at
+          end
+        where listing_skc_id = ?
+          and sku_code = ?
+      `).run(priceConfirmed, priceConfirmed, Number(listingSkc.id), skuCode)
     }
   }
 }
@@ -3209,11 +3207,14 @@ function ensureFallbackColorAssets(db: ReturnType<typeof getDb>, listingId: numb
   }
 }
 
-async function uploadLocalImageToShein(localPath: string, imageType: number) {
+async function uploadLocalImageToShein(localPath: string, imageType: number, credentials: SheinCredentials) {
   const apiPath = "/open-api/goods/upload-pic"
-  const baseUrl = readEnv("SHEIN_BASE_URL", "https://openapi-test01.sheincorp.cn")
-  const url = new URL(apiPath, baseUrl)
-  const headers = headersForOpenApi(apiPath)
+  const url = new URL(apiPath, credentials.baseUrl)
+  const headers = headersForOpenApiCredentials(apiPath, {
+    openKeyId: credentials.openKeyId,
+    secretKey: credentials.secretKey,
+    language: credentials.language,
+  })
   delete (headers as Record<string, string>)["Content-Type"]
   const bytes = fs.readFileSync(localPath)
   const form = new FormData()
@@ -3234,8 +3235,9 @@ async function uploadLocalImageToShein(localPath: string, imageType: number) {
   return { imageUrl, payload }
 }
 
-async function transformOnlineImageToShein(sourceUrl: string, imageType: number) {
-  const result = await requestSheinWithRetry("/open-api/goods/transform-pic", {
+async function transformOnlineImageToShein(sourceUrl: string, imageType: number, credentials: SheinCredentials) {
+  const result = await requestSheinWithCredentialsAndRetry("/open-api/goods/transform-pic", {
+    credentials,
     body: {
       image_type: imageType,
       original_url: sourceUrl,
@@ -3251,6 +3253,7 @@ async function transformOnlineImageToShein(sourceUrl: string, imageType: number)
 }
 
 async function prepareListingImagesForPublish(db: ReturnType<typeof getDb>, listingId: number) {
+  const credentials = resolveSheinCredentials(db)
   ensureFallbackColorAssets(db, listingId)
   const assets = db.prepare(`
     select *
@@ -3263,7 +3266,18 @@ async function prepareListingImagesForPublish(db: ReturnType<typeof getDb>, list
     update listing_asset
     set platform_url = ?,
       status = 'READY',
+      transform_status = 'READY',
+      transform_error = null,
+      transformed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
       raw_payload_json = ?,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+  `)
+  const updateFailed = db.prepare(`
+    update listing_asset
+    set status = 'FAILED',
+      transform_status = 'FAILED',
+      transform_error = ?,
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     where id = ?
   `)
@@ -3272,36 +3286,57 @@ async function prepareListingImagesForPublish(db: ReturnType<typeof getDb>, list
     const localPath = normalizeText(asset.local_path)
     const sourceUrl = normalizeText(asset.source_url)
     let prepared: { imageUrl: string; payload: unknown } | null = null
-    if (localPath) {
-      if (!fs.existsSync(localPath)) throw new Error(`本地图片不存在：${localPath}`)
-      prepared = await uploadLocalImageToShein(localPath, imageType)
-    } else if (sourceUrl) {
-      prepared = await transformOnlineImageToShein(sourceUrl, imageType)
+    try {
+      db.prepare(`
+        update listing_asset
+        set transform_status = 'TRANSFORMING',
+          transform_error = null,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        where id = ?
+      `).run(asset.id)
+      if (localPath) {
+        if (!fs.existsSync(localPath)) throw new Error(`本地图片不存在：${localPath}`)
+        prepared = await uploadLocalImageToShein(localPath, imageType, credentials)
+      } else if (sourceUrl) {
+        prepared = await transformOnlineImageToShein(sourceUrl, imageType, credentials)
+      }
+      if (!prepared) {
+        db.prepare(`
+          update listing_asset
+          set transform_status = case when coalesce(platform_url, '') <> '' then 'READY' else transform_status end,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          where id = ?
+        `).run(asset.id)
+        continue
+      }
+      update.run(
+        prepared.imageUrl,
+        JSON.stringify({
+          ...parseJsonObject(asset.raw_payload_json),
+          shein_prepare_response: prepared.payload,
+          prepared_at: nowIso(),
+        }),
+        asset.id,
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "SHEIN 图片转换失败"
+      updateFailed.run(message, asset.id)
+      throw error
     }
-    if (!prepared) continue
-    update.run(
-      prepared.imageUrl,
-      JSON.stringify({
-        ...parseJsonObject(asset.raw_payload_json),
-        shein_prepare_response: prepared.payload,
-        prepared_at: nowIso(),
-      }),
-      asset.id,
-    )
   }
 }
 
-function selectedImageInfo(skc: SourceRow, assets: SourceRow[]) {
+function selectedImageInfo(skc: SourceRow, assets: SourceRow[], allowSourceImages = false) {
   const skcCode = normalizeText(skc.skc_code)
   const selectedAssets = assets
     .filter((asset) => normalizeText(asset.skc_code) === skcCode)
-    .filter((asset) => normalizeText(asset.platform_url) || normalizeText(asset.source_url))
+    .filter((asset) => normalizeText(asset.platform_url) || (allowSourceImages && normalizeText(asset.source_url)))
     .sort((a, b) => Number(a.image_sort ?? 0) - Number(b.image_sort ?? 0))
 
   const imageInfoList = selectedAssets.map((asset, index) => ({
     image_sort: index + 1,
     image_type: sheinImageType(asset.asset_type, index + 1),
-    image_url: normalizeText(asset.platform_url) || normalizeText(asset.source_url),
+    image_url: normalizeText(asset.platform_url) || (allowSourceImages ? normalizeText(asset.source_url) : ""),
   }))
 
   const tmallImage = normalizeText(skc.image_url)
@@ -3353,28 +3388,6 @@ function buildSuggestedRetailPricePayload(readiness: ReadinessRow, publishFields
     currency: "USD",
     price: Number(price.toFixed(2)),
   }
-}
-
-function buildSizeAttributeList(skus: SourceRow[], sizeAttrId: number | null) {
-  if (!sizeAttrId) return []
-  const seen = new Set<string>()
-  const output: Array<Record<string, unknown>> = []
-  for (const sku of skus) {
-    const sizePayload = parseJsonObject(sku.size_attribute_payload_json)
-    const valueId = asPositiveNumber(sizePayload.attribute_value_id)
-    if (!valueId) continue
-    const key = `${sizeAttrId}:${valueId}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    output.push({
-      attribute_id: sizeAttrId,
-      attribute_value_id: "",
-      attribute_extra_value: normalizeText(sku.shein_size_value) || normalizeText(sizePayload.attribute_value),
-      relate_sale_attribute_id: sizeAttrId,
-      relate_sale_attribute_value_id: valueId,
-    })
-  }
-  return output
 }
 
 function getSizeChartAttributes(db: ReturnType<typeof getDb>, productTypeId: unknown) {
@@ -3482,7 +3495,11 @@ function publishBusinessValidationErrors(payload: unknown) {
   return errors
 }
 
-function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, options?: { skcCodes?: string[] }) {
+function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, options?: {
+  skcCodes?: string[]
+  allowSourceImages?: boolean
+  requirePreparedImages?: boolean
+}) {
   const detail = getListingDetail(db, listingId)
   if (!detail) throw new HTTPException(404, { message: "草稿不存在" })
   const listing = detail.listing as SourceRow
@@ -3500,6 +3517,12 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
   const colorAttr = attrs.find((attr) => attr.attribute_type === 1 && attr.attribute_label === 1)
   const sizeAttr = attrs.find((attr) => attr.attribute_type === 1 && attr.attribute_label === 0)
   const assets = detail.assets as SourceRow[]
+  const selectedAssetBySkc = new Map<string, SourceRow[]>()
+  for (const asset of assets) {
+    const key = normalizeText(asset.skc_code)
+    if (!key) continue
+    selectedAssetBySkc.set(key, [...(selectedAssetBySkc.get(key) ?? []), asset])
+  }
   const readiness = detail.readiness as ReadinessRow
   const sizeAttributeList = buildSizeChartAttributeList({
     db,
@@ -3550,6 +3573,8 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
       const sizeValueId = asPositiveNumber(sizePayload.attribute_value_id)
       if (!sizeValueId && !normalizeText(sizePayload.custom_attribute_value)) errors.push(`${sku.sku_code} 缺 SHEIN 尺码枚举`)
       if (!asPositiveNumber(sku.package_weight_g)) errors.push(`${sku.sku_code} 缺 SKU 毛重`)
+      if (!asPositiveNumber(sku.cost_price)) errors.push(`${sku.sku_code} 缺 SKU 供货价`)
+      if (asPositiveNumber(sku.cost_price) && Number(sku.price_confirmed ?? 0) !== 1) errors.push(`${sku.sku_code} 供货价未确认`)
       let supplierBarcode = fieldShown(publishFields, "supplier_barcode")
         ? buildSupplierBarcodePayload(sku.supplier_barcode, publishFields)
         : undefined
@@ -3600,7 +3625,7 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
         ? { skc_title: normalizeText(skc.skc_title) || normalizeText(listing.title) || normalizeText(listing.spu_code) }
         : {}),
       sale_attribute: saleAttribute,
-      image_info: selectedImageInfo(skc, assets),
+      image_info: selectedImageInfo(skc, assets, Boolean(options?.allowSourceImages)),
       sku_list: skuList,
       shelf_way: "1",
       ...(fieldShown(publishFields, "shelf_require") ? { shelf_require: "0" } : {}),
@@ -3611,6 +3636,16 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
   for (const skc of skcList) {
     const imageCount = Array.isArray(skc.image_info.image_info_list) ? skc.image_info.image_info_list.length : 0
     if (imageCount === 0) errors.push(`${skc.supplier_code} 缺 SHEIN 可用图片 URL`)
+  }
+  for (const skc of skcs) {
+    const skcCode = normalizeText(skc.skc_code)
+    const skcAssets = selectedAssetBySkc.get(skcCode) ?? []
+    const hasPlatformUrl = skcAssets.some((asset) => normalizeText(asset.platform_url))
+    const failedAsset = skcAssets.find((asset) => normalizeText(asset.transform_status) === "FAILED" || normalizeText(asset.status) === "FAILED")
+    if ((options?.requirePreparedImages ?? true) && !hasPlatformUrl) errors.push(`${skc.skc_code} 图片未转换为 SHEIN 可用 URL`)
+    if (failedAsset) {
+      errors.push(`${skc.skc_code} 图片转换失败：${normalizeText(failedAsset.transform_error) || normalizeText(failedAsset.note) || "请重新上传或转换"}`)
+    }
   }
 
   const titleCn = normalizeText(readinessFieldValue(readiness, "title_cn")) || normalizeText(readiness.title_cn) || normalizeText(listing.title) || normalizeText(listing.spu_code)
@@ -3845,6 +3880,14 @@ function updateListingSkuCommercials({
       package_length_cm = coalesce(?, package_length_cm),
       package_width_cm = coalesce(?, package_width_cm),
       package_height_cm = coalesce(?, package_height_cm),
+      price_confirmed = case
+        when ? is not null and ? > 0 then 1
+        else price_confirmed
+      end,
+      price_confirmed_at = case
+        when ? is not null and ? > 0 and price_confirmed_at is null then strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        else price_confirmed_at
+      end,
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     where id = ?
       and listing_skc_id in (
@@ -3852,7 +3895,19 @@ function updateListingSkuCommercials({
       )
   `)
   for (const item of valid) {
-    stmt.run(item.costPrice, item.currency, item.length, item.width, item.height, item.id, listingId)
+    stmt.run(
+      item.costPrice,
+      item.currency,
+      item.length,
+      item.width,
+      item.height,
+      item.costPrice,
+      item.costPrice,
+      item.costPrice,
+      item.costPrice,
+      item.id,
+      listingId,
+    )
   }
 }
 
@@ -4694,12 +4749,8 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
   }
 
   if (mode === "all" || mode === "attributes") {
-    let aiFills: Array<Record<string, unknown>> = []
-    try {
-      aiFills = await callAiFill(readiness) as Array<Record<string, unknown>>
-    } catch {
-      aiFills = []
-    }
+    const aiFills = await callAiFill(readiness)
+      .catch(() => [] as Array<Record<string, unknown>>) as Array<Record<string, unknown>>
     const byKey = new Map(aiFills.map((fill) => [String(fill.field_key), fill]))
     for (const field of readiness.manual_fields) {
       const aiFill = byKey.get(field.key)
@@ -4775,6 +4826,65 @@ function inferAssetTypeFromRequirement(requirementKey: unknown, fallbackFileName
   return classifyImportedImage(fallbackFileName).assetType
 }
 
+function imageFileSizeLimitBytes(requirement: PictureRequirement) {
+  const match = requirement.size_rule.match(/[≤<]\s*(\d+(?:\.\d+)?)\s*M/i)
+  if (!match) return null
+  return Math.round(Number(match[1]) * 1024 * 1024)
+}
+
+function isNearRatio(width: number, height: number, ratio: number, tolerance = 0.08) {
+  if (width <= 0 || height <= 0) return false
+  return Math.abs(width / height - ratio) <= tolerance
+}
+
+function inferAssetTypeFromLibraryAsset(asset: SourceRow, requirement: PictureRequirement) {
+  const assetType = normalizeText(asset.asset_type).toUpperCase()
+  const pictureType = normalizeText(asset.picture_type).toUpperCase()
+  const sourceKind = normalizeText(asset.source_kind).toUpperCase()
+  if (requirement.requirement_key === "SKC_COLOR_BLOCK") return assetType.includes("COLOR") || pictureType.includes("COLOR") ? "COLOR" : "COLOR_BLOCK"
+  if (requirement.requirement_key === "SPU_SQUARE" || requirement.requirement_key === "SKC_SQUARE") return "SQUARE"
+  if (assetType.includes("MAIN")) return "MAIN"
+  if (assetType.includes("BACK")) return "DETAIL_BACK"
+  if (sourceKind.includes("DETAIL") || assetType.includes("DETAIL")) return "DETAIL"
+  return requirement.asset_types[0] ?? "DETAIL"
+}
+
+function imageCompliance(asset: SourceRow, requirement: PictureRequirement) {
+  const width = asPositiveNumber(asset.width)
+  const height = asPositiveNumber(asset.height)
+  const fileSize = asPositiveNumber(asset.file_size)
+  const maxSize = imageFileSizeLimitBytes(requirement)
+  const failures: string[] = []
+  const warnings: string[] = []
+
+  if (width != null && height != null) {
+    const square = isNearRatio(width, height, 1, 0.03)
+    if (requirement.requirement_key === "SKC_COLOR_BLOCK") {
+      if (!square) failures.push("色块图需为 1:1")
+      if (width < 80 || height < 80) failures.push("色块图尺寸需不小于 80 x 80")
+    } else if (requirement.requirement_key === "SPU_SQUARE" || requirement.requirement_key === "SKC_SQUARE") {
+      if (!square) failures.push("方形图需为 1:1")
+      if (width < 900 || height < 900 || width > 2200 || height > 2200) failures.push("方形图尺寸需在 900-2200 px")
+    } else {
+      const mainRatioOk = isNearRatio(width, height, 1340 / 1785, 0.08) && width >= 900 && height >= 1200
+      const squareOk = square && width >= 900 && height >= 900 && width <= 2200 && height <= 2200
+      if (!mainRatioOk && !squareOk) failures.push("主图/细节图需接近 1340 x 1785，或 1:1 且 900-2200 px")
+    }
+  } else {
+    warnings.push("素材库暂缺尺寸信息，需人工预览确认")
+  }
+
+  if (maxSize != null && fileSize != null && fileSize > maxSize) failures.push("文件大小超过平台限制")
+  if (maxSize != null && fileSize == null) warnings.push("素材库暂缺文件大小信息")
+
+  return {
+    compliant: failures.length === 0,
+    status: failures.length ? "FAIL" : warnings.length ? "WARN" : "PASS",
+    reasons: [...failures, ...warnings],
+    file_size_limit_bytes: maxSize,
+  }
+}
+
 prePublish.post("/drafts/:id/images/import-folder", async (c) => {
   const db = getDb()
   const listingId = Number(c.req.param("id"))
@@ -4810,13 +4920,14 @@ prePublish.post("/drafts/:id/images/import-folder", async (c) => {
       asset_type,
       image_sort,
       local_path,
+      file_size,
       status,
       confirmed,
       note,
       raw_payload_json,
       updated_at
     )
-    values (?, ?, ?, 'MANUAL_FOLDER_IMPORT', ?, ?, ?, 'PENDING_CONFIRM', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    values (?, ?, ?, 'MANUAL_FOLDER_IMPORT', ?, ?, ?, ?, 'PENDING_CONFIRM', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   `)
   const saved: SourceRow[] = []
   const transaction = db.transaction(() => {
@@ -4828,6 +4939,7 @@ prePublish.post("/drafts/:id/images/import-folder", async (c) => {
         ?? fallbackSkc
       if (!matchedSkc) continue
       const classified = classifyImportedImage(fileName)
+      const fileSize = fs.statSync(filePath).size
       const result = insert.run(
         listingId,
         matchedSkc.id,
@@ -4835,10 +4947,12 @@ prePublish.post("/drafts/:id/images/import-folder", async (c) => {
         classified.assetType,
         classified.sort,
         filePath,
+        fileSize,
         classified.note,
         JSON.stringify({
           file_name: fileName,
           folder_path: folderPath,
+          file_size: fileSize,
           requirement_key: classified.requirementKey,
           classification_rule: "filename_index",
         }),
@@ -4851,6 +4965,240 @@ prePublish.post("/drafts/:id/images/import-folder", async (c) => {
     ok: true,
     imported_count: saved.length,
     assets: saved,
+    detail: getListingDetail(db, listingId),
+  })
+})
+
+prePublish.get("/drafts/:id/image-candidates", (c) => {
+  const db = getDb()
+  const listingId = Number(c.req.param("id"))
+  const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
+  if (!listing) {
+    throw new HTTPException(404, { message: "草稿不存在" })
+  }
+  const requirementKey = normalizeText(c.req.query("requirement_key"))
+  const requirement = getImageRequirements(db, listing).find((item) => item.requirement_key === requirementKey)
+  if (!requirement) {
+    throw new HTTPException(400, { message: "图片规则不存在" })
+  }
+  const skcCode = normalizeText(c.req.query("skc_code"))
+  const q = normalizeText(c.req.query("q"))
+  const onlyCompliant = normalizeText(c.req.query("only_compliant")) === "1"
+  const sourceKinds = batchTerms(c.req.query("source_kinds"))
+    .map((item) => item.toUpperCase())
+    .filter((item) => ["PICTURE", "DETAIL_SCREENSHOT", "DETAIL_MODULE"].includes(item))
+  const sourcePlaces = batchTerms(c.req.query("source_places"))
+    .map((item) => item.toUpperCase())
+    .filter(Boolean)
+  const limit = readLimit(c.req.query("limit"), 120, 240)
+  const offset = readOffset(c.req.query("offset"))
+  const clauses = [
+    "coalesce(asset.normalized_url, asset.source_url, '') <> ''",
+    "(asset.spu_code = ? or asset.owner_code = ? or asset.owner_code like ?)",
+  ]
+  const params: unknown[] = [listing.spu_code, listing.spu_code, `%${listing.spu_code}%`]
+  if (sourceKinds.length > 0) {
+    clauses.push(`asset.source_kind in (${sourceKinds.map(() => "?").join(",")})`)
+    params.push(...sourceKinds)
+  }
+  if (skcCode) {
+    clauses.push("(coalesce(asset.skc_code, '') = '' or asset.skc_code = ? or asset.owner_code = ? or asset.owner_code like ?)")
+    params.push(skcCode, skcCode, `%${skcCode}%`)
+  }
+  if (q) {
+    const like = `%${q}%`
+    clauses.push(`(
+      asset.spu_code like ?
+      or asset.skc_code like ?
+      or asset.owner_code like ?
+      or asset.asset_type like ?
+      or asset.picture_type like ?
+      or asset.file_name like ?
+      or asset.module_name like ?
+      or asset.place like ?
+    )`)
+    params.push(like, like, like, like, like, like, like, like)
+  }
+  const platformClauses = [...clauses]
+  const platformParams = [...params]
+  if (sourcePlaces.length > 0) {
+    clauses.push(`upper(coalesce(asset.place, '')) in (${sourcePlaces.map(() => "?").join(",")})`)
+    params.push(...sourcePlaces)
+  }
+
+  const sourcePlaceRows = db.prepare(`
+    select asset.place as source_place, count(*) as count
+    from product_asset asset
+    where ${platformClauses.join(" and ")}
+      and coalesce(asset.place, '') <> ''
+    group by asset.place
+    order by
+      case upper(asset.place)
+        when 'TMALL' then 0
+        when 'VIP' then 1
+        when 'TAOBAO' then 2
+        when 'JD' then 3
+        else 9
+      end,
+      count(*) desc,
+      asset.place
+  `).all(...platformParams) as SourceRow[]
+
+  const rows = db.prepare(`
+    select
+      asset.*,
+      pkg.title as content_title,
+      pkg.brand_name as content_brand_name,
+      pkg.category_name as content_category_name
+    from product_asset asset
+    left join product_content_package pkg on pkg.id = asset.content_package_id
+    where ${clauses.join(" and ")}
+    order by
+      case
+        when asset.skc_code = ? then 0
+        when coalesce(asset.skc_code, '') = '' then 1
+        else 2
+      end,
+      case
+        when asset.source_kind = 'PICTURE' then 0
+        when asset.source_kind = 'DETAIL_SCREENSHOT' then 1
+        when asset.source_kind = 'DETAIL_MODULE' then 2
+        else 3
+      end,
+      coalesce(asset.sort_no, asset.module_index, asset.detail_page_index, 999999),
+      asset.id
+    limit ? offset ?
+  `).all(...params, skcCode, limit, offset) as SourceRow[]
+
+  const items = rows
+    .map((asset) => {
+      const compliance = imageCompliance(asset, requirement)
+      return {
+        ...asset,
+        preview_url: normalizeText(asset.normalized_url) || normalizeText(asset.source_url),
+        recommended_asset_type: inferAssetTypeFromLibraryAsset(asset, requirement),
+        compliance,
+      }
+    })
+    .sort((a, b) => {
+      const typeA = requirement.asset_types.includes(normalizeText(a.asset_type)) ? 0 : 1
+      const typeB = requirement.asset_types.includes(normalizeText(b.asset_type)) ? 0 : 1
+      const statusScore = { PASS: 0, WARN: 1, FAIL: 2 } as const
+      const placeScore = (value: unknown) => {
+        const place = normalizeText(value).toUpperCase()
+        if (place === "TMALL") return 0
+        if (place === "VIP") return 1
+        if (place === "TAOBAO") return 2
+        if (place === "JD") return 3
+        return 9
+      }
+      return statusScore[a.compliance.status as keyof typeof statusScore] - statusScore[b.compliance.status as keyof typeof statusScore]
+        || typeA - typeB
+        || placeScore(a.place) - placeScore(b.place)
+        || Number(a.sort_no ?? a.module_index ?? a.detail_page_index ?? 999999) - Number(b.sort_no ?? b.module_index ?? b.detail_page_index ?? 999999)
+        || Number(a.id ?? 0) - Number(b.id ?? 0)
+    })
+    .filter((asset) => !onlyCompliant || asset.compliance.compliant)
+
+  return c.json({
+    items,
+    pagination: {
+      limit,
+      offset,
+      total: items.length,
+    },
+    source_places: sourcePlaceRows,
+    requirement,
+  })
+})
+
+prePublish.post("/drafts/:id/images/from-library", async (c) => {
+  const db = getDb()
+  const listingId = Number(c.req.param("id"))
+  const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
+  if (!listing) {
+    throw new HTTPException(404, { message: "草稿不存在" })
+  }
+  const body = await c.req.json().catch(() => ({})) as {
+    asset_id?: unknown
+    skc_code?: unknown
+    requirement_key?: unknown
+    asset_type?: unknown
+  }
+  const productAssetId = Number(body.asset_id)
+  if (!Number.isFinite(productAssetId) || productAssetId <= 0) {
+    throw new HTTPException(400, { message: "请选择素材库图片" })
+  }
+  const productAsset = db.prepare("select * from product_asset where id = ?").get(productAssetId) as SourceRow | undefined
+  if (!productAsset) {
+    throw new HTTPException(404, { message: "素材库图片不存在" })
+  }
+  const requirementKey = normalizeText(body.requirement_key)
+  const requirement = getImageRequirements(db, listing).find((item) => item.requirement_key === requirementKey)
+  if (!requirement) {
+    throw new HTTPException(400, { message: "图片规则不存在" })
+  }
+  const skcCode = normalizeText(body.skc_code) || normalizeText(productAsset.skc_code)
+  const listingSkc = skcCode
+    ? db.prepare("select * from listing_skc where listing_id = ? and skc_code = ?").get(listingId, skcCode) as SourceRow | undefined
+    : undefined
+  if (requirement.level === "SKC" && !listingSkc) {
+    throw new HTTPException(400, { message: "SKC 图片必须指定草稿内的款色" })
+  }
+  const assetType = normalizeText(body.asset_type) || inferAssetTypeFromLibraryAsset(productAsset, requirement)
+  const sortRow = db.prepare(`
+    select coalesce(max(image_sort), 0) + 1 as next_sort
+    from listing_asset
+    where listing_id = ?
+      and coalesce(skc_code, '') = coalesce(?, '')
+      and asset_type = ?
+  `).get(listingId, skcCode || null, assetType) as SourceRow | undefined
+  const imageSort = Number(sortRow?.next_sort ?? 1)
+  const compliance = imageCompliance(productAsset, requirement)
+  const result = db.prepare(`
+    insert into listing_asset (
+      listing_id,
+      listing_skc_id,
+      skc_code,
+      source_type,
+      asset_type,
+      image_sort,
+      source_url,
+      width,
+      height,
+      file_size,
+      status,
+      confirmed,
+      note,
+      raw_payload_json,
+      updated_at
+    )
+    values (?, ?, ?, 'IMAGE_LIBRARY', ?, ?, ?, ?, ?, ?, 'PENDING_CONFIRM', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  `).run(
+    listingId,
+    listingSkc?.id ?? null,
+    skcCode || null,
+    assetType,
+    imageSort,
+    normalizeText(productAsset.normalized_url) || normalizeText(productAsset.source_url),
+    asPositiveNumber(productAsset.width),
+    asPositiveNumber(productAsset.height),
+    asPositiveNumber(productAsset.file_size),
+    `素材库选图：${requirement.name}`,
+    JSON.stringify({
+      product_asset_id: productAsset.id,
+      requirement_key: requirement.requirement_key,
+      source_kind: productAsset.source_kind,
+      asset_type: productAsset.asset_type,
+      picture_type: productAsset.picture_type,
+      file_name: productAsset.file_name,
+      compliance,
+    }),
+  )
+
+  return c.json({
+    ok: true,
+    asset: db.prepare("select * from listing_asset where id = ?").get(result.lastInsertRowid),
     detail: getListingDetail(db, listingId),
   })
 })
@@ -4896,13 +5244,14 @@ prePublish.post("/drafts/:id/images/upload", async (c) => {
       asset_type,
       image_sort,
       local_path,
+      file_size,
       status,
       confirmed,
       note,
       raw_payload_json,
       updated_at
     )
-    values (?, ?, ?, 'MANUAL_UPLOAD', ?, ?, ?, 'PENDING_CONFIRM', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    values (?, ?, ?, 'MANUAL_UPLOAD', ?, ?, ?, ?, 'PENDING_CONFIRM', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   `).run(
     listingId,
     listingSkc?.id ?? null,
@@ -4910,6 +5259,7 @@ prePublish.post("/drafts/:id/images/upload", async (c) => {
     assetType,
     imageSort,
     localPath,
+    bytes.length,
     `人工上传 ${requirementKey || assetType}`,
     JSON.stringify({
       file_name: file.name,
@@ -4921,6 +5271,57 @@ prePublish.post("/drafts/:id/images/upload", async (c) => {
   return c.json({
     ok: true,
     asset: db.prepare("select * from listing_asset where id = ?").get(result.lastInsertRowid),
+    detail: getListingDetail(db, listingId),
+  })
+})
+
+prePublish.patch("/drafts/:id/images/:assetId", async (c) => {
+  const db = getDb()
+  const listingId = Number(c.req.param("id"))
+  const assetId = Number(c.req.param("assetId"))
+  const body = await c.req.json().catch(() => ({})) as {
+    asset_type?: unknown
+    image_sort?: unknown
+    confirmed?: unknown
+    note?: unknown
+  }
+  const asset = db.prepare("select * from listing_asset where id = ? and listing_id = ?").get(assetId, listingId) as SourceRow | undefined
+  if (!asset) {
+    throw new HTTPException(404, { message: "草稿图片不存在" })
+  }
+  const nextAssetType = normalizeText(body.asset_type) || normalizeText(asset.asset_type)
+  const nextSort = asPositiveNumber(body.image_sort) ?? asPositiveNumber(asset.image_sort) ?? 1
+  const confirmed = body.confirmed == null
+    ? Number(asset.confirmed ?? 0)
+    : (Number(body.confirmed) === 1 || body.confirmed === true ? 1 : 0)
+  db.prepare(`
+    update listing_asset
+    set asset_type = ?,
+      image_sort = ?,
+      confirmed = ?,
+      note = ?,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+      and listing_id = ?
+  `).run(nextAssetType, Math.round(nextSort), confirmed, normalizeText(body.note), assetId, listingId)
+  return c.json({
+    ok: true,
+    asset: db.prepare("select * from listing_asset where id = ?").get(assetId),
+    detail: getListingDetail(db, listingId),
+  })
+})
+
+prePublish.delete("/drafts/:id/images/:assetId", (c) => {
+  const db = getDb()
+  const listingId = Number(c.req.param("id"))
+  const assetId = Number(c.req.param("assetId"))
+  const asset = db.prepare("select * from listing_asset where id = ? and listing_id = ?").get(assetId, listingId) as SourceRow | undefined
+  if (!asset) {
+    throw new HTTPException(404, { message: "草稿图片不存在" })
+  }
+  db.prepare("delete from listing_asset where id = ? and listing_id = ?").run(assetId, listingId)
+  return c.json({
+    ok: true,
     detail: getListingDetail(db, listingId),
   })
 })
@@ -4965,7 +5366,7 @@ prePublish.get("/drafts/:id/publish-payload", async (c) => {
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const skcCodes = csvTerms(c.req.query("skc_codes"))
-  const preview = buildPublishPayload(db, listingId, { skcCodes })
+  const preview = buildPublishPayload(db, listingId, { skcCodes, allowSourceImages: true, requirePreparedImages: false })
   return c.json({
     ok: preview.errors.length === 0,
     errors: preview.errors,
@@ -5120,7 +5521,7 @@ prePublish.post("/drafts/:id/publish", async (c) => {
     versionType: "PUBLISH",
     changeSummary: "提交 SHEIN 发布",
   })
-  const preview = buildPublishPayload(db, listingId, { skcCodes })
+  const preview = buildPublishPayload(db, listingId, { skcCodes, allowSourceImages: true, requirePreparedImages: false })
   if (preview.errors.length > 0) {
     db.prepare(`
       update listing_publish_version
@@ -5160,53 +5561,56 @@ prePublish.post("/drafts/:id/publish", async (c) => {
     where id = ?
   `).run(listing.id)
 
-  let built = preview
-  try {
-    await prepareListingImagesForPublish(db, listingId)
-    built = buildPublishPayload(db, listingId, { skcCodes })
-    if (built.errors.length > 0) {
-      throw new Error(`发布前仍有阻断项：${built.errors.join("；")}`)
+  const built = await (async () => {
+    try {
+      await prepareListingImagesForPublish(db, listingId)
+      const prepared = buildPublishPayload(db, listingId, { skcCodes })
+      if (prepared.errors.length > 0) {
+        throw new Error(`发布前仍有阻断项：${prepared.errors.join("；")}`)
+      }
+      db.prepare(`
+        update listing_publish_task
+        set request_payload_json = ?,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        where id = ?
+      `).run(JSON.stringify(prepared.payload), taskId)
+      db.prepare(`
+        update listing_publish_version
+        set request_payload_json = ?
+        where id = ?
+      `).run(JSON.stringify(prepared.payload), version.id)
+      return prepared
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "SHEIN 图片准备失败"
+      db.prepare(`
+        update listing_publish_task
+        set status = 'PUBLISH_FAILED',
+          error_code = 'IMAGE_PREPARE_FAILED',
+          error_message = ?,
+          finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        where id = ?
+      `).run(message, taskId)
+      db.prepare(`
+        update listing_publish_version
+        set status = 'FAILED',
+          error_code = 'IMAGE_PREPARE_FAILED',
+          error_message = ?
+        where id = ?
+      `).run(message, version.id)
+      db.prepare(`
+        update listing
+        set status = 'PUBLISH_FAILED',
+          validation_status = 'FAILED',
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        where id = ?
+      `).run(listing.id)
+      throw new HTTPException(502, { message })
     }
-    db.prepare(`
-      update listing_publish_task
-      set request_payload_json = ?,
-        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      where id = ?
-    `).run(JSON.stringify(built.payload), taskId)
-    db.prepare(`
-      update listing_publish_version
-      set request_payload_json = ?
-      where id = ?
-    `).run(JSON.stringify(built.payload), version.id)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "SHEIN 图片准备失败"
-    db.prepare(`
-      update listing_publish_task
-      set status = 'PUBLISH_FAILED',
-        error_code = 'IMAGE_PREPARE_FAILED',
-        error_message = ?,
-        finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      where id = ?
-    `).run(message, taskId)
-    db.prepare(`
-      update listing_publish_version
-      set status = 'FAILED',
-        error_code = 'IMAGE_PREPARE_FAILED',
-        error_message = ?
-      where id = ?
-    `).run(message, version.id)
-    db.prepare(`
-      update listing
-      set status = 'PUBLISH_FAILED',
-        validation_status = 'FAILED',
-        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      where id = ?
-    `).run(listing.id)
-    throw new HTTPException(502, { message })
-  }
+  })()
 
-  const result = await requestSheinWithRetry("/open-api/goods/product/publishOrEdit", {
+  const result = await requestSheinWithCredentialsAndRetry("/open-api/goods/product/publishOrEdit", {
+    credentials: resolveSheinCredentials(db),
     body: built.payload,
   })
   const code = responseCode(result.payload)
@@ -5423,12 +5827,8 @@ prePublish.post("/ai-fill", async (c) => {
       ...row.manual_fields,
     ]
     if (fieldsToFill.length === 0) continue
-    let aiFills: Array<Record<string, unknown>> = []
-    try {
-      aiFills = await callAiFill(row) as Array<Record<string, unknown>>
-    } catch (error) {
-      aiFills = []
-    }
+    const aiFills = await callAiFill(row)
+      .catch(() => [] as Array<Record<string, unknown>>) as Array<Record<string, unknown>>
 
     const byKey = new Map(aiFills.map((fill) => [String(fill.field_key), fill]))
     for (const field of fieldsToFill) {

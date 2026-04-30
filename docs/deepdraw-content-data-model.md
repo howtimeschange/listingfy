@@ -46,7 +46,7 @@ code / response / reason / requestId / timestamp / body
 
 ## 层级关系
 
-深绘内容包按 Listingfy 内部商品层级建模：
+深绘内容包按 Listingify 内部商品层级建模：
 
 ```mermaid
 erDiagram

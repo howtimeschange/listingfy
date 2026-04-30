@@ -2,6 +2,7 @@ import { Hono } from "hono"
 import type { Context } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
+import { requestSheinWithRetry } from "../../../scripts/lib/shein_client.mjs"
 
 const publishTasks = new Hono()
 
@@ -36,12 +37,126 @@ function readCsv(value: string | undefined) {
 }
 
 function parseJsonObject(value: unknown) {
+  if (value && typeof value === "object") return value as Record<string, unknown>
   if (!value || typeof value !== "string") return {}
   try {
     const parsed = JSON.parse(value)
     return parsed && typeof parsed === "object" ? parsed : {}
   } catch {
     return {}
+  }
+}
+
+function parseJsonArray(value: unknown) {
+  if (Array.isArray(value)) return value
+  if (!value || typeof value !== "string") return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function responseCode(payload: unknown) {
+  return normalizeText(parseJsonObject(payload).code)
+}
+
+function responseMessage(payload: unknown) {
+  const object = parseJsonObject(payload)
+  return normalizeText(object.msg) || normalizeText(object.message)
+}
+
+function publishInfo(payload: unknown) {
+  return parseJsonObject(parseJsonObject(payload).info)
+}
+
+function firstPlatformIdentity(db: ReturnType<typeof getDb>, task: SourceRow, platformType: string) {
+  return db.prepare(`
+    select identity.*
+    from platform_identity identity
+    where identity.platform = ?
+      and identity.channel_account_id = ?
+      and identity.local_type = 'listing'
+      and identity.local_id = ?
+      and identity.platform_type = ?
+    order by identity.id desc
+    limit 1
+  `).get(task.platform, task.channel_account_id, task.listing_id, platformType) as SourceRow | undefined
+}
+
+function documentStateLabel(state: number) {
+  const labels: Record<number, string> = {
+    [-1]: "接收失败",
+    1: "待审核",
+    2: "审批成功",
+    3: "审批失败",
+    4: "已撤回",
+    5: "申诉中",
+  }
+  return labels[state] ?? `未知状态 ${state}`
+}
+
+function mapDocumentState(states: number[]) {
+  if (states.length === 0) return "UNDER_REVIEW"
+  if (states.some((state) => state === 3 || state === -1)) return "REJECTED"
+  if (states.every((state) => state === 2)) return "APPROVED"
+  if (states.some((state) => state === 2) && states.some((state) => [1, 5].includes(state))) return "PARTIALLY_APPROVED"
+  if (states.some((state) => [1, 5].includes(state))) return "UNDER_REVIEW"
+  return "UNDER_REVIEW"
+}
+
+function failureReasons(documentPayload: unknown) {
+  const info = publishInfo(documentPayload)
+  const rows = parseJsonArray(info.data)
+  const output: string[] = []
+  for (const row of rows) {
+    const object = parseJsonObject(row)
+    for (const skc of parseJsonArray(object.skcList ?? object.skc_list)) {
+      const skcObject = parseJsonObject(skc)
+      const skcName = normalizeText(skcObject.skcName ?? skcObject.skc_name)
+      const documentSn = normalizeText(skcObject.documentSn ?? skcObject.document_sn)
+      for (const reason of parseJsonArray(skcObject.failedReason ?? skcObject.failed_reason)) {
+        const reasonObject = parseJsonObject(reason)
+        const content = normalizeText(reasonObject.content)
+        if (content) output.push(`${skcName || documentSn || "SKC"}：${content}`)
+      }
+    }
+  }
+  return output
+}
+
+function documentStates(documentPayload: unknown) {
+  const info = publishInfo(documentPayload)
+  const states: number[] = []
+  for (const row of parseJsonArray(info.data)) {
+    const object = parseJsonObject(row)
+    for (const skc of parseJsonArray(object.skcList ?? object.skc_list)) {
+      const state = Number(parseJsonObject(skc).documentState ?? parseJsonObject(skc).document_state)
+      if (Number.isFinite(state)) states.push(state)
+    }
+  }
+  return states
+}
+
+function updateListingAndBucketStatus(db: ReturnType<typeof getDb>, listingId: unknown, status: string) {
+  const listing = db.prepare("select * from listing where id = ?").get(listingId) as SourceRow | undefined
+  db.prepare(`
+    update listing
+    set status = ?,
+      validation_status = case when ? in ('APPROVED', 'UNDER_REVIEW', 'PUBLISH_SUBMITTED') then 'PASSED' else validation_status end,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+  `).run(status, status, listingId)
+  if (listing?.spu_code) {
+    db.prepare(`
+      update shein_product_bucket
+      set latest_listing_id = ?,
+        latest_publish_status = ?,
+        bucket_status = case when ? = 'APPROVED' then 'PUBLISHED' else bucket_status end,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      where spu_code = ?
+    `).run(listingId, status, status, listing.spu_code)
   }
 }
 
@@ -232,6 +347,164 @@ publishTasks.get("/:id", (c) => {
     },
     platform_identities: platformIdentities,
     related_tasks: relatedTasks,
+  })
+})
+
+publishTasks.post("/:id/retry", (c) => {
+  const db = getDb()
+  const taskId = Number(c.req.param("id"))
+  const task = db.prepare(`
+    ${taskSelect()}
+    ${taskBaseFrom()}
+    where task.id = ?
+  `).get(taskId) as SourceRow | undefined
+  if (!task) {
+    throw new HTTPException(404, { message: "发布任务不存在" })
+  }
+  const status = normalizeText(task.status)
+  if (!["PUBLISH_FAILED", "FAILED", "REJECTED", "PARTIALLY_APPROVED"].includes(status)) {
+    throw new HTTPException(400, { message: "只有失败或驳回任务可以从任务页重提" })
+  }
+
+  const latestVersion = db.prepare(`
+    select coalesce(max(version_no), 0) + 1 as next_no
+    from listing_publish_version
+    where listing_id = ?
+  `).get(task.listing_id) as SourceRow
+  const requestPayload = parseJsonObject(task.request_payload_json)
+  const responsePayload = parseJsonObject(task.response_payload_json)
+  const result = db.prepare(`
+    insert into listing_publish_version (
+      listing_id,
+      version_no,
+      version_type,
+      status,
+      change_summary,
+      source_snapshot_json,
+      request_payload_json,
+      response_payload_json,
+      error_code,
+      error_message,
+      created_by
+    )
+    values (?, ?, 'RETRY', 'DRAFT', ?, ?, ?, ?, ?, ?, 'codex')
+  `).run(
+    task.listing_id,
+    Number(latestVersion.next_no ?? 1),
+    `从发布任务 #${task.id} 失败结果重提`,
+    JSON.stringify({
+      retry_from_task_id: task.id,
+      retry_from_version_id: task.publish_version_id,
+      retry_reason: task.error_message,
+      listing_status: task.listing_status,
+      validation_status: task.validation_status,
+    }),
+    JSON.stringify(requestPayload),
+    JSON.stringify(responsePayload),
+    normalizeText(task.error_code) || null,
+    normalizeText(task.error_message) || null,
+  )
+  const version = db.prepare("select * from listing_publish_version where id = ?").get(result.lastInsertRowid) as SourceRow
+  db.prepare(`
+    update listing
+    set status = 'READY_TO_VALIDATE',
+      validation_status = 'NOT_VALIDATED',
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+  `).run(task.listing_id)
+  updateListingAndBucketStatus(db, task.listing_id, "READY_TO_VALIDATE")
+  return c.json({
+    ok: true,
+    version,
+    listing_id: task.listing_id,
+    redirect_to: `/pre-publish-validation/${task.listing_id}`,
+  })
+})
+
+publishTasks.post("/:id/sync-status", async (c) => {
+  const db = getDb()
+  const taskId = Number(c.req.param("id"))
+  const task = db.prepare(`
+    ${taskSelect()}
+    ${taskBaseFrom()}
+    where task.id = ?
+  `).get(taskId) as SourceRow | undefined
+  if (!task) {
+    throw new HTTPException(404, { message: "发布任务不存在" })
+  }
+  const platformVersion = normalizeText(task.platform_version)
+  const spuIdentity = firstPlatformIdentity(db, task, "SPU")
+  const spuName = normalizeText(spuIdentity?.platform_id)
+  if (!spuName) {
+    throw new HTTPException(400, { message: "缺少 SHEIN spu_name，无法查询审核状态" })
+  }
+  const body = {
+    spuList: [
+      {
+        spuName,
+        ...(platformVersion ? { version: platformVersion } : {}),
+      },
+    ],
+  }
+  const result = await requestSheinWithRetry("/open-api/goods/query-document-state", { body })
+  const code = responseCode(result.payload)
+  if (code !== "0") {
+    const message = responseMessage(result.payload) || "SHEIN 审核状态查询失败"
+    db.prepare(`
+      update listing_publish_task
+      set response_payload_json = ?,
+        error_code = ?,
+        error_message = ?,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      where id = ?
+    `).run(JSON.stringify(result.payload), code || String(result.status), message, task.id)
+    throw new HTTPException(502, { message })
+  }
+  const states = documentStates(result.payload)
+  const nextStatus = mapDocumentState(states)
+  const reasons = failureReasons(result.payload)
+  const message = reasons.join("；")
+  db.prepare(`
+    update listing_publish_task
+    set status = ?,
+      response_payload_json = ?,
+      error_code = case when ? = 'REJECTED' then 'SHEIN_AUDIT_REJECTED' else null end,
+      error_message = case when ? = 'REJECTED' then ? else null end,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+  `).run(nextStatus, JSON.stringify(result.payload), nextStatus, nextStatus, message || "SHEIN 审核驳回", task.id)
+  if (task.publish_version_id) {
+    db.prepare(`
+      update listing_publish_version
+      set status = ?,
+        response_payload_json = ?,
+        error_code = case when ? = 'REJECTED' then 'SHEIN_AUDIT_REJECTED' else error_code end,
+        error_message = case when ? = 'REJECTED' then ? else error_message end
+      where id = ?
+    `).run(nextStatus, JSON.stringify(result.payload), nextStatus, nextStatus, message || "SHEIN 审核驳回", task.publish_version_id)
+  }
+  updateListingAndBucketStatus(db, task.listing_id, nextStatus)
+  db.prepare("delete from listing_validation_result where listing_id = ? and module = 'SHEIN_AUDIT'").run(task.listing_id)
+  if (nextStatus === "REJECTED") {
+    db.prepare(`
+      insert into listing_validation_result (
+        listing_id,
+        severity,
+        module,
+        field_key,
+        owner_type,
+        owner_id,
+        message,
+        suggestion
+      )
+      values (?, 'ERROR', 'SHEIN_AUDIT', 'audit_status', 'LISTING', ?, ?, ?)
+    `).run(task.listing_id, task.listing_id, message || "SHEIN 审核驳回", "按 SHEIN 审核原因修正草稿，生成新版本后重新发布。")
+  }
+  return c.json({
+    ok: true,
+    status: nextStatus,
+    state_labels: states.map(documentStateLabel),
+    response: result.payload,
   })
 })
 
