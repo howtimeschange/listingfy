@@ -3,6 +3,11 @@ import type { Context } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
 import { requestSheinWithRetry } from "../../../scripts/lib/shein_client.mjs"
+import {
+  markPublishTaskFailed,
+  markPublishTaskStatusSynced,
+  refreshBatchPublishSummary as refreshBatchPublishSummaryForBatch,
+} from "../services/publish/publish-job-service"
 
 const publishTasks = new Hono()
 
@@ -160,6 +165,14 @@ function updateListingAndBucketStatus(db: ReturnType<typeof getDb>, listingId: u
   }
 }
 
+function refreshBatchPublishSummary(db: ReturnType<typeof getDb>, listingId: unknown) {
+  const listing = db.prepare("select platform, listing_batch_no from listing where id = ?").get(listingId) as SourceRow | undefined
+  const batchNo = normalizeText(listing?.listing_batch_no)
+  const platform = normalizeText(listing?.platform)
+  if (!batchNo || !platform) return
+  refreshBatchPublishSummaryForBatch(db, { platform, batchNo })
+}
+
 function taskBaseFrom() {
   return `
     from listing_publish_task task
@@ -215,6 +228,7 @@ function buildListWhere(c: Context) {
   if (terms.length > 0) {
     clauses.push(`(${terms.map(() => `(
       listing.spu_code like ?
+      or listing.listing_batch_no like ?
       or listing.title like ?
       or spu.spu_name like ?
       or task.platform_trace_id like ?
@@ -224,7 +238,7 @@ function buildListWhere(c: Context) {
     )`).join(" or ")})`)
     for (const term of terms) {
       const like = `%${term}%`
-      params.push(like, like, like, like, like, like, like)
+      params.push(like, like, like, like, like, like, like, like)
     }
   }
 
@@ -450,29 +464,25 @@ publishTasks.post("/:id/sync-status", async (c) => {
   const code = responseCode(result.payload)
   if (code !== "0") {
     const message = responseMessage(result.payload) || "SHEIN 审核状态查询失败"
-    db.prepare(`
-      update listing_publish_task
-      set response_payload_json = ?,
-        error_code = ?,
-        error_message = ?,
-        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      where id = ?
-    `).run(JSON.stringify(result.payload), code || String(result.status), message, task.id)
+    markPublishTaskFailed(db, {
+      taskId: Number(task.id),
+      responsePayload: result.payload,
+      errorCode: code || String(result.status),
+      errorMessage: message,
+    })
     throw new HTTPException(502, { message })
   }
   const states = documentStates(result.payload)
   const nextStatus = mapDocumentState(states)
   const reasons = failureReasons(result.payload)
   const message = reasons.join("；")
-  db.prepare(`
-    update listing_publish_task
-    set status = ?,
-      response_payload_json = ?,
-      error_code = case when ? = 'REJECTED' then 'SHEIN_AUDIT_REJECTED' else null end,
-      error_message = case when ? = 'REJECTED' then ? else null end,
-      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-    where id = ?
-  `).run(nextStatus, JSON.stringify(result.payload), nextStatus, nextStatus, message || "SHEIN 审核驳回", task.id)
+  markPublishTaskStatusSynced(db, {
+    taskId: Number(task.id),
+    status: nextStatus,
+    responsePayload: result.payload,
+    errorCode: nextStatus === "REJECTED" ? "SHEIN_AUDIT_REJECTED" : null,
+    errorMessage: nextStatus === "REJECTED" ? message || "SHEIN 审核驳回" : null,
+  })
   if (task.publish_version_id) {
     db.prepare(`
       update listing_publish_version
@@ -484,6 +494,7 @@ publishTasks.post("/:id/sync-status", async (c) => {
     `).run(nextStatus, JSON.stringify(result.payload), nextStatus, nextStatus, message || "SHEIN 审核驳回", task.publish_version_id)
   }
   updateListingAndBucketStatus(db, task.listing_id, nextStatus)
+  refreshBatchPublishSummary(db, task.listing_id)
   db.prepare("delete from listing_validation_result where listing_id = ? and module = 'SHEIN_AUDIT'").run(task.listing_id)
   if (nextStatus === "REJECTED") {
     db.prepare(`

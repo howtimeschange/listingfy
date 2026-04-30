@@ -10,6 +10,8 @@ const requireFromWeb = createRequire(path.join(PROJECT_ROOT, "web/package.json")
 const Database = requireFromWeb("better-sqlite3");
 
 const {
+  credentialIsEncrypted,
+  encryptStoredPlatformCredentials,
   ensurePlatformIntegrationBootstrap,
   maskSecret,
   platformIntegrationForResponse,
@@ -75,6 +77,7 @@ test("bootstraps SHEIN platform integration from existing env values", async () 
   const { db, cleanup } = await createTempDb();
   try {
     await withEnv({
+      LISTINGIFY_CREDENTIAL_SECRET: "test credential encryption secret",
       SHEIN_BASE_URL: "https://openapi.example.test",
       SHEIN_LANGUAGE: "zh-cn",
       SHEIN_OPEN_KEY_ID: "env-open-key",
@@ -86,10 +89,20 @@ test("bootstraps SHEIN platform integration from existing env values", async () 
 
     const row = db.prepare("select * from platform_integration where platform = 'SHEIN'").get();
     assert.equal(row.integration_name, "SHEIN 默认全托管账号");
-    assert.equal(row.open_key_id, "env-open-key");
-    assert.equal(row.secret_key, "env-secret-key");
+    assert.equal(row.open_key_id === "env-open-key", false);
+    assert.equal(credentialIsEncrypted(row.open_key_id), true);
+    assert.equal(row.secret_key === "env-secret-key", false);
+    assert.equal(credentialIsEncrypted(row.secret_key), true);
     assert.equal(row.base_url, "https://openapi.example.test");
     assert.equal(row.is_default, 1);
+
+    await withEnv({
+      LISTINGIFY_CREDENTIAL_SECRET: "test credential encryption secret",
+    }, () => {
+      const credentials = resolveSheinCredentials(db);
+      assert.equal(credentials.openKeyId, "env-open-key");
+      assert.equal(credentials.secretKey, "env-secret-key");
+    });
   } finally {
     await cleanup();
   }
@@ -116,6 +129,35 @@ test("database SHEIN credentials win over environment credentials", async () => 
       assert.equal(credentials.secretKey, "db-secret-key");
       assert.equal(credentials.baseUrl, "https://db.example.test");
       assert.equal(credentials.language, "en");
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("encryptStoredPlatformCredentials encrypts existing plaintext credentials when a secret is configured", async () => {
+  const { db, cleanup } = await createTempDb();
+  try {
+    db.prepare(`
+      insert into platform_integration (
+        platform, integration_name, status, base_url, language, open_key_id, secret_key, app_secret_key, is_default
+      ) values ('SHEIN', 'SHEIN 明文账号', 'ACTIVE', 'https://db.example.test', 'zh-cn', 'plain-open-key', 'plain-secret-key', 'plain-app-secret', 1)
+    `).run();
+
+    await withEnv({
+      LISTINGIFY_CREDENTIAL_SECRET: "test credential encryption secret",
+    }, () => {
+      const count = encryptStoredPlatformCredentials(db);
+      assert.equal(count, 1);
+
+      const row = db.prepare("select * from platform_integration where platform = 'SHEIN'").get();
+      assert.equal(credentialIsEncrypted(row.open_key_id), true);
+      assert.equal(credentialIsEncrypted(row.secret_key), true);
+      assert.equal(credentialIsEncrypted(row.app_secret_key), true);
+
+      const credentials = resolveSheinCredentials(db);
+      assert.equal(credentials.openKeyId, "plain-open-key");
+      assert.equal(credentials.secretKey, "plain-secret-key");
     });
   } finally {
     await cleanup();

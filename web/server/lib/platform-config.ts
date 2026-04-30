@@ -1,3 +1,4 @@
+import crypto from "node:crypto"
 import type Database from "better-sqlite3"
 
 export interface PlatformIntegrationRow {
@@ -33,6 +34,7 @@ export interface SheinCredentials {
 }
 
 const SHEIN_TEST_BASE_URL = "https://openapi-test01.sheincorp.cn"
+const CREDENTIAL_PREFIX = "enc:v1:"
 
 function env(name: string, fallback = "") {
   const value = process.env[name]
@@ -45,6 +47,68 @@ export function maskSecret(value: string | null | undefined) {
   return `${value.slice(0, 4)}********${value.slice(-4)}`
 }
 
+function credentialSecret() {
+  return env("LISTINGIFY_CREDENTIAL_SECRET")
+}
+
+function encryptionKey(secret: string) {
+  return crypto.createHash("sha256").update(secret, "utf8").digest()
+}
+
+export function credentialIsEncrypted(value: string | null | undefined) {
+  return typeof value === "string" && value.startsWith(CREDENTIAL_PREFIX)
+}
+
+export function encryptCredential(value: string | null | undefined) {
+  if (!value) return value ?? null
+  if (credentialIsEncrypted(value)) return value
+  const secret = credentialSecret()
+  if (!secret) return value
+
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(secret), iv)
+  const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()])
+  const tag = cipher.getAuthTag()
+  return [
+    CREDENTIAL_PREFIX.slice(0, -1),
+    iv.toString("base64url"),
+    tag.toString("base64url"),
+    encrypted.toString("base64url"),
+  ].join(":")
+}
+
+export function decryptCredential(value: string | null | undefined) {
+  if (!value) return value ?? null
+  if (!credentialIsEncrypted(value)) return value
+  const secret = credentialSecret()
+  if (!secret) {
+    throw new Error("LISTINGIFY_CREDENTIAL_SECRET is required to decrypt platform credentials")
+  }
+
+  const [, , ivPart, tagPart, encryptedPart] = value.split(":")
+  if (!ivPart || !tagPart || !encryptedPart) throw new Error("Invalid encrypted platform credential")
+  const decipher = crypto.createDecipheriv(
+    "aes-256-gcm",
+    encryptionKey(secret),
+    Buffer.from(ivPart, "base64url"),
+  )
+  decipher.setAuthTag(Buffer.from(tagPart, "base64url"))
+  return Buffer.concat([
+    decipher.update(Buffer.from(encryptedPart, "base64url")),
+    decipher.final(),
+  ]).toString("utf8")
+}
+
+function maskCredential(value: string | null | undefined) {
+  if (!value) return null
+  if (!credentialIsEncrypted(value)) return maskSecret(value)
+  try {
+    return maskSecret(decryptCredential(value))
+  } catch {
+    return "********"
+  }
+}
+
 export function platformIntegrationForResponse(row: PlatformIntegrationRow) {
   return {
     id: row.id,
@@ -55,11 +119,11 @@ export function platformIntegrationForResponse(row: PlatformIntegrationRow) {
     status: row.status,
     base_url: row.base_url,
     language: row.language,
-    open_key_mask: maskSecret(row.open_key_id),
+    open_key_mask: maskCredential(row.open_key_id),
     has_open_key: Boolean(row.open_key_id),
-    secret_mask: maskSecret(row.secret_key),
+    secret_mask: maskCredential(row.secret_key),
     app_id: row.app_id,
-    app_secret_mask: maskSecret(row.app_secret_key),
+    app_secret_mask: maskCredential(row.app_secret_key),
     is_default: Boolean(row.is_default),
     last_test_status: row.last_test_status,
     last_test_message: row.last_test_message,
@@ -90,8 +154,8 @@ export function resolveSheinCredentials(db?: Database.Database): SheinCredential
       platformIntegrationId: row.id,
       baseUrl: row.base_url || SHEIN_TEST_BASE_URL,
       language: row.language || "zh-cn",
-      openKeyId: row.open_key_id || "",
-      secretKey: row.secret_key || "",
+      openKeyId: decryptCredential(row.open_key_id) || "",
+      secretKey: decryptCredential(row.secret_key) || "",
     }
   }
 
@@ -103,6 +167,39 @@ export function resolveSheinCredentials(db?: Database.Database): SheinCredential
     openKeyId: env("SHEIN_OPEN_KEY_ID"),
     secretKey: env("SHEIN_SECRET_KEY"),
   }
+}
+
+export function encryptStoredPlatformCredentials(db: Database.Database) {
+  if (!credentialSecret()) return 0
+  const rows = db.prepare(`
+    select id, open_key_id, secret_key, app_secret_key
+    from platform_integration
+  `).all() as Array<Pick<PlatformIntegrationRow, "id" | "open_key_id" | "secret_key" | "app_secret_key">>
+
+  let changed = 0
+  const update = db.prepare(`
+    update platform_integration
+    set open_key_id = ?,
+      secret_key = ?,
+      app_secret_key = ?,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+  `)
+  for (const row of rows) {
+    const openKeyId = encryptCredential(row.open_key_id)
+    const secretKey = encryptCredential(row.secret_key)
+    const appSecretKey = encryptCredential(row.app_secret_key)
+    if (
+      openKeyId === row.open_key_id &&
+      secretKey === row.secret_key &&
+      appSecretKey === row.app_secret_key
+    ) {
+      continue
+    }
+    update.run(openKeyId, secretKey, appSecretKey, row.id)
+    changed += 1
+  }
+  return changed
 }
 
 export function ensurePlatformIntegrationBootstrap(db: Database.Database) {
@@ -147,8 +244,8 @@ export function ensurePlatformIntegrationBootstrap(db: Database.Database) {
       env("SHEIN_ENVIRONMENT", "TEST").toUpperCase() === "PROD" ? "PROD" : "TEST",
       env("SHEIN_BASE_URL", SHEIN_TEST_BASE_URL),
       env("SHEIN_LANGUAGE", "zh-cn"),
-      openKeyId,
-      secretKey,
+      encryptCredential(openKeyId),
+      encryptCredential(secretKey),
       payload,
       existing.id,
     )
@@ -174,8 +271,8 @@ export function ensurePlatformIntegrationBootstrap(db: Database.Database) {
     env("SHEIN_ENVIRONMENT", "TEST").toUpperCase() === "PROD" ? "PROD" : "TEST",
     env("SHEIN_BASE_URL", SHEIN_TEST_BASE_URL),
     env("SHEIN_LANGUAGE", "zh-cn"),
-    openKeyId,
-    secretKey,
+    encryptCredential(openKeyId),
+    encryptCredential(secretKey),
     payload,
   )
   return true

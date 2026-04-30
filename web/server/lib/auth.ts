@@ -26,6 +26,14 @@ interface UserRow {
   password_hash: string
   password_salt: string
   status: string
+  failed_login_count?: number
+  locked_until?: string | null
+}
+
+export interface LoginFailurePolicy {
+  maxFailures: number
+  lockMinutes: number
+  now?: Date
 }
 
 function nowIso() {
@@ -34,6 +42,19 @@ function nowIso() {
 
 function expiresAt() {
   return new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString()
+}
+
+function readPositiveInteger(value: string | undefined, fallback: number, max: number) {
+  const number = Number(value ?? fallback)
+  if (!Number.isFinite(number)) return fallback
+  return Math.max(1, Math.min(max, Math.floor(number)))
+}
+
+export function loginFailurePolicyFromEnv(): LoginFailurePolicy {
+  return {
+    maxFailures: readPositiveInteger(process.env.LISTINGIFY_LOGIN_MAX_FAILURES, 5, 20),
+    lockMinutes: readPositiveInteger(process.env.LISTINGIFY_LOGIN_LOCK_MINUTES, 15, 1440),
+  }
 }
 
 export function hashPassword(password: string, salt = crypto.randomBytes(16).toString("hex")) {
@@ -94,6 +115,63 @@ export function requirePermission(c: Context, permission: string) {
   return user
 }
 
+export function isLoginLocked(user: Pick<UserRow, "locked_until"> | Record<string, unknown>, now = new Date()) {
+  const lockedUntil = typeof user.locked_until === "string" ? user.locked_until : null
+  if (!lockedUntil) return false
+  const lockedUntilMs = new Date(lockedUntil).getTime()
+  return Number.isFinite(lockedUntilMs) && lockedUntilMs > now.getTime()
+}
+
+function hasColumn(db: Database.Database, tableName: string, columnName: string) {
+  return db.prepare(`pragma table_info(${tableName})`)
+    .all()
+    .some((row) => String((row as { name: string }).name) === columnName)
+}
+
+function loginFailureColumnsExist(db: Database.Database) {
+  return hasColumn(db, "app_user", "failed_login_count") && hasColumn(db, "app_user", "locked_until")
+}
+
+export function recordFailedLogin(
+  db: Database.Database,
+  userId: number,
+  policy: LoginFailurePolicy = loginFailurePolicyFromEnv(),
+) {
+  if (!loginFailureColumnsExist(db)) return { failedLoginCount: 0, lockedUntil: null }
+  const now = policy.now ?? new Date()
+  const user = db.prepare(`
+    select failed_login_count
+    from app_user
+    where id = ?
+  `).get(userId) as { failed_login_count: number } | undefined
+  const failedLoginCount = Number(user?.failed_login_count ?? 0) + 1
+  const shouldLock = failedLoginCount >= policy.maxFailures
+  const lockedUntil = shouldLock
+    ? new Date(now.getTime() + policy.lockMinutes * 60 * 1000).toISOString()
+    : null
+
+  db.prepare(`
+    update app_user
+    set failed_login_count = ?,
+      locked_until = ?,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+  `).run(failedLoginCount, lockedUntil, userId)
+
+  return { failedLoginCount, lockedUntil }
+}
+
+export function clearLoginFailures(db: Database.Database, userId: number) {
+  if (!loginFailureColumnsExist(db)) return
+  db.prepare(`
+    update app_user
+    set failed_login_count = 0,
+      locked_until = null,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+  `).run(userId)
+}
+
 export async function requireAuth(c: Context, next: Next) {
   const db = getDb()
   const sessionId = getCookie(c, SESSION_COOKIE)
@@ -149,11 +227,12 @@ export function clearSession(c: Context) {
 
 export function ensureAdminUser(db: Database.Database) {
   const username = process.env.LISTINGIFY_ADMIN_USERNAME || "admin"
-  const password = process.env.LISTINGIFY_ADMIN_PASSWORD || "admin123456"
+  const password = process.env.LISTINGIFY_ADMIN_PASSWORD
   const displayName = process.env.LISTINGIFY_ADMIN_DISPLAY_NAME || "系统管理员"
 
   const existing = db.prepare("select id from app_user where username = ?").get(username) as { id: number } | undefined
   if (existing) return false
+  if (!password) return false
 
   const { salt, hash } = hashPassword(password)
   const result = db.prepare(`

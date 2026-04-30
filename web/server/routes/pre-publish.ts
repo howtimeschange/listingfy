@@ -4,12 +4,44 @@ import { Hono } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { DB_FILE, getDb } from "../db"
 import { resolveAiConfig } from "../../../scripts/lib/ai_category_matcher.mjs"
-import {
-  headersForOpenApiCredentials,
-  requestSheinWithCredentialsAndRetry,
-} from "../../../scripts/lib/shein_client.mjs"
 import { refreshBucketProduct } from "./shein-products"
-import { resolveSheinCredentials, type SheinCredentials } from "../lib/platform-config"
+import { resolveSheinCredentials } from "../lib/platform-config"
+import { platformAdapterFor } from "../platform-adapters"
+import {
+  ensurePublishTask,
+  markPublishTaskFailed,
+  updatePublishTaskRequestPayload,
+} from "../services/publish/publish-job-service"
+import { canTransitionDraftStatus } from "../services/pre-publish/drafts"
+import { coerceFieldValues } from "../services/pre-publish/field-fills"
+import {
+  boolConfigValue,
+  buildPictureRequirements,
+  classifyImportedImage,
+  imageCompliance,
+  inferAssetTypeFromLibraryAsset,
+  inferAssetTypeFromRequirement,
+  type PictureConfigRow,
+  type PictureRequirement,
+} from "../services/pre-publish/images"
+import { publishBusinessValidationErrors, publishInfo, responseCode, responseMessage } from "../services/pre-publish/payload"
+import { transformOnlineImageToShein, uploadLocalImageToShein } from "../services/pre-publish/shein-api"
+import {
+  asNumber,
+  asPositiveNumber,
+  batchTerms,
+  buildScopeKey,
+  compactText,
+  normalizeText,
+  nowIso,
+  parseJsonArray,
+  parseJsonList,
+  parseJsonObject,
+  readLimit,
+  readOffset,
+  uniqueStrings,
+} from "../services/pre-publish/shared"
+import { createPublishVersion } from "../services/pre-publish/versions"
 
 const prePublish = new Hono()
 
@@ -67,34 +99,11 @@ type DimensionFieldGroup = {
   groups: FieldGroup[]
 }
 
-type PictureConfigRow = {
-  field_key: string
-  is_true: number | boolean | null
-}
-
 type PublishFieldRule = {
   module: string
   field_key: string
   required: boolean | null
   show: boolean | null
-}
-
-type PictureRequirement = {
-  key: string
-  requirement_key: string
-  name: string
-  level: "SPU" | "SKC" | "SKU"
-  show: number | null
-  required: number | null
-  single: number | null
-  image_type: string
-  asset_types: string[]
-  count_rule: string
-  dimension_rule: string
-  format_rule: string
-  size_rule: string
-  field_keys: Array<{ field_key: string; is_true: number | null }>
-  note: string | null
 }
 
 type ReadinessRow = {
@@ -143,112 +152,6 @@ type CategoryOverride = {
   status?: string
 }
 
-function normalizeText(value: unknown) {
-  return String(value ?? "").trim()
-}
-
-function compactText(value: unknown, maxLength = 180) {
-  const text = normalizeText(value).replace(/\s+/g, " ")
-  if (!text) return ""
-  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
-}
-
-function parseJsonArray(value: unknown) {
-  if (Array.isArray(value)) return value
-  if (typeof value !== "string" || !value) return []
-  try {
-    const parsed = JSON.parse(value)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
-  }
-}
-
-function parseJsonObject(value: unknown) {
-  if (value && typeof value === "object") return value as Record<string, unknown>
-  if (typeof value !== "string" || !value) return {}
-  try {
-    const parsed = JSON.parse(value)
-    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {}
-  } catch {
-    return {}
-  }
-}
-
-function parseJsonList(value: unknown) {
-  if (Array.isArray(value)) return value
-  if (typeof value !== "string" || !value) return []
-  try {
-    const parsed = JSON.parse(value)
-    if (Array.isArray(parsed)) return parsed
-  } catch {
-    // Fall through to delimiter parsing.
-  }
-  return value
-    .split(/[、,，;；|]+/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-}
-
-function batchTerms(value: string | undefined) {
-  return Array.from(
-    new Set(
-      normalizeText(value)
-        .split(/[\s,，;；]+/)
-        .map((item) => item.trim())
-        .filter(Boolean),
-    ),
-  )
-}
-
-function asNumber(value: unknown) {
-  const number = Number(value)
-  return Number.isFinite(number) ? number : null
-}
-
-function asPositiveNumber(value: unknown) {
-  const number = asNumber(value)
-  return number != null && number > 0 ? number : null
-}
-
-function readLimit(value: string | undefined, fallback = 50, max = 200) {
-  const number = Number(value ?? fallback)
-  if (!Number.isFinite(number)) return fallback
-  return Math.max(1, Math.min(max, Math.floor(number)))
-}
-
-function readOffset(value: string | undefined) {
-  const number = Number(value ?? 0)
-  if (!Number.isFinite(number)) return 0
-  return Math.max(0, Math.floor(number))
-}
-
-function nowIso() {
-  return new Date().toISOString()
-}
-
-function uniqueStrings(values: unknown[]) {
-  return Array.from(new Set(values.map(normalizeText).filter(Boolean)))
-}
-
-function buildScopeKey({
-  spuCode,
-  skcCode,
-  skuCode,
-  fieldKey,
-}: {
-  spuCode: string
-  skcCode?: string | null
-  skuCode?: string | null
-  fieldKey: string
-}) {
-  return [
-    `spu:${spuCode}`,
-    skcCode ? `skc:${skcCode}` : "skc:*",
-    skuCode ? `sku:${skuCode}` : "sku:*",
-    `field:${fieldKey}`,
-  ].join("|")
-}
 
 function activeFillMap(db: ReturnType<typeof getDb>, spuCodes: string[]) {
   if (spuCodes.length === 0) return new Map<string, SourceRow>()
@@ -1733,114 +1636,6 @@ function persistListingValidation(db: ReturnType<typeof getDb>, listingId: numbe
   )
 }
 
-function nextVersionNo(db: ReturnType<typeof getDb>, listingId: number) {
-  const row = db.prepare(`
-    select coalesce(max(version_no), 0) + 1 as next_no
-    from listing_publish_version
-    where listing_id = ?
-  `).get(listingId) as SourceRow | undefined
-  return Number(row?.next_no ?? 1)
-}
-
-function buildListingSnapshot(db: ReturnType<typeof getDb>, listing: ListingRow, readiness: ReadinessRow) {
-  const validationIssues = db.prepare(`
-    select severity, module, field_key, message, suggestion, resolved, created_at
-    from listing_validation_result
-    where listing_id = ?
-    order by id
-  `).all(listing.id) as SourceRow[]
-  const fieldFills = db.prepare(`
-    select scope_key, spu_code, skc_code, sku_code, field_key, field_label, field_value, source, confidence, updated_at
-    from listing_field_fill
-    where status = 'ACTIVE'
-      and spu_code = ?
-    order by skc_code, sku_code, field_key
-  `).all(listing.spu_code) as SourceRow[]
-  const skcs = db.prepare(`
-    select *
-    from listing_skc
-    where listing_id = ?
-    order by skc_code
-  `).all(listing.id) as SourceRow[]
-  const skus = db.prepare(`
-    select sku.*
-    from listing_sku sku
-    join listing_skc skc on skc.id = sku.listing_skc_id
-    where skc.listing_id = ?
-    order by skc.skc_code, sku.size_name, sku.sku_code
-  `).all(listing.id) as SourceRow[]
-  const assets = db.prepare(`
-    select *
-    from listing_asset
-    where listing_id = ?
-    order by skc_code, image_sort, id
-  `).all(listing.id) as SourceRow[]
-  return {
-    listing: {
-      id: listing.id,
-      platform: listing.platform,
-      spu_code: listing.spu_code,
-      status: listing.status,
-      validation_status: listing.validation_status,
-      category_id: listing.platform_category_id,
-      product_type_id: listing.product_type_id,
-      category_name: listing.platform_category_name,
-      updated_at: listing.updated_at,
-    },
-    readiness,
-    skcs,
-    skus,
-    assets,
-    field_fills: fieldFills,
-    validation_issues: validationIssues,
-  }
-}
-
-function createPublishVersion({
-  db,
-  listing,
-  readiness,
-  versionType = "DRAFT",
-  changeSummary,
-}: {
-  db: ReturnType<typeof getDb>
-  listing: ListingRow
-  readiness: ReadinessRow
-  versionType?: string
-  changeSummary?: string
-}) {
-  const versionNo = nextVersionNo(db, listing.id)
-  const snapshot = buildListingSnapshot(db, listing, readiness)
-  const result = db.prepare(`
-    insert into listing_publish_version (
-      listing_id,
-      version_no,
-      version_type,
-      status,
-      change_summary,
-      source_snapshot_json,
-      request_payload_json,
-      created_by
-    )
-    values (?, ?, ?, 'DRAFT', ?, ?, ?, 'codex')
-  `).run(
-    listing.id,
-    versionNo,
-    versionType,
-    changeSummary ?? `草稿版本 v${versionNo}`,
-    JSON.stringify(snapshot),
-    JSON.stringify({
-      platform: listing.platform,
-      category_id: listing.platform_category_id,
-      product_type_id: listing.product_type_id,
-      spu_code: listing.spu_code,
-      status: listing.status,
-      validation_status: listing.validation_status,
-    }),
-  )
-  return db.prepare("select * from listing_publish_version where id = ?").get(result.lastInsertRowid) as SourceRow
-}
-
 function upsertListingChildren(db: ReturnType<typeof getDb>, listingId: number, sourceRow: SourceRow, readiness: ReadinessRow) {
   const mdmSkcs = getSkcs(db, sourceRow.id)
   const contentSkcs = mdmSkcs.length ? [] : getContentSkcs(db, sourceRow.content_package_id)
@@ -2103,23 +1898,6 @@ function updateBucketLatestForSpu(db: ReturnType<typeof getDb>, spuCode: string)
   )
 }
 
-function canTransitionDraftStatus(currentStatus: string, nextStatus: string) {
-  const current = normalizeText(currentStatus).toUpperCase()
-  const next = normalizeText(nextStatus).toUpperCase()
-  if (current === next) return true
-  if (["PUBLISHING", "PUBLISH_SUBMITTED"].includes(current)) return false
-  const transitions: Record<string, string[]> = {
-    DRAFT: ["NEEDS_ENRICHMENT", "READY_TO_VALIDATE", "READY_TO_PUBLISH", "PAUSED", "ARCHIVED"],
-    NEEDS_ENRICHMENT: ["DRAFT", "READY_TO_VALIDATE", "READY_TO_PUBLISH", "PAUSED", "ARCHIVED"],
-    READY_TO_VALIDATE: ["DRAFT", "NEEDS_ENRICHMENT", "READY_TO_PUBLISH", "PAUSED", "ARCHIVED"],
-    READY_TO_PUBLISH: ["DRAFT", "NEEDS_ENRICHMENT", "READY_TO_VALIDATE", "PAUSED", "ARCHIVED"],
-    PUBLISH_FAILED: ["DRAFT", "NEEDS_ENRICHMENT", "READY_TO_VALIDATE", "READY_TO_PUBLISH", "PAUSED", "ARCHIVED"],
-    PAUSED: ["DRAFT", "NEEDS_ENRICHMENT", "READY_TO_VALIDATE", "ARCHIVED"],
-    ARCHIVED: ["DRAFT", "PAUSED"],
-  }
-  return (transitions[current] ?? ["DRAFT", "NEEDS_ENRICHMENT", "READY_TO_VALIDATE", "PAUSED", "ARCHIVED"]).includes(next)
-}
-
 function createDraft(db: ReturnType<typeof getDb>, row: ReadinessRow, sourceRow: SourceRow, platform = "SHEIN") {
   const account = getDefaultChannelAccount(db, platform)
   const publishUnitNo = nextPublishUnitNo(db, platform, Number(account.id), row.product_spu_id)
@@ -2357,29 +2135,6 @@ function getMappedSizeCharts({
   })
 }
 
-const MAIN_DETAIL_IMAGE_RULE = {
-  dimension_rule: "1340 x 1785 px；或 1:1，900-2200 px",
-  format_rule: "JPG / JPEG / PNG",
-  size_rule: "≤ 3MB",
-}
-
-const SQUARE_IMAGE_RULE = {
-  dimension_rule: "1:1，900 x 900 - 2200 x 2200 px",
-  format_rule: "JPG / JPEG / PNG",
-  size_rule: "≤ 3MB",
-}
-
-const COLOR_IMAGE_RULE = {
-  dimension_rule: "1:1，80 x 80 px",
-  format_rule: "JPG / JPEG / PNG",
-  size_rule: "≤ 3MB",
-}
-
-function boolConfigValue(value: number | boolean | null | undefined) {
-  if (value == null) return null
-  return value === true || Number(value) === 1 ? 1 : 0
-}
-
 function standardBool(value: unknown) {
   if (value == null) return null
   if (typeof value === "boolean") return value
@@ -2412,121 +2167,6 @@ function fieldShown(publishFields: Map<string, PublishFieldRule>, fieldKey: stri
 
 function fieldRequired(publishFields: Map<string, PublishFieldRule>, fieldKey: string, fallback = false) {
   return publishFields.get(fieldKey)?.required ?? fallback
-}
-
-function buildPictureRequirements(config: PictureConfigRow[]): PictureRequirement[] {
-  const configMap = new Map(config.map((item) => [item.field_key, boolConfigValue(item.is_true)]))
-  const field = (fieldKey: string) => ({
-    field_key: fieldKey,
-    is_true: configMap.get(fieldKey) ?? null,
-  })
-  const boolValue = (fieldKey: string) => configMap.get(fieldKey) ?? null
-  const detailCountRule = (single: number | null) => {
-    if (single === 1) return "最多 1 张主图"
-    return "主图最多 1 张；细节图最多 10 张"
-  }
-  const detailImageType = (single: number | null) => {
-    if (single === 1) return "1-主图"
-    return "1-主图；2-细节图"
-  }
-
-  const requirements: PictureRequirement[] = [
-    {
-      key: "spu-detail",
-      requirement_key: "SPU_DETAIL",
-      name: "SPU 轮播图",
-      level: "SPU",
-      show: boolValue("spu_image_detail_show"),
-      required: boolValue("spu_image_detail_required"),
-      single: boolValue("spu_image_detail_single"),
-      image_type: detailImageType(boolValue("spu_image_detail_single")),
-      asset_types: ["MAIN", "DETAIL", "DETAIL_BACK"],
-      count_rule: detailCountRule(boolValue("spu_image_detail_single")),
-      ...MAIN_DETAIL_IMAGE_RULE,
-      field_keys: [
-        field("spu_image_detail_show"),
-        field("spu_image_detail_required"),
-        field("spu_image_detail_single"),
-      ],
-      note: "SPU 维度图片当前按类目规则展示；本流程优先使用 SKC 维度图片。",
-    },
-    {
-      key: "spu-square",
-      requirement_key: "SPU_SQUARE",
-      name: "SPU 方形图",
-      level: "SPU",
-      show: boolValue("spu_image_square_show"),
-      required: boolValue("spu_image_square_required"),
-      single: null,
-      image_type: "5-方块图",
-      asset_types: ["SQUARE"],
-      count_rule: "1 张",
-      ...SQUARE_IMAGE_RULE,
-      field_keys: [
-        field("spu_image_square_show"),
-        field("spu_image_square_required"),
-      ],
-      note: null,
-    },
-    {
-      key: "skc-detail",
-      requirement_key: "SKC_DETAIL",
-      name: "SKC 主图/细节图",
-      level: "SKC",
-      show: boolValue("skc_image_detail_show"),
-      required: boolValue("skc_image_detail_required"),
-      single: boolValue("skc_image_detail_single"),
-      image_type: detailImageType(boolValue("skc_image_detail_single")),
-      asset_types: ["MAIN", "DETAIL", "DETAIL_BACK"],
-      count_rule: detailCountRule(boolValue("skc_image_detail_single")),
-      ...MAIN_DETAIL_IMAGE_RULE,
-      field_keys: [
-        field("skc_image_detail_show"),
-        field("skc_image_detail_required"),
-        field("skc_image_detail_single"),
-      ],
-      note: "主图优先取 TMALL COLOR_BLOCK / COLOR；细节图可人工导入补齐。",
-    },
-    {
-      key: "skc-square",
-      requirement_key: "SKC_SQUARE",
-      name: "SKC 方形图",
-      level: "SKC",
-      show: boolValue("skc_image_square_show"),
-      required: boolValue("skc_image_square_required"),
-      single: null,
-      image_type: "5-方块图",
-      asset_types: ["SQUARE"],
-      count_rule: "1 张",
-      ...SQUARE_IMAGE_RULE,
-      field_keys: [
-        field("skc_image_square_show"),
-        field("skc_image_square_required"),
-      ],
-      note: null,
-    },
-    {
-      key: "skc-color",
-      requirement_key: "SKC_COLOR_BLOCK",
-      name: "SKC 色块图",
-      level: "SKC",
-      show: 1,
-      required: null,
-      single: 1,
-      image_type: "6-色块图",
-      asset_types: ["COLOR_BLOCK", "COLOR"],
-      count_rule: "每个 SKC 1 张；多 SKC 必填，单 SKC 非必填",
-      ...COLOR_IMAGE_RULE,
-      field_keys: [],
-      note: "是否必填取决于实际勾选发布的 SKC 数量。",
-    },
-  ]
-
-  if (config.length === 1 && config[0]?.field_key === "switch_spu_picture") {
-    return requirements.filter((item) => item.key.startsWith("skc-"))
-  }
-
-  return requirements
 }
 
 function getImageRequirements(db: ReturnType<typeof getDb>, listing: ListingRow) {
@@ -3001,15 +2641,6 @@ function requiredFillFields(db: ReturnType<typeof getDb>, listing: ListingRow) {
   return readiness.field_groups.flatMap((group) => group.fields)
 }
 
-function coerceFieldValues(field: FillField, rawValue: unknown) {
-  if (field.render_kind === "multi_enum") {
-    const values = parseJsonList(rawValue).map(normalizeText).filter(Boolean)
-    return values.length ? values : []
-  }
-  const value = normalizeText(rawValue)
-  return value ? [value] : []
-}
-
 function optionForFieldValue(field: FillField, value: string) {
   return findEnumOption(field.options ?? [], [value])
 }
@@ -3205,51 +2836,6 @@ function ensureFallbackColorAssets(db: ReturnType<typeof getDb>, listingId: numb
       }),
     )
   }
-}
-
-async function uploadLocalImageToShein(localPath: string, imageType: number, credentials: SheinCredentials) {
-  const apiPath = "/open-api/goods/upload-pic"
-  const url = new URL(apiPath, credentials.baseUrl)
-  const headers = headersForOpenApiCredentials(apiPath, {
-    openKeyId: credentials.openKeyId,
-    secretKey: credentials.secretKey,
-    language: credentials.language,
-  })
-  delete (headers as Record<string, string>)["Content-Type"]
-  const bytes = fs.readFileSync(localPath)
-  const form = new FormData()
-  form.append("image_type", String(imageType))
-  form.append("file", new Blob([new Uint8Array(bytes)]), path.basename(localPath))
-  const response = await fetch(url, {
-    method: "POST",
-    headers,
-    body: form,
-  })
-  const payload = await response.json().catch(async () => ({ code: String(response.status), msg: await response.text().catch(() => "") }))
-  if (responseCode(payload) !== "0") {
-    throw new Error(`SHEIN 图片上传失败：${responseCode(payload) || response.status} ${responseMessage(payload)}`)
-  }
-  const info = publishInfo(payload)
-  const imageUrl = normalizeText(info.image_url ?? info.imageUrl)
-  if (!imageUrl) throw new Error("SHEIN 图片上传未返回 image_url")
-  return { imageUrl, payload }
-}
-
-async function transformOnlineImageToShein(sourceUrl: string, imageType: number, credentials: SheinCredentials) {
-  const result = await requestSheinWithCredentialsAndRetry("/open-api/goods/transform-pic", {
-    credentials,
-    body: {
-      image_type: imageType,
-      original_url: sourceUrl,
-    },
-  })
-  if (responseCode(result.payload) !== "0") {
-    throw new Error(`SHEIN 图片转换失败：${responseCode(result.payload) || result.status} ${responseMessage(result.payload)}`)
-  }
-  const info = publishInfo(result.payload)
-  const imageUrl = normalizeText(info.transformed ?? info.image_url ?? info.imageUrl)
-  if (!imageUrl) throw new Error("SHEIN 图片转换未返回 transformed")
-  return { imageUrl, payload: result.payload }
 }
 
 async function prepareListingImagesForPublish(db: ReturnType<typeof getDb>, listingId: number) {
@@ -3479,22 +3065,6 @@ function buildSizeChartAttributeList({
   return output
 }
 
-function publishBusinessValidationErrors(payload: unknown) {
-  const info = publishInfo(payload)
-  const errors: string[] = []
-  for (const key of ["pre_valid_result", "mcc_valid_result"]) {
-    for (const item of parseJsonArray(info[key])) {
-      const object = parseJsonObject(item)
-      const formName = normalizeText(object.form_name) || normalizeText(object.form) || key
-      for (const message of parseJsonArray(object.messages)) {
-        const text = normalizeText(message)
-        if (text) errors.push(`${formName}：${text}`)
-      }
-    }
-  }
-  return errors
-}
-
 function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, options?: {
   skcCodes?: string[]
   allowSourceImages?: boolean
@@ -3680,21 +3250,6 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
     errors,
     detail,
   }
-}
-
-function responseCode(payload: unknown) {
-  const object = parseJsonObject(payload)
-  return normalizeText(object.code)
-}
-
-function responseMessage(payload: unknown) {
-  const object = parseJsonObject(payload)
-  return normalizeText(object.msg) || normalizeText(object.message)
-}
-
-function publishInfo(payload: unknown) {
-  const object = parseJsonObject(payload)
-  return parseJsonObject(object.info)
 }
 
 function persistPlatformIdentity({
@@ -4789,20 +4344,6 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
   return c.json({ ok: true, saved_count: saved.length, fills: saved, detail: getListingDetail(db, listingId) })
 })
 
-function classifyImportedImage(fileName: string) {
-  const base = fileName.toLowerCase()
-  const index = Number(base.match(/_(\d+)\.[a-z0-9]+$/)?.[1] ?? 0)
-  if (/square|方形|方图|1x1/.test(base)) {
-    return { assetType: "SQUARE", requirementKey: "SKC_SQUARE", sort: index || 1, note: "SKC 方形图，满足类目方形图要求" }
-  }
-  if (/color[-_ ]?block|色块/.test(base)) {
-    return { assetType: "COLOR_BLOCK", requirementKey: "SKC_COLOR_BLOCK", sort: index || 1, note: "SKC 色块图，满足颜色展示要求" }
-  }
-  if (index === 1) return { assetType: "MAIN", requirementKey: "SKC_DETAIL", sort: 1, note: "SKC 主图/款色图，适合作为当前 SKC 首图" }
-  if (index === 2) return { assetType: "DETAIL_BACK", requirementKey: "SKC_DETAIL", sort: 2, note: "背面/整体细节图" }
-  return { assetType: "DETAIL", requirementKey: "SKC_DETAIL", sort: index || 99, note: "商品细节图" }
-}
-
 function skcFingerprint(value: unknown) {
   return normalizeText(value).replace(/[^a-zA-Z0-9]/g, "").toLowerCase()
 }
@@ -4816,73 +4357,6 @@ function imageContentType(fileName: string) {
   if (ext === ".png") return "image/png"
   if (ext === ".webp") return "image/webp"
   return "image/jpeg"
-}
-
-function inferAssetTypeFromRequirement(requirementKey: unknown, fallbackFileName = "") {
-  const key = normalizeText(requirementKey)
-  if (key === "SPU_SQUARE" || key === "SKC_SQUARE") return "SQUARE"
-  if (key === "SKC_COLOR_BLOCK") return "COLOR_BLOCK"
-  if (key === "SPU_DETAIL" || key === "SKC_DETAIL") return classifyImportedImage(fallbackFileName).assetType
-  return classifyImportedImage(fallbackFileName).assetType
-}
-
-function imageFileSizeLimitBytes(requirement: PictureRequirement) {
-  const match = requirement.size_rule.match(/[≤<]\s*(\d+(?:\.\d+)?)\s*M/i)
-  if (!match) return null
-  return Math.round(Number(match[1]) * 1024 * 1024)
-}
-
-function isNearRatio(width: number, height: number, ratio: number, tolerance = 0.08) {
-  if (width <= 0 || height <= 0) return false
-  return Math.abs(width / height - ratio) <= tolerance
-}
-
-function inferAssetTypeFromLibraryAsset(asset: SourceRow, requirement: PictureRequirement) {
-  const assetType = normalizeText(asset.asset_type).toUpperCase()
-  const pictureType = normalizeText(asset.picture_type).toUpperCase()
-  const sourceKind = normalizeText(asset.source_kind).toUpperCase()
-  if (requirement.requirement_key === "SKC_COLOR_BLOCK") return assetType.includes("COLOR") || pictureType.includes("COLOR") ? "COLOR" : "COLOR_BLOCK"
-  if (requirement.requirement_key === "SPU_SQUARE" || requirement.requirement_key === "SKC_SQUARE") return "SQUARE"
-  if (assetType.includes("MAIN")) return "MAIN"
-  if (assetType.includes("BACK")) return "DETAIL_BACK"
-  if (sourceKind.includes("DETAIL") || assetType.includes("DETAIL")) return "DETAIL"
-  return requirement.asset_types[0] ?? "DETAIL"
-}
-
-function imageCompliance(asset: SourceRow, requirement: PictureRequirement) {
-  const width = asPositiveNumber(asset.width)
-  const height = asPositiveNumber(asset.height)
-  const fileSize = asPositiveNumber(asset.file_size)
-  const maxSize = imageFileSizeLimitBytes(requirement)
-  const failures: string[] = []
-  const warnings: string[] = []
-
-  if (width != null && height != null) {
-    const square = isNearRatio(width, height, 1, 0.03)
-    if (requirement.requirement_key === "SKC_COLOR_BLOCK") {
-      if (!square) failures.push("色块图需为 1:1")
-      if (width < 80 || height < 80) failures.push("色块图尺寸需不小于 80 x 80")
-    } else if (requirement.requirement_key === "SPU_SQUARE" || requirement.requirement_key === "SKC_SQUARE") {
-      if (!square) failures.push("方形图需为 1:1")
-      if (width < 900 || height < 900 || width > 2200 || height > 2200) failures.push("方形图尺寸需在 900-2200 px")
-    } else {
-      const mainRatioOk = isNearRatio(width, height, 1340 / 1785, 0.08) && width >= 900 && height >= 1200
-      const squareOk = square && width >= 900 && height >= 900 && width <= 2200 && height <= 2200
-      if (!mainRatioOk && !squareOk) failures.push("主图/细节图需接近 1340 x 1785，或 1:1 且 900-2200 px")
-    }
-  } else {
-    warnings.push("素材库暂缺尺寸信息，需人工预览确认")
-  }
-
-  if (maxSize != null && fileSize != null && fileSize > maxSize) failures.push("文件大小超过平台限制")
-  if (maxSize != null && fileSize == null) warnings.push("素材库暂缺文件大小信息")
-
-  return {
-    compliant: failures.length === 0,
-    status: failures.length ? "FAIL" : warnings.length ? "WARN" : "PASS",
-    reasons: [...failures, ...warnings],
-    file_size_limit_bytes: maxSize,
-  }
 }
 
 prePublish.post("/drafts/:id/images/import-folder", async (c) => {
@@ -5539,21 +5013,16 @@ prePublish.post("/drafts/:id/publish", async (c) => {
       request_payload_json = ?
     where id = ?
   `).run(JSON.stringify(preview.payload), version.id)
-  const taskResult = db.prepare(`
-    insert into listing_publish_task (
-      listing_id,
-      publish_version_id,
-      platform,
-      task_type,
-      status,
-      attempt_count,
-      request_payload_json,
-      started_at,
-      updated_at
-    )
-    values (?, ?, 'SHEIN', 'PUBLISH_LISTING', 'PUBLISHING', 1, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-  `).run(listing.id, version.id, JSON.stringify(preview.payload))
-  const taskId = Number(taskResult.lastInsertRowid)
+  const { task } = ensurePublishTask(db, {
+    listingId: listing.id,
+    publishVersionId: Number(version.id),
+    platform: normalizeText(listing.platform) || "SHEIN",
+    taskType: "PUBLISH_LISTING",
+    status: "PUBLISHING",
+    attemptCount: 1,
+    requestPayload: preview.payload,
+  })
+  const taskId = Number(task.id)
   db.prepare(`
     update listing
     set status = 'PUBLISHING',
@@ -5568,12 +5037,7 @@ prePublish.post("/drafts/:id/publish", async (c) => {
       if (prepared.errors.length > 0) {
         throw new Error(`发布前仍有阻断项：${prepared.errors.join("；")}`)
       }
-      db.prepare(`
-        update listing_publish_task
-        set request_payload_json = ?,
-          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        where id = ?
-      `).run(JSON.stringify(prepared.payload), taskId)
+      updatePublishTaskRequestPayload(db, taskId, prepared.payload)
       db.prepare(`
         update listing_publish_version
         set request_payload_json = ?
@@ -5582,15 +5046,12 @@ prePublish.post("/drafts/:id/publish", async (c) => {
       return prepared
     } catch (error) {
       const message = error instanceof Error ? error.message : "SHEIN 图片准备失败"
-      db.prepare(`
-        update listing_publish_task
-        set status = 'PUBLISH_FAILED',
-          error_code = 'IMAGE_PREPARE_FAILED',
-          error_message = ?,
-          finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        where id = ?
-      `).run(message, taskId)
+      markPublishTaskFailed(db, {
+        taskId,
+        responsePayload: {},
+        errorCode: "IMAGE_PREPARE_FAILED",
+        errorMessage: message,
+      })
       db.prepare(`
         update listing_publish_version
         set status = 'FAILED',
@@ -5609,9 +5070,10 @@ prePublish.post("/drafts/:id/publish", async (c) => {
     }
   })()
 
-  const result = await requestSheinWithCredentialsAndRetry("/open-api/goods/product/publishOrEdit", {
+  const platformAdapter = platformAdapterFor(normalizeText(listing.platform) || "SHEIN")
+  const result = await platformAdapter.publishListing({
     credentials: resolveSheinCredentials(db),
-    body: built.payload,
+    payload: built.payload,
   })
   const code = responseCode(result.payload)
   const message = responseMessage(result.payload)
@@ -5672,16 +5134,12 @@ prePublish.post("/drafts/:id/publish", async (c) => {
   const failureMessage = code === "0" && businessValidationErrors.length > 0
     ? businessValidationErrors.join("；")
     : message
-  db.prepare(`
-    update listing_publish_task
-    set status = 'PUBLISH_FAILED',
-      response_payload_json = ?,
-      error_code = ?,
-      error_message = ?,
-      finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-    where id = ?
-  `).run(JSON.stringify(result.payload), failureCode, failureMessage, taskId)
+  markPublishTaskFailed(db, {
+    taskId,
+    responsePayload: result.payload,
+    errorCode: failureCode,
+    errorMessage: failureMessage,
+  })
   db.prepare(`
     update listing_publish_version
     set status = 'FAILED',

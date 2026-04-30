@@ -55,6 +55,9 @@ test("system management exposes auth, users, platform integrations, sync tasks, 
   assert.match(server, /app\.route\("\/api\/platform-integrations"/);
   assert.match(server, /app\.route\("\/api\/system"/);
   assert.match(server, /requireAuth/);
+  assert.doesNotMatch(server, /app\.use\("\*",\s*cors\(\)\)/);
+  assert.match(server, /corsOptions/);
+  assert.match(server, /LISTINGIFY_ALLOWED_ORIGINS/);
 
   assert.match(loginPage, /登录/);
   assert.match(loginPage, /api\.post<.*>\("\/auth\/login"/s);
@@ -76,6 +79,7 @@ test("system management exposes auth, users, platform integrations, sync tasks, 
 
 test("system management migration defines RBAC, sessions, audit logs, and platform integrations", async () => {
   const migration = await file("db/migrations/014_system_management_auth_platform_integrations.sql");
+  const securityMigration = await file("db/migrations/015_security_hardening.sql");
 
   assert.match(migration, /create table if not exists app_user/);
   assert.match(migration, /create table if not exists rbac_role/);
@@ -83,6 +87,8 @@ test("system management migration defines RBAC, sessions, audit logs, and platfo
   assert.match(migration, /create table if not exists user_session/);
   assert.match(migration, /create table if not exists operation_log/);
   assert.match(migration, /create table if not exists platform_integration/);
+  assert.match(securityMigration, /failed_login_count/);
+  assert.match(securityMigration, /locked_until/);
   assert.match(migration, /USER_ADMIN/);
   assert.match(migration, /PLATFORM_CONFIG/);
   assert.match(migration, /SYNC_RUN/);

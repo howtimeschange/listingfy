@@ -5,6 +5,7 @@ import test from "node:test";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const PAGE_FILE = path.join(PROJECT_ROOT, "web/src/pages/pre-publish-validation/page.tsx");
+const BATCH_PUBLISH_DIALOG = path.join(PROJECT_ROOT, "web/src/components/pre-publish/batch-publish-dialog.tsx");
 const DETAIL_PAGE_FILE = path.join(PROJECT_ROOT, "web/src/pages/pre-publish-validation/[listingId]/page.tsx");
 const SHEIN_PRODUCTS_PAGE = path.join(PROJECT_ROOT, "web/src/pages/shein-products/page.tsx");
 const APP_SIDEBAR_FILE = path.join(PROJECT_ROOT, "web/src/components/layout/app-sidebar.tsx");
@@ -131,11 +132,13 @@ test("publish task center shows submitted platform tasks and task detail payload
 });
 
 test("pre publish validation page is now a draft list after selection moved to SHEIN bucket", async () => {
-  const [page, pagination, sidebar] = await Promise.all([
+  const [page, batchPublishDialog, pagination, sidebar] = await Promise.all([
     readFile(PAGE_FILE, "utf8"),
+    readFile(BATCH_PUBLISH_DIALOG, "utf8"),
     readFile(PAGINATION_COMPONENT, "utf8"),
     readFile(APP_SIDEBAR_FILE, "utf8"),
   ]);
+  const combined = `${page}\n${batchPublishDialog}`;
 
   assert.doesNotMatch(page, /ComingSoonPage/);
   assert.match(page, /SHEIN 发布草稿箱/);
@@ -152,9 +155,10 @@ test("pre publish validation page is now a draft list after selection moved to S
   assert.match(page, /publish_unit_no/);
   assert.match(page, /ProductThumb/);
   assert.match(page, /批量提交发布/);
-  assert.match(page, /batch-publish-check/);
-  assert.match(page, /保存调整并重新预检/);
-  assert.match(page, /确认批量发布/);
+  assert.match(page, /BatchPublishDialog/);
+  assert.match(combined, /batch-publish-check/);
+  assert.match(combined, /保存调整并重新预检/);
+  assert.match(combined, /确认批量发布/);
   assert.match(page, /发布平台/);
   assert.match(page, /SHEIN/);
   assert.match(page, /字段完整度/);

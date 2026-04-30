@@ -20,7 +20,7 @@ import platformIntegrations from "./routes/platform-integrations"
 import system from "./routes/system"
 import { applyPendingMigrations, DB_FILE, getDb } from "./db"
 import { ensureAdminUser, requireAuth } from "./lib/auth"
-import { ensurePlatformIntegrationBootstrap } from "./lib/platform-config"
+import { encryptStoredPlatformCredentials, ensurePlatformIntegrationBootstrap } from "./lib/platform-config"
 
 loadLocalEnv()
 
@@ -28,10 +28,33 @@ const db = getDb()
 const appliedMigrations = applyPendingMigrations(db)
 const adminSeeded = ensureAdminUser(db)
 const sheinConfigSeeded = ensurePlatformIntegrationBootstrap(db)
+const encryptedPlatformCredentials = encryptStoredPlatformCredentials(db)
 
 const app = new Hono()
 
-app.use("*", cors())
+const allowedOrigins = (process.env.LISTINGIFY_ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean)
+function isLocalDevOrigin(origin: string) {
+  try {
+    const url = new URL(origin)
+    return url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
+  } catch {
+    return false
+  }
+}
+const corsOptions = {
+  origin: (origin: string) => {
+    if (!origin) return null
+    if (allowedOrigins.includes("*")) return origin
+    if (allowedOrigins.length === 0 && isLocalDevOrigin(origin)) return origin
+    return allowedOrigins.includes(origin) ? origin : null
+  },
+  credentials: true,
+}
+
+app.use("*", cors(corsOptions))
 app.use("*", logger)
 app.onError(errorHandler)
 
@@ -68,5 +91,6 @@ console.log(`Database: ${DB_FILE}`)
 if (appliedMigrations.length) console.log(`Applied migrations: ${appliedMigrations.join(", ")}`)
 if (adminSeeded) console.log("Seeded default admin user")
 if (sheinConfigSeeded) console.log("Migrated SHEIN env credentials into platform_integration")
+if (encryptedPlatformCredentials) console.log(`Encrypted platform credentials: ${encryptedPlatformCredentials}`)
 
 serve({ fetch: app.fetch, port })

@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
+import { parseBatchPublishSummary } from "@/lib/publish-summary"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
 import { ServerPagination, type ServerPaginationState } from "@/components/server-pagination"
@@ -40,6 +41,8 @@ interface ListingBatch {
   note: string | null
   created_at: string
   updated_at: string
+  last_status_synced_at: string | null
+  publish_status_summary_json: string | null
   draft_count: number
   skc_count: number
   sku_count: number
@@ -86,12 +89,12 @@ export default function ListingBatchesPage() {
   const [batchName, setBatchName] = useState(`SHEIN 上新批次 ${new Date().toISOString().slice(0, 10)}`)
   const [batchSearch, setBatchSearch] = useState("")
   const { data, isLoading } = useListingBatches({ q, pagination })
-  const items = data?.items ?? []
+  const items = useMemo(() => data?.items ?? [], [data?.items])
   const summary = useMemo(() => {
     const totalDrafts = items.reduce((sum, item) => sum + Number(item.draft_count ?? 0), 0)
     const blockers = items.reduce((sum, item) => sum + Number(item.blocker_count ?? 0), 0)
     return `批次 ${formatNumber(data?.pagination.total ?? 0)} / 当前页草稿 ${formatNumber(totalDrafts)} / 阻断 ${formatNumber(blockers)}`
-  }, [data, items])
+  }, [data?.pagination.total, items])
   const createMutation = useMutation({
     mutationFn: () => api.post<{ batch: ListingBatch; draft_count: number }>("/listing-batches", {
       batch_name: batchName,
@@ -186,7 +189,12 @@ export default function ListingBatchesPage() {
                     <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">加载批次...</TableCell>
                   </TableRow>
                 ) : items.length ? (
-                  items.map((item) => (
+                  items.map((item) => {
+                    const publishSummary = parseBatchPublishSummary(item.publish_status_summary_json, item.batch_no)
+                    const failedTasks = Number(publishSummary.by_task_status.PUBLISH_FAILED ?? 0)
+                    const pendingTasks = Number(publishSummary.by_task_status.PENDING_CONFIRM ?? 0)
+                    const reviewTasks = Number(publishSummary.by_task_status.UNDER_REVIEW ?? 0)
+                    return (
                     <TableRow key={item.batch_no}>
                       <TableCell>
                         <div className="space-y-1">
@@ -207,6 +215,14 @@ export default function ListingBatchesPage() {
                           <Badge variant="outline">审核中 {formatNumber(item.auditing_count)}</Badge>
                           <Badge variant="outline">通过 {formatNumber(item.approved_count)}</Badge>
                           <Badge variant="outline">失败 {formatNumber(item.failed_count)}</Badge>
+                          <Badge variant="outline">待提交任务 {formatNumber(pendingTasks)}</Badge>
+                          <Badge variant="outline">轮询中 {formatNumber(reviewTasks)}</Badge>
+                          <Badge
+                            variant="outline"
+                            className={failedTasks > 0 ? "border-[#f1cccc] bg-[#fff1f1] text-[#d45656]" : ""}
+                          >
+                            任务失败 {formatNumber(failedTasks)}
+                          </Badge>
                         </div>
                       </TableCell>
                       <TableCell>
@@ -214,7 +230,10 @@ export default function ListingBatchesPage() {
                           {formatNumber(item.blocker_count)}
                         </Badge>
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{formatDateTime(item.updated_at)}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        <div>更新：{formatDateTime(item.updated_at)}</div>
+                        <div>最近轮询：{formatDateTime(item.last_status_synced_at)}</div>
+                      </TableCell>
                       <TableCell className="text-right">
                         <Button asChild variant="ghost" size="sm">
                           <Link to={`/listing-batches/${encodeURIComponent(item.batch_no)}`}>
@@ -224,7 +243,8 @@ export default function ListingBatchesPage() {
                         </Button>
                       </TableCell>
                     </TableRow>
-                  ))
+                    )
+                  })
                 ) : (
                   <TableRow>
                     <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">暂无批次</TableCell>

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react"
-import { Link } from "react-router"
+import { Link, useSearchParams } from "react-router"
 import { ArrowRight, RefreshCw, RotateCcw, Search, Send } from "lucide-react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
@@ -149,6 +149,7 @@ function StatusFilterMenu({
 
 function usePublishTasks(params: {
   q: string
+  batchSearch: string
   statuses: string[]
   pagination: { limit: number; offset: number }
 }) {
@@ -158,6 +159,7 @@ function usePublishTasks(params: {
       const search = new URLSearchParams({
         platform: "SHEIN",
         q: params.q,
+        batch_search: params.batchSearch,
         statuses: params.statuses.join(","),
       })
       return api.get(`/publish-tasks?${search.toString()}&limit=${params.pagination.limit}&offset=${params.pagination.offset}`)
@@ -174,11 +176,14 @@ function usePublishTaskFilters() {
 
 export default function PublishTasksPage() {
   const queryClient = useQueryClient()
+  const [searchParams] = useSearchParams()
+  const batchSearch = searchParams.get("batch_search") ?? ""
   const [search, setSearch] = useState("")
   const [statusFilter, setStatusFilter] = useState<string[]>([])
   const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
   const { data, isLoading, refetch, isFetching } = usePublishTasks({
     q: search,
+    batchSearch,
     statuses: statusFilter,
     pagination,
   })
@@ -230,6 +235,9 @@ export default function PublishTasksPage() {
             <div className="space-y-1">
               <CardTitle>任务列表</CardTitle>
               <p className="text-sm text-muted-foreground">{statusSummary}</p>
+              {batchSearch ? (
+                <p className="text-xs text-muted-foreground">批次筛选：{batchSearch}</p>
+              ) : null}
             </div>
             <div className="flex w-full flex-col gap-2 md:flex-row md:flex-wrap xl:w-auto xl:justify-end">
               <div className="relative md:w-80">

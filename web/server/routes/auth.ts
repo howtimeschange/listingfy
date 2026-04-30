@@ -3,9 +3,12 @@ import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
 import {
   clearSession,
+  clearLoginFailures,
   createSession,
   getUserForLogin,
+  isLoginLocked,
   loadUserById,
+  recordFailedLogin,
   requireCurrentUser,
   serializeUser,
   verifyPassword,
@@ -22,11 +25,22 @@ auth.post("/login", async (c) => {
 
   const db = getDb()
   const user = getUserForLogin(db, username)
-  if (!user || user.status !== "ACTIVE" || !verifyPassword(password, user.password_salt, user.password_hash)) {
+  if (!user || user.status !== "ACTIVE") {
+    throw new HTTPException(401, { message: "账号或密码错误" })
+  }
+  if (isLoginLocked(user)) {
+    throw new HTTPException(429, { message: "登录失败次数过多，请稍后再试" })
+  }
+  if (!verifyPassword(password, user.password_salt, user.password_hash)) {
+    const failure = recordFailedLogin(db, user.id)
+    if (failure.lockedUntil) {
+      throw new HTTPException(429, { message: "登录失败次数过多，请稍后再试" })
+    }
     throw new HTTPException(401, { message: "账号或密码错误" })
   }
 
   createSession(c, db, user.id)
+  clearLoginFailures(db, user.id)
   db.prepare(`
     update app_user
     set last_login_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),

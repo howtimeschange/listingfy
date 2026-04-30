@@ -13,6 +13,11 @@
     "shein:metadata:query": "NODE_OPTIONS=--no-warnings=ExperimentalWarning node scripts/shein_metadata_query.mjs",
     "deepdraw:sync": "node scripts/deepdraw_product_sync.mjs",
     "deepdraw:import": "NODE_OPTIONS=--no-warnings=ExperimentalWarning node scripts/deepdraw_content_import.mjs",
+    "admin:create": "NODE_OPTIONS=--no-warnings=ExperimentalWarning ./web/node_modules/.bin/tsx scripts/create_admin_user.mjs",
+    "test": "NODE_OPTIONS=--no-warnings=ExperimentalWarning ./web/node_modules/.bin/tsx --test scripts/lib/*.test.mjs",
+    "test:security": "NODE_OPTIONS=--no-warnings=ExperimentalWarning ./web/node_modules/.bin/tsx --test scripts/lib/auth_security.test.mjs scripts/lib/platform_config.test.mjs scripts/lib/system_management_ui.test.mjs",
+    "web:build": "npm --prefix web run build",
+    "web:lint": "npm --prefix web run lint",
     "web:dev": "npm --prefix web run dev",
     "web:server": "npm --prefix web run server:dev"
   }

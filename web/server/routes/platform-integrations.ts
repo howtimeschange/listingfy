@@ -4,6 +4,7 @@ import { getDb } from "../db"
 import { requirePermission } from "../lib/auth"
 import { auditFromContext } from "../lib/audit"
 import {
+  encryptCredential,
   platformIntegrationForResponse,
   type PlatformIntegrationRow,
 } from "../lib/platform-config"
@@ -121,10 +122,10 @@ platformIntegrations.post("/", async (c) => {
     normalized.status,
     normalized.baseUrl || null,
     normalized.language,
-    normalized.openKeyId || null,
-    normalized.secretKey || null,
+    encryptCredential(normalized.openKeyId) || null,
+    encryptCredential(normalized.secretKey) || null,
     normalized.appId || null,
-    normalized.appSecretKey || null,
+    encryptCredential(normalized.appSecretKey) || null,
     normalized.isDefault ? 1 : 0,
     JSON.stringify({ source: "web" }),
   )
@@ -172,10 +173,10 @@ platformIntegrations.put("/:id", async (c) => {
     normalized.status,
     normalized.baseUrl || null,
     normalized.language,
-    normalized.openKeyId || null,
-    normalized.secretKey || null,
+    encryptCredential(normalized.openKeyId) || null,
+    encryptCredential(normalized.secretKey) || null,
     normalized.appId || null,
-    normalized.appSecretKey || null,
+    encryptCredential(normalized.appSecretKey) || null,
     normalized.isDefault ? 1 : 0,
     id,
   )

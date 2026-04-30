@@ -1,6 +1,13 @@
 import { Hono } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
+import {
+  ensureBatchPublishTasks,
+  publishSummaryForBatch,
+  refreshBatchPublishSummary,
+  retryFailedBatchTasks,
+} from "../services/publish/publish-job-service"
+import { syncPublishTaskStatus } from "../services/publish/shein-status-sync"
 
 const listingBatches = new Hono()
 
@@ -29,6 +36,38 @@ function batchTerms(value: unknown) {
     .filter(Boolean)
 }
 
+function readListingIds(value: unknown) {
+  const raw = Array.isArray(value) ? value : batchTerms(value)
+  return Array.from(
+    new Set(
+      raw
+        .map(Number)
+        .filter((id) => Number.isFinite(id) && id > 0),
+    ),
+  )
+}
+
+function readBoolean(value: unknown, fallback: boolean) {
+  if (value == null) return fallback
+  if (typeof value === "boolean") return value
+  const text = normalizeText(value).toLowerCase()
+  if (["1", "true", "yes", "y", "是"].includes(text)) return true
+  if (["0", "false", "no", "n", "否"].includes(text)) return false
+  return fallback
+}
+
+function readStatuses(value: unknown, fallback: string[]) {
+  const items = Array.isArray(value) ? value : normalizeText(value).split(/[\s,，;；]+/)
+  const statuses = Array.from(
+    new Set(
+      items
+        .map((item) => normalizeText(item).toUpperCase())
+        .filter(Boolean),
+    ),
+  )
+  return statuses.length ? statuses : fallback
+}
+
 function batchNo() {
   const date = new Date().toISOString().slice(0, 10).replaceAll("-", "")
   return `SHEIN-BATCH-${date}-${Date.now().toString().slice(-6)}`
@@ -54,6 +93,8 @@ function listSelect() {
       coalesce(batch.status, 'ACTIVE') as status,
       coalesce(batch.source_type, 'LISTING') as source_type,
       batch.note,
+      batch.last_status_synced_at,
+      coalesce(batch.publish_status_summary_json, '{}') as publish_status_summary_json,
       coalesce(batch.created_at, min(listing.created_at)) as created_at,
       coalesce(batch.updated_at, max(listing.updated_at)) as updated_at,
       count(distinct listing.id) as draft_count,
@@ -79,6 +120,59 @@ function batchesCte() {
       from listing_batch
     )
   `
+}
+
+function resolveBatch(db: ReturnType<typeof getDb>, id: string, platformHint?: unknown) {
+  const platform = normalizeText(platformHint) || "SHEIN"
+  const batch = /^\d+$/.test(id)
+    ? db.prepare("select * from listing_batch where id = ?").get(Number(id)) as SourceRow | undefined
+    : db.prepare("select * from listing_batch where batch_no = ?").get(id) as SourceRow | undefined
+  if (batch) {
+    return {
+      batch,
+      platform: normalizeText(batch.platform) || platform,
+      batchNo: normalizeText(batch.batch_no) || id,
+    }
+  }
+  const virtual = db.prepare(`
+    ${batchesCte()}
+    select b.platform, b.batch_no
+    from batches b
+    where b.platform = ?
+      and b.batch_no = ?
+    limit 1
+  `).get(platform, id) as SourceRow | undefined
+  if (!virtual) {
+    throw new HTTPException(404, { message: "批次不存在" })
+  }
+  return {
+    batch: null,
+    platform: normalizeText(virtual.platform) || platform,
+    batchNo: normalizeText(virtual.batch_no) || id,
+  }
+}
+
+function batchSyncTaskRows(db: ReturnType<typeof getDb>, input: {
+  platform: string
+  batchNo: string
+  statuses: string[]
+  taskIds: number[]
+  limit: number
+}) {
+  return db.prepare(`
+    select task.id
+    from listing_publish_task task
+    join listing on listing.id = task.listing_id
+    where listing.platform = ?
+      and listing.listing_batch_no = ?
+      and task.status in (${input.statuses.map(() => "?").join(",")})
+      ${input.taskIds.length ? `and task.id in (${input.taskIds.map(() => "?").join(",")})` : ""}
+    order by
+      case when task.last_status_synced_at is null then 0 else 1 end,
+      coalesce(task.last_status_synced_at, task.updated_at) asc,
+      task.id asc
+    limit ?
+  `).all(input.platform, input.batchNo, ...input.statuses, ...input.taskIds, input.limit) as SourceRow[]
 }
 
 listingBatches.get("/", (c) => {
@@ -175,6 +269,82 @@ listingBatches.post("/", async (c) => {
   transaction()
   const created = db.prepare("select * from listing_batch where batch_no = ?").get(no)
   return c.json({ ok: true, batch: created, draft_count: listingRows.length })
+})
+
+listingBatches.post("/:id/publish-tasks", async (c) => {
+  const db = getDb()
+  const body = await c.req.json().catch(() => ({})) as {
+    listing_ids?: unknown
+    status?: unknown
+    platform?: unknown
+  }
+  const ref = resolveBatch(db, c.req.param("id"), body.platform ?? c.req.query("platform"))
+  const result = ensureBatchPublishTasks(db, {
+    platform: ref.platform,
+    batchNo: ref.batchNo,
+    status: normalizeText(body.status) || "PENDING_CONFIRM",
+    onlyListingIds: readListingIds(body.listing_ids),
+  })
+  return c.json(result)
+})
+
+listingBatches.get("/:id/publish-summary", (c) => {
+  const db = getDb()
+  const ref = resolveBatch(db, c.req.param("id"), c.req.query("platform"))
+  const summary = c.req.query("persist") === "0"
+    ? publishSummaryForBatch(db, { platform: ref.platform, batchNo: ref.batchNo })
+    : refreshBatchPublishSummary(db, { platform: ref.platform, batchNo: ref.batchNo })
+  return c.json({ ok: true, summary })
+})
+
+listingBatches.post("/:id/sync-status", async (c) => {
+  const db = getDb()
+  const body = await c.req.json().catch(() => ({})) as {
+    platform?: unknown
+    statuses?: unknown
+    task_ids?: unknown
+    limit?: unknown
+  }
+  const ref = resolveBatch(db, c.req.param("id"), body.platform ?? c.req.query("platform"))
+  const statuses = readStatuses(body.statuses, ["PUBLISH_SUBMITTED", "UNDER_REVIEW", "PARTIALLY_APPROVED"])
+  const limit = readLimit(body.limit == null ? undefined : normalizeText(body.limit), 20, 100)
+  const taskIds = readListingIds(body.task_ids)
+  const taskRows = batchSyncTaskRows(db, {
+    platform: ref.platform,
+    batchNo: ref.batchNo,
+    statuses,
+    taskIds,
+    limit,
+  })
+  const items = []
+  for (const row of taskRows) {
+    items.push(await syncPublishTaskStatus(db, Number(row.id)))
+  }
+  const summary = refreshBatchPublishSummary(db, { platform: ref.platform, batchNo: ref.batchNo })
+  return c.json({
+    ok: items.every((item) => item.ok),
+    batch_no: ref.batchNo,
+    platform: ref.platform,
+    polled_count: items.length,
+    failed_count: items.filter((item) => !item.ok).length,
+    items,
+    summary,
+  })
+})
+
+listingBatches.post("/:id/retry-failed", async (c) => {
+  const db = getDb()
+  const body = await c.req.json().catch(() => ({})) as {
+    platform?: unknown
+    retryable_only?: unknown
+  }
+  const ref = resolveBatch(db, c.req.param("id"), body.platform ?? c.req.query("platform"))
+  const result = retryFailedBatchTasks(db, {
+    platform: ref.platform,
+    batchNo: ref.batchNo,
+    retryableOnly: readBoolean(body.retryable_only, true),
+  })
+  return c.json(result)
 })
 
 listingBatches.get("/:id", (c) => {
