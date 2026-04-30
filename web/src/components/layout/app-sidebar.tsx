@@ -1,9 +1,7 @@
 import { NavLink, useLocation } from "react-router"
 import {
   LayoutDashboard,
-  PackagePlus,
-  ClipboardEdit,
-  Image,
+  ShoppingBag,
   ShieldCheck,
   Send,
   GitBranch,
@@ -51,10 +49,8 @@ const NAV_GROUPS: NavGroup[] = [
     label: "上新工作",
     items: [
       { label: "工作台", to: "/dashboard", icon: LayoutDashboard },
-      { label: "上新批次", to: "/listing-batches", icon: PackagePlus },
-      { label: "草稿工作台", to: "/draft-workbench", icon: ClipboardEdit },
-      { label: "图片管理", to: "/image-management", icon: Image },
-      { label: "发布校验", to: "/pre-publish-validation", icon: ShieldCheck },
+      { label: "SHEIN 商品分桶", to: "/shein-products", icon: ShoppingBag },
+      { label: "SHEIN 发布草稿箱", to: "/pre-publish-validation", icon: ShieldCheck },
       { label: "发布任务", to: "/publish-tasks", icon: Send },
     ],
   },
@@ -63,10 +59,10 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: "类目映射", to: "/category-mapping", icon: GitBranch },
       { label: "属性映射", to: "/attribute-mapping", icon: Tags },
-      { label: "尺码转换", to: "/size-conversion", icon: Ruler },
+      { label: "SHEIN 尺码转换", to: "/size-conversion", icon: Ruler },
       { label: "包装规则", to: "/package-rules", icon: Box },
       { label: "价格规则", to: "/price-rules", icon: DollarSign },
-      { label: "低倍率清单", to: "/low-rate-list", icon: TrendingDown },
+      { label: "SHEIN 低倍率清单", to: "/low-rate-list", icon: TrendingDown },
     ],
   },
   {
@@ -135,7 +131,7 @@ export function AppSidebar() {
                           )}
                         >
                           <Icon className="size-4 shrink-0" />
-                          <span>{item.label}</span>
+                          <span className="truncate whitespace-nowrap">{item.label}</span>
                         </NavLink>
                       </SidebarMenuButton>
                     </SidebarMenuItem>

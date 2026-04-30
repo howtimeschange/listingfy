@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadLocalEnv } from "./lib/local_env.mjs";
 import {
   APP_AUTH_PATH,
   PROD_BASE_URL_CN,
@@ -10,6 +13,9 @@ import {
   requireEnv,
   requestShein,
 } from "./lib/shein_client.mjs";
+
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+loadLocalEnv({ cwd: PROJECT_ROOT });
 
 function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);

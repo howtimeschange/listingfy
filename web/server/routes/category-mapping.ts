@@ -91,6 +91,12 @@ function readLimit(value: string | undefined, fallback = 50, max = 200) {
   return Math.max(1, Math.min(max, Math.floor(limit)))
 }
 
+function readOffset(value: string | undefined) {
+  const offset = Number(value ?? 0)
+  if (!Number.isFinite(offset)) return 0
+  return Math.max(0, Math.floor(offset))
+}
+
 function parseJsonArray(value: unknown) {
   if (Array.isArray(value)) return value
   if (typeof value !== "string" || !value) return []
@@ -405,6 +411,8 @@ categoryMapping.get("/rules", (c) => {
   const db = getDb()
   const status = c.req.query("status")
   const search = c.req.query("q")
+  const limit = readLimit(c.req.query("limit"), 50, 200)
+  const offset = readOffset(c.req.query("offset"))
 
   let sql = `
     SELECT id, mdm_middle_category_code, mdm_middle_category_name,
@@ -428,10 +436,18 @@ categoryMapping.get("/rules", (c) => {
     params.push(like, like, like)
   }
 
-  sql += " ORDER BY priority ASC, id DESC LIMIT 500"
+  const total = db.prepare(`
+    SELECT count(*) as count
+    FROM mdm_shein_category_mapping_rule
+    WHERE 1=1
+    ${status ? " AND status = ?" : ""}
+    ${search ? " AND (mdm_small_category_name LIKE ? OR mdm_middle_category_name LIKE ? OR match_key LIKE ?)" : ""}
+  `).get(...params) as { count: number }
 
-  const rules = db.prepare(sql).all(...params)
-  return c.json({ rules })
+  sql += " ORDER BY priority ASC, id DESC LIMIT ? OFFSET ?"
+
+  const rules = db.prepare(sql).all(...params, limit, offset)
+  return c.json({ rules, pagination: { total: total.count, limit, offset } })
 })
 
 // POST /api/category-mapping/rules - create new rule

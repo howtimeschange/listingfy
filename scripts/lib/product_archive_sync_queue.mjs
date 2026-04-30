@@ -104,8 +104,8 @@ export function createProductArchiveSyncQueue({
 
   function enqueue({ source, rawCodes, intervalMs, options = {} } = {}) {
     const normalizedSource = String(source ?? "").toLowerCase();
-    if (!["mdm", "deepdraw"].includes(normalizedSource)) {
-      throw new Error("source must be mdm or deepdraw");
+    if (!["mdm", "deepdraw", "mdm_deepdraw"].includes(normalizedSource)) {
+      throw new Error("source must be mdm, deepdraw, or mdm_deepdraw");
     }
 
     const codes = parseSpuCodes(rawCodes);

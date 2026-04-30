@@ -3,21 +3,17 @@ import { Link } from "react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
   ArrowRight,
-  FileImage,
   FileText,
   ImageIcon,
-  Layers3,
-  PackageSearch,
   Search,
-  Tags,
 } from "lucide-react"
 import { api } from "@/lib/api-client"
 import { formatCurrency, formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { EmptyState } from "@/components/empty-state"
+import { ServerPagination } from "@/components/server-pagination"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
-import { StatCard } from "@/components/stat-card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -76,10 +72,10 @@ interface DeepdrawContentSummary {
   latest_synced_at: string | null
 }
 
-function useDeepdrawContent(query: string) {
+function useDeepdrawContent(query: string, pagination: { limit: number; offset: number }) {
   return useQuery<DeepdrawContentList>({
-    queryKey: ["deepdraw-content", query],
-    queryFn: () => api.get(`/deepdraw-content?q=${encodeURIComponent(query)}&limit=100`),
+    queryKey: ["deepdraw-content", query, pagination],
+    queryFn: () => api.get(`/deepdraw-content?q=${encodeURIComponent(query)}&limit=${pagination.limit}&offset=${pagination.offset}`),
   })
 }
 
@@ -137,8 +133,9 @@ function itemTitle(item: DeepdrawContentItem) {
 
 export default function DeepDrawContentPage() {
   const [searchText, setSearchText] = useState("")
+  const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
   const debouncedSearch = useDebounce(searchText, 300)
-  const { data, isLoading } = useDeepdrawContent(debouncedSearch)
+  const { data, isLoading } = useDeepdrawContent(debouncedSearch, pagination)
   const { data: summary } = useDeepdrawContentSummary()
 
   return (
@@ -148,24 +145,14 @@ export default function DeepDrawContentPage() {
         description="以深绘同步数据为准，全量展示内容包、款色 SKU、关键字段、尺码表、商详页面和图片素材。"
       />
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard title="内容包" value={formatNumber(summary?.package_count)} icon={PackageSearch} />
-        <StatCard
-          title="款色/SKU"
-          value={`${formatNumber(summary?.skc_count)} / ${formatNumber(summary?.sku_count)}`}
-          icon={Layers3}
-        />
-        <StatCard title="字段" value={formatNumber(summary?.field_count)} icon={Tags} />
-        <StatCard
-          title="商详/素材"
-          value={`${formatNumber(summary?.detail_page_count)} / ${formatNumber(summary?.asset_count)}`}
-          icon={FileImage}
-        />
-      </div>
-
       <Card>
         <CardHeader className="flex flex-col gap-3 pb-3 lg:flex-row lg:items-center lg:justify-between">
-          <CardTitle>内容包列表</CardTitle>
+          <div>
+            <CardTitle>内容包列表</CardTitle>
+            <p className="mt-1 text-sm text-muted-foreground">
+              内容包 {formatNumber(summary?.package_count)} / SKC {formatNumber(summary?.skc_count)} / SKU {formatNumber(summary?.sku_count)} / 字段 {formatNumber(summary?.field_count)} / 商详 {formatNumber(summary?.detail_page_count)} / 素材 {formatNumber(summary?.asset_count)}
+            </p>
+          </div>
           <div className="relative w-full lg:w-[420px]">
             <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -337,9 +324,13 @@ export default function DeepDrawContentPage() {
             <span>当前展示 {formatNumber(data?.items.length ?? 0)} 条</span>
             <span>共 {formatNumber(data?.pagination.total)} 个内容包</span>
           </div>
+          <ServerPagination
+            pagination={data?.pagination}
+            onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
+            onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
+          />
         </CardContent>
       </Card>
     </PageContainer>
   )
 }
-

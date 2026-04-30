@@ -5,7 +5,6 @@ import {
   FolderTree,
   Tags,
   GitBranch,
-  PackagePlus,
   ArrowRight,
 } from "lucide-react"
 import { api } from "@/lib/api-client"
@@ -118,12 +117,6 @@ export default function DashboardPage() {
           description="管理 MDM 到 SHEIN 的类目映射"
           icon={GitBranch}
           to="/category-mapping"
-        />
-        <QuickLink
-          title="上新批次"
-          description="创建和管理上新批次"
-          icon={PackagePlus}
-          to="/listing-batches"
         />
       </div>
 

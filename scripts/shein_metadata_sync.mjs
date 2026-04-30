@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadLocalEnv } from "./lib/local_env.mjs";
 import {
   PROD_BASE_URL_CN,
   assertSheinSuccess,
@@ -22,6 +23,7 @@ const ATTRIBUTE_BATCH_SIZE = 10;
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDir, "..");
+loadLocalEnv({ cwd: projectRoot });
 
 function timestampForPath(date = new Date()) {
   return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");

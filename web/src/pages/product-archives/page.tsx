@@ -1,26 +1,26 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { Link } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   ArrowRight,
-  Database,
-  FileImage,
+  Check,
   ImageIcon,
   Loader2,
-  PackageSearch,
   RefreshCw,
   Search,
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
-import { formatCurrency, formatDateTime, formatNumber, formatPercent } from "@/lib/format"
+import { formatDateTime, formatNumber } from "@/lib/format"
+import { parseBatchSearch } from "@/lib/spreadsheet"
 import { useDebounce } from "@/hooks/use-debounce"
+import { ServerPagination } from "@/components/server-pagination"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
-import { StatCard } from "@/components/stat-card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
   DialogContent,
@@ -29,6 +29,14 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Progress } from "@/components/ui/progress"
 import {
@@ -49,28 +57,14 @@ import {
   TableRow,
 } from "@/components/ui/table"
 
-type SyncSource = "mdm" | "deepdraw"
+type SyncSource = "mdm" | "deepdraw" | "mdm_deepdraw"
+type SourceStatus = "SYNCED" | "MISSING"
 
 interface ProductArchiveItem {
   spu_code: string
   spu_name: string | null
   listing_title_cn: string | null
   listing_title_en: string | null
-  shein_spu_code: string | null
-  shein_category_name: string | null
-  matched_category_rule_id: number | null
-  matched_category_rule_source: string | null
-  matched_category_match_key: string | null
-  matched_shein_category_id: number | null
-  matched_shein_product_type_id: number | null
-  matched_shein_category_name: string | null
-  matched_shein_category_path: string | null
-  suggested_category_suggestion_id: number | null
-  suggested_category_rule_source: string | null
-  suggested_shein_category_id: number | null
-  suggested_shein_product_type_id: number | null
-  suggested_shein_category_name: string | null
-  suggested_shein_category_path: string | null
   old_style_code: string | null
   deepdraw_info_status: string | null
   mdm_brand_code: string | null
@@ -88,19 +82,14 @@ interface ProductArchiveItem {
   deepdraw_brand_name: string | null
   deepdraw_category_name: string | null
   deepdraw_synced_at: string | null
-  mdm_status: "SYNCED" | "MISSING"
-  deepdraw_status: "SYNCED" | "MISSING"
+  mdm_status: SourceStatus
+  deepdraw_status: SourceStatus
   mdm_skc_count: number
   mdm_sku_count: number
   deepdraw_skc_count: number
   deepdraw_sku_count: number
   product_image_count: number
   detail_image_count: number
-  publish_supply_discount: number | null
-  publish_supply_price_cny: number | null
-  publish_retail_price_usd: number | null
-  publish_package_size_text: string | null
-  publish_weight_record_count: number
   hero_image_url: string | null
 }
 
@@ -158,12 +147,21 @@ interface SyncJob {
   items: SyncJobItem[]
 }
 
-function useProductArchives(query: string, brand: string) {
+interface ImportBucketResult {
+  imported_count: number
+  missing: string[]
+}
+
+function useProductArchives(
+  query: string,
+  brand: string,
+  pagination: { limit: number; offset: number },
+) {
   return useQuery<ProductArchiveList>({
-    queryKey: ["product-archives", query, brand],
+    queryKey: ["product-archives", query, brand, pagination],
     queryFn: () =>
       api.get(
-        `/product-archives?q=${encodeURIComponent(query)}&brand=${encodeURIComponent(brand)}&limit=100`,
+        `/product-archives?q=${encodeURIComponent(query)}&brand=${encodeURIComponent(brand)}&limit=${pagination.limit}&offset=${pagination.offset}`,
       ),
   })
 }
@@ -182,24 +180,7 @@ function useProductArchiveConfig() {
   })
 }
 
-function parseCodesPreview(value: string) {
-  return Array.from(
-    new Set(
-      value
-        .split(/[\s,，;；]+/)
-        .map((item) => item.trim())
-        .filter(Boolean),
-    ),
-  )
-}
-
-function SourceBadge({
-  label,
-  status,
-}: {
-  label: string
-  status: "SYNCED" | "MISSING"
-}) {
+function SourceBadge({ label, status }: { label: string; status: SourceStatus }) {
   return (
     <Badge
       variant="outline"
@@ -214,16 +195,10 @@ function SourceBadge({
   )
 }
 
-function ProductThumb({
-  src,
-  alt,
-}: {
-  src: string | null
-  alt: string
-}) {
+function ProductThumb({ src, alt }: { src: string | null; alt: string }) {
   if (!src) {
     return (
-      <div className="flex h-14 w-14 items-center justify-center rounded-2xl border bg-muted text-muted-foreground">
+      <div className="flex h-14 w-14 items-center justify-center rounded-lg border bg-muted text-muted-foreground">
         <ImageIcon className="size-5" />
       </div>
     )
@@ -232,26 +207,36 @@ function ProductThumb({
     <img
       src={src}
       alt={alt}
-      className="h-14 w-14 rounded-2xl border object-cover"
+      className="h-14 w-14 rounded-lg border object-cover"
       loading="lazy"
       referrerPolicy="no-referrer"
     />
   )
 }
 
+function selectedStatusesLabel(values: SourceStatus[]) {
+  if (values.length === 0) return "来源状态"
+  if (values.length === 2) return "已选 2 种状态"
+  return values[0] === "SYNCED" ? "已同步" : "未同步"
+}
+
 export default function ProductArchivesPage() {
   const [searchText, setSearchText] = useState("")
   const [brandFilter, setBrandFilter] = useState("all")
+  const [mdmStatusFilter, setMdmStatusFilter] = useState<SourceStatus[]>([])
+  const [deepdrawStatusFilter, setDeepdrawStatusFilter] = useState<SourceStatus[]>([])
   const [syncCodes, setSyncCodes] = useState("")
-  const [syncSource, setSyncSource] = useState<SyncSource>("mdm")
+  const [syncSource, setSyncSource] = useState<SyncSource>("mdm_deepdraw")
   const [deepdrawTenantName, setDeepdrawTenantName] = useState("电商巴拉巴拉")
-  const [syncIntervalMs, setSyncIntervalMs] = useState("1500")
   const [syncJobId, setSyncJobId] = useState<string | null>(null)
+  const [batchBucketText, setBatchBucketText] = useState("")
+  const [selectedSpus, setSelectedSpus] = useState<string[]>([])
+  const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
   const debouncedSearch = useDebounce(searchText, 300)
   const queryClient = useQueryClient()
-  const codePreview = parseCodesPreview(syncCodes)
+  const codePreview = parseBatchSearch(syncCodes)
 
-  const { data, isLoading } = useProductArchives(debouncedSearch, brandFilter)
+  const { data, isLoading } = useProductArchives(debouncedSearch, brandFilter, pagination)
   const { data: summary } = useProductArchiveSummary()
   const { data: config } = useProductArchiveConfig()
   const { data: syncJob } = useQuery<SyncJob>({
@@ -264,14 +249,36 @@ export default function ProductArchivesPage() {
     },
   })
 
+  const items = useMemo(() => {
+    return (data?.items ?? []).filter((item) => {
+      const mdmOk = mdmStatusFilter.length === 0 || mdmStatusFilter.includes(item.mdm_status)
+      const deepdrawOk = deepdrawStatusFilter.length === 0 || deepdrawStatusFilter.includes(item.deepdraw_status)
+      return mdmOk && deepdrawOk
+    })
+  }, [data?.items, deepdrawStatusFilter, mdmStatusFilter])
+  const selectedSet = useMemo(() => new Set(selectedSpus), [selectedSpus])
+  const allVisibleSelected = items.length > 0 && items.every((item) => selectedSet.has(item.spu_code))
+  const selectedBrand = config?.brands.find((item) => item.brandCode === brandFilter)
+  const recommendedTenant = selectedBrand?.deepdrawTenantName
+  const syncProgress = syncJob
+    ? Math.round(((syncJob.completed_count + syncJob.failed_count) / syncJob.total_count) * 100)
+    : 0
+  const batchBucketCount = parseBatchSearch(batchBucketText).length
+  const shouldChooseDeepdrawTenant = syncSource === "deepdraw" || syncSource === "mdm_deepdraw"
+  const syncSourceLabel = (source: SyncSource) => {
+    if (source === "mdm_deepdraw") return "MDM + 深绘"
+    if (source === "deepdraw") return "深绘"
+    return "MDM"
+  }
+
   const syncMutation = useMutation({
     mutationFn: async () => {
       if (codePreview.length === 0) throw new Error("请输入款号")
       return api.post<SyncJob>("/product-archives/sync-jobs", {
         source: syncSource,
         codes: syncCodes,
-        intervalMs: Number(syncIntervalMs),
-        deepdrawTenantName: syncSource === "deepdraw" ? deepdrawTenantName : undefined,
+        intervalMs: 1500,
+        deepdrawTenantName: shouldChooseDeepdrawTenant ? deepdrawTenantName : undefined,
       })
     },
     onSuccess: async (result) => {
@@ -284,290 +291,304 @@ export default function ProductArchivesPage() {
     },
   })
 
-  const syncProgress = syncJob
-    ? Math.round(((syncJob.completed_count + syncJob.failed_count) / syncJob.total_count) * 100)
-    : 0
-  const selectedBrand = config?.brands.find((item) => item.brandCode === brandFilter)
-  const recommendedTenant = selectedBrand?.deepdrawTenantName
+  const importBucketMutation = useMutation({
+    mutationFn: () => {
+      const spuCodes = batchBucketCount > 0 ? parseBatchSearch(batchBucketText) : selectedSpus
+      if (spuCodes.length === 0) throw new Error("请先勾选商品或粘贴款号")
+      return api.post<ImportBucketResult>("/shein-products/import", { spu_codes: spuCodes })
+    },
+    onSuccess: async (result) => {
+      toast.success(`已加入 SHEIN 商品分桶：${formatNumber(result.imported_count)} 款`)
+      if (result.missing.length) toast.warning(`未找到款号：${result.missing.join("、")}`)
+      setSelectedSpus([])
+      setBatchBucketText("")
+      await queryClient.invalidateQueries({ queryKey: ["shein-products"] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "加入分桶失败")
+    },
+  })
+
+  function toggleStatus(
+    values: SourceStatus[],
+    setter: (value: SourceStatus[]) => void,
+    status: SourceStatus,
+  ) {
+    setter(values.includes(status) ? values.filter((item) => item !== status) : [...values, status])
+  }
+
+  function toggleSpu(spuCode: string) {
+    setSelectedSpus((prev) =>
+      prev.includes(spuCode) ? prev.filter((item) => item !== spuCode) : [...prev, spuCode],
+    )
+  }
+
+  function toggleAllVisible(checked: boolean) {
+    if (!checked) {
+      setSelectedSpus((prev) => prev.filter((spuCode) => !items.some((item) => item.spu_code === spuCode)))
+      return
+    }
+    setSelectedSpus((prev) => Array.from(new Set([...prev, ...items.map((item) => item.spu_code)])))
+  }
+
+  const rowSummary = [
+    `共 ${formatNumber(data?.pagination.total ?? summary?.total ?? 0)} 条`,
+    `MDM ${formatNumber(summary?.mdm_count ?? 0)}`,
+    `深绘 ${formatNumber(summary?.deepdraw_count ?? 0)}`,
+    `双源完整 ${formatNumber(summary?.complete_count ?? 0)}`,
+    `已勾选 ${formatNumber(selectedSpus.length)}`,
+  ].join(" / ")
 
   return (
     <PageContainer className="flex flex-col gap-6">
       <PageHeader
         title="商品档案"
-        description="聚合 MDM 商品主数据与深绘内容包，按 SPU 查看双源状态、图片资产和同步进度。"
+        description="源数据留档页，只保留 MDM、深绘内容包和图片素材状态；平台业务字段进入 SHEIN 商品分桶处理。"
       />
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard
-          title="档案总数"
-          value={formatNumber(summary?.total)}
-          icon={PackageSearch}
-        />
-        <StatCard
-          title="MDM 已同步"
-          value={formatNumber(summary?.mdm_count)}
-          icon={Database}
-        />
-        <StatCard
-          title="深绘已同步"
-          value={formatNumber(summary?.deepdraw_count)}
-          icon={FileImage}
-        />
-        <StatCard
-          title="双源完整"
-          value={formatNumber(summary?.complete_count)}
-          icon={RefreshCw}
-        />
-      </div>
-
       <Card className="min-h-0">
-        <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle>档案列表</CardTitle>
-          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button type="button" variant="outline">
-                  <RefreshCw className="size-4" />
-                  批量同步
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="sm:max-w-2xl">
-                <DialogHeader>
-                  <DialogTitle>批量同步</DialogTitle>
-                  <DialogDescription>
-                    粘贴一批款号后入队执行，服务端会串行请求并按间隔控频，避免 MDM 或深绘接口被打得太密。
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="space-y-3">
-                  <Textarea
-                    value={syncCodes}
-                    onChange={(event) => setSyncCodes(event.target.value)}
-                    placeholder={"粘贴款号，支持换行、逗号或空格分隔\n208226102001\n208226103201"}
-                    className="min-h-32"
-                  />
-                  <div className="grid gap-2 sm:grid-cols-[132px_minmax(0,1fr)_108px]">
-                    <Select
-                      value={syncSource}
-                      onValueChange={(value) => {
-                        const nextSource = value as SyncSource
-                        setSyncSource(nextSource)
-                        if (nextSource === "deepdraw" && recommendedTenant) {
-                          setDeepdrawTenantName(recommendedTenant)
-                        }
-                      }}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="mdm">MDM</SelectItem>
-                        <SelectItem value="deepdraw">深绘</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Input
-                      value={syncIntervalMs}
-                      onChange={(event) => setSyncIntervalMs(event.target.value)}
-                      inputMode="numeric"
-                      placeholder="请求间隔 ms"
-                      className="min-w-0"
+        <CardHeader className="gap-4 pb-3">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+            <div className="space-y-1">
+              <CardTitle>源数据列表</CardTitle>
+              <p className="text-sm text-muted-foreground">{rowSummary}</p>
+            </div>
+            <div className="flex w-full flex-col gap-2 md:flex-row xl:w-auto">
+              <Dialog>
+                <DialogTrigger asChild>
+                  <Button type="button" variant="outline">
+                    <RefreshCw className="size-4" />
+                    批量同步
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="sm:max-w-2xl">
+                  <DialogHeader>
+                    <DialogTitle>批量同步</DialogTitle>
+                    <DialogDescription>
+                      粘贴一批款号后入队执行，服务端会串行请求并按 1500ms 间隔控频。
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-3">
+                    <Textarea
+                      value={syncCodes}
+                      onChange={(event) => setSyncCodes(event.target.value)}
+                      placeholder={"粘贴款号，支持换行、逗号或空格分隔\n208226102001\n208226103201"}
+                      className="min-h-32"
                     />
+                    <div className="grid gap-3 sm:grid-cols-[180px_minmax(0,1fr)_108px] sm:items-end">
+                      <div className="space-y-1.5">
+                        <div className="text-xs font-medium text-muted-foreground">同步方式</div>
+                        <Select
+                          value={syncSource}
+                          onValueChange={(value) => {
+                            const nextSource = value as SyncSource
+                            setSyncSource(nextSource)
+                            if ((nextSource === "deepdraw" || nextSource === "mdm_deepdraw") && recommendedTenant) {
+                              setDeepdrawTenantName(recommendedTenant)
+                            }
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="mdm_deepdraw">MDM + 深绘</SelectItem>
+                            <SelectItem value="mdm">MDM</SelectItem>
+                            <SelectItem value="deepdraw">深绘</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      {shouldChooseDeepdrawTenant ? (
+                        <div className="space-y-1.5">
+                          <div className="text-xs font-medium text-muted-foreground">深绘租户</div>
+                          <Select value={deepdrawTenantName} onValueChange={setDeepdrawTenantName}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="选择深绘同步租户" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {config?.deepdraw_tenants.map((tenant) => (
+                                <SelectItem key={tenant.tenantName} value={tenant.tenantName}>
+                                  {tenant.tenantName} / {tenant.merchantId}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      ) : (
+                        <div className="hidden sm:block" />
+                      )}
+                      <Button
+                        type="button"
+                        onClick={() => syncMutation.mutate()}
+                        disabled={syncMutation.isPending || codePreview.length === 0}
+                      >
+                        {syncMutation.isPending ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <RefreshCw className="size-4" />
+                        )}
+                        入队
+                      </Button>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      已识别 {codePreview.length} 个款号；服务端会串行同步，默认间隔 1500ms。
+                    </div>
+                    {syncJob ? (
+                      <div className="space-y-3 rounded-lg border bg-muted/40 p-4">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="font-medium">
+                            {syncSourceLabel(syncJob.source)} 队列：
+                            {syncJob.status === "completed" ? "已完成" : "执行中"}
+                          </span>
+                          <span className="text-muted-foreground">
+                            {syncJob.completed_count + syncJob.failed_count}/{syncJob.total_count}
+                          </span>
+                        </div>
+                        <Progress value={syncProgress} />
+                        <div className="max-h-28 space-y-1 overflow-auto font-mono text-xs">
+                          {syncJob.items.map((item) => (
+                            <div key={item.spu_code} className="flex items-center justify-between gap-2">
+                              <span>{item.spu_code}</span>
+                              <span className={item.status === "failed" ? "text-destructive" : "text-muted-foreground"}>
+                                {item.error ?? item.status}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </DialogContent>
+              </Dialog>
+
+              <Dialog>
+                <DialogTrigger asChild>
+                  <Button type="button" variant="outline">
+                    <Check className="size-4" />
+                    加入 SHEIN 商品分桶
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>加入 SHEIN 商品分桶</DialogTitle>
+                    <DialogDescription>
+                      默认使用当前勾选商品；也可以粘贴一批款号直接入桶，进入 SHEIN 业务字段清洗流程。
+                    </DialogDescription>
+                  </DialogHeader>
+                  <Textarea
+                    value={batchBucketText}
+                    onChange={(event) => setBatchBucketText(event.target.value)}
+                    rows={8}
+                    placeholder={"可选：粘贴款号覆盖当前勾选\n201122104105\n208226102001"}
+                  />
+                  <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
+                    <span>
+                      当前勾选 {formatNumber(selectedSpus.length)} 款；批量输入 {formatNumber(batchBucketCount)} 款
+                    </span>
                     <Button
                       type="button"
-                      onClick={() => syncMutation.mutate()}
-                      disabled={syncMutation.isPending || codePreview.length === 0}
+                      onClick={() => importBucketMutation.mutate()}
+                      disabled={importBucketMutation.isPending || (selectedSpus.length === 0 && batchBucketCount === 0)}
                     >
-                      {syncMutation.isPending ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <RefreshCw className="size-4" />
-                      )}
-                      入队
+                      {importBucketMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
+                      确认入桶
                     </Button>
                   </div>
-                  {syncSource === "deepdraw" ? (
-                    <Select
-                      value={deepdrawTenantName}
-                      onValueChange={setDeepdrawTenantName}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="选择深绘同步租户" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {config?.deepdraw_tenants.map((tenant) => (
-                          <SelectItem key={tenant.tenantName} value={tenant.tenantName}>
-                            {tenant.tenantName} / {tenant.merchantId}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : null}
-                  <div className="text-xs text-muted-foreground">
-                    已识别 {codePreview.length} 个款号；服务端会串行同步，默认间隔 1500ms。
-                    {syncSource === "deepdraw" ? ` 当前租户：${deepdrawTenantName}` : ""}
-                  </div>
-                  {syncJob ? (
-                    <div className="space-y-3 rounded-2xl border bg-muted/40 p-4">
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="font-medium">
-                          {syncJob.source.toUpperCase()} 队列：{syncJob.status === "completed" ? "已完成" : "执行中"}
-                        </span>
-                        <span className="text-muted-foreground">
-                          {syncJob.completed_count + syncJob.failed_count}/{syncJob.total_count}
-                        </span>
-                      </div>
-                      <Progress value={syncProgress} />
-                      <div className="max-h-28 space-y-1 overflow-auto font-mono text-xs">
-                        {syncJob.items.map((item) => (
-                          <div
-                            key={item.spu_code}
-                            className="flex items-center justify-between gap-2"
-                          >
-                            <span>{item.spu_code}</span>
-                            <span
-                              className={
-                                item.status === "failed"
-                                  ? "text-destructive"
-                                  : "text-muted-foreground"
-                              }
-                            >
-                              {item.error ?? item.status}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              </DialogContent>
-            </Dialog>
-            <Select
-              value={brandFilter}
-              onValueChange={(value) => {
-                setBrandFilter(value)
-                const brand = config?.brands.find((item) => item.brandCode === value)
-                if (brand?.deepdrawTenantName) {
-                  setDeepdrawTenantName(brand.deepdrawTenantName)
-                }
-              }}
-            >
-              <SelectTrigger className="sm:w-[180px]">
-                <SelectValue placeholder="全部品牌" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部品牌</SelectItem>
-                {config?.brands.map((brand) => (
-                  <SelectItem key={brand.brandCode} value={brand.brandCode}>
-                    {brand.brandCode} {brand.brandName}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <div className="relative w-full sm:w-[360px]">
-              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={searchText}
-                onChange={(event) => setSearchText(event.target.value)}
-                placeholder="搜索款号、标题、品牌、类目"
-                className="pl-9"
-              />
+                </DialogContent>
+              </Dialog>
+
+              <Select
+                value={brandFilter}
+                onValueChange={(value) => {
+                  setBrandFilter(value)
+                  setPagination((current) => ({ ...current, offset: 0 }))
+                  const brand = config?.brands.find((item) => item.brandCode === value)
+                  if (brand?.deepdrawTenantName) setDeepdrawTenantName(brand.deepdrawTenantName)
+                }}
+              >
+                <SelectTrigger className="md:w-[180px]">
+                  <SelectValue placeholder="全部品牌" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部品牌</SelectItem>
+                  {config?.brands.map((brand) => (
+                    <SelectItem key={brand.brandCode} value={brand.brandCode}>
+                      {brand.brandCode} {brand.brandName}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline">
+                    {selectedStatusesLabel([...mdmStatusFilter, ...deepdrawStatusFilter])}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuLabel>MDM 状态</DropdownMenuLabel>
+                  <DropdownMenuCheckboxItem
+                    checked={mdmStatusFilter.includes("SYNCED")}
+                    onCheckedChange={() => toggleStatus(mdmStatusFilter, setMdmStatusFilter, "SYNCED")}
+                  >
+                    MDM 已同步
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem
+                    checked={mdmStatusFilter.includes("MISSING")}
+                    onCheckedChange={() => toggleStatus(mdmStatusFilter, setMdmStatusFilter, "MISSING")}
+                  >
+                    MDM 未同步
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel>深绘状态</DropdownMenuLabel>
+                  <DropdownMenuCheckboxItem
+                    checked={deepdrawStatusFilter.includes("SYNCED")}
+                    onCheckedChange={() => toggleStatus(deepdrawStatusFilter, setDeepdrawStatusFilter, "SYNCED")}
+                  >
+                    深绘已同步
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem
+                    checked={deepdrawStatusFilter.includes("MISSING")}
+                    onCheckedChange={() => toggleStatus(deepdrawStatusFilter, setDeepdrawStatusFilter, "MISSING")}
+                  >
+                    深绘未同步
+                  </DropdownMenuCheckboxItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+
+              <div className="relative md:w-[320px]">
+                <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={searchText}
+                  onChange={(event) => {
+                    setSearchText(event.target.value)
+                    setPagination((current) => ({ ...current, offset: 0 }))
+                  }}
+                  placeholder="搜索款号、源标题、品牌、源类目"
+                  className="pl-9"
+                />
+              </div>
             </div>
           </div>
         </CardHeader>
         <CardContent>
-          <div className="space-y-3 md:hidden">
-            {isLoading ? (
-              Array.from({ length: 3 }).map((_, index) => (
-                <div key={index} className="rounded-2xl border p-4">
-                  <Skeleton className="mb-3 h-14 w-14 rounded-2xl" />
-                  <Skeleton className="h-5 w-full" />
-                </div>
-              ))
-            ) : data?.items.length ? (
-              data.items.map((item) => (
-                <div key={item.spu_code} className="rounded-2xl border bg-card p-4">
-                  <div className="flex gap-3">
-                    <ProductThumb
-                      src={item.hero_image_url}
-                      alt={item.spu_name ?? item.deepdraw_title ?? item.spu_code}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <Link
-                        to={`/product-archives/${item.spu_code}`}
-                        className="font-medium hover:text-[var(--brand-deep)] hover:underline"
-                      >
-                        {item.spu_code}
-                      </Link>
-                      <div className="mt-1 line-clamp-2 text-sm text-muted-foreground">
-                        {item.listing_title_cn
-                          ?? item.spu_name
-                          ?? item.deepdraw_title
-                          ?? "—"}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-1.5">
-                    <SourceBadge label="MDM " status={item.mdm_status} />
-                    <SourceBadge label="深绘 " status={item.deepdraw_status} />
-                  </div>
-                  <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-                    <div>
-                      <div className="text-xs text-muted-foreground">深绘 SKU</div>
-                      <div>{item.deepdraw_skc_count} SKC / {item.deepdraw_sku_count} SKU</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-muted-foreground">SHEIN 类目</div>
-                      <div>{item.matched_shein_category_name ?? item.suggested_shein_category_name ?? item.shein_category_name ?? item.deepdraw_category_name ?? "—"}</div>
-                      {item.matched_shein_category_name ? (
-                        <div className="text-xs text-muted-foreground">
-                          映射规则：{item.matched_category_rule_source ?? "—"}
-                        </div>
-                      ) : item.suggested_shein_category_name ? (
-                        <div className="text-xs text-muted-foreground">
-                          AI 建议：{item.suggested_category_rule_source ?? "—"}
-                        </div>
-                      ) : null}
-                    </div>
-                    <div>
-                      <div className="text-xs text-muted-foreground">图片</div>
-                      <div>{item.product_image_count} 商品图 / {item.detail_image_count} 商详图</div>
-                    </div>
-                    <div className="col-span-2">
-                      <div className="text-xs text-muted-foreground">发布字段</div>
-                      <div>
-                        {formatCurrency(item.publish_supply_price_cny)}
-                        {" / "}
-                        {formatCurrency(item.publish_retail_price_usd, "USD")}
-                        {" / "}
-                        {item.publish_package_size_text ?? "—"}
-                      </div>
-                    </div>
-                  </div>
-                  <Button asChild variant="outline" size="sm" className="mt-3 w-full">
-                    <Link to={`/product-archives/${item.spu_code}`}>
-                      查看档案
-                      <ArrowRight className="size-4" />
-                    </Link>
-                  </Button>
-                </div>
-              ))
-            ) : (
-              <div className="rounded-2xl border p-8 text-center text-sm text-muted-foreground">
-                暂无商品档案
-              </div>
-            )}
-          </div>
-
-          <div className="hidden overflow-hidden rounded-2xl border md:block">
+          <div className="hidden overflow-hidden rounded-lg border md:block">
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-12">
+                    <Checkbox
+                      checked={allVisibleSelected}
+                      onCheckedChange={(checked) => toggleAllVisible(Boolean(checked))}
+                      aria-label="全选当前商品"
+                    />
+                  </TableHead>
                   <TableHead className="w-[88px]">图片</TableHead>
                   <TableHead>商品</TableHead>
                   <TableHead>来源状态</TableHead>
-                  <TableHead>发品</TableHead>
-                  <TableHead>MDM</TableHead>
-                  <TableHead>深绘</TableHead>
-                  <TableHead>图片</TableHead>
+                  <TableHead>MDM 源数据</TableHead>
+                  <TableHead>深绘源数据</TableHead>
+                  <TableHead>图片素材</TableHead>
                   <TableHead className="w-[92px]" />
                 </TableRow>
               </TableHeader>
@@ -575,22 +596,23 @@ export default function ProductArchivesPage() {
                 {isLoading ? (
                   Array.from({ length: 6 }).map((_, index) => (
                     <TableRow key={index}>
-                      <TableCell>
-                        <Skeleton className="h-14 w-14 rounded-2xl" />
-                      </TableCell>
-                      <TableCell colSpan={7}>
-                        <Skeleton className="h-5 w-full" />
+                      <TableCell colSpan={8}>
+                        <Skeleton className="h-6 w-full" />
                       </TableCell>
                     </TableRow>
                   ))
-                ) : data?.items.length ? (
-                  data.items.map((item) => (
+                ) : items.length ? (
+                  items.map((item) => (
                     <TableRow key={item.spu_code}>
                       <TableCell>
-                        <ProductThumb
-                          src={item.hero_image_url}
-                          alt={item.spu_name ?? item.deepdraw_title ?? item.spu_code}
+                        <Checkbox
+                          checked={selectedSet.has(item.spu_code)}
+                          onCheckedChange={() => toggleSpu(item.spu_code)}
+                          aria-label={`选择 ${item.spu_code}`}
                         />
+                      </TableCell>
+                      <TableCell>
+                        <ProductThumb src={item.hero_image_url} alt={item.spu_name ?? item.deepdraw_title ?? item.spu_code} />
                       </TableCell>
                       <TableCell>
                         <div className="space-y-1">
@@ -601,10 +623,7 @@ export default function ProductArchivesPage() {
                             {item.spu_code}
                           </Link>
                           <div className="max-w-[360px] truncate text-sm text-muted-foreground">
-                            {item.listing_title_cn
-                              ?? item.spu_name
-                              ?? item.deepdraw_title
-                              ?? "—"}
+                            {item.listing_title_cn ?? item.spu_name ?? item.deepdraw_title ?? "—"}
                           </div>
                           <div className="text-xs text-muted-foreground">
                             {[item.mdm_brand_name ?? item.deepdraw_brand_name, item.year, item.season_name]
@@ -620,40 +639,8 @@ export default function ProductArchivesPage() {
                         </div>
                       </TableCell>
                       <TableCell className="text-sm">
-                        <div>{item.matched_shein_category_name ?? item.suggested_shein_category_name ?? item.shein_category_name ?? "待补 SHEIN 类目"}</div>
-                        {item.matched_shein_category_name ? (
-                          <div className="text-xs text-muted-foreground">
-                            映射规则：{item.matched_category_rule_source ?? "—"}
-                          </div>
-                        ) : item.suggested_shein_category_name ? (
-                          <div className="text-xs text-muted-foreground">
-                            AI 建议：{item.suggested_category_rule_source ?? "—"}
-                          </div>
-                        ) : null}
-                        <div className="text-muted-foreground">
-                          老款号：{item.old_style_code ?? "—"}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          深绘资料：{item.deepdraw_info_status ?? (item.deepdraw_status === "SYNCED" ? "已同步" : "未同步")}
-                        </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          发布字段：{formatCurrency(item.publish_supply_price_cny)}
-                          {" / "}
-                          {formatCurrency(item.publish_retail_price_usd, "USD")}
-                          {" / "}
-                          {item.publish_package_size_text ?? "—"}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          折扣：{formatPercent(item.publish_supply_discount)}
-                          {" / "}
-                          毛重记录：{formatNumber(item.publish_weight_record_count)}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-sm">
                         <div>{item.product_line_name ?? item.middle_class_name ?? "—"}</div>
-                        <div className="text-muted-foreground">
-                          {item.subclass_name ?? item.mdm_status_name ?? "—"}
-                        </div>
+                        <div className="text-muted-foreground">{item.subclass_name ?? item.mdm_status_name ?? "—"}</div>
                         <div className="text-xs text-muted-foreground">
                           {item.mdm_synced_at ? formatDateTime(item.mdm_synced_at) : "—"}
                         </div>
@@ -664,9 +651,7 @@ export default function ProductArchivesPage() {
                           {item.deepdraw_skc_count} SKC / {item.deepdraw_sku_count} SKU
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          {item.deepdraw_synced_at
-                            ? formatDateTime(item.deepdraw_synced_at)
-                            : "—"}
+                          {item.deepdraw_synced_at ? formatDateTime(item.deepdraw_synced_at) : "—"}
                         </div>
                       </TableCell>
                       <TableCell className="text-sm">
@@ -687,10 +672,7 @@ export default function ProductArchivesPage() {
                   ))
                 ) : (
                   <TableRow>
-                    <TableCell
-                      colSpan={8}
-                      className="h-28 text-center text-muted-foreground"
-                    >
+                    <TableCell colSpan={8} className="h-28 text-center text-muted-foreground">
                       暂无商品档案
                     </TableCell>
                   </TableRow>
@@ -698,6 +680,58 @@ export default function ProductArchivesPage() {
               </TableBody>
             </Table>
           </div>
+
+          <div className="space-y-3 md:hidden">
+            {items.map((item) => (
+              <div key={item.spu_code} className="rounded-lg border bg-card p-4">
+                <div className="flex gap-3">
+                  <Checkbox
+                    checked={selectedSet.has(item.spu_code)}
+                    onCheckedChange={() => toggleSpu(item.spu_code)}
+                    aria-label={`选择 ${item.spu_code}`}
+                  />
+                  <ProductThumb src={item.hero_image_url} alt={item.spu_name ?? item.deepdraw_title ?? item.spu_code} />
+                  <div className="min-w-0 flex-1">
+                    <Link to={`/product-archives/${item.spu_code}`} className="font-medium">
+                      {item.spu_code}
+                    </Link>
+                    <div className="mt-1 line-clamp-2 text-sm text-muted-foreground">
+                      {item.listing_title_cn ?? item.spu_name ?? item.deepdraw_title ?? "—"}
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  <SourceBadge label="MDM " status={item.mdm_status} />
+                  <SourceBadge label="深绘 " status={item.deepdraw_status} />
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                  <div>
+                    <div className="text-xs text-muted-foreground">MDM</div>
+                    <div>{item.mdm_skc_count} SKC / {item.mdm_sku_count} SKU</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">深绘</div>
+                    <div>{item.deepdraw_skc_count} SKC / {item.deepdraw_sku_count} SKU</div>
+                  </div>
+                  <div className="col-span-2">
+                    <div className="text-xs text-muted-foreground">图片</div>
+                    <div>{item.product_image_count} 商品图 / {item.detail_image_count} 商详图</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {!isLoading && items.length === 0 ? (
+              <div className="rounded-lg border p-8 text-center text-sm text-muted-foreground">
+                暂无商品档案
+              </div>
+            ) : null}
+          </div>
+
+          <ServerPagination
+            pagination={data?.pagination}
+            onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
+            onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
+          />
         </CardContent>
       </Card>
     </PageContainer>

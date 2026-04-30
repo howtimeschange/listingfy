@@ -16,58 +16,51 @@ test("product archive bulk sync is launched from a dialog instead of an inline p
   assert.doesNotMatch(source, /xl:grid-cols-\[1fr_560px\]/);
 });
 
-test("product archive pages expose key SHEIN upload-readiness fields", async () => {
+test("product archive bulk sync defaults to combined sync without exposing interval input", async () => {
+  const source = await readFile(PAGE_FILE, "utf8");
+
+  assert.match(source, /useState<SyncSource>\("mdm_deepdraw"\)/);
+  assert.match(source, />同步方式</);
+  assert.match(source, />深绘租户</);
+  assert.match(source, /<SelectItem value="mdm_deepdraw">MDM \+ 深绘<\/SelectItem>/);
+  assert.doesNotMatch(source, /syncIntervalMs/);
+  assert.doesNotMatch(source, /请求间隔 ms/);
+});
+
+test("product archive pages stay source-only and move SHEIN business fields into bucket workflow", async () => {
   const [listPage, detailPage, route] = await Promise.all([
     readFile(PAGE_FILE, "utf8"),
     readFile(DETAIL_PAGE_FILE, "utf8"),
     readFile(ROUTE_FILE, "utf8"),
   ]);
 
-  for (const field of ["shein_category_name", "old_style_code", "deepdraw_info_status"]) {
-    assert.match(route, new RegExp(`spu\\.${field}`));
-    assert.match(listPage, new RegExp(field));
-    assert.match(detailPage, new RegExp(field));
-  }
-
   for (const field of [
+    "shein_category_name",
+    "matched_shein_category_name",
+    "suggested_shein_category_name",
+    "publish_supply_price_cny",
+    "publish_retail_price_usd",
+    "publish_package_size_text",
+    "publish_weight_record_count",
     "shein_size_name",
     "supply_price_cny",
     "suggested_retail_price_usd",
     "gross_weight_g",
     "package_size_text",
   ]) {
-    assert.match(detailPage, new RegExp(field));
+    assert.doesNotMatch(listPage, new RegExp(field), `${field} should not be rendered on archive list`);
+    assert.doesNotMatch(detailPage, new RegExp(field), `${field} should not be rendered on archive detail`);
   }
 
-  assert.match(route, /sizeTables/);
-  assert.match(route, /sizeTableRows/);
-  assert.match(detailPage, /尺码表/);
-});
-
-test("product archive pages expose category mapping rule results next to MDM SHEIN fields", async () => {
-  const [listPage, detailPage, route] = await Promise.all([
-    readFile(PAGE_FILE, "utf8"),
-    readFile(DETAIL_PAGE_FILE, "utf8"),
-    readFile(ROUTE_FILE, "utf8"),
-  ]);
-
-  assert.match(route, /matched_shein_category_id/);
-  assert.match(route, /matched_shein_category_name/);
-  assert.match(route, /matched_category_rule_source/);
-  assert.match(route, /left join mdm_shein_category_mapping_rule matched_rule/);
-  assert.match(route, /left join v_shein_leaf_category matched_category/);
-  assert.match(route, /mdm_shein_category_ai_suggestion ai_suggestion/);
-  assert.match(route, /suggested_shein_category_name/);
-  assert.match(listPage, /matched_shein_category_name/);
-  assert.match(listPage, /suggested_shein_category_name/);
-  assert.match(listPage, /matched_category_rule_source/);
-  assert.match(listPage, /映射规则/);
-  assert.match(listPage, /AI 建议/);
-  assert.match(detailPage, /matched_shein_category_name/);
-  assert.match(detailPage, /suggested_shein_category_name/);
-  assert.match(detailPage, /matched_category_rule_source/);
-  assert.match(detailPage, /规则匹配类目/);
-  assert.match(detailPage, /AI 建议类目/);
+  assert.doesNotMatch(route, /publish_supply_price_cny/);
+  assert.doesNotMatch(route, /matched_shein_category_name/);
+  assert.match(listPage, /加入 SHEIN 商品分桶/);
+  assert.match(listPage, /\/shein-products\/import/);
+  assert.match(listPage, /selectedSpus/);
+  assert.match(listPage, /源数据/);
+  assert.match(detailPage, /源数据概览/);
+  assert.match(detailPage, /商品档案尺码/);
+  assert.match(detailPage, /挂牌价/);
 });
 
 test("product archive detail page tolerates older API responses without size tables", async () => {

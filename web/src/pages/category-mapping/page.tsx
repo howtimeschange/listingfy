@@ -4,10 +4,8 @@ import {
   ArrowRight,
   Bot,
   CheckCircle2,
-  CircleAlert,
   GitBranch,
   ImageOff,
-  Layers3,
   Search,
   Sparkles,
   Split,
@@ -17,9 +15,10 @@ import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { EmptyState } from "@/components/empty-state"
+import { ServerPagination } from "@/components/server-pagination"
+import type { ServerPaginationState } from "@/components/server-pagination"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
-import { StatCard } from "@/components/stat-card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -125,6 +124,7 @@ interface SkcSuggestion {
 
 interface RulesResponse {
   rules: MappingRule[]
+  pagination: ServerPaginationState
 }
 
 interface UnmappedGroupsResponse {
@@ -141,10 +141,10 @@ interface AiSuggestionsResponse {
   }
 }
 
-function useCategoryRules(search: string) {
+function useCategoryRules(search: string, pagination: { limit: number; offset: number }) {
   return useQuery<RulesResponse>({
-    queryKey: ["category-mapping", "rules", search],
-    queryFn: () => api.get(`/category-mapping/rules?q=${encodeURIComponent(search)}`),
+    queryKey: ["category-mapping", "rules", search, pagination],
+    queryFn: () => api.get(`/category-mapping/rules?q=${encodeURIComponent(search)}&limit=${pagination.limit}&offset=${pagination.offset}`),
   })
 }
 
@@ -423,8 +423,9 @@ export default function CategoryMappingPage() {
   const queryClient = useQueryClient()
   const [searchText, setSearchText] = useState("")
   const [selectedSuggestion, setSelectedSuggestion] = useState<AiSuggestion | null>(null)
+  const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
   const debouncedSearch = useDebounce(searchText, 300)
-  const rulesQuery = useCategoryRules(debouncedSearch)
+  const rulesQuery = useCategoryRules(debouncedSearch, pagination)
   const groupsQuery = useUnmappedGroups()
   const suggestionsQuery = usePersistedAiSuggestions()
   const aiMutation = useCategoryMatchSuggestions()
@@ -482,20 +483,13 @@ export default function CategoryMappingPage() {
         </Button>
       </PageHeader>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard title="已配置规则" value={formatNumber(rules.length)} icon={GitBranch} />
-        <StatCard title="未映射组合" value={formatNumber(groups.length)} icon={Layers3} />
-        <StatCard title="高置信建议" value={formatNumber(highConfidenceCount)} icon={CheckCircle2} />
-        <StatCard title="需复核" value={formatNumber(ambiguousCount)} icon={CircleAlert} />
-      </div>
-
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
         <Card>
           <CardHeader className="flex flex-col gap-3 pb-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <CardTitle>AI 匹配审核</CardTitle>
               <div className="mt-1 text-sm text-muted-foreground">
-                按 MDM 中类、小类、性别、年龄段聚合，确认后写入映射规则。
+                规则 {formatNumber(rules.length)} / 未映射组合 {formatNumber(groups.length)} / 高置信建议 {formatNumber(highConfidenceCount)} / 需复核 {formatNumber(ambiguousCount)}
               </div>
             </div>
             <Button variant="outline" onClick={handleRunAi} disabled={aiMutation.isPending}>
@@ -628,7 +622,7 @@ export default function CategoryMappingPage() {
               </div>
             ) : rules.length ? (
               <div className="space-y-3">
-                {rules.slice(0, 12).map((rule) => (
+                {rules.map((rule) => (
                   <div key={rule.id} className="rounded-2xl border bg-card p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
@@ -654,6 +648,11 @@ export default function CategoryMappingPage() {
             ) : (
               <EmptyState message="暂无类目映射规则" icon={GitBranch} />
             )}
+            <ServerPagination
+              pagination={rulesQuery.data?.pagination}
+              onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
+              onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
+            />
           </CardContent>
         </Card>
       </div>

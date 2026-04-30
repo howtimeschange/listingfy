@@ -6,10 +6,11 @@ import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { exportSpreadsheet, parseBatchSearch, readSpreadsheetFile } from "@/lib/spreadsheet"
 import type { SpreadsheetRow } from "@/lib/spreadsheet"
+import { ServerPagination } from "@/components/server-pagination"
+import type { ServerPaginationState } from "@/components/server-pagination"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
 import { EmptyState } from "@/components/empty-state"
-import { StatCard } from "@/components/stat-card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -45,6 +46,7 @@ interface SizeConversionRule {
 
 interface RuleList {
   items: SizeConversionRule[]
+  pagination: ServerPaginationState
 }
 
 interface ImportResult {
@@ -59,12 +61,12 @@ const emptyForm = {
   note: "",
 }
 
-function useSizeRules(search: string, batchSearch: string) {
+function useSizeRules(search: string, batchSearch: string, pagination: { limit: number; offset: number }) {
   return useQuery<RuleList>({
-    queryKey: ["business-rules", "size-conversions", search, batchSearch],
+    queryKey: ["business-rules", "size-conversions", search, batchSearch, pagination],
     queryFn: () =>
       api.get(
-        `/business-rules/size-conversions?q=${encodeURIComponent(search)}&batch_search=${encodeURIComponent(batchSearch)}&limit=500`,
+        `/business-rules/size-conversions?q=${encodeURIComponent(search)}&batch_search=${encodeURIComponent(batchSearch)}&limit=${pagination.limit}&offset=${pagination.offset}`,
       ),
   })
 }
@@ -75,9 +77,10 @@ export default function SizeConversionPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<SizeConversionRule | null>(null)
   const [form, setForm] = useState(emptyForm)
+  const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
   const queryClient = useQueryClient()
 
-  const { data, isLoading } = useSizeRules(search, batchSearchText)
+  const { data, isLoading } = useSizeRules(search, batchSearchText, pagination)
   const items = data?.items ?? []
   const batchCount = useMemo(() => parseBatchSearch(batchSearchText).length, [batchSearchText])
 
@@ -154,8 +157,8 @@ export default function SizeConversionPage() {
   return (
     <PageContainer className="space-y-6">
       <PageHeader
-        title="尺码转换规则"
-        description="维护 MDM 尺码到 SHEIN 尺码的映射，支持表格导入导出、批量搜索、编辑和增删改查。"
+        title="SHEIN 尺码转换"
+        description="维护 MDM 尺码到 SHEIN 尺码的映射；这是 SHEIN 适配规则，后续其他平台会使用各自的尺码规则。"
       >
         <Button variant="outline" onClick={exportRows}>
           <Download className="mr-2 size-4" />
@@ -183,16 +186,15 @@ export default function SizeConversionPage() {
         </Button>
       </PageHeader>
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <StatCard title="规则数量" value={formatNumber(items.length)} />
-        <StatCard title="批量搜索" value={batchCount ? `${batchCount} 个` : "未启用"} />
-        <StatCard title="示例格式" value="080 -> 9-12M" description="按表格 Shein-Size / 尺码 导入" />
-      </div>
-
       <Card>
         <CardHeader className="gap-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-            <CardTitle>规则列表</CardTitle>
+            <div>
+              <CardTitle>SHEIN 尺码规则列表</CardTitle>
+              <p className="mt-1 text-sm text-muted-foreground">
+                规则 {formatNumber(items.length)} / 批量搜索 {batchCount ? `${batchCount} 个` : "未启用"} / 示例 080 {"->"} 9-12M
+              </p>
+            </div>
             <div className="flex w-full flex-col gap-2 lg:w-auto lg:flex-row">
               <div className="relative lg:w-72">
                 <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
@@ -227,7 +229,7 @@ export default function SizeConversionPage() {
           {isLoading ? (
             <div className="py-12 text-center text-sm text-muted-foreground">加载中...</div>
           ) : items.length === 0 ? (
-            <EmptyState message="暂无尺码转换规则" />
+            <EmptyState message="暂无 SHEIN 尺码转换规则" />
           ) : (
             <Table>
               <TableHeader>
@@ -271,14 +273,19 @@ export default function SizeConversionPage() {
               </TableBody>
             </Table>
           )}
+          <ServerPagination
+            pagination={data?.pagination}
+            onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
+            onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
+          />
         </CardContent>
       </Card>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editing ? "编辑尺码转换规则" : "新增尺码转换规则"}</DialogTitle>
-            <DialogDescription>保存后会直接参与发布前尺码字段补齐。</DialogDescription>
+            <DialogTitle>{editing ? "编辑 SHEIN 尺码转换规则" : "新增 SHEIN 尺码转换规则"}</DialogTitle>
+            <DialogDescription>保存后会直接参与 SHEIN 发布前尺码字段补齐。</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4">
             <div className="grid gap-2">

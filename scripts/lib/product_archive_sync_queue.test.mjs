@@ -108,3 +108,33 @@ test("queue passes sync options to each item", async () => {
 
   assert.deepEqual(seen, [["208226102001", "迷你巴拉"]]);
 });
+
+test("queue accepts combined mdm and deepdraw sync jobs", async () => {
+  const events = [];
+  const queue = createProductArchiveSyncQueue({
+    wait: async () => {},
+    syncOne: async ({ source, spuCode, options }) => {
+      events.push([source, spuCode, options.deepdrawTenantName]);
+      return {
+        mdm: { ok: true },
+        deepdraw: { ok: true },
+      };
+    },
+  });
+
+  const job = queue.enqueue({
+    source: "mdm_deepdraw",
+    rawCodes: ["208226102001"],
+    options: { deepdrawTenantName: "电商巴拉巴拉" },
+  });
+  await queue.waitForIdle();
+
+  const finished = queue.getJob(job.id);
+  assert.equal(finished.status, "completed");
+  assert.equal(finished.source, "mdm_deepdraw");
+  assert.deepEqual(events, [["mdm_deepdraw", "208226102001", "电商巴拉巴拉"]]);
+  assert.deepEqual(finished.items[0].result, {
+    mdm: { ok: true },
+    deepdraw: { ok: true },
+  });
+});

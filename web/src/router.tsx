@@ -4,9 +4,10 @@ import { AppLayout } from "@/components/layout/app-layout"
 import DashboardPage from "@/pages/dashboard/page"
 import ListingBatchesPage from "@/pages/listing-batches/page"
 import BatchDetailPage from "@/pages/listing-batches/[id]/page"
-import DraftWorkbenchPage from "@/pages/draft-workbench/page"
 import ImageManagementPage from "@/pages/image-management/page"
+import SheinProductsPage from "@/pages/shein-products/page"
 import PrePublishValidationPage from "@/pages/pre-publish-validation/page"
+import PrePublishDraftDetailPage from "@/pages/pre-publish-validation/[listingId]/page"
 import PublishTasksPage from "@/pages/publish-tasks/page"
 import PublishTaskDetailPage from "@/pages/publish-tasks/[id]/page"
 import CategoryMappingPage from "@/pages/category-mapping/page"
@@ -36,11 +37,12 @@ export const router = createBrowserRouter([
       { path: "dashboard", element: <DashboardPage /> },
       { path: "listing-batches", element: <ListingBatchesPage /> },
       { path: "listing-batches/:id", element: <BatchDetailPage /> },
-      { path: "draft-workbench", element: <DraftWorkbenchPage /> },
-      { path: "draft-workbench/:batchId", element: <DraftWorkbenchPage /> },
+      { path: "draft-workbench", element: <Navigate to="/pre-publish-validation" replace /> },
+      { path: "draft-workbench/:batchId", element: <Navigate to="/pre-publish-validation" replace /> },
       { path: "image-management", element: <ImageManagementPage /> },
+      { path: "shein-products", element: <SheinProductsPage /> },
       { path: "pre-publish-validation", element: <PrePublishValidationPage /> },
-      { path: "pre-publish-validation/:batchId", element: <PrePublishValidationPage /> },
+      { path: "pre-publish-validation/:listingId", element: <PrePublishDraftDetailPage /> },
       { path: "publish-tasks", element: <PublishTasksPage /> },
       { path: "publish-tasks/:id", element: <PublishTaskDetailPage /> },
       { path: "category-mapping", element: <CategoryMappingPage /> },

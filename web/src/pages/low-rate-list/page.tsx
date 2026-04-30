@@ -6,10 +6,11 @@ import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber, formatPercent } from "@/lib/format"
 import { exportSpreadsheet, parseBatchSearch, readSpreadsheetFile } from "@/lib/spreadsheet"
 import type { SpreadsheetRow } from "@/lib/spreadsheet"
+import { ServerPagination } from "@/components/server-pagination"
+import type { ServerPaginationState } from "@/components/server-pagination"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
 import { EmptyState } from "@/components/empty-state"
-import { StatCard } from "@/components/stat-card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -45,6 +46,7 @@ interface DiscountRule {
 
 interface RuleList {
   items: DiscountRule[]
+  pagination: ServerPaginationState
 }
 
 interface ImportResult {
@@ -58,12 +60,12 @@ const emptyForm = {
   note: "",
 }
 
-function useDiscountRules(search: string, batchSearch: string) {
+function useDiscountRules(search: string, batchSearch: string, pagination: { limit: number; offset: number }) {
   return useQuery<RuleList>({
-    queryKey: ["business-rules", "discount-rules", search, batchSearch],
+    queryKey: ["business-rules", "discount-rules", search, batchSearch, pagination],
     queryFn: () =>
       api.get(
-        `/business-rules/discount-rules?q=${encodeURIComponent(search)}&batch_search=${encodeURIComponent(batchSearch)}&limit=1000`,
+        `/business-rules/discount-rules?q=${encodeURIComponent(search)}&batch_search=${encodeURIComponent(batchSearch)}&limit=${pagination.limit}&offset=${pagination.offset}`,
       ),
   })
 }
@@ -74,9 +76,10 @@ export default function LowRateListPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<DiscountRule | null>(null)
   const [form, setForm] = useState(emptyForm)
+  const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
   const queryClient = useQueryClient()
 
-  const { data, isLoading } = useDiscountRules(search, batchSearchText)
+  const { data, isLoading } = useDiscountRules(search, batchSearchText, pagination)
   const items = data?.items ?? []
   const batchCount = useMemo(() => parseBatchSearch(batchSearchText).length, [batchSearchText])
   const lowRateCount = items.filter((item) => Number(item.discount) > 0.4).length
@@ -152,8 +155,8 @@ export default function LowRateListPage() {
   return (
     <PageContainer className="space-y-6">
       <PageHeader
-        title="低倍率清单"
-        description="维护需要使用 0.45 供货折扣的款号清单，发布前价格会优先命中这里的规则，其他款默认 0.4。"
+        title="SHEIN 低倍率清单"
+        description="维护 SHEIN 需要使用 0.45 供货折扣的款号清单；这是 SHEIN 适配规则，其他平台后续单独配置。"
       >
         <Button variant="outline" onClick={exportRows}>
           <Download className="mr-2 size-4" />
@@ -181,16 +184,15 @@ export default function LowRateListPage() {
         </Button>
       </PageHeader>
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <StatCard title="规则数量" value={formatNumber(items.length)} />
-        <StatCard title="命中高折扣" value={formatNumber(lowRateCount)} description="倍率高于默认 0.4" />
-        <StatCard title="批量搜索" value={batchCount ? `${batchCount} 款` : "未启用"} />
-      </div>
-
       <Card>
         <CardHeader className="gap-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-            <CardTitle>供货折扣规则</CardTitle>
+            <div>
+              <CardTitle>SHEIN 供货折扣规则</CardTitle>
+              <p className="mt-1 text-sm text-muted-foreground">
+                规则 {formatNumber(items.length)} / 高折扣 {formatNumber(lowRateCount)} / 批量搜索 {batchCount ? `${batchCount} 款` : "未启用"}
+              </p>
+            </div>
             <div className="flex w-full flex-col gap-2 lg:w-auto lg:flex-row">
               <div className="relative lg:w-72">
                 <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
@@ -225,7 +227,7 @@ export default function LowRateListPage() {
           {isLoading ? (
             <div className="py-12 text-center text-sm text-muted-foreground">加载中...</div>
           ) : items.length === 0 ? (
-            <EmptyState message="暂无低倍率清单数据" />
+            <EmptyState message="暂无 SHEIN 低倍率清单数据" />
           ) : (
             <Table>
               <TableHeader>
@@ -269,6 +271,11 @@ export default function LowRateListPage() {
               </TableBody>
             </Table>
           )}
+          <ServerPagination
+            pagination={data?.pagination}
+            onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
+            onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
+          />
         </CardContent>
       </Card>
 

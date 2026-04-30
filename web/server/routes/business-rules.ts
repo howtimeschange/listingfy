@@ -25,6 +25,15 @@ type DiscountRuleBody = {
   note?: unknown
 }
 
+type WeightRuleBody = {
+  spu_code?: unknown
+  skc_code?: unknown
+  sku_code?: unknown
+  package_weight_g?: unknown
+  status?: unknown
+  note?: unknown
+}
+
 function normalizeText(value: unknown) {
   return String(value ?? "").trim()
 }
@@ -38,6 +47,12 @@ function readLimit(value: string | undefined, fallback = 100, max = 1000) {
   const number = Number(value ?? fallback)
   if (!Number.isFinite(number)) return fallback
   return Math.max(1, Math.min(max, Math.floor(number)))
+}
+
+function readOffset(value: string | undefined) {
+  const number = Number(value ?? 0)
+  if (!Number.isFinite(number)) return 0
+  return Math.max(0, Math.floor(number))
 }
 
 function batchTerms(value: string | undefined) {
@@ -73,6 +88,18 @@ function readDiscount(value: unknown, fallback: number | null = null) {
   const number = Number(normalized)
   if (!Number.isFinite(number)) return fallback
   return number > 1 ? number / 100 : number
+}
+
+function readWeight(value: unknown, fallback: number | null = null) {
+  if (value == null || value === "") return fallback
+  const normalized = normalizeText(value)
+    .replace(/,/g, "")
+    .replace(/g$/i, "")
+    .replace(/克$/, "")
+    .trim()
+  const number = Number(normalized)
+  if (!Number.isFinite(number) || number <= 0) return fallback
+  return number
 }
 
 function createImportBatch({
@@ -146,6 +173,27 @@ function listWhere({
   }
 }
 
+function paginatedResponse({
+  items,
+  total,
+  limit,
+  offset,
+}: {
+  items: unknown[]
+  total: number
+  limit: number
+  offset: number
+}) {
+  return {
+    items,
+    pagination: {
+      total,
+      limit,
+      offset,
+    },
+  }
+}
+
 function normalizeSizeRow(row: Record<string, unknown>): SizeRuleBody | null {
   const sheinSize = normalizeNullableText(firstValue(row, [
     "shein_size_value",
@@ -196,11 +244,150 @@ function normalizeDiscountRow(row: Record<string, unknown>): DiscountRuleBody | 
   }
 }
 
+function normalizeWeightRow(row: Record<string, unknown>): WeightRuleBody | null {
+  const spuCode = normalizeNullableText(firstValue(row, [
+    "spu_code",
+    "商品款号",
+    "款号",
+    "SPU",
+  ]))
+  const skcCode = normalizeNullableText(firstValue(row, [
+    "skc_code",
+    "SKC",
+    "款色编码",
+    "款色",
+  ]))
+  const skuCode = normalizeNullableText(firstValue(row, [
+    "sku_code",
+    "sku",
+    "SKU",
+    "Sku",
+    "商品SKU",
+    "商品 SKU",
+    "小红书商家编码",
+  ]))
+  const packageWeight = readWeight(firstValue(row, [
+    "package_weight_g",
+    "sku重量",
+    "SKU重量",
+    "SKU 重量",
+    "产品毛重",
+    "毛重",
+  ]))
+
+  if (!skuCode || packageWeight == null) return null
+  return {
+    spu_code: spuCode,
+    skc_code: skcCode,
+    sku_code: skuCode,
+    package_weight_g: packageWeight,
+    status: "ACTIVE",
+  }
+}
+
+function lookupSkuContext(
+  db: ReturnType<typeof getDb>,
+  skuCode: string,
+): { spu_code: string | null; skc_code: string | null } {
+  const mdm = db.prepare(`
+    select spu.spu_code, skc.skc_code
+    from product_sku sku
+    join product_skc skc on skc.id = sku.skc_id
+    join product_spu spu on spu.id = skc.spu_id
+    where sku.sku_code = ?
+    limit 1
+  `).get(skuCode) as { spu_code: string | null; skc_code: string | null } | undefined
+  if (mdm) return mdm
+
+  const content = db.prepare(`
+    select spu_code, skc_code
+    from product_content_sku
+    where sku_code = ?
+    order by updated_at desc, id desc
+    limit 1
+  `).get(skuCode) as { spu_code: string | null; skc_code: string | null } | undefined
+  return content ?? { spu_code: null, skc_code: null }
+}
+
+function upsertWeightRule({
+  importBatchId,
+  body,
+}: {
+  importBatchId?: number | null
+  body: WeightRuleBody
+}) {
+  const db = getDb()
+  const skuCode = normalizeText(body.sku_code)
+  const packageWeight = Math.round(readWeight(body.package_weight_g, 0) ?? 0)
+  if (!skuCode || packageWeight <= 0) {
+    throw new HTTPException(400, { message: "缺少 SKU 或 SKU重量" })
+  }
+  const context = lookupSkuContext(db, skuCode)
+  const spuCode = normalizeNullableText(body.spu_code) ?? context.spu_code
+  const skcCode = normalizeNullableText(body.skc_code) ?? context.skc_code
+
+  const existing = db.prepare(`
+    select id
+    from product_weight_import
+    where status = 'ACTIVE'
+      and sku_code = ?
+    order by id desc
+    limit 1
+  `).get(skuCode) as { id: number } | undefined
+
+  if (existing) {
+    db.prepare(`
+      update product_weight_import
+      set import_batch_id = coalesce(?, import_batch_id),
+        spu_code = ?,
+        skc_code = ?,
+        package_weight_g = ?,
+        raw_payload_json = ?,
+        status = ?,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      where id = ?
+    `).run(
+      importBatchId ?? null,
+      spuCode,
+      skcCode,
+      packageWeight,
+      JSON.stringify(body),
+      normalizeText(body.status ?? "ACTIVE") || "ACTIVE",
+      existing.id,
+    )
+    return existing.id
+  }
+
+  const result = db.prepare(`
+    insert into product_weight_import (
+      import_batch_id,
+      spu_code,
+      skc_code,
+      sku_code,
+      package_weight_g,
+      raw_payload_json,
+      status,
+      updated_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  `).run(
+      importBatchId ?? null,
+      spuCode,
+      skcCode,
+    skuCode,
+    packageWeight,
+    JSON.stringify(body),
+    normalizeText(body.status ?? "ACTIVE") || "ACTIVE",
+  )
+  return Number(result.lastInsertRowid)
+}
+
 businessRules.get("/size-conversions", (c) => {
   const db = getDb()
   const q = c.req.query("q")
   const batch_search = c.req.query("batch_search")
   const limit = readLimit(c.req.query("limit"))
+  const offset = readOffset(c.req.query("offset"))
   const { clause, params } = listWhere({
     q,
     batchSearch: batch_search,
@@ -215,10 +402,16 @@ businessRules.get("/size-conversions", (c) => {
       cast(local_size_name as integer),
       local_size_name,
       id desc
-    limit ?
-  `).all(...params, limit)
+    limit ? offset ?
+  `).all(...params, limit, offset)
 
-  return c.json({ items })
+  const total = db.prepare(`
+    select count(*) as count
+    from size_conversion_rule
+    ${clause}
+  `).get(...params) as { count: number }
+
+  return c.json(paginatedResponse({ items, total: total.count, limit, offset }))
 })
 
 businessRules.post("/size-conversions", async (c) => {
@@ -369,6 +562,7 @@ businessRules.get("/discount-rules", (c) => {
   const q = c.req.query("q")
   const batch_search = c.req.query("batch_search")
   const limit = readLimit(c.req.query("limit"))
+  const offset = readOffset(c.req.query("offset"))
   const { clause, params } = listWhere({
     q,
     batchSearch: batch_search,
@@ -380,10 +574,16 @@ businessRules.get("/discount-rules", (c) => {
     from supply_discount_rule
     ${clause}
     order by spu_code
-    limit ?
-  `).all(...params, limit)
+    limit ? offset ?
+  `).all(...params, limit, offset)
 
-  return c.json({ items })
+  const total = db.prepare(`
+    select count(*) as count
+    from supply_discount_rule
+    ${clause}
+  `).get(...params) as { count: number }
+
+  return c.json(paginatedResponse({ items, total: total.count, limit, offset }))
 })
 
 businessRules.post("/discount-rules", async (c) => {
@@ -536,7 +736,8 @@ businessRules.get("/product-weights", (c) => {
   const q = c.req.query("q")
   const batch_search = c.req.query("batch_search")
   const limit = readLimit(c.req.query("limit"))
-  const clauses: string[] = ["1=1"]
+  const offset = readOffset(c.req.query("offset"))
+  const clauses: string[] = ["status <> 'DELETED'", "coalesce(sku_code, '') <> ''"]
   const params: unknown[] = []
   const terms = batchTerms(batch_search)
 
@@ -555,10 +756,134 @@ businessRules.get("/product-weights", (c) => {
     from product_weight_import
     where ${clauses.join(" and ")}
     order by created_at desc, id desc
-    limit ?
-  `).all(...params, limit)
+    limit ? offset ?
+  `).all(...params, limit, offset)
 
-  return c.json({ items })
+  const total = db.prepare(`
+    select count(*) as count
+    from product_weight_import
+    where ${clauses.join(" and ")}
+  `).get(...params) as { count: number }
+
+  return c.json(paginatedResponse({ items, total: total.count, limit, offset }))
+})
+
+businessRules.post("/product-weights", async (c) => {
+  const body = await c.req.json() as WeightRuleBody
+  const id = upsertWeightRule({ body })
+  return c.json({ ok: true, id })
+})
+
+businessRules.post("/product-weights/import", async (c) => {
+  const body = await c.req.json().catch(() => ({})) as ImportBody
+  const rows = Array.isArray(body.rows) ? body.rows : []
+  const normalized = rows.map(normalizeWeightRow)
+  const validRows = normalized.filter(Boolean) as WeightRuleBody[]
+  const validBySku = new Map<string, WeightRuleBody>()
+  for (const row of validRows) {
+    const skuCode = normalizeText(row.sku_code)
+    if (skuCode) validBySku.set(skuCode, row)
+  }
+  const valid = [...validBySku.values()]
+
+  const batchId = createImportBatch({
+    importType: "PRODUCT_WEIGHT",
+    fileName: body.file_name,
+    totalCount: rows.length,
+    successCount: valid.length,
+    failedCount: rows.length - validRows.length,
+  })
+
+  const saved: Array<Record<string, unknown>> = []
+  const db = getDb()
+  const transaction = db.transaction(() => {
+    for (const row of valid) {
+      const payload: WeightRuleBody = {
+        ...row,
+        note: "由库存毛重表按 SKU 写入 sku重量",
+        status: "ACTIVE",
+      }
+      const id = upsertWeightRule({ importBatchId: batchId, body: payload })
+      saved.push({
+        id,
+        spu_code: payload.spu_code,
+        skc_code: payload.skc_code ?? null,
+        sku_code: payload.sku_code,
+        package_weight_g: payload.package_weight_g,
+      })
+    }
+  })
+  transaction()
+
+  return c.json({
+    ok: true,
+    batch_id: batchId,
+    total_count: rows.length,
+    success_count: saved.length,
+    failed_count: rows.length - validRows.length,
+    items: saved,
+  })
+})
+
+businessRules.get("/product-weights/export", (c) => {
+  const db = getDb()
+  const rows = db.prepare(`
+    select
+      spu_code as "款号",
+      skc_code as "SKC",
+      sku_code as "SKU",
+      package_weight_g as "sku重量",
+      raw_payload_json as "备注"
+    from product_weight_import
+    where status = 'ACTIVE'
+      and coalesce(sku_code, '') <> ''
+    order by spu_code, skc_code, sku_code
+  `).all()
+  return c.json({ rows })
+})
+
+businessRules.patch("/product-weights/:id", async (c) => {
+  const db = getDb()
+  const id = Number(c.req.param("id"))
+  const body = await c.req.json() as WeightRuleBody
+  const packageWeight = Math.round(readWeight(body.package_weight_g, 0) ?? 0)
+  const skuCode = normalizeText(body.sku_code)
+  if (!Number.isFinite(id) || id <= 0 || !skuCode || packageWeight <= 0) {
+    throw new HTTPException(400, { message: "缺少有效 ID、SKU 或 SKU重量" })
+  }
+  const context = lookupSkuContext(db, skuCode)
+  db.prepare(`
+    update product_weight_import
+    set spu_code = ?,
+      skc_code = ?,
+      sku_code = ?,
+      package_weight_g = ?,
+      status = ?,
+      raw_payload_json = ?,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+  `).run(
+    normalizeNullableText(body.spu_code) ?? context.spu_code,
+    normalizeNullableText(body.skc_code) ?? context.skc_code,
+    skuCode,
+    packageWeight,
+    normalizeText(body.status ?? "ACTIVE") || "ACTIVE",
+    JSON.stringify(body),
+    id,
+  )
+  return c.json({ ok: true })
+})
+
+businessRules.delete("/product-weights/:id", (c) => {
+  const db = getDb()
+  const id = Number(c.req.param("id"))
+  db.prepare(`
+    update product_weight_import
+    set status = 'DELETED',
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+  `).run(id)
+  return c.json({ ok: true })
 })
 
 export default businessRules

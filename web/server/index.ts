@@ -10,7 +10,9 @@ import mdmProducts from "./routes/mdm-products"
 import deepdrawContent from "./routes/deepdraw-content"
 import imageLibrary from "./routes/image-library"
 import businessRules from "./routes/business-rules"
+import sheinProducts from "./routes/shein-products"
 import prePublish from "./routes/pre-publish"
+import publishTasks from "./routes/publish-tasks"
 import { DB_FILE } from "./db"
 
 loadLocalEnv()
@@ -31,7 +33,9 @@ app.route("/api/mdm-products", mdmProducts)
 app.route("/api/deepdraw-content", deepdrawContent)
 app.route("/api/image-library", imageLibrary)
 app.route("/api/business-rules", businessRules)
+app.route("/api/shein-products", sheinProducts)
 app.route("/api/pre-publish", prePublish)
+app.route("/api/publish-tasks", publishTasks)
 
 const port = Number(process.env.PORT ?? 3001)
 console.log(`API server listening on http://localhost:${port}`)

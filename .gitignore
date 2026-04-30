@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 *.log
+app.db
 node_modules/
 dist/
 .vite/

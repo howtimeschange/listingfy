@@ -7,9 +7,11 @@ const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const SIZE_PAGE = path.join(PROJECT_ROOT, "web/src/pages/size-conversion/page.tsx");
 const LOW_RATE_PAGE = path.join(PROJECT_ROOT, "web/src/pages/low-rate-list/page.tsx");
 const PACKAGE_PAGE = path.join(PROJECT_ROOT, "web/src/pages/package-rules/page.tsx");
+const PAGINATION_COMPONENT = path.join(PROJECT_ROOT, "web/src/components/server-pagination.tsx");
 const ROUTE_FILE = path.join(PROJECT_ROOT, "web/server/routes/business-rules.ts");
 const SERVER_INDEX = path.join(PROJECT_ROOT, "web/server/index.ts");
 const MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/007_business_rules_and_publish_readiness.sql");
+const SKU_WEIGHT_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/011_sku_weight_and_publish_tasks.sql");
 
 test("business rule migration creates import, size, discount, weight, and field fill tables", async () => {
   const migration = await readFile(MIGRATION_FILE, "utf8");
@@ -26,40 +28,65 @@ test("business rule migration creates import, size, discount, weight, and field 
 });
 
 test("business rules API exposes import export search and CRUD endpoints", async () => {
-  const [route, server] = await Promise.all([
+  const [route, server, skuWeightMigration] = await Promise.all([
     readFile(ROUTE_FILE, "utf8"),
     readFile(SERVER_INDEX, "utf8"),
+    readFile(SKU_WEIGHT_MIGRATION_FILE, "utf8"),
   ]);
 
   assert.match(server, /app\.route\("\/api\/business-rules", businessRules\)/);
   assert.match(route, /\/size-conversions\/import/);
   assert.match(route, /\/size-conversions\/export/);
   assert.match(route, /\/size-conversions\/:id/);
+  assert.match(route, /offset/);
+  assert.match(route, /pagination/);
+  assert.match(route, /select count\(\*\) as count/);
   assert.match(route, /\/discount-rules\/import/);
   assert.match(route, /\/discount-rules\/export/);
   assert.match(route, /\/discount-rules\/:id/);
   assert.match(route, /batch_search/);
   assert.match(route, /product-weights/);
+  assert.match(route, /\/product-weights\/import/);
+  assert.match(route, /\/product-weights\/export/);
+  assert.match(route, /\/product-weights\/:id/);
+  assert.match(route, /sku重量/);
+  assert.match(route, /款号/);
+  assert.match(route, /sku_code/);
+  assert.match(route, /validBySku/);
+  assert.match(route, /coalesce\(sku_code, ''\) <> ''/);
+  assert.match(skuWeightMigration, /unique index if not exists ux_product_weight_import_active_sku/);
+  assert.doesNotMatch(route, /avgWeight/);
+  assert.doesNotMatch(route, /按款号汇总/);
+  assert.doesNotMatch(route, /legacy_spu/);
 });
 
 test("size conversion page supports spreadsheet import export batch search and CRUD", async () => {
-  const page = await readFile(SIZE_PAGE, "utf8");
+  const [page, pagination] = await Promise.all([
+    readFile(SIZE_PAGE, "utf8"),
+    readFile(PAGINATION_COMPONENT, "utf8"),
+  ]);
 
   assert.doesNotMatch(page, /ComingSoonPage/);
-  assert.match(page, /尺码转换规则/);
+  assert.match(page, /SHEIN 尺码转换/);
+  assert.match(page, /SHEIN 适配规则/);
   assert.match(page, /导入表格/);
   assert.match(page, /导出/);
   assert.match(page, /批量搜索/);
   assert.match(page, /编辑/);
   assert.match(page, /删除/);
   assert.match(page, /size-conversions\/import/);
+  assert.match(page, /ServerPagination/);
+  assert.match(page, /pagination/);
+  assert.match(page, /offset=/);
+  assert.match(pagination, /每页数量/);
 });
 
 test("low rate list page supports spreadsheet import export batch search and CRUD", async () => {
   const page = await readFile(LOW_RATE_PAGE, "utf8");
 
   assert.doesNotMatch(page, /ComingSoonPage/);
-  assert.match(page, /低倍率清单/);
+  assert.match(page, /SHEIN 低倍率清单/);
+  assert.match(page, /SHEIN 适配规则/);
   assert.match(page, /供货折扣/);
   assert.match(page, /导入表格/);
   assert.match(page, /导出/);
@@ -67,6 +94,9 @@ test("low rate list page supports spreadsheet import export batch search and CRU
   assert.match(page, /编辑/);
   assert.match(page, /删除/);
   assert.match(page, /discount-rules\/import/);
+  assert.match(page, /ServerPagination/);
+  assert.match(page, /pagination/);
+  assert.match(page, /offset=/);
 });
 
 test("package rules page keeps product weight report available as an empty import-backed list", async () => {
@@ -75,6 +105,21 @@ test("package rules page keeps product weight report available as an empty impor
   assert.doesNotMatch(page, /ComingSoonPage/);
   assert.match(page, /包装规则/);
   assert.match(page, /产品毛重报表/);
-  assert.match(page, /暂无毛重数据/);
+  assert.match(page, /SKU 维度/);
+  assert.match(page, /SKU 毛重记录/);
+  assert.match(page, /当前页/);
+  assert.match(page, /导入库存毛重表/);
+  assert.match(page, /导出/);
+  assert.match(page, /批量搜索/);
+  assert.match(page, /编辑/);
+  assert.match(page, /删除/);
   assert.match(page, /product-weights/);
+  assert.match(page, /product-weights\/import/);
+  assert.match(page, /ServerPagination/);
+  assert.match(page, /pagination/);
+  assert.match(page, /offset=/);
+  assert.match(page, /款号（可选）/);
+  assert.match(page, /必填，导入源表第 3 列/);
+  assert.doesNotMatch(page, /avgWeight/);
+  assert.doesNotMatch(page, /平均毛重/);
 });

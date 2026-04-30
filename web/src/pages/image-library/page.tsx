@@ -3,20 +3,16 @@ import { Link } from "react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
   ArrowRight,
-  FileImage,
   ImageIcon,
-  Images,
-  Layers3,
   Search,
-  Sparkles,
 } from "lucide-react"
 import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { EmptyState } from "@/components/empty-state"
+import { ServerPagination } from "@/components/server-pagination"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
-import { StatCard } from "@/components/stat-card"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -80,12 +76,12 @@ interface ImageAssetSummary {
   source_kinds: SourceKindSummary[]
 }
 
-function useImageAssets(query: string, sourceKind: string) {
+function useImageAssets(query: string, sourceKind: string, pagination: { limit: number; offset: number }) {
   return useQuery<ImageAssetList>({
-    queryKey: ["image-library", query, sourceKind],
+    queryKey: ["image-library", query, sourceKind, pagination],
     queryFn: () =>
       api.get(
-        `/image-library?q=${encodeURIComponent(query)}&sourceKind=${encodeURIComponent(sourceKind)}&limit=120`,
+        `/image-library?q=${encodeURIComponent(query)}&sourceKind=${encodeURIComponent(sourceKind)}&limit=${pagination.limit}&offset=${pagination.offset}`,
       ),
   })
 }
@@ -155,8 +151,9 @@ function ImageCard({ asset }: { asset: ImageAssetItem }) {
 export default function ImageLibraryPage() {
   const [searchText, setSearchText] = useState("")
   const [sourceKind, setSourceKind] = useState("all")
+  const [pagination, setPagination] = useState({ limit: 60, offset: 0 })
   const debouncedSearch = useDebounce(searchText, 300)
-  const { data, isLoading } = useImageAssets(debouncedSearch, sourceKind)
+  const { data, isLoading } = useImageAssets(debouncedSearch, sourceKind, pagination)
   const { data: summary } = useImageAssetSummary()
 
   return (
@@ -166,20 +163,14 @@ export default function ImageLibraryPage() {
         description="以深绘同步的图片为准，全量展示商品图、商详截图与模块图片，并按 SPU、SKC、素材类型钻取。"
       />
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard title="图片素材" value={formatNumber(summary?.asset_count)} icon={Images} />
-        <StatCard title="去重 URL" value={formatNumber(summary?.unique_url_count)} icon={Sparkles} />
-        <StatCard
-          title="商品/商详"
-          value={`${formatNumber(summary?.picture_count)} / ${formatNumber(summary?.detail_count)}`}
-          icon={FileImage}
-        />
-        <StatCard title="关联 SPU" value={formatNumber(summary?.spu_count)} icon={Layers3} />
-      </div>
-
       <Card>
         <CardHeader className="flex flex-col gap-3 pb-3 lg:flex-row lg:items-center lg:justify-between">
-          <CardTitle>素材列表</CardTitle>
+          <div>
+            <CardTitle>素材列表</CardTitle>
+            <p className="mt-1 text-sm text-muted-foreground">
+              素材 {formatNumber(summary?.asset_count)} / 去重 URL {formatNumber(summary?.unique_url_count)} / 商品图 {formatNumber(summary?.picture_count)} / 商详图 {formatNumber(summary?.detail_count)} / 关联 SPU {formatNumber(summary?.spu_count)}
+            </p>
+          </div>
           <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
             <Select value={sourceKind} onValueChange={setSourceKind}>
               <SelectTrigger className="sm:w-[180px]">
@@ -232,6 +223,11 @@ export default function ImageLibraryPage() {
               共 {formatNumber(data?.pagination.total)} 张；最近同步 {formatDateTime(summary?.latest_synced_at)}
             </span>
           </div>
+          <ServerPagination
+            pagination={data?.pagination}
+            onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
+            onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
+          />
         </CardContent>
       </Card>
     </PageContainer>

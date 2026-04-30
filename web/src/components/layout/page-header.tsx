@@ -7,6 +7,7 @@ interface PageHeaderProps {
   children?: ReactNode
   className?: string
   compact?: boolean
+  actionsClassName?: string
 }
 
 export function PageHeader({
@@ -15,6 +16,7 @@ export function PageHeader({
   children,
   className,
   compact = false,
+  actionsClassName,
 }: PageHeaderProps) {
   return (
     <section
@@ -41,7 +43,11 @@ export function PageHeader({
             </p>
           ) : null}
         </div>
-        {children ? <div className="flex shrink-0 flex-wrap gap-2">{children}</div> : null}
+        {children ? (
+          <div className={cn("flex min-w-0 max-w-full flex-wrap gap-2 lg:justify-end", actionsClassName)}>
+            {children}
+          </div>
+        ) : null}
       </div>
     </section>
   )

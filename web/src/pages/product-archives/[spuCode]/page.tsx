@@ -13,7 +13,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
-import { formatCurrency, formatDateTime, formatNumber, formatPercent } from "@/lib/format"
+import { formatCurrency, formatDateTime, formatNumber } from "@/lib/format"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
 import { StatCard } from "@/components/stat-card"
@@ -42,21 +42,6 @@ interface MdmSpu {
   spu_name_en: string | null
   listing_title_cn: string | null
   listing_title_en: string | null
-  shein_spu_code: string | null
-  shein_category_name: string | null
-  matched_category_rule_id: number | null
-  matched_category_rule_source: string | null
-  matched_category_match_key: string | null
-  matched_shein_category_id: number | null
-  matched_shein_product_type_id: number | null
-  matched_shein_category_name: string | null
-  matched_shein_category_path: string | null
-  suggested_category_suggestion_id: number | null
-  suggested_category_rule_source: string | null
-  suggested_shein_category_id: number | null
-  suggested_shein_product_type_id: number | null
-  suggested_shein_category_name: string | null
-  suggested_shein_category_path: string | null
   old_style_code: string | null
   deepdraw_info_status: string | null
   brand_code: string | null
@@ -109,16 +94,10 @@ interface MdmSku {
   sku_name: string | null
   size_code: string | null
   size_name: string | null
-  shein_size_name: string | null
   ean_code: string | null
   inner_code: string | null
   supplier_product_code: string | null
   price_tag: number | null
-  supply_price_cny: number | null
-  suggested_retail_price_usd: number | null
-  gross_weight_g: number | null
-  supply_discount: number | null
-  package_size_text: string | null
   status_name: string | null
 }
 
@@ -306,15 +285,6 @@ function parseJsonRecord(value: string | null | undefined): Record<string, strin
   } catch {
     return {}
   }
-}
-
-function formatWeight(value: number | null | undefined) {
-  if (value == null) return "—"
-  return `${formatNumber(value)}g`
-}
-
-function formatDiscount(value: number | null | undefined) {
-  return value == null ? "—" : formatPercent(value)
 }
 
 function channelRank(place: string | null | undefined) {
@@ -816,18 +786,13 @@ export default function ProductArchiveDetailPage() {
           <TabsContent value="overview" className="mt-4 space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle>发品资料</CardTitle>
+                <CardTitle>源数据概览</CardTitle>
               </CardHeader>
               <CardContent className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                <InfoItem label="SHEIN SPU" value={data.spu?.shein_spu_code} />
-                <InfoItem label="SHEIN 分类" value={data.spu?.shein_category_name} />
-                <InfoItem label="规则匹配类目" value={data.spu?.matched_shein_category_name} />
-                <InfoItem label="映射规则来源" value={data.spu?.matched_category_rule_source} />
-                <InfoItem label="AI 建议类目" value={data.spu?.suggested_shein_category_name} />
                 <InfoItem label="老款号" value={data.spu?.old_style_code} />
                 <InfoItem label="深绘已有信息" value={data.spu?.deepdraw_info_status} />
                 <InfoItem label="中文标题" value={data.spu?.listing_title_cn ?? data.content_package?.title} />
-                <InfoItem label="英文标题" value={data.spu?.listing_title_en} />
+                <InfoItem label="英文款名" value={data.spu?.spu_name_en} />
                 <InfoItem label="深绘类目" value={data.content_package?.category_name} />
                 <InfoItem label="尺码表" value={sizeTables.length ? `${sizeTables.length} 张` : null} />
               </CardContent>
@@ -1117,10 +1082,9 @@ export default function ProductArchiveDetailPage() {
                       <TableRow>
                         <TableHead>SKU</TableHead>
                         <TableHead>SKC</TableHead>
-                        <TableHead>尺码</TableHead>
+                        <TableHead>商品档案尺码</TableHead>
                         <TableHead>条码/企业码</TableHead>
-                        <TableHead>价格</TableHead>
-                        <TableHead>包装</TableHead>
+                        <TableHead>挂牌价</TableHead>
                         <TableHead>状态</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -1130,32 +1094,25 @@ export default function ProductArchiveDetailPage() {
                           <TableRow key={sku.id}>
                             <TableCell className="font-medium">{sku.sku_code}</TableCell>
                             <TableCell>{sku.skc_code}</TableCell>
-                            <TableCell>{sku.shein_size_name ?? sku.size_name ?? sku.size_code ?? "—"}</TableCell>
+                            <TableCell>
+                              <div>{sku.size_name ?? "—"}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {sku.size_code ?? "—"}
+                              </div>
+                            </TableCell>
                             <TableCell>
                               <div>{sku.ean_code ?? "—"}</div>
                               <div className="text-xs text-muted-foreground">
                                 {sku.inner_code ?? sku.supplier_product_code ?? "—"}
                               </div>
                             </TableCell>
-                            <TableCell>
-                              <div>{formatCurrency(sku.supply_price_cny ?? sku.price_tag)}</div>
-                              <div className="text-xs text-muted-foreground">
-                                {formatCurrency(sku.suggested_retail_price_usd, "USD")}
-                                {sku.supply_discount != null ? ` / ${formatDiscount(sku.supply_discount)}` : ""}
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <div>{formatWeight(sku.gross_weight_g)}</div>
-                              <div className="text-xs text-muted-foreground">
-                                {sku.package_size_text ?? "—"}
-                              </div>
-                            </TableCell>
+                            <TableCell>{formatCurrency(sku.price_tag)}</TableCell>
                             <TableCell>{sku.status_name ?? "—"}</TableCell>
                           </TableRow>
                         ))
                       ) : (
                         <TableRow>
-                          <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+                          <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
                             暂无 MDM SKU
                           </TableCell>
                         </TableRow>

@@ -3,20 +3,17 @@ import { Link } from "react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
   ArrowRight,
-  Boxes,
   Database,
   ImageIcon,
-  Layers3,
-  Package,
   Search,
 } from "lucide-react"
 import { api } from "@/lib/api-client"
 import { formatCurrency, formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { EmptyState } from "@/components/empty-state"
+import { ServerPagination } from "@/components/server-pagination"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
-import { StatCard } from "@/components/stat-card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -79,10 +76,10 @@ interface MdmProductSummary {
   latest_synced_at: string | null
 }
 
-function useMdmProducts(query: string) {
+function useMdmProducts(query: string, pagination: { limit: number; offset: number }) {
   return useQuery<MdmProductList>({
-    queryKey: ["mdm-products", query],
-    queryFn: () => api.get(`/mdm-products?q=${encodeURIComponent(query)}&limit=100`),
+    queryKey: ["mdm-products", query, pagination],
+    queryFn: () => api.get(`/mdm-products?q=${encodeURIComponent(query)}&limit=${pagination.limit}&offset=${pagination.offset}`),
   })
 }
 
@@ -140,8 +137,9 @@ function productTitle(item: MdmProductItem) {
 
 export default function MdmProductsPage() {
   const [searchText, setSearchText] = useState("")
+  const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
   const debouncedSearch = useDebounce(searchText, 300)
-  const { data, isLoading } = useMdmProducts(debouncedSearch)
+  const { data, isLoading } = useMdmProducts(debouncedSearch, pagination)
   const { data: summary } = useMdmProductSummary()
 
   return (
@@ -151,20 +149,14 @@ export default function MdmProductsPage() {
         description="以 MDM 主数据为准，按 SPU、SKC、SKU 三层维度查看商品资料、分类、状态和价格包装字段。"
       />
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard title="SPU" value={formatNumber(summary?.spu_count)} icon={Database} />
-        <StatCard title="SKC" value={formatNumber(summary?.skc_count)} icon={Layers3} />
-        <StatCard title="SKU" value={formatNumber(summary?.sku_count)} icon={Boxes} />
-        <StatCard
-          title="最近同步"
-          value={summary?.latest_synced_at ? formatDateTime(summary.latest_synced_at) : "—"}
-          icon={Package}
-        />
-      </div>
-
       <Card>
         <CardHeader className="flex flex-col gap-3 pb-3 lg:flex-row lg:items-center lg:justify-between">
-          <CardTitle>SPU 主数据列表</CardTitle>
+          <div>
+            <CardTitle>SPU 主数据列表</CardTitle>
+            <p className="mt-1 text-sm text-muted-foreground">
+              SPU {formatNumber(summary?.spu_count)} / SKC {formatNumber(summary?.skc_count)} / SKU {formatNumber(summary?.sku_count)} / 最近同步 {summary?.latest_synced_at ? formatDateTime(summary.latest_synced_at) : "—"}
+            </p>
+          </div>
           <div className="relative w-full lg:w-[420px]">
             <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -342,6 +334,11 @@ export default function MdmProductsPage() {
             <span>当前展示 {formatNumber(data?.items.length ?? 0)} 条</span>
             <span>共 {formatNumber(data?.pagination.total)} 条 SPU</span>
           </div>
+          <ServerPagination
+            pagination={data?.pagination}
+            onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
+            onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
+          />
         </CardContent>
       </Card>
     </PageContainer>
