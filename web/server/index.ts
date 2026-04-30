@@ -9,6 +9,8 @@ import productArchives from "./routes/product-archives"
 import mdmProducts from "./routes/mdm-products"
 import deepdrawContent from "./routes/deepdraw-content"
 import imageLibrary from "./routes/image-library"
+import businessRules from "./routes/business-rules"
+import prePublish from "./routes/pre-publish"
 import { DB_FILE } from "./db"
 
 loadLocalEnv()
@@ -28,6 +30,8 @@ app.route("/api/product-archives", productArchives)
 app.route("/api/mdm-products", mdmProducts)
 app.route("/api/deepdraw-content", deepdrawContent)
 app.route("/api/image-library", imageLibrary)
+app.route("/api/business-rules", businessRules)
+app.route("/api/pre-publish", prePublish)
 
 const port = Number(process.env.PORT ?? 3001)
 console.log(`API server listening on http://localhost:${port}`)

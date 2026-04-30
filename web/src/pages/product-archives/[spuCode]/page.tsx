@@ -122,6 +122,14 @@ interface MdmSku {
   status_name: string | null
 }
 
+interface ContentSkc {
+  id: number
+  skc_code: string
+  color_name: string | null
+  color_alias: string | null
+  sku_count: number
+}
+
 interface ContentField {
   id: number
   field_name: string
@@ -180,7 +188,7 @@ interface ProductArchiveDetail {
   content_package: DeepdrawPackage | null
   skcs: MdmSkc[]
   skus: MdmSku[]
-  content_skcs: unknown[]
+  content_skcs: ContentSkc[]
   content_skus: unknown[]
   key_fields: ContentField[]
   detail_pages: DetailPage[]
@@ -627,22 +635,36 @@ export default function ProductArchiveDetailPage() {
     })
   }
   for (const item of data.content_skcs) {
-    if (!item || typeof item !== "object") continue
-    const contentSkc = item as {
-      skc_code?: unknown
-      color_name?: unknown
-      color_alias?: unknown
-    }
-    if (typeof contentSkc.skc_code !== "string") continue
-    const existing = skcMetaByCode.get(contentSkc.skc_code)
-    skcMetaByCode.set(contentSkc.skc_code, {
-      skcCode: contentSkc.skc_code,
+    const existing = skcMetaByCode.get(item.skc_code)
+    skcMetaByCode.set(item.skc_code, {
+      skcCode: item.skc_code,
       mdmColorName: existing?.mdmColorName ?? null,
       mdmColorCode: existing?.mdmColorCode ?? null,
-      deepdrawColorName: typeof contentSkc.color_name === "string" ? contentSkc.color_name : null,
-      deepdrawColorAlias: typeof contentSkc.color_alias === "string" ? contentSkc.color_alias : null,
+      deepdrawColorName: item.color_name,
+      deepdrawColorAlias: item.color_alias,
     })
   }
+  const displaySkcs = data.skcs.length
+    ? data.skcs.map((skc) => ({
+      id: `mdm-${skc.id}`,
+      skc_code: skc.skc_code,
+      color_name: skc.color_name,
+      color_code: skc.color_code,
+      skc_name: skc.skc_name,
+      sku_count: skc.sku_count,
+      status_name: skc.status_name,
+      source: "MDM",
+    }))
+    : data.content_skcs.map((skc) => ({
+      id: `deepdraw-${skc.id}`,
+      skc_code: skc.skc_code,
+      color_name: skc.color_name,
+      color_code: null,
+      skc_name: skc.color_alias,
+      sku_count: skc.sku_count,
+      status_name: "深绘",
+      source: "深绘",
+    }))
   const mainProductImages = data.product_images.filter((asset) => asset.asset_type === "MAIN")
   const colorProductImages = data.product_images.filter((asset) => asset.asset_type === "COLOR_BLOCK")
   const colorTransparencyImages = mainProductImages.filter((asset) => (
@@ -1046,7 +1068,7 @@ export default function ProductArchiveDetailPage() {
           <TabsContent value="skus" className="mt-4 space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle>MDM 款色</CardTitle>
+                <CardTitle>{data.skcs.length ? "MDM 款色" : "深绘款色"}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="overflow-hidden rounded-2xl border">
@@ -1061,20 +1083,20 @@ export default function ProductArchiveDetailPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {data.skcs.length ? (
-                        data.skcs.map((skc) => (
+                      {displaySkcs.length ? (
+                        displaySkcs.map((skc) => (
                           <TableRow key={skc.id}>
                             <TableCell className="font-medium">{skc.skc_code}</TableCell>
                             <TableCell>{skc.color_name ?? skc.color_code ?? "—"}</TableCell>
                             <TableCell>{skc.skc_name ?? "—"}</TableCell>
                             <TableCell>{skc.sku_count}</TableCell>
-                            <TableCell>{skc.status_name ?? "—"}</TableCell>
+                            <TableCell>{skc.status_name ?? skc.source ?? "—"}</TableCell>
                           </TableRow>
                         ))
                       ) : (
                         <TableRow>
                           <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
-                            暂无 MDM 款色
+                            暂无款色
                           </TableCell>
                         </TableRow>
                       )}
@@ -1086,7 +1108,7 @@ export default function ProductArchiveDetailPage() {
 
             <Card>
               <CardHeader>
-                <CardTitle>MDM SKU</CardTitle>
+                <CardTitle>{data.skcs.length ? "MDM SKU" : "深绘 SKU"}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="overflow-hidden rounded-2xl border">

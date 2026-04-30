@@ -13,7 +13,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
-import { formatDateTime, formatNumber } from "@/lib/format"
+import { formatCurrency, formatDateTime, formatNumber, formatPercent } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
@@ -96,6 +96,11 @@ interface ProductArchiveItem {
   deepdraw_sku_count: number
   product_image_count: number
   detail_image_count: number
+  publish_supply_discount: number | null
+  publish_supply_price_cny: number | null
+  publish_retail_price_usd: number | null
+  publish_package_size_text: string | null
+  publish_weight_record_count: number
   hero_image_url: string | null
 }
 
@@ -526,6 +531,16 @@ export default function ProductArchivesPage() {
                       <div className="text-xs text-muted-foreground">图片</div>
                       <div>{item.product_image_count} 商品图 / {item.detail_image_count} 商详图</div>
                     </div>
+                    <div className="col-span-2">
+                      <div className="text-xs text-muted-foreground">发布字段</div>
+                      <div>
+                        {formatCurrency(item.publish_supply_price_cny)}
+                        {" / "}
+                        {formatCurrency(item.publish_retail_price_usd, "USD")}
+                        {" / "}
+                        {item.publish_package_size_text ?? "—"}
+                      </div>
+                    </div>
                   </div>
                   <Button asChild variant="outline" size="sm" className="mt-3 w-full">
                     <Link to={`/product-archives/${item.spu_code}`}>
@@ -620,6 +635,18 @@ export default function ProductArchivesPage() {
                         </div>
                         <div className="text-xs text-muted-foreground">
                           深绘资料：{item.deepdraw_info_status ?? (item.deepdraw_status === "SYNCED" ? "已同步" : "未同步")}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          发布字段：{formatCurrency(item.publish_supply_price_cny)}
+                          {" / "}
+                          {formatCurrency(item.publish_retail_price_usd, "USD")}
+                          {" / "}
+                          {item.publish_package_size_text ?? "—"}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          折扣：{formatPercent(item.publish_supply_discount)}
+                          {" / "}
+                          毛重记录：{formatNumber(item.publish_weight_record_count)}
                         </div>
                       </TableCell>
                       <TableCell className="text-sm">

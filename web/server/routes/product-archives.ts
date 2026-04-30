@@ -82,6 +82,137 @@ function readIntervalMs(value: unknown) {
   return Math.max(0, Math.min(60000, Math.floor(number)))
 }
 
+function normalizeText(value: unknown) {
+  return String(value ?? "").trim()
+}
+
+function sizeKeys(value: unknown) {
+  const raw = normalizeText(value)
+  if (!raw) return []
+  const keys = new Set<string>([raw])
+  const digits = raw.match(/\d+/)?.[0] ?? ""
+  if (digits) {
+    keys.add(digits)
+    keys.add(digits.padStart(3, "0"))
+  }
+  if (raw.toLowerCase().endsWith("cm")) {
+    const withoutCm = raw.replace(/cm$/i, "")
+    keys.add(withoutCm)
+    keys.add(withoutCm.padStart(3, "0"))
+  }
+  return [...keys].filter(Boolean)
+}
+
+function packageRule(row: SourceRow | null) {
+  const text = [
+    row?.middle_class_name,
+    row?.subclass_name,
+    row?.fabric_type_name,
+    row?.length_name,
+  ].map(normalizeText).join(" ")
+  if (text.includes("鞋")) return "30*20*10cm"
+  if (text.includes("内裤")) return "25*14*2cm"
+  if (text.includes("毛衫") || text.includes("毛衣") || text.includes("厚") || text.includes("外套")) {
+    return "35*25*1.5cm"
+  }
+  return "28*24*1cm"
+}
+
+function enrichArchiveSkus(
+  db: ReturnType<typeof getDb>,
+  spu: SourceRow | null,
+  skus: SourceRow[],
+) {
+  if (!spu || skus.length === 0) return skus
+
+  const sizeRows = db.prepare(`
+    select *
+    from size_conversion_rule
+    where platform = 'SHEIN'
+      and status = 'ACTIVE'
+  `).all() as SourceRow[]
+  const sizeMap = new Map<string, SourceRow>()
+  for (const row of sizeRows) {
+    for (const key of [...sizeKeys(row.local_size_code), ...sizeKeys(row.local_size_name)]) {
+      sizeMap.set(key, row)
+    }
+  }
+
+  const discountRow = db.prepare(`
+    select *
+    from supply_discount_rule
+    where status = 'ACTIVE'
+      and spu_code = ?
+    order by id desc
+    limit 1
+  `).get(spu.spu_code) as SourceRow | undefined
+  const discount = Number(discountRow?.discount ?? 0.4)
+  const packageSize = packageRule(spu)
+  const weightRows = db.prepare(`
+    select *
+    from product_weight_import
+    where spu_code = ?
+       or skc_code in (${skus.map(() => "?").join(",") || "null"})
+       or sku_code in (${skus.map(() => "?").join(",") || "null"})
+    order by created_at desc, id desc
+  `).all(
+    spu.spu_code,
+    ...skus.map((sku) => sku.skc_code),
+    ...skus.map((sku) => sku.sku_code),
+  ) as SourceRow[]
+  const weightBySku = new Map<string, SourceRow>()
+  const weightBySkc = new Map<string, SourceRow>()
+  let weightBySpu: SourceRow | null = null
+  for (const row of weightRows) {
+    const skuCode = normalizeText(row.sku_code)
+    const skcCode = normalizeText(row.skc_code)
+    if (skuCode && !weightBySku.has(skuCode)) weightBySku.set(skuCode, row)
+    if (skcCode && !weightBySkc.has(skcCode)) weightBySkc.set(skcCode, row)
+    if (!weightBySpu && normalizeText(row.spu_code) === normalizeText(spu.spu_code)) weightBySpu = row
+  }
+
+  return skus.map((sku) => {
+    const sizeRule = [...sizeKeys(sku.size_code), ...sizeKeys(sku.size_name)]
+      .map((key) => sizeMap.get(key))
+      .find(Boolean)
+    const priceTag = Number(sku.price_tag ?? spu.price_tag ?? 0)
+    const weight = weightBySku.get(normalizeText(sku.sku_code))
+      ?? weightBySkc.get(normalizeText(sku.skc_code))
+      ?? weightBySpu
+    return {
+      ...sku,
+      shein_size_name: sku.shein_size_name ?? sizeRule?.shein_size_value ?? null,
+      supply_discount: sku.supply_discount ?? discount,
+      supply_price_cny: sku.supply_price_cny ?? (priceTag > 0 ? Number((priceTag * discount).toFixed(2)) : null),
+      suggested_retail_price_usd: sku.suggested_retail_price_usd ?? (priceTag > 0 ? Math.round(priceTag / 7.3) : null),
+      gross_weight_g: sku.gross_weight_g ?? weight?.package_weight_g ?? null,
+      package_size_text: sku.package_size_text ?? packageSize,
+    }
+  })
+}
+
+function contentSkuToArchiveSku(row: SourceRow) {
+  return {
+    id: row.id,
+    skc_code: row.skc_code,
+    sku_code: row.sku_code,
+    sku_name: null,
+    size_code: row.size_code,
+    size_name: row.size_name,
+    shein_size_name: null,
+    ean_code: row.barcode,
+    inner_code: row.seller_code,
+    supplier_product_code: row.seller_code,
+    price_tag: row.price,
+    supply_price_cny: null,
+    suggested_retail_price_usd: null,
+    gross_weight_g: null,
+    supply_discount: null,
+    package_size_text: null,
+    status_name: null,
+  }
+}
+
 async function syncMdmProduct(db: ReturnType<typeof getDb>, spuCode: string) {
   const startedAt = new Date().toISOString()
   const result = await queryMdmProduct({ spuCode })
@@ -203,7 +334,7 @@ const listSelect = `
     c.spu_code,
     spu.spu_name,
     spu.listing_title_cn,
-    spu.listing_title_en,
+    coalesce(title_fill.field_value, spu.listing_title_en) as listing_title_en,
     spu.shein_spu_code,
     spu.shein_category_name,
     matched_rule.id as matched_category_rule_id,
@@ -266,6 +397,29 @@ const listSelect = `
       where asset.spu_code = c.spu_code
         and asset.source_kind in ('DETAIL_SCREENSHOT', 'DETAIL_MODULE')
     ) as detail_image_count,
+    coalesce(discount_rule.discount, 0.4) as publish_supply_discount,
+    case
+      when coalesce(spu.price_tag, pkg.retail_price) is not null
+      then round(coalesce(spu.price_tag, pkg.retail_price) * coalesce(discount_rule.discount, 0.4), 2)
+      else null
+    end as publish_supply_price_cny,
+    case
+      when coalesce(spu.price_tag, pkg.retail_price) is not null
+      then round(coalesce(spu.price_tag, pkg.retail_price) / 7.3, 0)
+      else null
+    end as publish_retail_price_usd,
+    case
+      when coalesce(spu.middle_class_name, '') || coalesce(spu.subclass_name, '') like '%鞋%' then '30*20*10cm'
+      when coalesce(spu.subclass_name, '') like '%内裤%' then '25*14*2cm'
+      when coalesce(spu.middle_class_name, '') || coalesce(spu.subclass_name, '') || coalesce(spu.fabric_type_name, '') like '%毛%'
+        then '35*25*1.5cm'
+      else '28*24*1cm'
+    end as publish_package_size_text,
+    (
+      select count(*)
+      from product_weight_import weight
+      where weight.spu_code = c.spu_code
+    ) as publish_weight_record_count,
     (
       select normalized_url from product_asset asset
       where asset.spu_code = c.spu_code
@@ -284,6 +438,13 @@ const listSelect = `
   from product_codes c
   left join product_spu spu on spu.spu_code = c.spu_code
   left join product_content_package pkg on pkg.spu_code = c.spu_code
+  left join listing_field_fill title_fill
+    on title_fill.status = 'ACTIVE'
+    and title_fill.spu_code = c.spu_code
+    and title_fill.field_key = 'title_en'
+  left join supply_discount_rule discount_rule
+    on discount_rule.status = 'ACTIVE'
+    and discount_rule.spu_code = c.spu_code
   left join mdm_shein_category_mapping_rule matched_rule
     on matched_rule.status = 'ACTIVE'
     and (
@@ -621,12 +782,29 @@ productArchives.get("/:spuCode", (c) => {
       id
   `).all(spuCode)
 
+  const storedTitleEn = db.prepare(`
+    select field_value
+    from listing_field_fill
+    where status = 'ACTIVE'
+      and spu_code = ?
+      and field_key = 'title_en'
+    order by updated_at desc, id desc
+    limit 1
+  `).get(spuCode) as { field_value?: string } | undefined
+  const enrichedSpu = spu && storedTitleEn?.field_value
+    ? { ...spu, listing_title_en: storedTitleEn.field_value }
+    : spu
+  const archiveSkus = (skus as SourceRow[]).length
+    ? skus as SourceRow[]
+    : (contentSkus as SourceRow[]).map(contentSkuToArchiveSku)
+  const enrichedSkus = enrichArchiveSkus(db, enrichedSpu, archiveSkus)
+
   return c.json({
     spu_code: spuCode,
-    spu,
+    spu: enrichedSpu,
     content_package: contentPackage,
     skcs,
-    skus,
+    skus: enrichedSkus,
     content_skcs: contentSkcs,
     content_skus: contentSkus,
     key_fields: keyFields,
