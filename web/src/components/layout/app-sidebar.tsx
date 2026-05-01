@@ -8,7 +8,6 @@ import {
   Ruler,
   Box,
   DollarSign,
-  TrendingDown,
   Database,
   Archive,
   Boxes,
@@ -61,11 +60,10 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: "规则中心",
     items: [
-      { label: "类目映射", to: "/category-mapping", icon: GitBranch, permission: "RULE_READ" },
+      { label: "SHEIN 类目映射", to: "/category-mapping", icon: GitBranch, permission: "RULE_READ" },
       { label: "SHEIN 尺码转换", to: "/size-conversion", icon: Ruler, permission: "RULE_READ" },
-      { label: "包装规则", to: "/package-rules", icon: Box, permission: "RULE_READ" },
-      { label: "价格规则", to: "/price-rules", icon: DollarSign, permission: "RULE_READ" },
-      { label: "SHEIN 低倍率清单", to: "/low-rate-list", icon: TrendingDown, permission: "RULE_READ" },
+      { label: "SHEIN 包装规则", to: "/package-rules", icon: Box, permission: "RULE_READ" },
+      { label: "SHEIN 价格规则", to: "/price-rules", icon: DollarSign, permission: "RULE_READ" },
     ],
   },
   {

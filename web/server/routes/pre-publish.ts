@@ -6,6 +6,8 @@ import { DB_FILE, getDb } from "../db"
 import { resolveAiConfig } from "../../../scripts/lib/ai_category_matcher.mjs"
 import { refreshBucketProduct } from "./shein-products"
 import { resolveSheinCredentials } from "../lib/platform-config"
+import { getSheinPriceConfig } from "../lib/price-config"
+import { resolvePackageRule } from "../lib/rule-resolver"
 import { platformAdapterFor } from "../platform-adapters"
 import {
   ensurePublishTask,
@@ -1093,26 +1095,6 @@ function inferAttributeValue({
   return ""
 }
 
-function packageRule(row: SourceRow) {
-  const text = [
-    row.middle_class_name,
-    row.subclass_name,
-    row.fabric_type_name,
-    row.deepdraw_title,
-    row.length_name,
-  ].map(normalizeText).join(" ")
-  if (text.includes("鞋")) {
-    return { size: "30*20*10cm", length: 30, width: 20, height: 10, type: "硬包装", source: "RULE" }
-  }
-  if (text.includes("内裤")) {
-    return { size: "25*14*2cm", length: 25, width: 14, height: 2, type: "软包装+软物品", source: "RULE" }
-  }
-  if (text.includes("毛衫") || text.includes("毛衣") || text.includes("厚") || text.includes("外套")) {
-    return { size: "35*25*1.5cm", length: 35, width: 25, height: 1.5, type: "软包装+软物品", source: "RULE" }
-  }
-  return { size: "28*24*1cm", length: 28, width: 24, height: 1, type: "软包装+软物品", source: "RULE" }
-}
-
 function fieldStatus(value: unknown, fallback: FillField["status"] = "READY") {
   return normalizeText(value) ? fallback : "MISSING"
 }
@@ -1142,12 +1124,13 @@ function buildRow({
   const skus = mdmSkus.length ? mdmSkus : getContentSkus(db, row.content_package_id)
   const category = categoryOverride ?? readStoredCategoryOverride(fills, spuCode) ?? resolveCategory(row)
   const attrs = getRequiredAttributes(db, category.category_id, category.product_type_id)
+  const priceConfig = getSheinPriceConfig(db)
   const discountRule = discounts.get(spuCode)
-  const discount = Number(discountRule?.discount ?? 0.4)
+  const discount = Number(discountRule?.discount ?? priceConfig.defaultDiscount)
   const priceTag = Number(row.price_tag ?? 0)
   const costPrice = priceTag > 0 ? Number((priceTag * discount).toFixed(2)) : null
-  const retailUsd = priceTag > 0 ? Math.round(priceTag / 7.3) : null
-  const pkg = packageRule(row)
+  const retailUsd = priceTag > 0 ? Math.round(priceTag / priceConfig.usdExchangeRate) : null
+  const pkg = resolvePackageRule(db, row)
   const storedTitleCn = getStoredFill(fills, spuCode, "title_cn")
   const titleCn = normalizeText(storedTitleCn?.field_value) || normalizeText(row.deepdraw_title) || normalizeText(row.listing_title_cn) || normalizeText(row.spu_name)
   const storedTitleEn = getStoredFill(fills, spuCode, "title_en")
@@ -1236,12 +1219,12 @@ function buildRow({
       key: "supply_discount",
       label: "供货折扣",
       value: discount,
-      source: discountRule ? "低倍率清单" : "默认规则",
+      source: discountRule ? "款号价格规则" : "默认规则",
       status: discountRule ? "WARNING" : "READY",
-      note: discountRule ? "命中低倍率清单" : "默认 0.4",
+      note: discountRule ? "命中款号级折扣" : `默认 ${priceConfig.defaultDiscount}`,
     },
     { key: "supply_price", label: "供货价(人民币)", value: costPrice, source: "公式", status: costPrice ? "READY" : "MISSING" },
-    { key: "retail_usd", label: "建议零售价(美元)", value: retailUsd, source: "公式", status: retailUsd ? "READY" : "MISSING", note: "Round(挂牌单价/7.3,0)" },
+    { key: "retail_usd", label: "建议零售价(美元)", value: retailUsd, source: "公式", status: retailUsd ? "READY" : "MISSING", note: `Round(挂牌单价/${priceConfig.usdExchangeRate},0)` },
     { key: "package_size", label: "含包装尺寸", value: pkg.size, source: pkg.source, status: "READY", note: pkg.type },
     {
       key: "package_weight",
@@ -1644,9 +1627,10 @@ function upsertListingChildren(db: ReturnType<typeof getDb>, listingId: number, 
   const contentSkus = mdmSkus.length ? [] : getContentSkus(db, sourceRow.content_package_id)
   const skus = mdmSkus.length ? mdmSkus : contentSkus
   const sizeConversions = activeSizeConversions(db)
-  const discount = Number(activeDiscounts(db).get(readiness.spu_code)?.discount ?? 0.4)
+  const priceConfig = getSheinPriceConfig(db)
+  const discount = Number(activeDiscounts(db).get(readiness.spu_code)?.discount ?? priceConfig.defaultDiscount)
   const weights = activeWeights(db)
-  const pkg = packageRule(sourceRow)
+  const pkg = resolvePackageRule(db, sourceRow)
   const attrs = getRequiredAttributes(db, readiness.category.category_id, readiness.category.product_type_id)
   const colorAttr = attrs.find((attr) => attr.attribute_type === 1 && attr.attribute_label === 1)
   const sizeAttr = attrs.find((attr) => attr.attribute_type === 1 && attr.attribute_name === "尺寸")

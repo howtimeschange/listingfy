@@ -1,8 +1,8 @@
 import type { Column } from "@tanstack/react-table"
-import { Check, PlusCircle } from "lucide-react"
+import { Check } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { FilterTrigger } from "@/components/filter-trigger"
 import {
   Command,
   CommandEmpty,
@@ -36,8 +36,7 @@ export function DataTableFacetedFilter<TData, TValue>({
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" className="h-8 border-dashed">
-          <PlusCircle className="mr-2 size-3.5" />
+        <FilterTrigger active={selectedValues.size > 0} className="h-8 text-sm">
           {title}
           {selectedValues.size > 0 && (
             <>
@@ -72,7 +71,7 @@ export function DataTableFacetedFilter<TData, TValue>({
               </div>
             </>
           )}
-        </Button>
+        </FilterTrigger>
       </PopoverTrigger>
       <PopoverContent className="w-[200px] p-0" align="start">
         <Command>

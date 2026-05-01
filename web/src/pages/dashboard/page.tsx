@@ -481,7 +481,7 @@ export default function DashboardPage() {
 
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
               <QuickAction icon={Database} title="浏览元数据" to="/shein-metadata" />
-              <QuickAction icon={GitBranch} title="维护类目映射" to="/category-mapping" />
+              <QuickAction icon={GitBranch} title="维护 SHEIN 类目映射" to="/category-mapping" />
             </div>
           </CardContent>
         </Card>

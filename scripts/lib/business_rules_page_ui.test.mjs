@@ -5,7 +5,7 @@ import test from "node:test";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const SIZE_PAGE = path.join(PROJECT_ROOT, "web/src/pages/size-conversion/page.tsx");
-const LOW_RATE_PAGE = path.join(PROJECT_ROOT, "web/src/pages/low-rate-list/page.tsx");
+const PRICE_PAGE = path.join(PROJECT_ROOT, "web/src/pages/price-rules/page.tsx");
 const PACKAGE_PAGE = path.join(PROJECT_ROOT, "web/src/pages/package-rules/page.tsx");
 const PAGINATION_COMPONENT = path.join(PROJECT_ROOT, "web/src/components/server-pagination.tsx");
 const ROUTE_FILE = path.join(PROJECT_ROOT, "web/server/routes/business-rules.ts");
@@ -44,6 +44,7 @@ test("business rules API exposes import export search and CRUD endpoints", async
   assert.match(route, /\/discount-rules\/import/);
   assert.match(route, /\/discount-rules\/export/);
   assert.match(route, /\/discount-rules\/:id/);
+  assert.match(route, /\/price-config/);
   assert.match(route, /batch_search/);
   assert.match(route, /product-weights/);
   assert.match(route, /\/product-weights\/import/);
@@ -81,19 +82,29 @@ test("size conversion page supports spreadsheet import export batch search and C
   assert.match(pagination, /每页数量/);
 });
 
-test("low rate list page supports spreadsheet import export batch search and CRUD", async () => {
-  const page = await readFile(LOW_RATE_PAGE, "utf8");
+test("price rules page subsumes low-rate list import export batch search and CRUD", async () => {
+  const page = await readFile(PRICE_PAGE, "utf8");
 
   assert.doesNotMatch(page, /ComingSoonPage/);
-  assert.match(page, /SHEIN 低倍率清单/);
-  assert.match(page, /SHEIN 适配规则/);
+  assert.match(page, /SHEIN 价格规则/);
+  assert.match(page, /默认配置/);
+  assert.match(page, /SHEIN 供货折扣规则/);
+  assert.match(page, /价格试算/);
+  assert.match(page, /低倍率款号/);
   assert.match(page, /供货折扣/);
-  assert.match(page, /导入表格/);
+  assert.match(page, /导入价格规则/);
   assert.match(page, /导出/);
   assert.match(page, /批量搜索/);
   assert.match(page, /编辑/);
   assert.match(page, /删除/);
   assert.match(page, /discount-rules\/import/);
+  assert.match(page, /discount-rules\/summary/);
+  assert.match(page, /discount-rules\/preview/);
+  assert.match(page, /business-rules\/price-config/);
+  assert.match(page, /default_discount/);
+  assert.match(page, /usd_exchange_rate/);
+  assert.match(page, /保存默认配置/);
+  assert.doesNotMatch(page, /基础参数/);
   assert.match(page, /ServerPagination/);
   assert.match(page, /pagination/);
   assert.match(page, /offset=/);

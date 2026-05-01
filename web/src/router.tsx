@@ -1,6 +1,7 @@
 import { createBrowserRouter, Navigate } from "react-router"
 import { ProtectedLayout } from "@/components/layout/protected-layout"
 
+import LandingPage from "@/pages/landing/page"
 import LoginPage from "@/pages/login/page"
 import DashboardPage from "@/pages/dashboard/page"
 import ListingBatchesPage from "@/pages/listing-batches/page"
@@ -15,7 +16,6 @@ import CategoryMappingPage from "@/pages/category-mapping/page"
 import SizeConversionPage from "@/pages/size-conversion/page"
 import PackageRulesPage from "@/pages/package-rules/page"
 import PriceRulesPage from "@/pages/price-rules/page"
-import LowRateListPage from "@/pages/low-rate-list/page"
 import SheinMetadataPage from "@/pages/shein-metadata/page"
 import ProductArchivesPage from "@/pages/product-archives/page"
 import ProductArchiveDetailPage from "@/pages/product-archives/[spuCode]/page"
@@ -31,11 +31,11 @@ import SyncTasksPage from "@/pages/sync-tasks/page"
 import OperationLogsPage from "@/pages/operation-logs/page"
 
 export const router = createBrowserRouter([
+  { index: true, element: <LandingPage /> },
   { path: "login", element: <LoginPage /> },
   {
     element: <ProtectedLayout />,
     children: [
-      { index: true, element: <Navigate to="/dashboard" replace /> },
       { path: "dashboard", element: <DashboardPage /> },
       { path: "listing-batches", element: <ListingBatchesPage /> },
       { path: "listing-batches/:id", element: <BatchDetailPage /> },
@@ -52,7 +52,7 @@ export const router = createBrowserRouter([
       { path: "size-conversion", element: <SizeConversionPage /> },
       { path: "package-rules", element: <PackageRulesPage /> },
       { path: "price-rules", element: <PriceRulesPage /> },
-      { path: "low-rate-list", element: <LowRateListPage /> },
+      { path: "low-rate-list", element: <Navigate to="/price-rules" replace /> },
       { path: "shein-metadata", element: <SheinMetadataPage /> },
       { path: "product-archives", element: <ProductArchivesPage /> },
       { path: "product-archives/:spuCode", element: <ProductArchiveDetailPage /> },
