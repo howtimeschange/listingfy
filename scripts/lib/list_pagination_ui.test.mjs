@@ -15,7 +15,7 @@ const listPages = [
   "web/src/pages/shein-products/page.tsx",
   "web/src/pages/pre-publish-validation/page.tsx",
   "web/src/pages/size-conversion/page.tsx",
-  "web/src/pages/low-rate-list/page.tsx",
+  "web/src/pages/price-rules/page.tsx",
   "web/src/pages/package-rules/page.tsx",
 ];
 

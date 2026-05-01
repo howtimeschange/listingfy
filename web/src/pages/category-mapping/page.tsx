@@ -474,7 +474,7 @@ export default function CategoryMappingPage() {
   return (
     <PageContainer className="flex flex-col gap-6">
       <PageHeader
-        title="类目映射规则"
+        title="SHEIN 类目映射规则"
         description="管理 MDM 类目到 SHEIN 叶子类目的映射。AI 先给候选，运营确认后沉淀为正式规则。"
       >
         <Button onClick={handleRunAi} disabled={aiMutation.isPending}>

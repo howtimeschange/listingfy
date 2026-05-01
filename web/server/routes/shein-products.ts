@@ -1,6 +1,8 @@
 import { Hono } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
+import { getSheinPriceConfig } from "../lib/price-config"
+import { resolvePackageRule } from "../lib/rule-resolver"
 
 const sheinProducts = new Hono()
 
@@ -75,22 +77,6 @@ function buildMatchKey(row: SourceRow) {
     normalizeText(row.gender_name),
     normalizeText(row.age_group_name),
   ].join("|")
-}
-
-function packageRule(row: SourceRow) {
-  const text = [
-    row.middle_class_name,
-    row.subclass_name,
-    row.fabric_type_name,
-    row.length_name,
-    row.deepdraw_title,
-  ].map(normalizeText).join(" ")
-  if (text.includes("鞋")) return "30*20*10cm"
-  if (text.includes("内裤")) return "25*14*2cm"
-  if (text.includes("毛衫") || text.includes("毛衣") || text.includes("厚") || text.includes("外套")) {
-    return "35*25*1.5cm"
-  }
-  return "28*24*1cm"
 }
 
 function fallbackCategory(row: SourceRow) {
@@ -386,6 +372,7 @@ function computeBucketSnapshot(db: ReturnType<typeof getDb>, row: SourceRow) {
   const category = resolveCategory(row)
   const skcs = skcRows(db, row)
   const skus = skuRows(db, row)
+  const priceConfig = getSheinPriceConfig(db)
   const sizeConversionKeys = activeSizeConversions(db)
   const weights = activeWeights(db)
   const sizeMatchCount = skus.filter((sku) => {
@@ -400,7 +387,7 @@ function computeBucketSnapshot(db: ReturnType<typeof getDb>, row: SourceRow) {
     order by id desc
     limit 1
   `).get(spus) as SourceRow | undefined
-  const discount = Number(discountRow?.discount ?? 0.4)
+  const discount = Number(discountRow?.discount ?? priceConfig.defaultDiscount)
   const priceTag = Number(row.price_tag ?? row.deepdraw_retail_price ?? 0)
   const weightRecordCount = skus.filter((sku) => weights.bySku.has(normalizeText(sku.sku_code))).length
   const imageStats = db.prepare(`
@@ -467,8 +454,8 @@ function computeBucketSnapshot(db: ReturnType<typeof getDb>, row: SourceRow) {
     title_en: titleEn || null,
     supply_discount: discount,
     supply_price_cny: priceTag > 0 ? Number((priceTag * discount).toFixed(2)) : null,
-    retail_price_usd: priceTag > 0 ? Math.round(priceTag / 7.3) : null,
-    package_size_text: packageRule(row),
+    retail_price_usd: priceTag > 0 ? Math.round(priceTag / priceConfig.usdExchangeRate) : null,
+    package_size_text: resolvePackageRule(db, row).size,
     weight_record_count: weightRecordCount,
     size_match_count: sizeMatchCount,
     sku_count: skus.length,

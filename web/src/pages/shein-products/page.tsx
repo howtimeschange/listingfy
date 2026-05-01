@@ -14,6 +14,7 @@ import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { formatCurrency, formatDateTime, formatNumber, formatPercent } from "@/lib/format"
 import { parseBatchSearch } from "@/lib/spreadsheet"
+import { FilterTrigger } from "@/components/filter-trigger"
 import { ServerPagination } from "@/components/server-pagination"
 import type { ServerPaginationState } from "@/components/server-pagination"
 import { PageContainer } from "@/components/layout/page-container"
@@ -228,9 +229,9 @@ function FilterMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline">
+        <FilterTrigger active={selected.length > 0}>
           {selected.length ? `${label} ${selected.length}` : label}
-        </Button>
+        </FilterTrigger>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="max-h-80 w-64 overflow-y-auto">
         <DropdownMenuLabel>{label}</DropdownMenuLabel>
@@ -266,9 +267,9 @@ function StatusFilterMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline">
+        <FilterTrigger active={selected.length > 0}>
           {selected.length ? `${label} ${selected.length}` : label}
-        </Button>
+        </FilterTrigger>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-52">
         <DropdownMenuLabel>{label}</DropdownMenuLabel>

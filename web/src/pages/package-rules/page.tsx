@@ -24,6 +24,13 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import {
   Table,
@@ -55,6 +62,26 @@ interface ImportResult {
   failed_count: number
 }
 
+interface PackageRule {
+  id: number
+  rule_name: string
+  priority: number
+  match_mode: "ANY" | "ALL"
+  match_keywords: string[]
+  package_length_cm: number
+  package_width_cm: number
+  package_height_cm: number
+  package_type: string
+  status: string
+  note: string | null
+  updated_at: string
+}
+
+interface PackageRuleList {
+  items: PackageRule[]
+  pagination: ServerPaginationState
+}
+
 const emptyForm = {
   spu_code: "",
   skc_code: "",
@@ -62,12 +89,18 @@ const emptyForm = {
   package_weight_g: "",
 }
 
-const defaultRules = [
-  { name: "鞋品", match: "中类/小类包含鞋", size: "30*20*10cm", packageType: "硬包装" },
-  { name: "服装薄款", match: "默认服饰、梭织、夏季轻薄款", size: "28*24*1cm", packageType: "软包装+软物品" },
-  { name: "服装厚款", match: "毛衫、毛衣、外套、厚款", size: "35*25*1.5cm", packageType: "软包装+软物品" },
-  { name: "内裤", match: "小类包含内裤", size: "25*14*2cm", packageType: "软包装+软物品" },
-]
+const emptyRuleForm = {
+  rule_name: "",
+  priority: "0",
+  match_mode: "ANY",
+  match_keywords: "",
+  package_length_cm: "",
+  package_width_cm: "",
+  package_height_cm: "",
+  package_type: "软包装+软物品",
+  status: "ACTIVE",
+  note: "",
+}
 
 function useProductWeights(search: string, batchSearch: string, pagination: { limit: number; offset: number }) {
   return useQuery<WeightList>({
@@ -79,20 +112,40 @@ function useProductWeights(search: string, batchSearch: string, pagination: { li
   })
 }
 
+function usePackageRules() {
+  return useQuery<PackageRuleList>({
+    queryKey: ["business-rules", "package-rules"],
+    queryFn: () => api.get("/business-rules/package-rules?limit=200&offset=0"),
+  })
+}
+
+function formatRuleSize(rule: PackageRule) {
+  return `${rule.package_length_cm}*${rule.package_width_cm}*${rule.package_height_cm}cm`
+}
+
 export default function PackageRulesPage() {
   const [search, setSearch] = useState("")
   const [batchSearchText, setBatchSearchText] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<WeightRow | null>(null)
   const [form, setForm] = useState(emptyForm)
+  const [ruleDialogOpen, setRuleDialogOpen] = useState(false)
+  const [editingRule, setEditingRule] = useState<PackageRule | null>(null)
+  const [ruleForm, setRuleForm] = useState(emptyRuleForm)
   const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
   const queryClient = useQueryClient()
 
   const { data, isLoading } = useProductWeights(search, batchSearchText, pagination)
+  const { data: packageRuleData } = usePackageRules()
+  const packageRules = packageRuleData?.items ?? []
   const items = data?.items ?? []
   const totalCount = data?.pagination?.total ?? 0
   const batchCount = useMemo(() => parseBatchSearch(batchSearchText).length, [batchSearchText])
   const canSave = form.sku_code.trim() !== "" && Number(form.package_weight_g) > 0
+  const canSaveRule = ruleForm.rule_name.trim() !== ""
+    && Number(ruleForm.package_length_cm) > 0
+    && Number(ruleForm.package_width_cm) > 0
+    && Number(ruleForm.package_height_cm) > 0
 
   const importMutation = useMutation({
     mutationFn: (payload: { file_name: string; rows: SpreadsheetRow[] }) =>
@@ -124,11 +177,48 @@ export default function PackageRulesPage() {
     },
   })
 
+  const saveRuleMutation = useMutation({
+    mutationFn: () => {
+      const body = {
+        rule_name: ruleForm.rule_name,
+        priority: Number(ruleForm.priority),
+        match_mode: ruleForm.match_mode,
+        match_keywords: ruleForm.match_keywords,
+        package_length_cm: Number(ruleForm.package_length_cm),
+        package_width_cm: Number(ruleForm.package_width_cm),
+        package_height_cm: Number(ruleForm.package_height_cm),
+        package_type: ruleForm.package_type,
+        status: ruleForm.status,
+        note: ruleForm.note,
+      }
+      return editingRule
+        ? api.patch(`/business-rules/package-rules/${editingRule.id}`, body)
+        : api.post("/business-rules/package-rules", body)
+    },
+    onSuccess: () => {
+      toast.success(editingRule ? "包装规则已更新" : "包装规则已新增")
+      setRuleDialogOpen(false)
+      setEditingRule(null)
+      setRuleForm(emptyRuleForm)
+      queryClient.invalidateQueries({ queryKey: ["business-rules", "package-rules"] })
+      queryClient.invalidateQueries({ queryKey: ["shein-products"] })
+    },
+  })
+
   const deleteMutation = useMutation({
     mutationFn: (id: number) => api.delete(`/business-rules/product-weights/${id}`),
     onSuccess: () => {
       toast.success("产品毛重已删除")
       queryClient.invalidateQueries({ queryKey: ["business-rules", "product-weights"] })
+    },
+  })
+
+  const deleteRuleMutation = useMutation({
+    mutationFn: (id: number) => api.delete(`/business-rules/package-rules/${id}`),
+    onSuccess: () => {
+      toast.success("包装规则已删除")
+      queryClient.invalidateQueries({ queryKey: ["business-rules", "package-rules"] })
+      queryClient.invalidateQueries({ queryKey: ["shein-products"] })
     },
   })
 
@@ -151,6 +241,29 @@ export default function PackageRulesPage() {
     setEditing(null)
     setForm(emptyForm)
     setDialogOpen(true)
+  }
+
+  function openCreateRule() {
+    setEditingRule(null)
+    setRuleForm(emptyRuleForm)
+    setRuleDialogOpen(true)
+  }
+
+  function openEditRule(rule: PackageRule) {
+    setEditingRule(rule)
+    setRuleForm({
+      rule_name: rule.rule_name,
+      priority: String(rule.priority ?? 0),
+      match_mode: rule.match_mode || "ANY",
+      match_keywords: rule.match_keywords.join("\n"),
+      package_length_cm: String(rule.package_length_cm ?? ""),
+      package_width_cm: String(rule.package_width_cm ?? ""),
+      package_height_cm: String(rule.package_height_cm ?? ""),
+      package_type: rule.package_type || "软包装+软物品",
+      status: rule.status || "ACTIVE",
+      note: rule.note ?? "",
+    })
+    setRuleDialogOpen(true)
   }
 
   function openEdit(row: WeightRow) {
@@ -200,29 +313,51 @@ export default function PackageRulesPage() {
             />
           </Label>
         </Button>
-        <Button onClick={openCreate}>
+        <Button variant="outline" onClick={openCreate}>
           <Plus className="mr-2 size-4" />
-          新增
+          新增毛重
+        </Button>
+        <Button onClick={openCreateRule}>
+          <Plus className="mr-2 size-4" />
+          新增包装规则
         </Button>
       </PageHeader>
 
       <div className="grid gap-4 lg:grid-cols-4">
-        {defaultRules.map((rule) => (
-          <Card key={rule.name}>
+        {packageRules.map((rule) => (
+          <Card key={rule.id}>
             <CardHeader>
               <div className="flex items-center justify-between gap-2">
-                <CardTitle className="text-base">{rule.name}</CardTitle>
-                <Badge variant="outline">{rule.size}</Badge>
+                <CardTitle className="text-base">{rule.rule_name}</CardTitle>
+                <Badge variant="outline">{formatRuleSize(rule)}</Badge>
               </div>
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
               <div>
                 <p className="text-xs text-muted-foreground">匹配规则</p>
-                <p>{rule.match}</p>
+                <p>{rule.match_keywords.length ? rule.match_keywords.join(" / ") : "默认兜底"}</p>
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">包装类型</p>
-                <p>{rule.packageType}</p>
+                <p>{rule.package_type}</p>
+              </div>
+              <div className="flex items-center justify-between gap-2 pt-2">
+                <Badge variant={rule.status === "ACTIVE" ? "secondary" : "outline"}>
+                  优先级 {rule.priority}
+                </Badge>
+                <div className="flex gap-1">
+                  <Button variant="ghost" size="icon-xs" onClick={() => openEditRule(rule)}>
+                    <Edit3 className="size-3.5" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="text-destructive"
+                    onClick={() => deleteRuleMutation.mutate(rule.id)}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -235,7 +370,7 @@ export default function PackageRulesPage() {
             <div>
               <CardTitle>产品毛重报表</CardTitle>
                 <p className="mt-1 text-sm text-muted-foreground">
-                SHEIN 尺寸规则 {defaultRules.length} / SKU 毛重记录 {formatNumber(totalCount)} / 当前页 {formatNumber(items.length)} / 批量搜索 {batchCount ? `${batchCount} 个词` : "未启用"}
+                SHEIN 尺寸规则 {formatNumber(packageRules.length)} / SKU 毛重记录 {formatNumber(totalCount)} / 当前页 {formatNumber(items.length)} / 批量搜索 {batchCount ? `${batchCount} 个词` : "未启用"}
               </p>
             </div>
             <div className="flex w-full flex-col gap-2 lg:w-auto lg:flex-row">
@@ -369,6 +504,103 @@ export default function PackageRulesPage() {
             <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || !canSave}>
               {saveMutation.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
               保存
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={ruleDialogOpen} onOpenChange={setRuleDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{editingRule ? "编辑包装规则" : "新增包装规则"}</DialogTitle>
+            <DialogDescription>按优先级从高到低匹配商品中类、小类、面料、标题等文本；关键词为空时作为默认兜底规则。</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid gap-4 sm:grid-cols-[1fr_120px]">
+              <Label className="grid gap-2">
+                规则名称
+                <Input
+                  value={ruleForm.rule_name}
+                  onChange={(event) => setRuleForm((current) => ({ ...current, rule_name: event.target.value }))}
+                  placeholder="服装薄款"
+                />
+              </Label>
+              <Label className="grid gap-2">
+                优先级
+                <Input
+                  type="number"
+                  value={ruleForm.priority}
+                  onChange={(event) => setRuleForm((current) => ({ ...current, priority: event.target.value }))}
+                />
+              </Label>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Label className="grid gap-2">
+                匹配方式
+                <Select value={ruleForm.match_mode} onValueChange={(value) => setRuleForm((current) => ({ ...current, match_mode: value }))}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ANY">任一关键词命中</SelectItem>
+                    <SelectItem value="ALL">全部关键词命中</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Label>
+              <Label className="grid gap-2">
+                状态
+                <Select value={ruleForm.status} onValueChange={(value) => setRuleForm((current) => ({ ...current, status: value }))}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ACTIVE">启用</SelectItem>
+                    <SelectItem value="INACTIVE">停用</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Label>
+            </div>
+            <Label className="grid gap-2">
+              匹配关键词
+              <Textarea
+                value={ruleForm.match_keywords}
+                onChange={(event) => setRuleForm((current) => ({ ...current, match_keywords: event.target.value }))}
+                rows={4}
+                placeholder={"毛衫\n毛衣\n厚\n外套"}
+              />
+            </Label>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <Label className="grid gap-2">
+                长/cm
+                <Input type="number" value={ruleForm.package_length_cm} onChange={(event) => setRuleForm((current) => ({ ...current, package_length_cm: event.target.value }))} />
+              </Label>
+              <Label className="grid gap-2">
+                宽/cm
+                <Input type="number" value={ruleForm.package_width_cm} onChange={(event) => setRuleForm((current) => ({ ...current, package_width_cm: event.target.value }))} />
+              </Label>
+              <Label className="grid gap-2">
+                高/cm
+                <Input type="number" step="0.1" value={ruleForm.package_height_cm} onChange={(event) => setRuleForm((current) => ({ ...current, package_height_cm: event.target.value }))} />
+              </Label>
+            </div>
+            <Label className="grid gap-2">
+              包装类型
+              <Input
+                value={ruleForm.package_type}
+                onChange={(event) => setRuleForm((current) => ({ ...current, package_type: event.target.value }))}
+              />
+            </Label>
+            <Label className="grid gap-2">
+              备注
+              <Textarea
+                value={ruleForm.note}
+                onChange={(event) => setRuleForm((current) => ({ ...current, note: event.target.value }))}
+                rows={2}
+              />
+            </Label>
+            <Button onClick={() => saveRuleMutation.mutate()} disabled={saveRuleMutation.isPending || !canSaveRule}>
+              {saveRuleMutation.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
+              保存规则
             </Button>
           </div>
         </DialogContent>

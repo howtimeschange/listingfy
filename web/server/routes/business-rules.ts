@@ -1,6 +1,7 @@
 import { Hono } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
+import { getSheinPriceConfig, updateSheinPriceConfig } from "../lib/price-config"
 
 const businessRules = new Hono()
 
@@ -31,6 +32,25 @@ type WeightRuleBody = {
   sku_code?: unknown
   package_weight_g?: unknown
   status?: unknown
+  note?: unknown
+}
+
+type PackageRuleBody = {
+  rule_name?: unknown
+  priority?: unknown
+  match_mode?: unknown
+  match_keywords?: unknown
+  package_length_cm?: unknown
+  package_width_cm?: unknown
+  package_height_cm?: unknown
+  package_type?: unknown
+  status?: unknown
+  note?: unknown
+}
+
+type PriceConfigBody = {
+  default_discount?: unknown
+  usd_exchange_rate?: unknown
   note?: unknown
 }
 
@@ -100,6 +120,59 @@ function readWeight(value: unknown, fallback: number | null = null) {
   const number = Number(normalized)
   if (!Number.isFinite(number) || number <= 0) return fallback
   return number
+}
+
+function readNumber(value: unknown, fallback: number | null = null) {
+  if (value == null || value === "") return fallback
+  const number = Number(value)
+  if (!Number.isFinite(number)) return fallback
+  return number
+}
+
+function readInteger(value: unknown, fallback = 0) {
+  const number = readNumber(value, fallback) ?? fallback
+  return Math.floor(number)
+}
+
+function normalizeKeywords(value: unknown) {
+  if (Array.isArray(value)) return value.map(normalizeText).filter(Boolean)
+  return Array.from(
+    new Set(
+      normalizeText(value)
+        .split(/[\n,，;；]+/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  )
+}
+
+function packageRuleRow(row: Record<string, unknown>) {
+  const length = readNumber(row.package_length_cm)
+  const width = readNumber(row.package_width_cm)
+  const height = readNumber(row.package_height_cm)
+  const ruleName = normalizeText(row.rule_name)
+  if (!ruleName || !length || !width || !height) return null
+  return {
+    rule_name: ruleName,
+    priority: readInteger(row.priority, 0),
+    match_mode: normalizeText(row.match_mode).toUpperCase() === "ALL" ? "ALL" : "ANY",
+    match_keywords: normalizeKeywords(row.match_keywords ?? row.match_keywords_json),
+    package_length_cm: length,
+    package_width_cm: width,
+    package_height_cm: height,
+    package_type: normalizeText(row.package_type) || "软包装+软物品",
+    status: normalizeText(row.status ?? "ACTIVE") || "ACTIVE",
+    note: normalizeNullableText(row.note),
+  }
+}
+
+function parseJsonArray(value: unknown) {
+  try {
+    const parsed = JSON.parse(String(value ?? "[]"))
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
 }
 
 function createImportBatch({
@@ -381,6 +454,122 @@ function upsertWeightRule({
   )
   return Number(result.lastInsertRowid)
 }
+
+businessRules.get("/package-rules", (c) => {
+  const db = getDb()
+  const q = c.req.query("q")
+  const limit = readLimit(c.req.query("limit"), 100, 500)
+  const offset = readOffset(c.req.query("offset"))
+  const clauses = ["status <> 'DELETED'"]
+  const params: unknown[] = []
+  if (q?.trim()) {
+    clauses.push("(rule_name like ? or package_type like ? or note like ? or match_keywords_json like ?)")
+    params.push(...Array(4).fill(`%${q.trim()}%`))
+  }
+  const where = `where ${clauses.join(" and ")}`
+  const rows = db.prepare(`
+    select *
+    from shein_package_rule
+    ${where}
+    order by status = 'ACTIVE' desc, priority desc, id asc
+    limit ? offset ?
+  `).all(...params, limit, offset) as Array<Record<string, unknown>>
+  const total = db.prepare(`
+    select count(*) as count
+    from shein_package_rule
+    ${where}
+  `).get(...params) as { count: number }
+  const items = rows.map((row) => ({
+    ...row,
+    match_keywords: parseJsonArray(row.match_keywords_json),
+  }))
+  return c.json(paginatedResponse({ items, total: total.count, limit, offset }))
+})
+
+businessRules.post("/package-rules", async (c) => {
+  const db = getDb()
+  const body = await c.req.json() as PackageRuleBody
+  const normalized = packageRuleRow(body as Record<string, unknown>)
+  if (!normalized) throw new HTTPException(400, { message: "缺少规则名称或包装尺寸" })
+  const result = db.prepare(`
+    insert into shein_package_rule (
+      rule_name,
+      priority,
+      match_mode,
+      match_keywords_json,
+      package_length_cm,
+      package_width_cm,
+      package_height_cm,
+      package_type,
+      status,
+      note,
+      updated_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  `).run(
+    normalized.rule_name,
+    normalized.priority,
+    normalized.match_mode,
+    JSON.stringify(normalized.match_keywords),
+    normalized.package_length_cm,
+    normalized.package_width_cm,
+    normalized.package_height_cm,
+    normalized.package_type,
+    normalized.status,
+    normalized.note,
+  )
+  return c.json({ ok: true, id: result.lastInsertRowid })
+})
+
+businessRules.patch("/package-rules/:id", async (c) => {
+  const db = getDb()
+  const id = Number(c.req.param("id"))
+  const body = await c.req.json() as PackageRuleBody
+  const normalized = packageRuleRow(body as Record<string, unknown>)
+  if (!Number.isFinite(id) || id <= 0 || !normalized) {
+    throw new HTTPException(400, { message: "缺少有效规则 ID、规则名称或包装尺寸" })
+  }
+  db.prepare(`
+    update shein_package_rule
+    set rule_name = ?,
+      priority = ?,
+      match_mode = ?,
+      match_keywords_json = ?,
+      package_length_cm = ?,
+      package_width_cm = ?,
+      package_height_cm = ?,
+      package_type = ?,
+      status = ?,
+      note = ?,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+  `).run(
+    normalized.rule_name,
+    normalized.priority,
+    normalized.match_mode,
+    JSON.stringify(normalized.match_keywords),
+    normalized.package_length_cm,
+    normalized.package_width_cm,
+    normalized.package_height_cm,
+    normalized.package_type,
+    normalized.status,
+    normalized.note,
+    id,
+  )
+  return c.json({ ok: true })
+})
+
+businessRules.delete("/package-rules/:id", (c) => {
+  const db = getDb()
+  const id = Number(c.req.param("id"))
+  db.prepare(`
+    update shein_package_rule
+    set status = 'DELETED',
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+  `).run(id)
+  return c.json({ ok: true })
+})
 
 businessRules.get("/size-conversions", (c) => {
   const db = getDb()
@@ -692,6 +881,89 @@ businessRules.get("/discount-rules/export", (c) => {
     order by spu_code
   `).all()
   return c.json({ rows })
+})
+
+businessRules.get("/price-config", (c) => {
+  const config = getSheinPriceConfig(getDb())
+  return c.json({
+    default_discount: config.defaultDiscount,
+    usd_exchange_rate: config.usdExchangeRate,
+    note: config.note,
+    updated_at: config.updatedAt,
+  })
+})
+
+businessRules.patch("/price-config", async (c) => {
+  const db = getDb()
+  const body = await c.req.json() as PriceConfigBody
+  const config = updateSheinPriceConfig(db, {
+    defaultDiscount: readDiscount(body.default_discount, 0.4) ?? 0.4,
+    usdExchangeRate: readNumber(body.usd_exchange_rate, 7.3) ?? 7.3,
+    note: normalizeNullableText(body.note),
+  })
+  return c.json({
+    ok: true,
+    config: {
+      default_discount: config.defaultDiscount,
+      usd_exchange_rate: config.usdExchangeRate,
+      note: config.note,
+      updated_at: config.updatedAt,
+    },
+  })
+})
+
+businessRules.get("/discount-rules/summary", (c) => {
+  const db = getDb()
+  const config = getSheinPriceConfig(db)
+  const summary = db.prepare(`
+    select
+      count(*) as total,
+      sum(case when status = 'ACTIVE' then 1 else 0 end) as active_count,
+      sum(case when status = 'ACTIVE' and discount > ? then 1 else 0 end) as low_rate_count,
+      avg(case when status = 'ACTIVE' then discount else null end) as average_discount
+    from supply_discount_rule
+    where status <> 'DELETED'
+  `).get(config.defaultDiscount) as Record<string, unknown>
+  return c.json({
+    total: Number(summary.total ?? 0),
+    active_count: Number(summary.active_count ?? 0),
+    low_rate_count: Number(summary.low_rate_count ?? 0),
+    average_discount: summary.average_discount == null ? null : Number(summary.average_discount),
+    default_discount: config.defaultDiscount,
+    retail_usd_rate: config.usdExchangeRate,
+    note: config.note,
+    updated_at: config.updatedAt,
+  })
+})
+
+businessRules.get("/discount-rules/preview", (c) => {
+  const db = getDb()
+  const config = getSheinPriceConfig(db)
+  const q = normalizeText(c.req.query("q"))
+  const limit = readLimit(c.req.query("limit"), 20, 100)
+  const params: unknown[] = []
+  const where = q
+    ? "where spu.spu_code like ? or spu.spu_name like ? or spu.listing_title_cn like ?"
+    : ""
+  if (q) params.push(`%${q}%`, `%${q}%`, `%${q}%`)
+  const items = db.prepare(`
+    select
+      spu.spu_code,
+      spu.spu_name,
+      spu.listing_title_cn,
+      spu.brand_name,
+      spu.price_tag,
+      coalesce(rule.discount, ?) as discount,
+      rule.id as rule_id,
+      round(coalesce(spu.price_tag, 0) * coalesce(rule.discount, ?), 2) as supply_price_cny,
+      round(coalesce(spu.price_tag, 0) / ?, 2) as retail_price_usd
+    from product_spu spu
+    left join supply_discount_rule rule on rule.spu_code = spu.spu_code and rule.status = 'ACTIVE'
+    ${where}
+    order by rule.id is null asc, spu.updated_at desc, spu.id desc
+    limit ?
+  `).all(config.defaultDiscount, config.defaultDiscount, config.usdExchangeRate, ...params, limit)
+  return c.json({ items })
 })
 
 businessRules.patch("/discount-rules/:id", async (c) => {

@@ -14,6 +14,7 @@ import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { parseBatchSearch } from "@/lib/spreadsheet"
 import { useDebounce } from "@/hooks/use-debounce"
+import { FilterTrigger } from "@/components/filter-trigger"
 import { ServerPagination } from "@/components/server-pagination"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
@@ -521,9 +522,9 @@ export default function ProductArchivesPage() {
 
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="outline">
+                  <FilterTrigger active={mdmStatusFilter.length + deepdrawStatusFilter.length > 0}>
                     {selectedStatusesLabel([...mdmStatusFilter, ...deepdrawStatusFilter])}
-                  </Button>
+                  </FilterTrigger>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
                   <DropdownMenuLabel>MDM 状态</DropdownMenuLabel>

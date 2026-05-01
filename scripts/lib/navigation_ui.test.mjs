@@ -22,6 +22,9 @@ test("primary navigation shows the active SHEIN workflow and hides deprecated pl
   assert.match(sidebar, /\/listing-batches/);
   assert.match(sidebar, /SHEIN 商品分桶/);
   assert.match(sidebar, /SHEIN 发布草稿箱/);
+  assert.match(sidebar, /SHEIN 类目映射/);
+  assert.match(sidebar, /SHEIN 包装规则/);
+  assert.match(sidebar, /SHEIN 价格规则/);
   assert.match(sidebar, /发布任务/);
   assert.match(sidebar, /图片素材库/);
   assert.doesNotMatch(dashboard, /图片管理/);
