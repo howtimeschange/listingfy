@@ -6,7 +6,7 @@
 
 - 前端使用 React 19、TypeScript、Vite、React Router、TanStack Query 和 TanStack Table。
 - UI 采用 shadcn/radix 风格组件和 lucide 图标。
-- API 服务使用 Hono + better-sqlite3，读取根目录 `data/app.sqlite`。
+- API 服务使用 Hono + PostgreSQL，通过 `pg` 连接池和兼容 facade 访问数据库。
 - 已实现登录鉴权、RBAC 权限、用户管理、平台对接配置、同步任务和操作日志。
 - 已实现首个平台元数据浏览页，当前数据源为 SHEIN，可查看类目、发布字段、图片规则、必填属性、销售属性和枚举值。
 - 已实现 SHEIN 类目映射、SHEIN 尺码转换、SHEIN 包装规则、SHEIN 价格规则和 SKU 毛重等业务规则维护；低倍率清单已整合进 SHEIN 价格规则。
@@ -37,16 +37,21 @@ npm run web:dev
 ```
 
 默认 API 服务端口为 `3001`。
-系统不再自动创建默认弱口令管理员。首次运行迁移后，请在项目根目录使用 `npm run admin:create -- --username admin --display-name 系统管理员 --password '<强密码>'` 创建或重置管理员账号。
+系统不再自动创建默认弱口令管理员。首次运行迁移后，请在项目根目录使用 `DATABASE_URL=postgres://listingify:listingify@localhost:5432/listingify npm run admin:create -- --username admin --display-name 系统管理员 --password '<强密码>'` 创建或重置管理员账号。
 
 ## 数据依赖
 
-页面依赖根目录的本地 SQLite 数据库：
+本地页面默认依赖 PostgreSQL：
 
 ```bash
 cd ..
+docker compose -f docker-compose.postgres.yml up -d
+
+DATABASE_PROVIDER=postgres \
+DATABASE_URL=postgres://listingify:listingify@localhost:5432/listingify \
 npm run db:migrate
+
+DATABASE_PROVIDER=postgres \
+DATABASE_URL=postgres://listingify:listingify@localhost:5432/listingify \
 npm run shein:metadata:import
 ```
-
-`data/app.sqlite` 不提交 Git，生产化前需要替换为正式数据库和鉴权方案。

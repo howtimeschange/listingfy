@@ -65,9 +65,9 @@ auth.get("/me", (c) => {
   return c.json({ user: serializeUser(user) })
 })
 
-auth.post("/logout", (c) => {
+auth.post("/logout", async (c) => {
   const user = requireCurrentUser(c)
-  clearSession(c)
+  await clearSession(c)
   auditFromContext(c, {
     module: "AUTH",
     action: "LOGOUT",

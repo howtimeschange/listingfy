@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3"
+import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 
 export interface SheinPriceConfig {
   defaultDiscount: number
@@ -19,7 +19,7 @@ function asPositiveNumber(value: unknown, fallback: number) {
   return Number.isFinite(number) && number > 0 ? number : fallback
 }
 
-export function getSheinPriceConfig(db: Database.Database): SheinPriceConfig {
+export function getSheinPriceConfig(db: SyncPostgresDatabase): SheinPriceConfig {
   const row = db.prepare(`
     select default_discount, usd_exchange_rate, note, updated_at
     from shein_price_config
@@ -41,7 +41,7 @@ export function getSheinPriceConfig(db: Database.Database): SheinPriceConfig {
 }
 
 export function updateSheinPriceConfig(
-  db: Database.Database,
+  db: SyncPostgresDatabase,
   input: { defaultDiscount: number; usdExchangeRate: number; note?: string | null },
 ) {
   if (!Number.isFinite(input.defaultDiscount) || input.defaultDiscount <= 0) {

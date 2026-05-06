@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3"
+import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 
 export type PublishTaskRow = Record<string, unknown> & {
   id: number
@@ -83,7 +83,7 @@ function parseJsonObject(value: unknown) {
   }
 }
 
-function taskById(db: Database.Database, taskId: number) {
+function taskById(db: SyncPostgresDatabase, taskId: number) {
   return db.prepare("select * from listing_publish_task where id = ?").get(taskId) as PublishTaskRow
 }
 
@@ -136,7 +136,7 @@ export function classifyPublishFailure(errorCode?: string | null, errorMessage?:
   }
 }
 
-export function ensurePublishTask(db: Database.Database, input: EnsurePublishTaskInput) {
+export function ensurePublishTask(db: SyncPostgresDatabase, input: EnsurePublishTaskInput) {
   const platform = platformOf(input.platform)
   const taskType = normalizeText(input.taskType || "PUBLISH_LISTING").toUpperCase()
   const idempotencyKey = input.idempotencyKey || buildPublishTaskIdempotencyKey({ ...input, platform, taskType })
@@ -178,7 +178,7 @@ export function ensurePublishTask(db: Database.Database, input: EnsurePublishTas
   return { created: true, task: taskById(db, Number(result.lastInsertRowid)) }
 }
 
-function latestPublishableVersion(db: Database.Database, listingId: number) {
+function latestPublishableVersion(db: SyncPostgresDatabase, listingId: number) {
   return db.prepare(`
     select *
     from listing_publish_version
@@ -189,7 +189,7 @@ function latestPublishableVersion(db: Database.Database, listingId: number) {
   `).get(listingId) as SourceRow | undefined
 }
 
-function unresolvedBlockerCount(db: Database.Database, listingId: number) {
+function unresolvedBlockerCount(db: SyncPostgresDatabase, listingId: number) {
   const row = db.prepare(`
     select count(*) as count
     from listing_validation_result
@@ -200,7 +200,7 @@ function unresolvedBlockerCount(db: Database.Database, listingId: number) {
   return Number(row?.count ?? 0)
 }
 
-function batchListingRows(db: Database.Database, input: BatchPublishInput) {
+function batchListingRows(db: SyncPostgresDatabase, input: BatchPublishInput) {
   const platform = platformOf(input.platform)
   const ids = Array.from(new Set((input.onlyListingIds ?? []).map(Number).filter((id) => Number.isFinite(id) && id > 0)))
   return db.prepare(`
@@ -220,7 +220,7 @@ function batchListingRows(db: Database.Database, input: BatchPublishInput) {
   `).all(platform, normalizeText(input.batchNo), ...ids) as SourceRow[]
 }
 
-export function ensureBatchPublishTasks(db: Database.Database, input: BatchPublishInput) {
+export function ensureBatchPublishTasks(db: SyncPostgresDatabase, input: BatchPublishInput) {
   const platform = platformOf(input.platform)
   const batchNo = normalizeText(input.batchNo)
   const status = normalizeText(input.status || "PENDING_CONFIRM")
@@ -293,7 +293,7 @@ export function ensureBatchPublishTasks(db: Database.Database, input: BatchPubli
   }
 }
 
-export function updatePublishTaskRequestPayload(db: Database.Database, taskId: number, requestPayload: unknown) {
+export function updatePublishTaskRequestPayload(db: SyncPostgresDatabase, taskId: number, requestPayload: unknown) {
   db.prepare(`
     update listing_publish_task
     set request_payload_json = ?,
@@ -303,7 +303,7 @@ export function updatePublishTaskRequestPayload(db: Database.Database, taskId: n
   return taskById(db, taskId)
 }
 
-export function markPublishTaskFailed(db: Database.Database, input: MarkPublishTaskFailedInput) {
+export function markPublishTaskFailed(db: SyncPostgresDatabase, input: MarkPublishTaskFailedInput) {
   const now = input.now ?? new Date()
   const failure = classifyPublishFailure(input.errorCode, input.errorMessage)
   const nextRetryAt = failure.retryable
@@ -336,7 +336,7 @@ export function markPublishTaskFailed(db: Database.Database, input: MarkPublishT
   return { task: taskById(db, input.taskId), failure }
 }
 
-export function markPublishTaskStatusSynced(db: Database.Database, input: MarkPublishTaskStatusSyncedInput) {
+export function markPublishTaskStatusSynced(db: SyncPostgresDatabase, input: MarkPublishTaskStatusSyncedInput) {
   const now = input.now ?? new Date()
   const errorCode = normalizeText(input.errorCode)
   const errorMessage = normalizeText(input.errorMessage)
@@ -370,7 +370,7 @@ export function markPublishTaskStatusSynced(db: Database.Database, input: MarkPu
   return taskById(db, input.taskId)
 }
 
-export function publishSummaryForBatch(db: Database.Database, input: BatchPublishSummaryInput) {
+export function publishSummaryForBatch(db: SyncPostgresDatabase, input: BatchPublishSummaryInput) {
   const platform = platformOf(input.platform)
   const batchNo = normalizeText(input.batchNo)
   const listingStatusRows = db.prepare(`
@@ -448,7 +448,7 @@ export function publishSummaryForBatch(db: Database.Database, input: BatchPublis
   }
 }
 
-export function refreshBatchPublishSummary(db: Database.Database, input: BatchPublishSummaryInput) {
+export function refreshBatchPublishSummary(db: SyncPostgresDatabase, input: BatchPublishSummaryInput) {
   const platform = platformOf(input.platform)
   const batchNo = normalizeText(input.batchNo)
   const summary = publishSummaryForBatch(db, { platform, batchNo })
@@ -463,7 +463,7 @@ export function refreshBatchPublishSummary(db: Database.Database, input: BatchPu
   return summary
 }
 
-function failedBatchTasksForRetry(db: Database.Database, input: RetryFailedBatchTasksInput) {
+function failedBatchTasksForRetry(db: SyncPostgresDatabase, input: RetryFailedBatchTasksInput) {
   const platform = platformOf(input.platform)
   const retryableClause = input.retryableOnly ? "and task.retryable = 1" : ""
   const retryableLatestClause = input.retryableOnly ? "and latest.retryable = 1" : ""
@@ -488,7 +488,7 @@ function failedBatchTasksForRetry(db: Database.Database, input: RetryFailedBatch
   `).all(platform, normalizeText(input.batchNo)) as PublishTaskRow[]
 }
 
-function existingRetryForTask(db: Database.Database, taskId: number) {
+function existingRetryForTask(db: SyncPostgresDatabase, taskId: number) {
   return db.prepare(`
     select version.*
     from listing_publish_version version
@@ -499,7 +499,7 @@ function existingRetryForTask(db: Database.Database, taskId: number) {
   `).get(taskId) as SourceRow | undefined
 }
 
-function nextVersionNo(db: Database.Database, listingId: number) {
+function nextVersionNo(db: SyncPostgresDatabase, listingId: number) {
   const row = db.prepare(`
     select coalesce(max(version_no), 0) + 1 as next_no
     from listing_publish_version
@@ -508,7 +508,7 @@ function nextVersionNo(db: Database.Database, listingId: number) {
   return Number(row.next_no ?? 1)
 }
 
-export function retryFailedBatchTasks(db: Database.Database, input: RetryFailedBatchTasksInput) {
+export function retryFailedBatchTasks(db: SyncPostgresDatabase, input: RetryFailedBatchTasksInput) {
   const platform = platformOf(input.platform)
   const batchNo = normalizeText(input.batchNo)
   const now = input.now ?? new Date()

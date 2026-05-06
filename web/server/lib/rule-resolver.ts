@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3"
+import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 
 type SourceRow = Record<string, unknown>
 
@@ -60,7 +60,7 @@ function fallbackPackageRule(row: SourceRow): PackageRuleResult {
   return { id: null, name: "服装薄款", size: "28*24*1cm", length: 28, width: 24, height: 1, type: "软包装+软物品", source: "FALLBACK" }
 }
 
-export function resolvePackageRule(db: Database.Database, row: SourceRow): PackageRuleResult {
+export function resolvePackageRule(db: SyncPostgresDatabase, row: SourceRow): PackageRuleResult {
   const text = packageMatchText(row)
   const rules = db.prepare(`
     select *

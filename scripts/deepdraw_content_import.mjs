@@ -3,12 +3,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { getDatabaseConfig } from "./lib/database_config.mjs";
 import { loadLocalEnv } from "./lib/local_env.mjs";
-import {
-  DEFAULT_DB_PATH,
-  applyMigrations,
-  openDatabase,
-} from "./lib/sqlite_db.mjs";
+import { applyPostgresMigrations, createPostgresPool, SyncPostgresDatabase } from "./lib/postgres_db.mjs";
 import { importDeepdrawPayloads } from "./lib/deepdraw_content_importer.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -17,7 +14,7 @@ const LATEST_MANIFEST_PATH = path.join(PROJECT_ROOT, "data", "deepdraw-content",
 
 function parseArgs(argv) {
   const args = {
-    dbPath: process.env.APP_DB_PATH || DEFAULT_DB_PATH,
+    databaseUrl: process.env.DATABASE_URL,
     sourceDir: null,
   };
 
@@ -29,13 +26,12 @@ function parseArgs(argv) {
       return argv[i];
     };
 
-    if (arg === "--db") args.dbPath = next();
+    if (arg === "--database-url") args.databaseUrl = next();
     else if (arg === "--source") args.sourceDir = next();
     else if (arg === "--help" || arg === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
   }
 
-  args.dbPath = path.resolve(args.dbPath);
   return args;
 }
 
@@ -44,7 +40,7 @@ function usage() {
 
 Options:
   --source <dir>   DeepDraw sync output directory. Default: latest manifest output.
-  --db <path>      SQLite database path. Default: ${DEFAULT_DB_PATH}
+  --database-url <url> PostgreSQL connection URL. Default: DATABASE_URL.
 
 Examples:
   npm run deepdraw:import
@@ -105,16 +101,24 @@ if (!payloads.length) {
   throw new Error(`No DeepDraw product payloads found under: ${sourceDir}`);
 }
 
-const db = openDatabase(args.dbPath);
+const config = getDatabaseConfig({
+  ...process.env,
+  DATABASE_PROVIDER: "postgres",
+  DATABASE_URL: args.databaseUrl,
+  DB_MIGRATIONS_DIR: path.join(PROJECT_ROOT, "db", "migrations"),
+});
+const pool = createPostgresPool(config.url);
+const applied = await applyPostgresMigrations(pool, config.migrationsDir);
+await pool.end();
+const db = new SyncPostgresDatabase(config.url);
 try {
-  const applied = applyMigrations(db);
   const summary = importDeepdrawPayloads(db, {
     payloads,
     sourceDir: path.relative(PROJECT_ROOT, sourceDir),
     manifest,
   });
   process.stdout.write(`${JSON.stringify({
-    db_path: args.dbPath,
+    database_url: config.url.replace(/:\/\/([^:@]+):([^@]+)@/, "://$1:***@"),
     source_dir: sourceDir,
     applied_migrations: applied,
     ...summary,

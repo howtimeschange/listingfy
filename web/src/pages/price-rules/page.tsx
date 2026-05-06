@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Download, Edit3, Loader2, Plus, Search, Trash2, Upload } from "lucide-react"
 import { toast } from "sonner"
@@ -93,10 +93,29 @@ const emptyForm = {
   note: "",
 }
 
-const emptyConfigForm = {
+interface ConfigForm {
+  default_discount: string
+  usd_exchange_rate: string
+  note: string
+}
+
+const defaultConfigForm: ConfigForm = {
   default_discount: "0.4",
   usd_exchange_rate: "7.3",
   note: "",
+}
+
+function configFormFromSummary(summary: DiscountSummary | null | undefined): ConfigForm {
+  return {
+    ...defaultConfigForm,
+    ...(summary
+      ? {
+          default_discount: String(summary.default_discount ?? 0.4),
+          usd_exchange_rate: String(summary.retail_usd_rate ?? 7.3),
+          note: summary.note ?? "",
+        }
+      : {}),
+  }
 }
 
 function useDiscountRules(search: string, batchSearch: string, pagination: { limit: number; offset: number }) {
@@ -135,7 +154,7 @@ export default function PriceRulesPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<DiscountRule | null>(null)
   const [form, setForm] = useState(emptyForm)
-  const [configForm, setConfigForm] = useState(emptyConfigForm)
+  const [configForm, setConfigForm] = useState<ConfigForm | null>(null)
   const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
   const queryClient = useQueryClient()
 
@@ -144,17 +163,9 @@ export default function PriceRulesPage() {
   const { data: preview } = usePricePreview(previewSearch)
   const items = data?.items ?? []
   const batchCount = useMemo(() => parseBatchSearch(batchSearchText).length, [batchSearchText])
+  const activeConfigForm = configForm ?? configFormFromSummary(summary)
   const canSave = form.spu_code.trim() !== "" && Number(form.discount) > 0
-  const canSaveConfig = Number(configForm.default_discount) > 0 && Number(configForm.usd_exchange_rate) > 0
-
-  useEffect(() => {
-    if (!summary) return
-    setConfigForm({
-      default_discount: String(summary.default_discount ?? 0.4),
-      usd_exchange_rate: String(summary.retail_usd_rate ?? 7.3),
-      note: summary.note ?? "",
-    })
-  }, [summary])
+  const canSaveConfig = Number(activeConfigForm.default_discount) > 0 && Number(activeConfigForm.usd_exchange_rate) > 0
 
   const importMutation = useMutation({
     mutationFn: (payload: { file_name: string; rows: SpreadsheetRow[] }) =>
@@ -190,18 +201,19 @@ export default function PriceRulesPage() {
   })
 
   const saveConfigMutation = useMutation({
-    mutationFn: () =>
-      api.patch("/business-rules/price-config", {
-        default_discount: Number(configForm.default_discount),
-        usd_exchange_rate: Number(configForm.usd_exchange_rate),
-        note: configForm.note,
-    }),
-    onSuccess: () => {
-      toast.success("默认配置已更新")
-      queryClient.invalidateQueries({ queryKey: ["business-rules", "discount-rules"] })
-      queryClient.invalidateQueries({ queryKey: ["shein-products"] })
-    },
-  })
+	    mutationFn: () =>
+	      api.patch("/business-rules/price-config", {
+	        default_discount: Number(activeConfigForm.default_discount),
+	        usd_exchange_rate: Number(activeConfigForm.usd_exchange_rate),
+	        note: activeConfigForm.note,
+	    }),
+	    onSuccess: () => {
+	      toast.success("默认配置已更新")
+	      setConfigForm(null)
+	      queryClient.invalidateQueries({ queryKey: ["business-rules", "discount-rules"] })
+	      queryClient.invalidateQueries({ queryKey: ["shein-products"] })
+	    },
+	  })
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => api.delete(`/business-rules/discount-rules/${id}`),
@@ -254,6 +266,10 @@ export default function PriceRulesPage() {
     setPagination((current) => ({ ...current, offset: 0 }))
   }
 
+  function updateConfigForm(field: keyof ConfigForm, value: string) {
+    setConfigForm((current) => ({ ...(current ?? activeConfigForm), [field]: value }))
+  }
+
   return (
     <PageContainer className="space-y-6">
       <PageHeader
@@ -280,30 +296,30 @@ export default function PriceRulesPage() {
               <div className="grid gap-4 md:grid-cols-2">
                 <Label className="grid gap-2">
                   默认折扣
-                  <Input
-                    type="number"
-                    step="0.01"
-                    value={configForm.default_discount}
-                    onChange={(event) => setConfigForm((current) => ({ ...current, default_discount: event.target.value }))}
-                  />
+	                  <Input
+	                    type="number"
+	                    step="0.01"
+	                    value={activeConfigForm.default_discount}
+	                    onChange={(event) => updateConfigForm("default_discount", event.target.value)}
+	                  />
                 </Label>
                 <Label className="grid gap-2">
                   USD 折算汇率
-                  <Input
-                    type="number"
-                    step="0.01"
-                    value={configForm.usd_exchange_rate}
-                    onChange={(event) => setConfigForm((current) => ({ ...current, usd_exchange_rate: event.target.value }))}
-                  />
+	                  <Input
+	                    type="number"
+	                    step="0.01"
+	                    value={activeConfigForm.usd_exchange_rate}
+	                    onChange={(event) => updateConfigForm("usd_exchange_rate", event.target.value)}
+	                  />
                 </Label>
               </div>
               <Label className="grid gap-2">
                 备注
-                <Textarea
-                  value={configForm.note}
-                  onChange={(event) => setConfigForm((current) => ({ ...current, note: event.target.value }))}
-                  rows={3}
-                />
+	                <Textarea
+	                  value={activeConfigForm.note}
+	                  onChange={(event) => updateConfigForm("note", event.target.value)}
+	                  rows={3}
+	                />
               </Label>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-sm text-muted-foreground">

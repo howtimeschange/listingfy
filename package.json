@@ -7,6 +7,7 @@
   },
   "scripts": {
     "db:migrate": "NODE_OPTIONS=--no-warnings=ExperimentalWarning node scripts/db_migrate.mjs",
+    "db:migrate:sqlite-data": "NODE_OPTIONS=--no-warnings=ExperimentalWarning node scripts/sqlite_to_postgres_data_migrate.mjs",
     "shein:probe": "node scripts/shein_probe.mjs",
     "shein:metadata:sync": "node scripts/shein_metadata_sync.mjs",
     "shein:metadata:import": "NODE_OPTIONS=--no-warnings=ExperimentalWarning node scripts/shein_metadata_import.mjs",

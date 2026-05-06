@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 
-import path from "node:path";
-import { DEFAULT_DB_PATH, openDatabase } from "./lib/sqlite_db.mjs";
+import { getDatabaseConfig } from "./lib/database_config.mjs";
+import { loadLocalEnv } from "./lib/local_env.mjs";
+import { SyncPostgresDatabase } from "./lib/postgres_db.mjs";
+
+loadLocalEnv();
 
 function parseArgs(argv) {
   const args = {
-    dbPath: process.env.APP_DB_PATH || DEFAULT_DB_PATH,
+    databaseUrl: process.env.DATABASE_URL,
     platform: "SHEIN",
     search: null,
     categoryId: null,
@@ -22,7 +25,7 @@ function parseArgs(argv) {
       return argv[i];
     };
 
-    if (arg === "--db") args.dbPath = next();
+    if (arg === "--database-url") args.databaseUrl = next();
     else if (arg === "--platform") args.platform = next();
     else if (arg === "--search") args.search = next();
     else if (arg === "--category-id") args.categoryId = Number(next());
@@ -46,7 +49,6 @@ function parseArgs(argv) {
     throw new Error("--attribute-id must be an integer");
   }
 
-  args.dbPath = path.resolve(args.dbPath);
   args.platform = args.platform.trim().toUpperCase();
   return args;
 }
@@ -60,7 +62,7 @@ Options:
   --product-type-id <id>         Show one product type attribute summary.
   --attribute-id <id>            With --product-type-id, show enum values for one attribute.
   --limit <n>                    Result limit. Default: 20.
-  --db <path>                    SQLite database path. Default: ${DEFAULT_DB_PATH}
+  --database-url <url>           PostgreSQL connection URL. Default: DATABASE_URL.
 
 Examples:
   npm run shein:metadata:query
@@ -266,7 +268,12 @@ if (args.help) {
   process.exit(0);
 }
 
-const db = openDatabase(args.dbPath, { configureJournal: false });
+const config = getDatabaseConfig({
+  ...process.env,
+  DATABASE_PROVIDER: "postgres",
+  DATABASE_URL: args.databaseUrl,
+});
+const db = new SyncPostgresDatabase(config.url);
 let result;
 if (args.categoryId !== null) {
   result = getCategory(db, args);

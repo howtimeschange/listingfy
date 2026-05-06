@@ -4,6 +4,7 @@
 !.env.example
 *.log
 app.db
+backups/
 node_modules/
 dist/
 .vite/

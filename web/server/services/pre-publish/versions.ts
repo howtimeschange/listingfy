@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3"
+import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 
 type SourceRow = Record<string, unknown>
 
@@ -14,7 +14,7 @@ export type PublishVersionListing = SourceRow & {
   updated_at: string
 }
 
-export function nextPublishVersionNo(db: Database.Database, listingId: number) {
+export function nextPublishVersionNo(db: SyncPostgresDatabase, listingId: number) {
   const row = db.prepare(`
     select coalesce(max(version_no), 0) + 1 as next_no
     from listing_publish_version
@@ -23,7 +23,7 @@ export function nextPublishVersionNo(db: Database.Database, listingId: number) {
   return Number(row?.next_no ?? 1)
 }
 
-export function buildListingSnapshot(db: Database.Database, listing: PublishVersionListing, readiness: unknown) {
+export function buildListingSnapshot(db: SyncPostgresDatabase, listing: PublishVersionListing, readiness: unknown) {
   const validationIssues = db.prepare(`
     select severity, module, field_key, message, suggestion, resolved, created_at
     from listing_validation_result
@@ -84,7 +84,7 @@ export function createPublishVersion({
   versionType = "DRAFT",
   changeSummary,
 }: {
-  db: Database.Database
+  db: SyncPostgresDatabase
   listing: PublishVersionListing
   readiness: unknown
   versionType?: string

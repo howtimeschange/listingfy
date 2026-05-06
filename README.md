@@ -77,13 +77,14 @@ Listingify 是面向跨境电商的多平台刊登中台。产品方向是商品
 
 ## 当前进度
 
-更新日期：2026-05-01
+更新日期：2026-05-06
 
 项目已从 Phase 1 数据底座推进到 SHEIN 发品闭环的可操作阶段。当前主线目标是：从 MDM/深绘同步商品档案，挑选进入 SHEIN 商品分桶，完成平台字段清洗、图片选择、尺码/价格/包装维护，生成发布草稿和版本，提交 SHEIN OpenAPI，并在发布任务中追踪状态。
 
 已完成的核心进展：
 
 - 已完成安全加固：系统不再自动创建默认弱口令管理员，登录失败会触发锁定策略，CORS 改为显式来源控制，平台密钥支持加密存储和脱敏返回，并提供 `npm run admin:create` 创建管理员账号。
+- 已完成数据库从 SQLite 到 PostgreSQL 的全量切换：运行时和管理脚本默认使用 PostgreSQL，`data/app.sqlite` 的 51 张表、784,521 行历史数据已补迁并逐表对账一致。
 - 已拆分 `pre-publish.ts` 中的草稿状态、字段填充、图片规则、发布 payload、SHEIN API、通用工具和版本快照服务，路由层继续承接真实页面接口，业务逻辑逐步下沉到 `web/server/services/pre-publish/*`。
 - 已抽象 `PlatformAdapter` 注册入口并落地 SHEIN Adapter，当前真实发布和图片上传/转换仍以 SHEIN 为首个平台，TEMU Adapter 保持预留但暂不接入。
 - 已补齐根目录测试入口，`npm test` 统一运行现有 `.test.mjs` 套件，覆盖安全、平台凭据、PlatformAdapter、pre-publish 服务、发布任务可靠性、批次发布和主要页面接线。
@@ -112,7 +113,7 @@ Listingify 是面向跨境电商的多平台刊登中台。产品方向是商品
 - `scripts/lib/shein_client.mjs`：SHEIN 签名、请求头、AES 解密、请求重试和结果断言。
 - `scripts/shein_probe.mjs`：单接口探查工具。
 - `scripts/shein_metadata_sync.mjs`：同步 SHEIN 类目树、发布字段规范、图片规则、属性模板和枚举。
-- `scripts/shein_metadata_import.mjs`：将同步产物导入本地 SQLite。
+- `scripts/shein_metadata_import.mjs`：将同步产物导入 PostgreSQL。
 - `scripts/shein_metadata_query.mjs`：查询类目、发布要求、图片规则、属性模板和枚举。
 
 ### 数据库
@@ -121,7 +122,10 @@ Listingify 是面向跨境电商的多平台刊登中台。产品方向是商品
 - `db/migrations/002_mdm_shein_mapping_dimensions.sql`：MDM 到 SHEIN 组合类目映射规则。
 - `db/migrations/003_mdm_product_master.sql`：MDM SPU/SKC/SKU 商品主数据表。
 - `db/migrations/004_deepdraw_content_model.sql`：深绘内容包、内容 SKC/SKU、图片、详情页、尺码表和字段池表。
-- 默认数据库文件为 `data/app.sqlite`，该文件不提交 Git。
+- Web API 和管理脚本默认使用 PostgreSQL。原因是当前迁移和查询大量使用 `on conflict`、部分唯一索引和 JSON 查询，PostgreSQL 与原 SQLite 语义更接近；如果改 MySQL，会额外消耗在冲突更新、部分索引和 JSON 方言改写上。
+- `npm run db:migrate` 默认迁移 PostgreSQL，需要 `DATABASE_URL`。SQLite helper 仅保留给少量历史测试和临时离线转换验证。
+- `npm run db:migrate:sqlite-data` 可把 legacy SQLite 数据文件全量补迁到 PostgreSQL；脚本会校验表/列一致、批量导入、重置 identity sequence，并在导入后做逐表行数校验。
+- 运行时通过 `scripts/lib/postgres_db.mjs` 提供 PostgreSQL 兼容 facade，现有同步查询代码会落到 PostgreSQL；后续可逐步把该兼容层拆成真正异步 repository，以提升并发能力。
 
 当前本地已导入过的 SHEIN 元数据规模：
 
@@ -148,27 +152,33 @@ channel_required_attribute: 8733
 `web/` 目录包含一个前后端原型：
 
 - 前端：React 19、TypeScript、Vite、React Router、TanStack Query、TanStack Table、shadcn/radix 风格组件。
-- 后端：Hono + better-sqlite3，本地读取 `data/app.sqlite`。
+- 后端：Hono + PostgreSQL，运行时通过 `pg` 连接池和兼容 facade 访问数据库。
 - 已配置页面路由：首页、工作台、上新批次、SHEIN 商品分桶、SHEIN 发布草稿箱、发布任务、SHEIN 类目映射、SHEIN 尺码转换、SHEIN 包装规则、SHEIN 价格规则、SHEIN 元数据、商品档案、MDM 商品主数据、深绘内容包、图片素材库、平台对接、用户管理、同步任务、操作日志。旧 `SHEIN 低倍率清单` 路由保留跳转到 `SHEIN 价格规则`。
 - 已实现接口：`/api/auth/*`、`/api/users/*`、`/api/platform-integrations/*`、`/api/system/*`、`/api/metadata/*`、`/api/category-mapping/*`、`/api/shein-products/*`、`/api/pre-publish/*`、`/api/publish-tasks/*`、`/api/listing-batches/*`、`/api/business-rules/*`、`/api/product-archives/*`、`/api/mdm-products/*`、`/api/deepdraw-content/*`、`/api/image-library/*`。
 - 当前页面以 SHEIN 作为首个完整平台工作流，平台账号、元数据、发布任务、操作日志和后续适配器仍按多平台模型保留。
 
 ### 本次更新重点
 
+- 数据库：新增 `docker-compose.postgres.yml`、PostgreSQL-only runtime config、迁移转换器、同步兼容 facade 和 SQLite-to-PostgreSQL 数据补迁脚本。
 - 安全：移除默认密码路径，新增显式管理员创建脚本、登录失败限制、CORS 白名单、平台密钥加密和凭据脱敏。
 - 架构：将 `pre-publish.ts` 中可独立测试的草稿、字段、图片、payload、SHEIN API、版本和 shared helper 拆到服务层。
 - 发布可靠性：`listing_publish_task` 增加幂等键、尝试次数、失败分类、可重试标记、下次重试时间和状态轮询时间。
 - 批次体验：上新批次详情页新增整批提交和勾选草稿提交，直接复用 SHEIN 发布草稿箱的预检和提交逻辑，减少页面跳转。
 - 规则中心：包装规则、价格默认配置、供货折扣规则和低倍率清单整合为可配置页面，SHEIN 平台规则菜单统一加上平台前缀。
 - 交互体验：统一列表筛选触发器，让所有下拉筛选项在视觉上更像可展开控件。
-- 测试：根目录 `npm test` 已成为稳定入口，本次覆盖 79 个测试用例。
+- 测试：根目录 `npm test` 已成为稳定入口，本次覆盖 94 个测试用例。
 
 ## 运行方式
 
 根目录命令：
 
 ```bash
+docker compose -f docker-compose.postgres.yml up -d
+export DATABASE_PROVIDER=postgres
+export DATABASE_URL=postgres://listingify:listingify@localhost:5432/listingify
+
 npm run db:migrate
+npm run db:migrate:sqlite-data -- --sqlite data/app.sqlite
 npm run admin:create -- --username admin --display-name 系统管理员 --password '<强密码>'
 npm run shein:metadata:import
 npm run shein:metadata:query
@@ -177,6 +187,37 @@ npm run deepdraw:import
 npm test
 npm run web:server
 npm run web:dev
+```
+
+PostgreSQL 迁移示例：
+
+```bash
+docker compose -f docker-compose.postgres.yml up -d
+
+DATABASE_PROVIDER=postgres \
+DATABASE_URL=postgres://listingify:listingify@localhost:5432/listingify \
+npm run db:migrate
+```
+
+从历史 SQLite 文件补迁数据：
+
+```bash
+DATABASE_PROVIDER=postgres \
+DATABASE_URL=postgres://listingify:listingify@localhost:5432/listingify \
+npm run db:migrate:sqlite-data -- --sqlite data/app.sqlite
+```
+
+本地 `psql` 如果来自 Homebrew `libpq`，可使用完整路径：
+
+```bash
+/opt/homebrew/opt/libpq/bin/psql "postgres://listingify:listingify@localhost:5432/listingify"
+```
+
+创建管理员：
+
+```bash
+DATABASE_URL=postgres://listingify:listingify@localhost:5432/listingify \
+npm run admin:create -- --username admin --display-name 系统管理员 --password '<强密码>'
 ```
 
 Web 子项目命令：
@@ -205,6 +246,7 @@ npm run lint
 - `docs/reference/integration-handoffs/`：MDM、深绘等外部系统对接交接资料的脱敏版本；原始交接文件只保存在本地忽略目录。
 - `docs/shein-openapi-live-probe-2026-04-24.md`：SHEIN OpenAPI 联调记录。
 - `docs/shein-metadata-sync-task.md`：元数据同步任务说明。
+- `docs/postgres-migration-plan-2026-05-06.md`：SQLite 到 PostgreSQL 的迁移计划、执行命令、验证项和后续优化建议。
 
 ## 下一步
 
@@ -220,6 +262,6 @@ npm run lint
 - 平台密钥只通过环境变量或凭据引用使用，不写入项目文件。
 - 系统不再自动创建默认弱口令管理员。首次运行迁移后，使用 `npm run admin:create -- --username admin --display-name 系统管理员 --password '<强密码>'` 创建或重置管理员。
 - 生产环境应设置 `LISTINGIFY_ALLOWED_ORIGINS` 和 `LISTINGIFY_CREDENTIAL_SECRET`；后者用于加密平台对接密钥，保存凭据后需保持稳定。
-- `data/app.sqlite` 和 `data/shein-metadata/` 为本地数据产物，不提交 Git。
+- PostgreSQL 本地数据由 `docker-compose.postgres.yml` 中的 Docker volume 管理；`data/shein-metadata/` 等同步产物不提交 Git。历史 `data/app.sqlite` 仅用于显式 legacy 转换/测试，不作为运行时数据库。
 - 平台类目、发布规范和属性模板会变化，需要定期同步，并在发布前刷新关键类目规范。
 - 当前 SHEIN 适配中，`fill_in_standard_list.show=false` 的字段不要提交，`attribute_status=3` 的属性必须补齐。

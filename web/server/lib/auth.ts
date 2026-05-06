@@ -2,8 +2,7 @@ import crypto from "node:crypto"
 import type { Context, Next } from "hono"
 import { getCookie, setCookie, deleteCookie } from "hono/cookie"
 import { HTTPException } from "hono/http-exception"
-import type Database from "better-sqlite3"
-import { getDb } from "../db"
+import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 
 export const SESSION_COOKIE = "listingify_session"
 const SESSION_TTL_DAYS = 7
@@ -68,7 +67,7 @@ export function verifyPassword(password: string, salt: string, expectedHash: str
   return expected.length === actual.length && crypto.timingSafeEqual(expected, actual)
 }
 
-export function loadUserById(db: Database.Database, userId: number): AuthUser | null {
+export function loadUserById(db: SyncPostgresDatabase, userId: number): AuthUser | null {
   const user = db.prepare(`
     select id, username, display_name, email, status
     from app_user
@@ -122,18 +121,18 @@ export function isLoginLocked(user: Pick<UserRow, "locked_until"> | Record<strin
   return Number.isFinite(lockedUntilMs) && lockedUntilMs > now.getTime()
 }
 
-function hasColumn(db: Database.Database, tableName: string, columnName: string) {
+function hasColumn(db: SyncPostgresDatabase, tableName: string, columnName: string) {
   return db.prepare(`pragma table_info(${tableName})`)
     .all()
     .some((row) => String((row as { name: string }).name) === columnName)
 }
 
-function loginFailureColumnsExist(db: Database.Database) {
+function loginFailureColumnsExist(db: SyncPostgresDatabase) {
   return hasColumn(db, "app_user", "failed_login_count") && hasColumn(db, "app_user", "locked_until")
 }
 
 export function recordFailedLogin(
-  db: Database.Database,
+  db: SyncPostgresDatabase,
   userId: number,
   policy: LoginFailurePolicy = loginFailurePolicyFromEnv(),
 ) {
@@ -161,7 +160,7 @@ export function recordFailedLogin(
   return { failedLoginCount, lockedUntil }
 }
 
-export function clearLoginFailures(db: Database.Database, userId: number) {
+export function clearLoginFailures(db: SyncPostgresDatabase, userId: number) {
   if (!loginFailureColumnsExist(db)) return
   db.prepare(`
     update app_user
@@ -173,6 +172,7 @@ export function clearLoginFailures(db: Database.Database, userId: number) {
 }
 
 export async function requireAuth(c: Context, next: Next) {
+  const { getDb } = await import("../db")
   const db = getDb()
   const sessionId = getCookie(c, SESSION_COOKIE)
   if (!sessionId) throw new HTTPException(401, { message: "请先登录" })
@@ -201,7 +201,7 @@ export async function requireAuth(c: Context, next: Next) {
   await next()
 }
 
-export function createSession(c: Context, db: Database.Database, userId: number) {
+export function createSession(c: Context, db: SyncPostgresDatabase, userId: number) {
   const sessionId = crypto.randomBytes(32).toString("hex")
   const expiry = expiresAt()
   db.prepare(`
@@ -218,14 +218,15 @@ export function createSession(c: Context, db: Database.Database, userId: number)
   return sessionId
 }
 
-export function clearSession(c: Context) {
+export async function clearSession(c: Context) {
+  const { getDb } = await import("../db")
   const db = getDb()
   const sessionId = getCookie(c, SESSION_COOKIE)
   if (sessionId) db.prepare("delete from user_session where id = ?").run(sessionId)
   deleteCookie(c, SESSION_COOKIE, { path: "/" })
 }
 
-export function ensureAdminUser(db: Database.Database) {
+export function ensureAdminUser(db: SyncPostgresDatabase) {
   const username = process.env.LISTINGIFY_ADMIN_USERNAME || "admin"
   const password = process.env.LISTINGIFY_ADMIN_PASSWORD
   const displayName = process.env.LISTINGIFY_ADMIN_DISPLAY_NAME || "系统管理员"
@@ -247,7 +248,7 @@ export function ensureAdminUser(db: Database.Database) {
   return true
 }
 
-export function getUserForLogin(db: Database.Database, username: string) {
+export function getUserForLogin(db: SyncPostgresDatabase, username: string) {
   return db.prepare(`
     select *
     from app_user

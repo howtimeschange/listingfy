@@ -4,20 +4,18 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import {
-  DEFAULT_DB_PATH,
-  applyMigrations,
-  boolInt,
-  json,
-  openDatabase,
-} from "./lib/sqlite_db.mjs";
+import { getDatabaseConfig } from "./lib/database_config.mjs";
+import { boolInt, json } from "./lib/db_helpers.mjs";
+import { loadLocalEnv } from "./lib/local_env.mjs";
+import { applyPostgresMigrations, createPostgresPool, SyncPostgresDatabase } from "./lib/postgres_db.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+loadLocalEnv({ cwd: PROJECT_ROOT });
 const LATEST_MANIFEST_PATH = path.join(PROJECT_ROOT, "data", "shein-metadata", "latest-manifest.json");
 
 function parseArgs(argv) {
   const args = {
-    dbPath: process.env.APP_DB_PATH || DEFAULT_DB_PATH,
+    databaseUrl: process.env.DATABASE_URL,
     sourceDir: null,
     platform: "SHEIN",
     skipAttributeValues: false,
@@ -31,7 +29,7 @@ function parseArgs(argv) {
       return argv[i];
     };
 
-    if (arg === "--db") args.dbPath = next();
+    if (arg === "--database-url") args.databaseUrl = next();
     else if (arg === "--source") args.sourceDir = next();
     else if (arg === "--platform") args.platform = next();
     else if (arg === "--skip-attribute-values") args.skipAttributeValues = true;
@@ -39,7 +37,6 @@ function parseArgs(argv) {
     else throw new Error(`Unknown argument: ${arg}`);
   }
 
-  args.dbPath = path.resolve(args.dbPath);
   args.platform = args.platform.trim().toUpperCase();
   return args;
 }
@@ -49,7 +46,7 @@ function usage() {
 
 Options:
   --source <dir>                 Metadata directory. Default: latest manifest output.
-  --db <path>                    SQLite database path. Default: ${DEFAULT_DB_PATH}
+  --database-url <url>           PostgreSQL connection URL. Default: DATABASE_URL.
   --platform <name>              Platform key. Default: SHEIN
   --skip-attribute-values        Import attributes but skip full enum values.
 
@@ -607,12 +604,20 @@ async function main() {
   const sourceDir = resolveSourceDir(args.sourceDir);
   const files = metadataFiles(sourceDir);
   const manifest = readJson(files.manifest);
-  const db = openDatabase(args.dbPath);
-  const applied = applyMigrations(db);
+  const config = getDatabaseConfig({
+    ...process.env,
+    DATABASE_PROVIDER: "postgres",
+    DATABASE_URL: args.databaseUrl,
+    DB_MIGRATIONS_DIR: path.join(PROJECT_ROOT, "db", "migrations"),
+  });
+  const pool = createPostgresPool(config.url);
+  const applied = await applyPostgresMigrations(pool, config.migrationsDir);
+  await pool.end();
+  const db = new SyncPostgresDatabase(config.url);
   const statements = prepareStatements(db);
 
   const summary = {
-    db_path: args.dbPath,
+    database_url: config.url.replace(/:\/\/([^:@]+):([^@]+)@/, "://$1:***@"),
     source_dir: sourceDir,
     platform: args.platform,
     migrations_applied: applied,
@@ -621,12 +626,14 @@ async function main() {
   };
 
   process.stderr.write(`Importing SHEIN metadata from ${sourceDir}\n`);
-  db.exec("begin immediate");
   try {
-    const batchId = upsertSyncBatch(db, { sourceDir, manifest });
-    summary.sync_batch_id = batchId;
+    db.transaction(() => {
+      const batchId = upsertSyncBatch(db, { sourceDir, manifest });
+      summary.sync_batch_id = batchId;
 
-    summary.imported.store_metadata = importStoreMetadata(statements, args.platform, batchId, files);
+      summary.imported.store_metadata = importStoreMetadata(statements, args.platform, batchId, files);
+    })();
+    const batchId = summary.sync_batch_id;
     summary.imported.categories = await importCategories(statements, {
       platform: args.platform,
       batchId,
@@ -650,9 +657,7 @@ async function main() {
     });
 
     db.exec("analyze");
-    db.exec("commit");
   } catch (error) {
-    db.exec("rollback");
     db.close();
     throw error;
   }

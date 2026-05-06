@@ -18,7 +18,7 @@ import auth from "./routes/auth"
 import users from "./routes/users"
 import platformIntegrations from "./routes/platform-integrations"
 import system from "./routes/system"
-import { applyPendingMigrations, DB_FILE, getDb } from "./db"
+import { applyPendingMigrations, DB_DSN_SAFE, DB_PROVIDER, getDb } from "./db"
 import { ensureAdminUser, requireAuth } from "./lib/auth"
 import { encryptStoredPlatformCredentials, ensurePlatformIntegrationBootstrap } from "./lib/platform-config"
 
@@ -58,7 +58,7 @@ app.use("*", cors(corsOptions))
 app.use("*", logger)
 app.onError(errorHandler)
 
-app.get("/", (c) => c.json({ name: "listingify-api", status: "ok", db: DB_FILE }))
+app.get("/", (c) => c.json({ name: "listingify-api", status: "ok", dbProvider: DB_PROVIDER, db: DB_DSN_SAFE }))
 app.get("/api/health", (c) => c.json({ ok: true, ts: Date.now() }))
 
 app.use("/api/*", async (c, next) => {
@@ -87,7 +87,7 @@ app.route("/api/listing-batches", listingBatches)
 
 const port = Number(process.env.PORT ?? 3001)
 console.log(`API server listening on http://localhost:${port}`)
-console.log(`Database: ${DB_FILE}`)
+console.log(`Database: ${DB_PROVIDER} ${DB_DSN_SAFE}`)
 if (appliedMigrations.length) console.log(`Applied migrations: ${appliedMigrations.join(", ")}`)
 if (adminSeeded) console.log("Seeded default admin user")
 if (sheinConfigSeeded) console.log("Migrated SHEIN env credentials into platform_integration")

@@ -1,5 +1,5 @@
 import type { Context } from "hono"
-import type Database from "better-sqlite3"
+import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import { getDb } from "../db"
 import { currentUser } from "./auth"
 
@@ -12,7 +12,7 @@ export interface AuditInput {
   metadata?: unknown
 }
 
-export function writeOperationLog(db: Database.Database, input: AuditInput, actor?: { id: number; username: string } | null, ipAddress?: string) {
+export function writeOperationLog(db: SyncPostgresDatabase, input: AuditInput, actor?: { id: number; username: string } | null, ipAddress?: string) {
   db.prepare(`
     insert into operation_log (
       actor_user_id,

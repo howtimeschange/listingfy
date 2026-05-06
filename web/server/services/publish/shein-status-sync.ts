@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3"
+import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import { requestSheinWithRetry } from "../../../../scripts/lib/shein_client.mjs"
 import {
   markPublishTaskFailed,
@@ -46,7 +46,7 @@ function publishInfo(payload: unknown) {
   return parseJsonObject(parseJsonObject(payload).info)
 }
 
-function firstPlatformIdentity(db: Database.Database, task: SourceRow, platformType: string) {
+function firstPlatformIdentity(db: SyncPostgresDatabase, task: SourceRow, platformType: string) {
   return db.prepare(`
     select identity.*
     from platform_identity identity
@@ -114,7 +114,7 @@ function documentStates(documentPayload: unknown) {
   return states
 }
 
-function updateListingAndBucketStatus(db: Database.Database, listingId: unknown, status: string) {
+function updateListingAndBucketStatus(db: SyncPostgresDatabase, listingId: unknown, status: string) {
   const listing = db.prepare("select * from listing where id = ?").get(listingId) as SourceRow | undefined
   db.prepare(`
     update listing
@@ -135,7 +135,7 @@ function updateListingAndBucketStatus(db: Database.Database, listingId: unknown,
   }
 }
 
-function taskForStatusSync(db: Database.Database, taskId: number) {
+function taskForStatusSync(db: SyncPostgresDatabase, taskId: number) {
   return db.prepare(`
     select
       task.*,
@@ -147,7 +147,7 @@ function taskForStatusSync(db: Database.Database, taskId: number) {
   `).get(taskId) as SourceRow | undefined
 }
 
-export async function syncPublishTaskStatus(db: Database.Database, taskId: number) {
+export async function syncPublishTaskStatus(db: SyncPostgresDatabase, taskId: number) {
   const task = taskForStatusSync(db, taskId)
   if (!task) {
     return {

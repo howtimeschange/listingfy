@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 
 import path from "node:path";
+import { getDatabaseConfig } from "./lib/database_config.mjs";
 import { loadLocalEnv } from "./lib/local_env.mjs";
-import { DEFAULT_DB_PATH, applyMigrations, openDatabase } from "./lib/sqlite_db.mjs";
+import { applyPostgresMigrations, createPostgresPool } from "./lib/postgres_db.mjs";
 
 loadLocalEnv();
 
 function parseArgs(argv) {
   const args = {
-    dbPath: process.env.APP_DB_PATH || DEFAULT_DB_PATH,
+    databaseUrl: process.env.DATABASE_URL,
+    migrationsDir: process.env.DB_MIGRATIONS_DIR || path.resolve("db", "migrations"),
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -19,12 +21,13 @@ function parseArgs(argv) {
       return argv[i];
     };
 
-    if (arg === "--db") args.dbPath = next();
+    if (arg === "--database-url") args.databaseUrl = next();
+    else if (arg === "--migrations-dir") args.migrationsDir = next();
     else if (arg === "--help" || arg === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
   }
 
-  args.dbPath = path.resolve(args.dbPath);
+  args.migrationsDir = path.resolve(args.migrationsDir);
   return args;
 }
 
@@ -32,11 +35,12 @@ function usage() {
   process.stdout.write(`Database migration
 
 Options:
-  --db <path>    SQLite database path. Default: ${DEFAULT_DB_PATH}
+  --database-url <url>            PostgreSQL connection URL. Default: DATABASE_URL.
+  --migrations-dir <path>         SQL migrations directory. Default: db/migrations
 
 Examples:
   npm run db:migrate
-  npm run db:migrate -- --db data/app.sqlite
+  DATABASE_URL=postgres://listingify:listingify@localhost:5432/listingify npm run db:migrate
 `);
 }
 
@@ -46,11 +50,22 @@ if (args.help) {
   process.exit(0);
 }
 
-const db = openDatabase(args.dbPath);
-const appliedNow = applyMigrations(db);
-db.close();
+const config = getDatabaseConfig({
+  ...process.env,
+  DATABASE_PROVIDER: "postgres",
+  DATABASE_URL: args.databaseUrl,
+  DB_MIGRATIONS_DIR: args.migrationsDir,
+});
 
-process.stdout.write(`${JSON.stringify({
-  db_path: args.dbPath,
-  applied: appliedNow,
-}, null, 2)}\n`);
+const pool = createPostgresPool(config.url);
+try {
+  const appliedNow = await applyPostgresMigrations(pool, config.migrationsDir);
+  process.stdout.write(`${JSON.stringify({
+    provider: config.provider,
+    database_url: config.url.replace(/:\/\/([^:@]+):([^@]+)@/, "://$1:***@"),
+    migrations_dir: config.migrationsDir,
+    applied: appliedNow,
+  }, null, 2)}\n`);
+} finally {
+  await pool.end();
+}

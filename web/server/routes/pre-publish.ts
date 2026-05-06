@@ -2,7 +2,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { Hono } from "hono"
 import { HTTPException } from "hono/http-exception"
-import { DB_FILE, getDb } from "../db"
+import { DATA_DIR, getDb } from "../db"
 import { resolveAiConfig } from "../../../scripts/lib/ai_category_matcher.mjs"
 import { refreshBucketProduct } from "./shein-products"
 import { resolveSheinCredentials } from "../lib/platform-config"
@@ -4333,7 +4333,7 @@ function skcFingerprint(value: unknown) {
 }
 
 function uploadsRoot() {
-  return path.join(path.dirname(DB_FILE), "listing-assets")
+  return path.join(DATA_DIR, "listing-assets")
 }
 
 function imageContentType(fileName: string) {

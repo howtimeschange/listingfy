@@ -1,5 +1,5 @@
 import crypto from "node:crypto"
-import type Database from "better-sqlite3"
+import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 
 export interface PlatformIntegrationRow {
   id: number
@@ -133,7 +133,7 @@ export function platformIntegrationForResponse(row: PlatformIntegrationRow) {
   }
 }
 
-function activeSheinIntegration(db: Database.Database) {
+function activeSheinIntegration(db: SyncPostgresDatabase) {
   return db.prepare(`
     select *
     from platform_integration
@@ -146,7 +146,7 @@ function activeSheinIntegration(db: Database.Database) {
   `).get() as PlatformIntegrationRow | undefined
 }
 
-export function resolveSheinCredentials(db?: Database.Database): SheinCredentials {
+export function resolveSheinCredentials(db?: SyncPostgresDatabase): SheinCredentials {
   const row = db ? activeSheinIntegration(db) : undefined
   if (row) {
     return {
@@ -169,7 +169,7 @@ export function resolveSheinCredentials(db?: Database.Database): SheinCredential
   }
 }
 
-export function encryptStoredPlatformCredentials(db: Database.Database) {
+export function encryptStoredPlatformCredentials(db: SyncPostgresDatabase) {
   if (!credentialSecret()) return 0
   const rows = db.prepare(`
     select id, open_key_id, secret_key, app_secret_key
@@ -202,7 +202,7 @@ export function encryptStoredPlatformCredentials(db: Database.Database) {
   return changed
 }
 
-export function ensurePlatformIntegrationBootstrap(db: Database.Database) {
+export function ensurePlatformIntegrationBootstrap(db: SyncPostgresDatabase) {
   const activeCount = db.prepare(`
     select count(*) as count
     from platform_integration

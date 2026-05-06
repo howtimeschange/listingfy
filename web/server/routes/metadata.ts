@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { Hono } from "hono"
 import { HTTPException } from "hono/http-exception"
-import { DB_FILE, getDb } from "../db"
+import { DB_DSN_SAFE, getDb } from "../db"
 
 const metadata = new Hono()
 
@@ -239,19 +239,17 @@ async function runMetadataSyncJob(job: MetadataSyncJob) {
   job.manifest = parseJsonOutput(syncOutput)
   job.completed_count += 1
 
-  const importArgs = [
-    "scripts/shein_metadata_import.mjs",
-    "--source",
-    outputDir,
-    "--db",
-    DB_FILE,
-  ]
+	  const importArgs = [
+	    "scripts/shein_metadata_import.mjs",
+	    "--source",
+	    outputDir,
+	  ]
   if (job.options.skipAttributeValues) {
     importArgs.push("--skip-attribute-values")
   }
 
-  job.stage = "import"
-  appendJobLog(job, "import", `Importing metadata into ${DB_FILE}`)
+	  job.stage = "import"
+	  appendJobLog(job, "import", `Importing metadata into ${DB_DSN_SAFE}`)
   const importOutput = await runNodeScript(job, "import", importArgs)
   job.import_summary = parseJsonOutput(importOutput)
   job.completed_count += 1

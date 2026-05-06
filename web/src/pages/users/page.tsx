@@ -95,8 +95,8 @@ export default function UsersPage() {
     queryFn: () => api.get("/users/roles"),
   })
 
-  const roles = rolesData?.items ?? []
-  const users = usersData?.items ?? []
+  const roles = useMemo(() => rolesData?.items ?? [], [rolesData])
+  const users = useMemo(() => usersData?.items ?? [], [usersData])
 
   const saveMutation = useMutation({
     mutationFn: () => {
