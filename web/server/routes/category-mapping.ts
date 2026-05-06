@@ -6,6 +6,7 @@ import {
 } from "../../../scripts/lib/ai_category_matcher.mjs"
 
 const categoryMapping = new Hono()
+const AI_CATEGORY_CANDIDATE_LIMIT = 20
 
 type MappingRuleBody = {
   mdm_middle_category_code?: string | null
@@ -588,11 +589,11 @@ categoryMapping.post("/ai-suggestions", async (c) => {
       groups,
       candidates,
       suggestions: [],
-      prompt: buildCategoryMatchPrompt({ groups, candidates }),
+      prompt: buildCategoryMatchPrompt({ groups, candidates: candidates.slice(0, AI_CATEGORY_CANDIDATE_LIMIT) }),
     })
   }
 
-  const result = await callAiCategoryMatcher({ groups, candidates })
+  const result = await callAiCategoryMatcher({ groups, candidates: candidates.slice(0, AI_CATEGORY_CANDIDATE_LIMIT) })
   const suggestions = enrichSuggestions({
     groups,
     suggestions: result.suggestions as unknown as Array<Record<string, unknown>>,

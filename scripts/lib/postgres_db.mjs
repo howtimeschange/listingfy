@@ -153,6 +153,425 @@ function replaceFunctionCall(sql, functionName, replacementName, suffix = "") {
   return result;
 }
 
+function replaceSqlOutsideLiterals(sql, replacePlainText) {
+  let result = "";
+  let plain = "";
+
+  const flushPlain = () => {
+    if (!plain) return;
+    result += replacePlainText(plain);
+    plain = "";
+  };
+
+  for (let index = 0; index < sql.length; index += 1) {
+    const char = sql[index];
+    const next = sql[index + 1] ?? "";
+
+    if (char === "-" && next === "-") {
+      flushPlain();
+      const end = sql.indexOf("\n", index + 2);
+      if (end === -1) {
+        result += sql.slice(index);
+        break;
+      }
+      result += sql.slice(index, end + 1);
+      index = end;
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      flushPlain();
+      const end = sql.indexOf("*/", index + 2);
+      if (end === -1) {
+        result += sql.slice(index);
+        break;
+      }
+      result += sql.slice(index, end + 2);
+      index = end + 1;
+      continue;
+    }
+
+    if (char === "$") {
+      const match = sql.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/);
+      if (match) {
+        flushPlain();
+        const tag = match[0];
+        const end = sql.indexOf(tag, index + tag.length);
+        if (end === -1) {
+          result += sql.slice(index);
+          break;
+        }
+        result += sql.slice(index, end + tag.length);
+        index = end + tag.length - 1;
+        continue;
+      }
+    }
+
+    if (char === "'" || char === "\"") {
+      flushPlain();
+      const quote = char;
+      let cursor = index + 1;
+      while (cursor < sql.length) {
+        if (sql[cursor] === quote) {
+          if (sql[cursor + 1] === quote) {
+            cursor += 2;
+            continue;
+          }
+          cursor += 1;
+          break;
+        }
+        cursor += 1;
+      }
+      result += sql.slice(index, cursor);
+      index = cursor - 1;
+      continue;
+    }
+
+    plain += char;
+  }
+
+  flushPlain();
+  return result;
+}
+
+function replaceLikeOperators(sql) {
+  return replaceSqlOutsideLiterals(sql, (text) => {
+    return text.replace(/\bnot\s+like\b/gi, "not ilike").replace(/\blike\b/gi, "ilike");
+  });
+}
+
+function findBalancedClose(sql, openIndex) {
+  let depth = 1;
+  let quote = null;
+  let dollarTag = null;
+  let lineComment = false;
+  let blockComment = false;
+
+  for (let index = openIndex + 1; index < sql.length; index += 1) {
+    const char = sql[index];
+    const next = sql[index + 1] ?? "";
+
+    if (lineComment) {
+      if (char === "\n") lineComment = false;
+      continue;
+    }
+
+    if (blockComment) {
+      if (char === "*" && next === "/") {
+        index += 1;
+        blockComment = false;
+      }
+      continue;
+    }
+
+    if (dollarTag) {
+      if (sql.startsWith(dollarTag, index)) {
+        index += dollarTag.length - 1;
+        dollarTag = null;
+      }
+      continue;
+    }
+
+    if (quote) {
+      if (char === quote) {
+        if (sql[index + 1] === quote) {
+          index += 1;
+          continue;
+        }
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === "-" && next === "-") {
+      index += 1;
+      lineComment = true;
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      index += 1;
+      blockComment = true;
+      continue;
+    }
+
+    if (char === "$") {
+      const match = sql.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/);
+      if (match) {
+        dollarTag = match[0];
+        index += dollarTag.length - 1;
+        continue;
+      }
+    }
+
+    if (char === "'" || char === "\"") {
+      quote = char;
+      continue;
+    }
+
+    if (char === "(") depth += 1;
+    else if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+
+  return -1;
+}
+
+function splitCastArguments(args) {
+  let depth = 0;
+  let quote = null;
+  let dollarTag = null;
+  let lineComment = false;
+  let blockComment = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const char = args[index];
+    const next = args[index + 1] ?? "";
+
+    if (lineComment) {
+      if (char === "\n") lineComment = false;
+      continue;
+    }
+
+    if (blockComment) {
+      if (char === "*" && next === "/") {
+        index += 1;
+        blockComment = false;
+      }
+      continue;
+    }
+
+    if (dollarTag) {
+      if (args.startsWith(dollarTag, index)) {
+        index += dollarTag.length - 1;
+        dollarTag = null;
+      }
+      continue;
+    }
+
+    if (quote) {
+      if (char === quote) {
+        if (args[index + 1] === quote) {
+          index += 1;
+          continue;
+        }
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === "-" && next === "-") {
+      index += 1;
+      lineComment = true;
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      index += 1;
+      blockComment = true;
+      continue;
+    }
+
+    if (char === "$") {
+      const match = args.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/);
+      if (match) {
+        dollarTag = match[0];
+        index += dollarTag.length - 1;
+        continue;
+      }
+    }
+
+    if (char === "'" || char === "\"") {
+      quote = char;
+      continue;
+    }
+
+    if (char === "(") {
+      depth += 1;
+      continue;
+    }
+
+    if (char === ")") {
+      depth -= 1;
+      continue;
+    }
+
+    if (
+      depth === 0
+      && (char === "a" || char === "A")
+      && (next === "s" || next === "S")
+      && !/[A-Za-z0-9_]/.test(args[index - 1] ?? "")
+      && !/[A-Za-z0-9_]/.test(args[index + 2] ?? "")
+    ) {
+      return {
+        expression: args.slice(0, index).trim(),
+        type: args.slice(index + 2).trim(),
+      };
+    }
+  }
+
+  return null;
+}
+
+function sqliteNumberTextExpression(expression) {
+  return `trim((${expression})::text)`;
+}
+
+function sqliteIntegerCastExpression(expression) {
+  const value = `(${expression})`;
+  const text = sqliteNumberTextExpression(expression);
+  return `case
+        when ${value} is null then null
+        when ${text} ~ '^[+-]?[0-9]+' then trunc(substring(${text} from '^[+-]?[0-9]+')::numeric)::bigint
+        else 0
+      end`;
+}
+
+function sqliteDecimalCastExpression(expression, postgresType) {
+  const value = `(${expression})`;
+  const text = sqliteNumberTextExpression(expression);
+  return `case
+        when ${value} is null then null
+        when ${text} ~ '^[+-]?[0-9]+[.]?[0-9]*' then substring(${text} from '^[+-]?[0-9]+[.]?[0-9]*')::${postgresType}
+        when ${text} ~ '^[+-]?[.][0-9]+' then substring(${text} from '^[+-]?[.][0-9]+')::${postgresType}
+        else 0
+      end`;
+}
+
+function sqliteCastExpression(expression, type) {
+  const normalizedType = type.replace(/\s+/g, " ").trim().toLowerCase();
+  if (/^(integer|int|bigint|smallint|tinyint)$/.test(normalizedType)) {
+    return sqliteIntegerCastExpression(expression);
+  }
+  if (/^(numeric|decimal)$/.test(normalizedType)) {
+    return sqliteDecimalCastExpression(expression, "numeric");
+  }
+  if (/^(real|float|double|double precision)$/.test(normalizedType)) {
+    return sqliteDecimalCastExpression(expression, "double precision");
+  }
+  return null;
+}
+
+function replaceSqliteCasts(sql) {
+  let result = "";
+  let index = 0;
+  let quote = null;
+  let dollarTag = null;
+  let lineComment = false;
+  let blockComment = false;
+
+  while (index < sql.length) {
+    const char = sql[index];
+    const next = sql[index + 1] ?? "";
+
+    if (lineComment) {
+      result += char;
+      if (char === "\n") lineComment = false;
+      index += 1;
+      continue;
+    }
+
+    if (blockComment) {
+      result += char;
+      if (char === "*" && next === "/") {
+        result += next;
+        index += 2;
+        blockComment = false;
+      } else {
+        index += 1;
+      }
+      continue;
+    }
+
+    if (dollarTag) {
+      result += char;
+      if (sql.startsWith(dollarTag, index)) {
+        result += sql.slice(index + 1, index + dollarTag.length);
+        index += dollarTag.length;
+        dollarTag = null;
+      } else {
+        index += 1;
+      }
+      continue;
+    }
+
+    if (quote) {
+      result += char;
+      if (char === quote) {
+        if (sql[index + 1] === quote) {
+          result += sql[index + 1];
+          index += 2;
+          continue;
+        }
+        quote = null;
+      }
+      index += 1;
+      continue;
+    }
+
+    if (char === "-" && next === "-") {
+      result += char + next;
+      index += 2;
+      lineComment = true;
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      result += char + next;
+      index += 2;
+      blockComment = true;
+      continue;
+    }
+
+    if (char === "$") {
+      const match = sql.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/);
+      if (match) {
+        dollarTag = match[0];
+        result += dollarTag;
+        index += dollarTag.length;
+        continue;
+      }
+    }
+
+    if (char === "'" || char === "\"") {
+      quote = char;
+      result += char;
+      index += 1;
+      continue;
+    }
+
+    if (
+      (char === "c" || char === "C")
+      && /^cast\b/i.test(sql.slice(index))
+      && !/[A-Za-z0-9_]/.test(sql[index - 1] ?? "")
+    ) {
+      let cursor = index + 4;
+      while (/\s/.test(sql[cursor] ?? "")) cursor += 1;
+      if (sql[cursor] === "(") {
+        const closeIndex = findBalancedClose(sql, cursor);
+        if (closeIndex !== -1) {
+          const parsed = splitCastArguments(sql.slice(cursor + 1, closeIndex));
+          if (parsed) {
+            const replacement = sqliteCastExpression(parsed.expression, parsed.type);
+            if (replacement) {
+              result += replacement;
+              index = closeIndex + 1;
+              continue;
+            }
+          }
+        }
+      }
+    }
+
+    result += char;
+    index += 1;
+  }
+
+  return result;
+}
+
 function replaceJsonExtract(sql) {
   const jsonExtractPattern = /json_extract\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*'\$\.([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)'\s*\)/gi;
   const jsonTextExpression = (column, pathExpression) => {
@@ -239,6 +658,8 @@ export function convertSqliteStatement(statement) {
   converted = appendDoNothingForInsertOrIgnore(original, converted);
   converted = appendDoUpdateForInsertOrReplace(original, converted);
   converted = convertProductSkcSummaryGroupBy(converted);
+  converted = replaceLikeOperators(converted);
+  converted = replaceSqliteCasts(converted);
   return converted;
 }
 
@@ -249,7 +670,10 @@ function normalizeParams(params) {
 
 export function toPostgresQuery(sql) {
   let parameterIndex = 0;
-  const text = convertSqliteStatement(sql).replace(/\?/g, () => `$${++parameterIndex}`);
+  const text = replaceSqlOutsideLiterals(
+    convertSqliteStatement(sql),
+    (plainText) => plainText.replace(/\?/g, () => `$${++parameterIndex}`),
+  );
   return text;
 }
 

@@ -2377,50 +2377,69 @@ function heuristicEnglishTitle(row: ReadinessRow) {
 async function callAiTranslateTitle(row: ReadinessRow) {
   const config = resolveAiConfig()
   if (!config.apiKey) return heuristicEnglishTitle(row)
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), config.timeoutMs)
-  try {
-    const response = await fetch(`${config.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        "Content-Type": "application/json",
+  const requestBody = JSON.stringify({
+    model: config.model,
+    temperature: 0.1,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: "你是跨境童装英文标题编辑，只输出适合 SHEIN 发品的简洁英文标题。",
       },
-      body: JSON.stringify({
-        model: config.model,
-        temperature: 0.1,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content: "你是跨境童装英文标题编辑，只输出适合 SHEIN 发品的简洁英文标题。",
+      {
+        role: "user",
+        content: JSON.stringify({
+          task: "把中文商品标题翻译成英文标题，保留品牌、性别、品类和季节，不要堆砌关键词。",
+          output_schema: { title_en: "英文标题" },
+          product: {
+            spu_code: row.spu_code,
+            brand: row.brand_name,
+            title_cn: row.title_cn,
+            category: row.category,
+            colors: row.skcs.map((skc) => skc.color_name).filter(Boolean),
           },
-          {
-            role: "user",
-            content: JSON.stringify({
-              task: "把中文商品标题翻译成英文标题，保留品牌、性别、品类和季节，不要堆砌关键词。",
-              output_schema: { title_en: "英文标题" },
-              product: {
-                spu_code: row.spu_code,
-                brand: row.brand_name,
-                title_cn: row.title_cn,
-                category: row.category,
-                colors: row.skcs.map((skc) => skc.color_name).filter(Boolean),
-              },
-            }),
-          },
-        ],
-      }),
-      signal: controller.signal,
-    })
-    if (!response.ok) throw new Error(`AI translate failed: HTTP ${response.status}`)
-    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> }
-    const content = payload.choices?.[0]?.message?.content ?? ""
-    const parsed = JSON.parse(extractJsonText(content)) as { title_en?: string }
-    return normalizeText(parsed.title_en) || heuristicEnglishTitle(row)
-  } finally {
-    clearTimeout(timeout)
+        }),
+      },
+    ],
+  })
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), config.timeoutMs)
+    try {
+      const response = await fetch(`${config.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: requestBody,
+        signal: controller.signal,
+      })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok) {
+        if (attempt === 0 && (response.status === 429 || response.status >= 500)) {
+          await sleep(800)
+          continue
+        }
+        throw new Error(`AI translate failed: HTTP ${response.status}`)
+      }
+      const content = responseMessageContent(payload)
+      const parsed = JSON.parse(extractJsonText(content)) as { title_en?: string }
+      return normalizeText(parsed.title_en) || heuristicEnglishTitle(row)
+    }
+    catch (error) {
+      if (attempt === 0 && retryableAiError(error)) {
+        await sleep(800)
+        continue
+      }
+      throw error
+    }
+    finally {
+      clearTimeout(timeout)
+    }
   }
+  return heuristicEnglishTitle(row)
 }
 
 function persistCategoryFill(db: ReturnType<typeof getDb>, row: ReadinessRow) {
@@ -2525,45 +2544,99 @@ function extractJsonText(text: string) {
   return trimmed
 }
 
+function responseMessageContent(body: unknown) {
+  const message = (body as { choices?: Array<{ message?: Record<string, unknown> }> })?.choices?.[0]?.message
+  const values = [
+    message?.content,
+    message?.reasoning_content,
+    message?.reasoning,
+  ]
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      const text = value
+        .map((part) => typeof part === "string" ? part : normalizeText((part as { text?: unknown; content?: unknown })?.text ?? (part as { text?: unknown; content?: unknown })?.content))
+        .join("\n")
+        .trim()
+      if (text) return text
+    }
+    else if (typeof value === "string" && value.trim()) {
+      return value
+    }
+  }
+  return ""
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function retryableAiError(error: unknown) {
+  const typed = error as { name?: string; message?: string; code?: string; cause?: { code?: string } }
+  const message = String(typed?.message ?? "")
+  const code = typed?.cause?.code ?? typed?.code
+  return typed?.name === "AbortError"
+    || message === "fetch failed"
+    || code === "UND_ERR_SOCKET"
+    || code === "ECONNRESET"
+    || code === "ETIMEDOUT"
+}
+
 async function callAiFill(row: ReadinessRow) {
   const config = resolveAiConfig()
   if (!config.apiKey || row.manual_fields.length === 0) return []
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), config.timeoutMs)
-  try {
-    const response = await fetch(`${config.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        "Content-Type": "application/json",
+  const requestBody = JSON.stringify({
+    model: config.model,
+    temperature: 0.1,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: "你是跨境童装 SHEIN 发品属性专家，负责在给定枚举里做保守选择。",
       },
-      body: JSON.stringify({
-        model: config.model,
-        temperature: 0.1,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content: "你是跨境童装 SHEIN 发品属性专家，负责在给定枚举里做保守选择。",
-          },
-          {
-            role: "user",
-            content: aiPrompt(row),
-          },
-        ],
-      }),
-      signal: controller.signal,
-    })
-    if (!response.ok) throw new Error(`AI fill failed: HTTP ${response.status}`)
-    const payload = await response.json() as {
-      choices?: Array<{ message?: { content?: string } }>
+      {
+        role: "user",
+        content: aiPrompt(row),
+      },
+    ],
+  })
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), config.timeoutMs)
+    try {
+      const response = await fetch(`${config.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: requestBody,
+        signal: controller.signal,
+      })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok) {
+        if (attempt === 0 && (response.status === 429 || response.status >= 500)) {
+          await sleep(800)
+          continue
+        }
+        throw new Error(`AI fill failed: HTTP ${response.status}`)
+      }
+      const text = responseMessageContent(payload)
+      const json = JSON.parse(extractJsonText(text))
+      return Array.isArray(json.fills) ? json.fills : []
     }
-    const text = payload.choices?.[0]?.message?.content ?? ""
-    const json = JSON.parse(extractJsonText(text))
-    return Array.isArray(json.fills) ? json.fills : []
-  } finally {
-    clearTimeout(timeout)
+    catch (error) {
+      if (attempt === 0 && retryableAiError(error)) {
+        await sleep(800)
+        continue
+      }
+      throw error
+    }
+    finally {
+      clearTimeout(timeout)
+    }
   }
+  return []
 }
 
 function persistFill({

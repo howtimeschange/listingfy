@@ -34,6 +34,13 @@ test("category mapping route provides AI suggestion and confirmation endpoints",
   assert.match(route, /dimension_payload_json/);
 });
 
+test("category mapping AI route limits candidate payload sent to the model", async () => {
+  const route = await readFile(ROUTE_FILE, "utf8");
+
+  assert.match(route, /AI_CATEGORY_CANDIDATE_LIMIT = 20/);
+  assert.match(route, /candidates\.slice\(0, AI_CATEGORY_CANDIDATE_LIMIT\)/);
+});
+
 test("category mapping AI grouping keeps one suggestion per match key", async () => {
   const route = await readFile(ROUTE_FILE, "utf8");
 

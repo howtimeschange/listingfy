@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildCategoryMatchMessages,
   buildCategoryMatchPrompt,
+  callAiCategoryMatcher,
   parseAiCategoryMatchResponse,
   resolveAiConfig,
 } from "./ai_category_matcher.mjs";
@@ -171,9 +172,161 @@ test("parseAiCategoryMatchResponse extracts suggestions from fenced JSON", () =>
   assert.equal(suggestions[0].skc_suggestions[0].model_gender, "女童");
 });
 
+test("parseAiCategoryMatchResponse treats string false as false for split_by_skc", () => {
+  const suggestions = parseAiCategoryMatchResponse(JSON.stringify({
+    suggestions: [
+      {
+        match_key: "套装|针织套装|男|幼童",
+        status: "READY",
+        confidence: 0.85,
+        split_by_skc: "false",
+        primary: {
+          category_id: 15254,
+          product_type_id: 10935,
+          category_name: "男童（小）卫衣套装",
+          path: "儿童 > 男童（小）服装 > 男童（小）套装 > 男童（小）卫衣套装",
+        },
+      },
+    ],
+  }));
+
+  assert.equal(suggestions[0].split_by_skc, false);
+});
+
+test("parseAiCategoryMatchResponse accepts a single suggestion object", () => {
+  const suggestions = parseAiCategoryMatchResponse(JSON.stringify({
+    match_key: "套装|针织套装|男|幼童",
+    status: "READY",
+    confidence: 0.85,
+    primary: {
+      category_id: 15254,
+      product_type_id: 10935,
+      category_name: "男童（小）卫衣套装",
+      path: "儿童 > 男童（小）服装 > 男童（小）套装 > 男童（小）卫衣套装",
+    },
+  }));
+
+  assert.equal(suggestions.length, 1);
+  assert.equal(suggestions[0].match_key, "套装|针织套装|男|幼童");
+});
+
+test("parseAiCategoryMatchResponse accepts common wrapped suggestion arrays", () => {
+  const suggestions = parseAiCategoryMatchResponse(JSON.stringify({
+    results: [
+      {
+        match_key: "套装|针织套装|男|幼童",
+        status: "READY",
+        confidence: 0.85,
+        primary: {
+          category_id: 15254,
+          product_type_id: 10935,
+          category_name: "男童（小）卫衣套装",
+          path: "儿童 > 男童（小）服装 > 男童（小）套装 > 男童（小）卫衣套装",
+        },
+      },
+    ],
+  }));
+
+  assert.equal(suggestions.length, 1);
+  assert.equal(suggestions[0].primary.product_type_id, 10935);
+});
+
 test("parseAiCategoryMatchResponse rejects malformed category suggestions", () => {
   assert.throws(
     () => parseAiCategoryMatchResponse(`{"suggestions":[{"match_key":"x","confidence":2}]}`),
     /Invalid AI category suggestion/,
   );
+});
+
+test("callAiCategoryMatcher reads JSON from provider reasoning fields when content is empty", async () => {
+  const response = {
+    suggestions: [
+      {
+        match_key: "衬衫|男|幼童",
+        status: "READY",
+        confidence: 0.9,
+        primary: {
+          category_id: 1001,
+          product_type_id: 2001,
+          category_name: "男童衬衫",
+          path: "儿童 > 男童（小） > 衬衫",
+        },
+      },
+    ],
+  };
+
+  const result = await callAiCategoryMatcher({
+    groups: [{ match_key: "衬衫|男|幼童" }],
+    candidates: [],
+    config: {
+      baseUrl: "https://ai.example.test/v1",
+      model: "reasoning-json",
+      apiKey: "test-key",
+      timeoutMs: 1000,
+    },
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: "",
+              reasoning_content: JSON.stringify(response),
+            },
+          },
+        ],
+      }),
+    }),
+  });
+
+  assert.equal(result.suggestions.length, 1);
+  assert.equal(result.suggestions[0].match_key, "衬衫|男|幼童");
+  assert.equal(result.suggestions[0].primary.category_id, 1001);
+});
+
+test("callAiCategoryMatcher retries transient fetch failures once", async () => {
+  let calls = 0;
+  const result = await callAiCategoryMatcher({
+    groups: [{ match_key: "衬衫|男|幼童" }],
+    candidates: [],
+    config: {
+      baseUrl: "https://ai.example.test/v1",
+      model: "retry-json",
+      apiKey: "test-key",
+      timeoutMs: 1000,
+    },
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 1) throw new TypeError("fetch failed");
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  suggestions: [
+                    {
+                      match_key: "衬衫|男|幼童",
+                      status: "READY",
+                      confidence: 0.9,
+                      primary: {
+                        category_id: 1001,
+                        product_type_id: 2001,
+                        category_name: "男童衬衫",
+                        path: "儿童 > 男童（小） > 衬衫",
+                      },
+                    },
+                  ],
+                }),
+              },
+            },
+          ],
+        }),
+      };
+    },
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(result.suggestions.length, 1);
 });

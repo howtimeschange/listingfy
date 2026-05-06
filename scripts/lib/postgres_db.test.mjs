@@ -84,6 +84,52 @@ test("toPostgresQuery converts placeholders and common SQLite runtime functions"
   assert.match(query, /where id = \$1 and username = \$2/);
 });
 
+test("toPostgresQuery leaves question marks inside SQL literals untouched", () => {
+  const query = toPostgresQuery(`
+    select '?', 'what?', "literal?column"
+    from app_user
+    where note = 'a ? b'
+      and username = ?
+      and message = ?
+  `);
+
+  assert.match(query, /select '\?', 'what\?', "literal\?column"/);
+  assert.match(query, /where note = 'a \? b'/);
+  assert.match(query, /and username = \$1/);
+  assert.match(query, /and message = \$2/);
+  assert.doesNotMatch(query, /'\$[0-9]'/);
+  assert.doesNotMatch(query, /what\$[0-9]/);
+});
+
+test("toPostgresQuery converts SQLite LIKE comparisons to PostgreSQL case-insensitive comparisons", () => {
+  const query = toPostgresQuery(`
+    select *
+    from product_spu
+    where spu_name like ?
+      and path not like '%套装%'
+      and status = ?
+  `);
+
+  assert.match(query, /spu_name ilike \$1/);
+  assert.match(query, /path not ilike '%套装%'/);
+  assert.match(query, /status = \$2/);
+  assert.doesNotMatch(query, /\slike\s/i);
+});
+
+test("toPostgresQuery converts SQLite integer casts to safe PostgreSQL numeric casts", () => {
+  const query = toPostgresQuery(`
+    select *
+    from size_conversion_rule
+    order by cast(local_size_name as integer), local_size_name
+  `);
+
+  assert.match(query, /case\s+when \(local_size_name\) is null then null/i);
+  assert.match(query, /when trim\(\(local_size_name\)::text\) ~/i);
+  assert.match(query, /then trunc\(substring\(trim\(\(local_size_name\)::text\) from/i);
+  assert.match(query, /else 0\s+end,\s+local_size_name/i);
+  assert.doesNotMatch(query, /cast\(local_size_name as integer\)/i);
+});
+
 test("toPostgresQuery converts runtime insert-or-ignore to conflict do nothing", () => {
   const query = toPostgresQuery(`
     insert or ignore into app_user_role(user_id, role_id)
@@ -146,7 +192,8 @@ test("toPostgresQuery converts JSON type and parameter comparisons", () => {
 
   assert.match(query, /jsonb_typeof\(raw_payload_json::jsonb #> '\{weight_scope\}'\) is null/);
   assert.match(query, /\(raw_payload_json::jsonb #>> '\{weight_scope\}'\) = \$1::text/);
-  assert.match(query, /cast\(coalesce\(\(raw_payload_json::jsonb #>> '\{field_completeness,missing_field_count\}'\), '0'\) as integer\) > 0/);
+  assert.match(query, /trunc\(substring\(trim\(\(coalesce\(\(raw_payload_json::jsonb #>> '\{field_completeness,missing_field_count\}'\), '0'\)\)::text\) from/);
+  assert.match(query, /else 0\s+end\s+> 0/);
 });
 
 test("toPostgresQuery converts SQLite table info pragma", () => {

@@ -263,3 +263,13 @@ test("creating drafts returns to the unified SHEIN draft box", async () => {
   assert.match(router, /path: "draft-workbench"/);
   assert.match(router, /Navigate to="\/pre-publish-validation"/);
 });
+
+test("pre publish AI calls handle reasoning responses and transient provider failures", async () => {
+  const route = await readFile(ROUTE_FILE, "utf8");
+
+  assert.match(route, /responseMessageContent/);
+  assert.match(route, /reasoning_content/);
+  assert.match(route, /retryableAiError/);
+  assert.match(route, /for \(let attempt = 0; attempt < 2; attempt \+= 1\)/);
+  assert.match(route, /response\.status === 429 \|\| response\.status >= 500/);
+});

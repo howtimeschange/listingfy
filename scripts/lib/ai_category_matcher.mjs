@@ -235,6 +235,17 @@ function normalizeSkcSuggestion(value) {
   };
 }
 
+function normalizeBoolean(value) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const text = value.trim().toLowerCase();
+    if (["true", "1", "yes", "y"].includes(text)) return true;
+    if (["false", "0", "no", "n", ""].includes(text)) return false;
+  }
+  if (typeof value === "number") return value !== 0;
+  return Boolean(value);
+}
+
 function normalizeSuggestion(value) {
   if (!value || typeof value !== "object") {
     throw new Error("Invalid AI category suggestion: suggestion must be an object");
@@ -259,7 +270,7 @@ function normalizeSuggestion(value) {
     status,
     confidence,
     primary,
-    split_by_skc: Boolean(value.split_by_skc),
+    split_by_skc: normalizeBoolean(value.split_by_skc),
     skc_suggestions: Array.isArray(value.skc_suggestions)
       ? value.skc_suggestions.map(normalizeSkcSuggestion).filter(Boolean)
       : [],
@@ -275,13 +286,67 @@ function normalizeSuggestion(value) {
   };
 }
 
+function looksLikeSuggestionObject(value) {
+  return value
+    && typeof value === "object"
+    && (
+      Object.hasOwn(value, "match_key")
+      || Object.hasOwn(value, "primary")
+      || Object.hasOwn(value, "confidence")
+    );
+}
+
+function extractSuggestions(json) {
+  if (Array.isArray(json)) return json;
+  if (!json || typeof json !== "object") return null;
+  for (const key of ["suggestions", "results", "data", "items"]) {
+    if (Array.isArray(json[key])) return json[key];
+  }
+  return looksLikeSuggestionObject(json) ? [json] : null;
+}
+
 export function parseAiCategoryMatchResponse(text) {
   const json = JSON.parse(extractJsonText(text));
-  const suggestions = Array.isArray(json) ? json : json.suggestions;
+  const suggestions = extractSuggestions(json);
   if (!Array.isArray(suggestions)) {
     throw new Error("Invalid AI category matcher response: missing suggestions array");
   }
   return suggestions.map(normalizeSuggestion);
+}
+
+function responseMessageContent(body) {
+  const message = body?.choices?.[0]?.message;
+  const values = [
+    message?.content,
+    message?.reasoning_content,
+    message?.reasoning,
+  ];
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      const text = value
+        .map((part) => typeof part === "string" ? part : part?.text ?? part?.content ?? "")
+        .join("\n")
+        .trim();
+      if (text) return text;
+    } else if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryableAiError(error) {
+  const message = String(error?.message ?? "");
+  const code = error?.cause?.code ?? error?.code;
+  return error?.name === "AbortError"
+    || message === "fetch failed"
+    || code === "UND_ERR_SOCKET"
+    || code === "ECONNRESET"
+    || code === "ETIMEDOUT";
 }
 
 export async function callAiCategoryMatcher({
@@ -293,54 +358,70 @@ export async function callAiCategoryMatcher({
   if (!config.apiKey) {
     throw new Error("Missing required env: AI_API_KEY");
   }
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
   const prompt = buildCategoryMatchPrompt({ groups, candidates });
   const userMessages = buildCategoryMatchMessages({ groups, candidates });
 
-  try {
-    const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        "Content-Type": "application/json",
+  const requestBody = JSON.stringify({
+    model: config.model,
+    temperature: 0.1,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: "你是跨境电商商品类目映射专家，擅长根据 MDM、深绘内容包和平台类目树做保守匹配。",
       },
-      body: JSON.stringify({
-        model: config.model,
-        temperature: 0.1,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content: "你是跨境电商商品类目映射专家，擅长根据 MDM、深绘内容包和平台类目树做保守匹配。",
-          },
-          ...userMessages,
-        ],
-      }),
-      signal: controller.signal,
-    });
+      ...userMessages,
+    ],
+  });
 
-    const body = await response.json().catch(() => null);
-    if (!response.ok) {
-      const message = body?.error?.message ?? body?.message ?? `AI request failed with HTTP ${response.status}`;
-      throw new Error(message);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+    try {
+      const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: requestBody,
+        signal: controller.signal,
+      });
+
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        const message = body?.error?.message ?? body?.message ?? `AI request failed with HTTP ${response.status}`;
+        if (attempt === 0 && (response.status === 429 || response.status >= 500)) {
+          await sleep(800);
+          continue;
+        }
+        throw new Error(message);
+      }
+
+      const content = responseMessageContent(body);
+      if (!content) {
+        throw new Error("AI response did not include message content");
+      }
+
+      return {
+        suggestions: parseAiCategoryMatchResponse(content),
+        raw: body,
+        prompt,
+        provider: {
+          baseUrl: config.baseUrl,
+          model: config.model,
+        },
+      };
+    } catch (error) {
+      if (attempt === 0 && retryableAiError(error)) {
+        await sleep(800);
+        continue;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const content = body?.choices?.[0]?.message?.content;
-    if (!content) {
-      throw new Error("AI response did not include message content");
-    }
-
-    return {
-      suggestions: parseAiCategoryMatchResponse(content),
-      raw: body,
-      prompt,
-      provider: {
-        baseUrl: config.baseUrl,
-        model: config.model,
-      },
-    };
-  } finally {
-    clearTimeout(timeout);
   }
+
+  throw new Error("AI request failed after retry");
 }
