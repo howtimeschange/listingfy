@@ -28,6 +28,8 @@ test("pre publish route builds readiness rows from SHEIN product bucket data", a
   assert.match(route, /\/readiness/);
   assert.match(route, /bucketReadinessRows/);
   assert.match(route, /shein_product_bucket/);
+  assert.doesNotMatch(route, /select distinct bucket\.spu_code\s+from shein_product_bucket[\s\S]*?order by bucket\.updated_at desc, bucket\.id desc/);
+  assert.match(route, /group by bucket\.spu_code/);
   assert.match(route, /\/ai-fill/);
   assert.match(route, /\/field-fills/);
   assert.match(route, /\/platforms/);

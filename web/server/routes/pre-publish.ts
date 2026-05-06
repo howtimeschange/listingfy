@@ -342,12 +342,13 @@ function bucketReadinessRows(
   ensureSheinBucketRows(db)
   const { clause, params } = bucketReadinessFilter(c)
   const rows = db.prepare(`
-    select distinct bucket.spu_code
+    select bucket.spu_code
     from shein_product_bucket bucket
     join product_spu spu on spu.id = bucket.product_spu_id
     left join product_content_package pkg on pkg.spu_code = bucket.spu_code
     ${clause}
-    order by bucket.updated_at desc, bucket.id desc
+    group by bucket.spu_code
+    order by max(bucket.updated_at) desc, max(bucket.id) desc
     limit ? offset ?
   `).all(...params, options.limit, options.offset) as SourceRow[]
   const total = db.prepare(`

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { convertSqliteMigration, syncAwait, toPostgresQuery } from "./postgres_db.mjs";
+import {
+  convertSqliteMigration,
+  identitySequenceSetvalSql,
+  syncAwait,
+  toPostgresQuery,
+} from "./postgres_db.mjs";
 
 test("convertSqliteMigration converts SQLite table defaults and inserts to PostgreSQL", () => {
   const sql = `
@@ -90,6 +95,24 @@ test("toPostgresQuery converts runtime insert-or-ignore to conflict do nothing",
   assert.match(query, /on conflict \(user_id, role_id\) do nothing/);
 });
 
+test("toPostgresQuery converts runtime insert-or-replace to conflict update", () => {
+  const query = toPostgresQuery(`
+    insert or replace into channel_attribute_value (
+      platform, product_type_id, attribute_id, attribute_value_id,
+      attribute_value, attribute_value_en, sync_batch_id, updated_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  assert.match(query, /insert into channel_attribute_value/i);
+  assert.match(query, /values \(\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8\)/);
+  assert.match(query, /on conflict \(platform, product_type_id, attribute_id, attribute_value_id\) do update set/i);
+  assert.match(query, /attribute_value = excluded\.attribute_value/);
+  assert.match(query, /updated_at = excluded\.updated_at/);
+  assert.doesNotMatch(query, /insert or replace/i);
+  assert.doesNotMatch(query, /platform = excluded\.platform/);
+});
+
 test("toPostgresQuery converts SQLite JSON array aggregation", () => {
   const query = toPostgresQuery(`
     select json_group_array(distinct spu.spu_code) as spus
@@ -132,6 +155,14 @@ test("toPostgresQuery converts SQLite table info pragma", () => {
   assert.match(query, /information_schema\.columns/);
   assert.match(query, /table_name = 'app_user'/);
   assert.match(query, /column_name as name/);
+});
+
+test("identity sequence sync advances past existing migrated ids", () => {
+  const sql = identitySequenceSetvalSql('"public"."shein_package_rule"', '"id"');
+
+  assert.match(sql, /select max\("id"\) from "public"\."shein_package_rule"/);
+  assert.match(sql, /case when \(select max\("id"\) from "public"\."shein_package_rule"\) is null then false else true end/);
+  assert.doesNotMatch(sql, /,\s*false\s*\)/);
 });
 
 test("syncAwait times out unresolved synchronous PostgreSQL calls", () => {

@@ -122,6 +122,23 @@ function batchesCte() {
   `
 }
 
+function listGroupBy() {
+  return `
+    group by
+      b.platform,
+      b.batch_no,
+      batch.id,
+      batch.batch_name,
+      batch.status,
+      batch.source_type,
+      batch.note,
+      batch.last_status_synced_at,
+      batch.publish_status_summary_json,
+      batch.created_at,
+      batch.updated_at
+  `
+}
+
 function resolveBatch(db: ReturnType<typeof getDb>, id: string, platformHint?: unknown) {
   const platform = normalizeText(platformHint) || "SHEIN"
   const batch = /^\d+$/.test(id)
@@ -192,7 +209,7 @@ listingBatches.get("/", (c) => {
     left join listing_sku sku on sku.listing_skc_id = skc.id
     left join listing_validation_result issue on issue.listing_id = listing.id
     where ${where}
-    group by b.batch_no
+    ${listGroupBy()}
     order by updated_at desc, b.batch_no desc
     limit ? offset ?
   `).all(...params, limit, offset) as SourceRow[]
@@ -235,7 +252,7 @@ listingBatches.post("/", async (c) => {
     from listing
     where platform = 'SHEIN'
       and (
-        ${listingIds.length ? `id in (${listingIds.map(() => "?").join(",")})` : "0"}
+        ${listingIds.length ? `id in (${listingIds.map(() => "?").join(",")})` : "false"}
         ${terms.length ? `or ${terms.map(() => "spu_code like ?").join(" or ")}` : ""}
       )
   `).all(
@@ -365,7 +382,7 @@ listingBatches.get("/:id", (c) => {
     left join listing_validation_result issue on issue.listing_id = listing.id
     where b.platform = 'SHEIN'
       and b.batch_no = ?
-    group by b.batch_no
+    ${listGroupBy()}
   `).get(batchNoValue) as SourceRow | undefined
   if (!summary) {
     throw new HTTPException(404, { message: "批次不存在" })

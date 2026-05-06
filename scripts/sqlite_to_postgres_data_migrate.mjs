@@ -4,7 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { getDatabaseConfig } from "./lib/database_config.mjs";
 import { loadLocalEnv } from "./lib/local_env.mjs";
-import { createPostgresPool } from "./lib/postgres_db.mjs";
+import { createPostgresPool, identitySequenceSetvalSql } from "./lib/postgres_db.mjs";
 
 const requireFromWeb = createRequire(new URL("../web/package.json", import.meta.url));
 const Database = requireFromWeb("better-sqlite3");
@@ -162,13 +162,10 @@ async function syncIdentitySequences(client) {
   for (const row of rows.rows) {
     const qualifiedTable = `${quoteIdent(row.table_schema)}.${quoteIdent(row.table_name)}`;
     const columnName = quoteIdent(row.column_name);
-    await client.query(`
-      select setval(
-        pg_get_serial_sequence($1, $2)::regclass,
-        greatest(coalesce((select max(${columnName}) from ${qualifiedTable}), 0), 1),
-        false
-      )
-    `, [`${row.table_schema}.${row.table_name}`, row.column_name]);
+    await client.query(
+      identitySequenceSetvalSql(qualifiedTable, columnName),
+      [`${row.table_schema}.${row.table_name}`, row.column_name],
+    );
   }
 }
 

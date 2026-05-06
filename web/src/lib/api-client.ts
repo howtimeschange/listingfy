@@ -5,11 +5,30 @@ export class ApiError extends Error {
   body: unknown
 
   constructor(status: number, body: unknown) {
-    super(`API Error ${status}`)
+    super(apiErrorMessage(status, body))
     this.name = "ApiError"
     this.status = status
     this.body = body
   }
+}
+
+function apiErrorMessage(status: number, body: unknown) {
+  if (typeof body === "string") {
+    const message = body.trim()
+    if (message) return message
+  }
+  if (body && typeof body === "object") {
+    const error = "error" in body ? (body as { error?: unknown }).error : null
+    if (error && typeof error === "object" && "message" in error) {
+      const message = String((error as { message?: unknown }).message ?? "").trim()
+      if (message) return message
+    }
+    if ("message" in body) {
+      const message = String((body as { message?: unknown }).message ?? "").trim()
+      if (message) return message
+    }
+  }
+  return `API Error ${status}`
 }
 
 async function request<T>(
@@ -27,7 +46,13 @@ async function request<T>(
   })
 
   if (!res.ok) {
-    const body = await res.json().catch(() => null)
+    const text = await res.text()
+    let body: unknown = text
+    try {
+      body = text ? JSON.parse(text) : null
+    } catch {
+      body = text
+    }
     throw new ApiError(res.status, body)
   }
 

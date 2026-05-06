@@ -222,6 +222,7 @@ export function convertSqliteStatement(statement) {
     .replace(/\binteger\s+primary\s+key\s+check\s*\(/gi, "bigint primary key check (")
     .replace(/\binteger(\s+not\s+null)?(\s+references\b)/gi, "bigint$1$2")
     .replace(/\binsert\s+or\s+ignore\s+into\b/gi, "insert into")
+    .replace(/\binsert\s+or\s+replace\s+into\b/gi, "insert into")
     .replace(/strftime\('%Y-%m-%dT%H:%M:%fZ', 'now'\)/gi, NOW_SQL)
     .replace(/\bgroup_concat\s*\(\s*distinct\s+([^)]+?)\s*\)/gi, "string_agg(distinct $1::text, ',')")
     .replace(/\bgroup_concat\s*\(\s*([^)]+?)\s*\)/gi, "string_agg($1::text, ',')")
@@ -236,6 +237,7 @@ export function convertSqliteStatement(statement) {
   converted = replaceJsonType(converted);
   converted = replaceJsonExtract(converted);
   converted = appendDoNothingForInsertOrIgnore(original, converted);
+  converted = appendDoUpdateForInsertOrReplace(original, converted);
   converted = convertProductSkcSummaryGroupBy(converted);
   return converted;
 }
@@ -256,6 +258,17 @@ export function syncAwait(promise) {
     (callback) => promise.then((result) => callback(null, result), (error) => callback(error)),
     "PostgreSQL synchronous operation",
   );
+}
+
+export function identitySequenceSetvalSql(qualifiedTable, columnName) {
+  const maxValue = `(select max(${columnName}) from ${qualifiedTable})`;
+  return `
+    select setval(
+      pg_get_serial_sequence($1, $2)::regclass,
+      greatest(coalesce(${maxValue}, 0), 1),
+      case when ${maxValue} is null then false else true end
+    )
+  `;
 }
 
 function syncWithTimeout(register, label) {
@@ -471,13 +484,10 @@ export class SyncPostgresDatabase {
     for (const row of rows) {
       const qualifiedTable = `"${row.table_schema}"."${row.table_name}"`;
       const columnName = `"${row.column_name}"`;
-      this.queryResult(`
-        select setval(
-          pg_get_serial_sequence($1, $2)::regclass,
-          greatest(coalesce((select max(${columnName}) from ${qualifiedTable}), 0), 1),
-          false
-        )
-      `, [`${row.table_schema}.${row.table_name}`, row.column_name]);
+      this.queryResult(
+        identitySequenceSetvalSql(qualifiedTable, columnName),
+        [`${row.table_schema}.${row.table_name}`, row.column_name],
+      );
     }
   }
 
@@ -493,12 +503,33 @@ function conflictTargetForInsert(statement) {
   const targets = {
     app_user_role: "(user_id, role_id)",
     channel_account: "(platform, account_name)",
+    channel_attribute_value: "(platform, product_type_id, attribute_id, attribute_value_id)",
+    channel_required_attribute: "(platform, category_id, product_type_id, attribute_id)",
     rbac_permission: "(permission_key)",
     rbac_role: "(role_key)",
     rbac_role_permission: "(role_id, permission_id)",
     shein_product_bucket: "(product_spu_id)",
   };
   return targets[table] ?? null;
+}
+
+function parseInsertColumns(statement) {
+  const match = statement.match(/insert\s+into\s+[a-zA-Z_][a-zA-Z0-9_]*\s*\(([\s\S]*?)\)\s*values\b/i);
+  if (!match) return [];
+  return match[1]
+    .split(",")
+    .map((column) => column.trim().replace(/^"|"$/g, ""))
+    .filter(Boolean);
+}
+
+function conflictColumns(target) {
+  return new Set(
+    String(target ?? "")
+      .replace(/[()]/g, "")
+      .split(",")
+      .map((column) => column.trim().replace(/^"|"$/g, ""))
+      .filter(Boolean),
+  );
 }
 
 function appendDoNothingForInsertOrIgnore(original, converted) {
@@ -508,9 +539,27 @@ function appendDoNothingForInsertOrIgnore(original, converted) {
   return `${converted}\non conflict${target ? ` ${target}` : ""} do nothing`;
 }
 
+function appendDoUpdateForInsertOrReplace(original, converted) {
+  if (!/\binsert\s+or\s+replace\s+into\b/i.test(original)) return converted;
+  if (/\bon\s+conflict\b/i.test(converted)) return converted;
+
+  const target = conflictTargetForInsert(converted);
+  if (!target) return converted;
+
+  const keyColumns = conflictColumns(target);
+  const updateColumns = parseInsertColumns(converted)
+    .filter((column) => !keyColumns.has(column));
+  if (!updateColumns.length) return `${converted}\non conflict ${target} do nothing`;
+
+  const assignments = updateColumns
+    .map((column) => `${column} = excluded.${column}`)
+    .join(",\n  ");
+  return `${converted}\non conflict ${target} do update set\n  ${assignments}`;
+}
+
 export function convertSqliteMigration(sql) {
   return splitSqlStatements(sql)
-    .map((statement) => appendDoNothingForInsertOrIgnore(statement, convertSqliteStatement(statement)))
+    .map((statement) => convertSqliteStatement(statement))
     .join(";\n\n");
 }
 
@@ -535,13 +584,10 @@ async function syncIdentitySequences(client) {
   for (const row of rows.rows) {
     const qualifiedTable = `"${row.table_schema}"."${row.table_name}"`;
     const columnName = `"${row.column_name}"`;
-    await client.query(`
-      select setval(
-        pg_get_serial_sequence($1, $2)::regclass,
-        greatest(coalesce((select max(${columnName}) from ${qualifiedTable}), 0), 1),
-        false
-      )
-    `, [`${row.table_schema}.${row.table_name}`, row.column_name]);
+    await client.query(
+      identitySequenceSetvalSql(qualifiedTable, columnName),
+      [`${row.table_schema}.${row.table_name}`, row.column_name],
+    );
   }
 }
 

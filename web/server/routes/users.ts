@@ -59,20 +59,20 @@ users.get("/", (c) => {
   requirePermission(c, "USER_ADMIN")
   const items = getDb().prepare(`
     select
-      user.id,
-      user.username,
-      user.display_name,
-      user.email,
-      user.status,
-      user.last_login_at,
-      user.created_at,
-      user.updated_at,
+      app_user.id,
+      app_user.username,
+      app_user.display_name,
+      app_user.email,
+      app_user.status,
+      app_user.last_login_at,
+      app_user.created_at,
+      app_user.updated_at,
       group_concat(role.role_key) as roles
-    from app_user user
-    left join app_user_role user_role on user_role.user_id = user.id
+    from app_user app_user
+    left join app_user_role user_role on user_role.user_id = app_user.id
     left join rbac_role role on role.id = user_role.role_id
-    group by user.id
-    order by user.updated_at desc, user.id desc
+    group by app_user.id
+    order by app_user.updated_at desc, app_user.id desc
   `).all().map((row) => userForResponse(row as Record<string, unknown>))
   return c.json({ items })
 })

@@ -44,3 +44,18 @@ test("listing batch list shows stored publish summary and sync time", async () =
   assert.match(page, /任务失败/);
   assert.match(page, /最近轮询/);
 });
+
+test("listing batch backend groups PostgreSQL batch summary columns explicitly", async () => {
+  const route = await readFile(path.join(PROJECT_ROOT, "web/server/routes/listing-batches.ts"), "utf8");
+
+  assert.match(route, /group by\s+b\.platform,\s*b\.batch_no,\s*batch\.id/s);
+  assert.doesNotMatch(route, /group by b\.batch_no/);
+});
+
+test("listing batch creation uses boolean SQL fallback when only searching by SPU", async () => {
+  const route = await readFile(path.join(PROJECT_ROOT, "web/server/routes/listing-batches.ts"), "utf8");
+
+  assert.match(route, /listingIds\.length \? `id in/);
+  assert.match(route, /: "false"/);
+  assert.doesNotMatch(route, /: "0"/);
+});

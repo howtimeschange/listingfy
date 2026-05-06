@@ -49,6 +49,8 @@ test("system management exposes auth, users, platform integrations, sync tasks, 
   assert.match(header, /logout|退出登录/);
   assert.match(appLayout, /useAuth/);
   assert.match(apiClient, /credentials:\s*"include"/);
+  assert.match(apiClient, /await res\.text\(\)/);
+  assert.match(apiClient, /JSON\.parse\(text\)/);
 
   assert.match(server, /app\.route\("\/api\/auth"/);
   assert.match(server, /app\.route\("\/api\/users"/);
@@ -92,4 +94,12 @@ test("system management migration defines RBAC, sessions, audit logs, and platfo
   assert.match(migration, /USER_ADMIN/);
   assert.match(migration, /PLATFORM_CONFIG/);
   assert.match(migration, /SYNC_RUN/);
+});
+
+test("user management backend avoids PostgreSQL reserved aliases in list query", async () => {
+  const route = await file("web/server/routes/users.ts");
+
+  assert.match(route, /from app_user app_user/);
+  assert.match(route, /group by\s+app_user\.id/s);
+  assert.doesNotMatch(route, /from app_user user/);
 });
