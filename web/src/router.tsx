@@ -16,6 +16,7 @@ import CategoryMappingPage from "@/pages/category-mapping/page"
 import SizeConversionPage from "@/pages/size-conversion/page"
 import PackageRulesPage from "@/pages/package-rules/page"
 import PriceRulesPage from "@/pages/price-rules/page"
+import BrandRulesPage from "@/pages/brand-rules/page"
 import SheinMetadataPage from "@/pages/shein-metadata/page"
 import ProductArchivesPage from "@/pages/product-archives/page"
 import ProductArchiveDetailPage from "@/pages/product-archives/[spuCode]/page"
@@ -52,6 +53,7 @@ export const router = createBrowserRouter([
       { path: "size-conversion", element: <SizeConversionPage /> },
       { path: "package-rules", element: <PackageRulesPage /> },
       { path: "price-rules", element: <PriceRulesPage /> },
+      { path: "brand-rules", element: <BrandRulesPage /> },
       { path: "low-rate-list", element: <Navigate to="/price-rules" replace /> },
       { path: "shein-metadata", element: <SheinMetadataPage /> },
       { path: "product-archives", element: <ProductArchivesPage /> },

@@ -190,7 +190,11 @@ test("SHEIN publish payload maps business feedback fields from existing source d
   assert.match(source, /const message = `\$\{sku\.sku_code\} 缺 SKU 毛重`/);
   assert.match(source, /errors\.push\(message\)/);
   assert.match(source, /warnings\.push\([^)]*本次临时按 500g 发布/);
-  assert.match(source, /brand_code:\s*normalizeText\(listing\.brand_code\)/);
+  assert.match(source, /function resolveSheinBrandCode\(/);
+  assert.match(source, /from shein_brand_rule/);
+  assert.match(source, /resolveSheinBrandCode\(db,\s*listing\)/);
+  assert.match(source, /brand_code:\s*brandCode/);
+  assert.doesNotMatch(source, /brand_code:\s*normalizeText\(listing\.brand_code\)/);
   assert.match(source, /package_type:\s*resolvePackageRule\(db,\s*listing\)\.type/);
   assert.match(source, /language:\s*"en"[\s\S]+name:\s*titleEn/);
   assert.match(source, /language:\s*defaultLanguage[\s\S]+name:\s*titleEn/);

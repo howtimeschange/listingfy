@@ -7,11 +7,15 @@ const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const SIZE_PAGE = path.join(PROJECT_ROOT, "web/src/pages/size-conversion/page.tsx");
 const PRICE_PAGE = path.join(PROJECT_ROOT, "web/src/pages/price-rules/page.tsx");
 const PACKAGE_PAGE = path.join(PROJECT_ROOT, "web/src/pages/package-rules/page.tsx");
+const BRAND_PAGE = path.join(PROJECT_ROOT, "web/src/pages/brand-rules/page.tsx");
 const PAGINATION_COMPONENT = path.join(PROJECT_ROOT, "web/src/components/server-pagination.tsx");
 const ROUTE_FILE = path.join(PROJECT_ROOT, "web/server/routes/business-rules.ts");
 const SERVER_INDEX = path.join(PROJECT_ROOT, "web/server/index.ts");
+const ROUTER_FILE = path.join(PROJECT_ROOT, "web/src/router.tsx");
+const APP_SIDEBAR_FILE = path.join(PROJECT_ROOT, "web/src/components/layout/app-sidebar.tsx");
 const MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/007_business_rules_and_publish_readiness.sql");
 const SKU_WEIGHT_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/011_sku_weight_and_publish_tasks.sql");
+const BRAND_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/020_shein_brand_management.sql");
 
 test("business rule migration creates import, size, discount, weight, and field fill tables", async () => {
   const migration = await readFile(MIGRATION_FILE, "utf8");
@@ -28,10 +32,11 @@ test("business rule migration creates import, size, discount, weight, and field 
 });
 
 test("business rules API exposes import export search and CRUD endpoints", async () => {
-  const [route, server, skuWeightMigration] = await Promise.all([
+  const [route, server, skuWeightMigration, brandMigration] = await Promise.all([
     readFile(ROUTE_FILE, "utf8"),
     readFile(SERVER_INDEX, "utf8"),
     readFile(SKU_WEIGHT_MIGRATION_FILE, "utf8"),
+    readFile(BRAND_MIGRATION_FILE, "utf8"),
   ]);
 
   assert.match(server, /app\.route\("\/api\/business-rules", businessRules\)/);
@@ -56,6 +61,18 @@ test("business rules API exposes import export search and CRUD endpoints", async
   assert.match(route, /validBySku/);
   assert.match(route, /coalesce\(sku_code, ''\) <> ''/);
   assert.match(skuWeightMigration, /unique index if not exists ux_product_weight_import_active_sku/);
+  assert.match(route, /brand-rules/);
+  assert.match(route, /\/brand-rules\/import/);
+  assert.match(route, /\/brand-rules\/export/);
+  assert.match(route, /\/brand-rules\/:id/);
+  assert.match(route, /品牌code/);
+  assert.match(route, /品牌名称/);
+  assert.match(brandMigration, /create table if not exists shein_brand_rule/);
+  assert.match(brandMigration, /ux_shein_brand_rule_active_name/);
+  assert.match(brandMigration, /2bbws/);
+  assert.match(brandMigration, /Balabala/);
+  assert.match(brandMigration, /252fb/);
+  assert.match(brandMigration, /mini bala/);
   assert.doesNotMatch(route, /avgWeight/);
   assert.doesNotMatch(route, /按款号汇总/);
   assert.doesNotMatch(route, /legacy_spu/);
@@ -133,4 +150,33 @@ test("package rules page keeps product weight report available as an empty impor
   assert.match(page, /必填，导入源表第 3 列/);
   assert.doesNotMatch(page, /avgWeight/);
   assert.doesNotMatch(page, /平均毛重/);
+});
+
+test("brand rules page manages SHEIN brand_code mappings in rule center", async () => {
+  const [page, router, sidebar] = await Promise.all([
+    readFile(BRAND_PAGE, "utf8"),
+    readFile(ROUTER_FILE, "utf8"),
+    readFile(APP_SIDEBAR_FILE, "utf8"),
+  ]);
+
+  assert.doesNotMatch(page, /ComingSoonPage/);
+  assert.match(page, /SHEIN 品牌管理/);
+  assert.match(page, /brand_code/);
+  assert.match(page, /brand_name/);
+  assert.match(page, /品牌code/);
+  assert.match(page, /品牌名称/);
+  assert.match(page, /Balabala/);
+  assert.match(page, /mini bala/);
+  assert.match(page, /brand-rules\/import/);
+  assert.match(page, /brand-rules\/export/);
+  assert.match(page, /导入品牌映射/);
+  assert.match(page, /导出/);
+  assert.match(page, /批量搜索/);
+  assert.match(page, /编辑/);
+  assert.match(page, /删除/);
+  assert.match(page, /ServerPagination/);
+  assert.match(page, /pagination/);
+  assert.match(router, /BrandRulesPage/);
+  assert.match(router, /brand-rules/);
+  assert.match(sidebar, /SHEIN 品牌管理/);
 });

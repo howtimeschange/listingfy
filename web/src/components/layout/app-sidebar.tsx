@@ -8,6 +8,7 @@ import {
   Ruler,
   Box,
   DollarSign,
+  BadgeCheck,
   Database,
   Archive,
   Boxes,
@@ -64,6 +65,7 @@ const NAV_GROUPS: NavGroup[] = [
       { label: "SHEIN 尺码转换", to: "/size-conversion", icon: Ruler, permission: "RULE_READ" },
       { label: "SHEIN 包装规则", to: "/package-rules", icon: Box, permission: "RULE_READ" },
       { label: "SHEIN 价格规则", to: "/price-rules", icon: DollarSign, permission: "RULE_READ" },
+      { label: "SHEIN 品牌管理", to: "/brand-rules", icon: BadgeCheck, permission: "RULE_READ" },
     ],
   },
   {

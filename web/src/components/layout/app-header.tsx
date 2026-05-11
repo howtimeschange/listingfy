@@ -24,6 +24,7 @@ const PATH_LABELS: Record<string, string> = {
   "size-conversion": "SHEIN 尺码转换",
   "package-rules": "SHEIN 包装规则",
   "price-rules": "SHEIN 价格规则",
+  "brand-rules": "SHEIN 品牌管理",
   "shein-metadata": "SHEIN 元数据",
   "product-archives": "商品档案",
   "mdm-products": "MDM 商品主数据",

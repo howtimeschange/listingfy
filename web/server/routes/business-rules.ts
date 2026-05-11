@@ -48,6 +48,15 @@ type PackageRuleBody = {
   note?: unknown
 }
 
+type BrandRuleBody = {
+  brand_code?: unknown
+  brand_name?: unknown
+  local_brand_name?: unknown
+  aliases?: unknown
+  status?: unknown
+  note?: unknown
+}
+
 type PriceConfigBody = {
   default_discount?: unknown
   usd_exchange_rate?: unknown
@@ -161,6 +170,43 @@ function packageRuleRow(row: Record<string, unknown>) {
     package_width_cm: width,
     package_height_cm: height,
     package_type: normalizeText(row.package_type) || "软包装+软物品",
+    status: normalizeText(row.status ?? "ACTIVE") || "ACTIVE",
+    note: normalizeNullableText(row.note),
+  }
+}
+
+function normalizeBrandRow(row: Record<string, unknown>): BrandRuleBody | null {
+  const brandCode = normalizeNullableText(firstValue(row, [
+    "brand_code",
+    "品牌code",
+    "品牌 code",
+    "品牌编码",
+    "SHEIN品牌code",
+    "SHEIN brand_code",
+  ]))
+  const brandName = normalizeNullableText(firstValue(row, [
+    "brand_name",
+    "品牌名称",
+    "品牌名",
+    "SHEIN品牌名称",
+    "SHEIN brand name",
+  ]))
+  if (!brandCode || !brandName) return null
+  return {
+    brand_code: brandCode,
+    brand_name: brandName,
+    local_brand_name: normalizeNullableText(firstValue(row, [
+      "local_brand_name",
+      "本地品牌名称",
+      "本地品牌",
+      "MDM品牌名称",
+    ])),
+    aliases: normalizeKeywords(firstValue(row, [
+      "aliases",
+      "aliases_json",
+      "别名",
+      "匹配别名",
+    ])),
     status: normalizeText(row.status ?? "ACTIVE") || "ACTIVE",
     note: normalizeNullableText(row.note),
   }
@@ -454,6 +500,192 @@ function upsertWeightRule({
   )
   return Number(result.lastInsertRowid)
 }
+
+businessRules.get("/brand-rules", (c) => {
+  const db = getDb()
+  const q = c.req.query("q")
+  const batch_search = c.req.query("batch_search")
+  const limit = readLimit(c.req.query("limit"), 100, 500)
+  const offset = readOffset(c.req.query("offset"))
+  const { clause, params } = listWhere({
+    q,
+    batchSearch: batch_search,
+    columns: ["brand_code", "brand_name", "local_brand_name", "aliases_json", "note"],
+  })
+
+  const rows = db.prepare(`
+    select *
+    from shein_brand_rule
+    ${clause}
+    order by status = 'ACTIVE' desc, brand_name, id desc
+    limit ? offset ?
+  `).all(...params, limit, offset) as Array<Record<string, unknown>>
+
+  const total = db.prepare(`
+    select count(*) as count
+    from shein_brand_rule
+    ${clause}
+  `).get(...params) as { count: number }
+
+  return c.json(paginatedResponse({
+    items: rows.map((row) => ({ ...row, aliases: parseJsonArray(row.aliases_json) })),
+    total: total.count,
+    limit,
+    offset,
+  }))
+})
+
+businessRules.post("/brand-rules", async (c) => {
+  const db = getDb()
+  const body = await c.req.json() as BrandRuleBody
+  const normalized = normalizeBrandRow(body as Record<string, unknown>)
+  if (!normalized) {
+    throw new HTTPException(400, { message: "缺少品牌code或品牌名称" })
+  }
+
+  const result = db.prepare(`
+    insert into shein_brand_rule (
+      brand_code,
+      brand_name,
+      local_brand_name,
+      aliases_json,
+      status,
+      note,
+      updated_at
+    )
+    values (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    on conflict(platform, brand_code)
+    where status = 'ACTIVE'
+    do update set
+      brand_name = excluded.brand_name,
+      local_brand_name = excluded.local_brand_name,
+      aliases_json = excluded.aliases_json,
+      note = excluded.note,
+      updated_at = excluded.updated_at
+  `).run(
+    normalized.brand_code,
+    normalized.brand_name,
+    normalized.local_brand_name ?? null,
+    JSON.stringify(normalized.aliases ?? []),
+    normalizeText(normalized.status ?? "ACTIVE") || "ACTIVE",
+    normalizeNullableText(normalized.note),
+  )
+  return c.json({ ok: true, id: result.lastInsertRowid })
+})
+
+businessRules.post("/brand-rules/import", async (c) => {
+  const db = getDb()
+  const body = await c.req.json().catch(() => ({})) as ImportBody
+  const rows = Array.isArray(body.rows) ? body.rows : []
+  const normalized = rows.map(normalizeBrandRow)
+  const valid = normalized.filter(Boolean) as BrandRuleBody[]
+  const batchId = createImportBatch({
+    importType: "SHEIN_BRAND",
+    fileName: body.file_name,
+    totalCount: rows.length,
+    successCount: valid.length,
+    failedCount: rows.length - valid.length,
+  })
+
+  const stmt = db.prepare(`
+    insert into shein_brand_rule (
+      brand_code,
+      brand_name,
+      local_brand_name,
+      aliases_json,
+      status,
+      note,
+      updated_at
+    )
+    values (?, ?, ?, ?, 'ACTIVE', ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    on conflict(platform, brand_code)
+    where status = 'ACTIVE'
+    do update set
+      brand_name = excluded.brand_name,
+      local_brand_name = excluded.local_brand_name,
+      aliases_json = excluded.aliases_json,
+      note = excluded.note,
+      updated_at = excluded.updated_at
+  `)
+  const transaction = db.transaction(() => {
+    for (const rule of valid) {
+      stmt.run(
+        rule.brand_code,
+        rule.brand_name,
+        rule.local_brand_name ?? null,
+        JSON.stringify(rule.aliases ?? []),
+        normalizeNullableText(rule.note) ?? `导入批次 ${batchId}`,
+      )
+    }
+  })
+  transaction()
+
+  return c.json({
+    ok: true,
+    batch_id: batchId,
+    total_count: rows.length,
+    success_count: valid.length,
+    failed_count: rows.length - valid.length,
+  })
+})
+
+businessRules.get("/brand-rules/export", (c) => {
+  const db = getDb()
+  const rows = db.prepare(`
+    select
+      brand_code as "品牌code",
+      brand_name as "品牌名称",
+      local_brand_name as "本地品牌名称",
+      aliases_json as "别名",
+      note as "备注"
+    from shein_brand_rule
+    where status = 'ACTIVE'
+    order by brand_name
+  `).all()
+  return c.json({ rows })
+})
+
+businessRules.patch("/brand-rules/:id", async (c) => {
+  const db = getDb()
+  const id = Number(c.req.param("id"))
+  const body = await c.req.json() as BrandRuleBody
+  const normalized = normalizeBrandRow(body as Record<string, unknown>)
+  if (!Number.isFinite(id) || id <= 0 || !normalized) {
+    throw new HTTPException(400, { message: "缺少有效 ID、品牌code或品牌名称" })
+  }
+  db.prepare(`
+    update shein_brand_rule
+    set brand_code = ?,
+      brand_name = ?,
+      local_brand_name = ?,
+      aliases_json = ?,
+      status = ?,
+      note = ?,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+  `).run(
+    normalized.brand_code,
+    normalized.brand_name,
+    normalized.local_brand_name ?? null,
+    JSON.stringify(normalized.aliases ?? []),
+    normalizeText(normalized.status ?? "ACTIVE") || "ACTIVE",
+    normalizeNullableText(normalized.note),
+    id,
+  )
+  return c.json({ ok: true })
+})
+
+businessRules.delete("/brand-rules/:id", (c) => {
+  const db = getDb()
+  const id = Number(c.req.param("id"))
+  db.prepare(`
+    update shein_brand_rule
+    set status = 'DELETED',
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+  `).run(id)
+  return c.json({ ok: true })
+})
 
 businessRules.get("/package-rules", (c) => {
   const db = getDb()

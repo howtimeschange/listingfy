@@ -792,6 +792,42 @@ function englishBrandName(value: unknown) {
   return "Balabala"
 }
 
+function compactBrandText(value: unknown) {
+  return normalizeText(value).toLowerCase().replace(/[\s\-_/（）()]+/g, "")
+}
+
+function brandRuleMatches(rule: SourceRow, candidates: string[]) {
+  const normalized = new Set(candidates.map(compactBrandText).filter(Boolean))
+  if (normalized.size === 0) return false
+  const ruleValues = [
+    rule.brand_code,
+    rule.brand_name,
+    rule.local_brand_name,
+    ...parseJsonArray(rule.aliases_json),
+  ]
+  return ruleValues.some((value) => normalized.has(compactBrandText(value)))
+}
+
+function resolveSheinBrandCode(db: ReturnType<typeof getDb>, listing: SourceRow) {
+  const candidates = uniqueStrings([
+    listing.brand_code,
+    listing.brand_name,
+    listing.deepdraw_brand_name,
+    englishBrandName(listing.brand_name),
+    englishBrandName(listing.deepdraw_brand_name),
+  ])
+  if (candidates.length === 0) return ""
+  const rows = db.prepare(`
+    select brand_code, brand_name, local_brand_name, aliases_json
+    from shein_brand_rule
+    where platform = 'SHEIN'
+      and status = 'ACTIVE'
+    order by id
+  `).all() as SourceRow[]
+  const matched = rows.find((row) => brandRuleMatches(row, candidates))
+  return normalizeText(matched?.brand_code) || normalizeText(listing.brand_code)
+}
+
 function englishColorName(value: unknown) {
   const text = normalizeText(value)
   if (!text) return ""
@@ -3211,7 +3247,7 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
   const publishFields = publishFieldRules(standard)
   const defaultLanguage = normalizeText(standard?.default_language) || "zh-cn"
   const suggestedRetailPrice = buildSuggestedRetailPricePayload(readiness, publishFields)
-  const brandCode = normalizeText(listing.brand_code)
+  const brandCode = resolveSheinBrandCode(db, listing)
   const supplierSkuBySkuCode = buildPublishSupplierSkuMap(skus)
   const supplierSkuCounts = new Map<string, number>()
   for (const sku of skus) {
@@ -3358,7 +3394,7 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
     suit_flag: "0",
     supplier_code: normalizeText(listing.spu_code),
     is_spu_pic: false,
-    ...(fieldShown(publishFields, "brand_code") && brandCode ? { brand_code: normalizeText(listing.brand_code) } : {}),
+    ...(fieldShown(publishFields, "brand_code") && brandCode ? { brand_code: brandCode } : {}),
     ...(fieldShown(publishFields, "package_type") ? { package_type: resolvePackageRule(db, listing).type } : {}),
     multi_language_name_list: nameList,
     product_attribute_list: buildProductAttributeList(db, listing as ListingRow),
