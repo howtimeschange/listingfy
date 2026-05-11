@@ -26,7 +26,16 @@ import {
   type PictureConfigRow,
   type PictureRequirement,
 } from "../services/pre-publish/images"
-import { publishBusinessValidationErrors, publishInfo, responseCode, responseMessage } from "../services/pre-publish/payload"
+import {
+  buildPublishSupplierSkuMap,
+  normalizeBarcode,
+  publishBusinessValidationErrors,
+  publishInfo,
+  publishPackageWeight,
+  publishSupplierSku,
+  responseCode,
+  responseMessage,
+} from "../services/pre-publish/payload"
 import { transformOnlineImageToShein, uploadLocalImageToShein } from "../services/pre-publish/shein-api"
 import {
   asNumber,
@@ -771,6 +780,37 @@ function sanitizeSingleItemTitleEn(title: unknown, categoryName?: unknown) {
   if (category.includes("卫衣") && !/sweatshirt|hoodie/i.test(text)) text = `${text} Sweatshirt`
   if (category.includes("T恤") && !/t-?shirt/i.test(text)) text = `${text} T-Shirt`
   return text
+}
+
+function englishBrandName(value: unknown) {
+  const text = normalizeText(value)
+  const lower = text.toLowerCase()
+  if (text.includes("迷你巴拉") || lower.includes("mini bala")) return "Mini Bala"
+  if (text.includes("巴拉巴拉") || lower.includes("balabala")) return "Balabala"
+  if (text.includes("森马") || lower.includes("semir")) return "Semir"
+  if (/^[\x20-\x7E]+$/.test(text)) return text
+  return "Balabala"
+}
+
+function englishColorName(value: unknown) {
+  const text = normalizeText(value)
+  if (!text) return ""
+  const ascii = text.replace(/[0-9]+/g, "").replace(/[^\x20-\x7E]+/g, " ").trim()
+  if (ascii && !/[\u4e00-\u9fff]/.test(text)) return ascii
+  if (/黑/.test(text)) return "Black"
+  if (/白/.test(text)) return "White"
+  if (/藏青|藏蓝/.test(text)) return "Navy"
+  if (/黄|姜黄/.test(text)) return "Yellow"
+  if (/红/.test(text)) return "Red"
+  if (/粉/.test(text)) return "Pink"
+  if (/蓝/.test(text)) return "Blue"
+  if (/绿/.test(text)) return "Green"
+  if (/灰/.test(text)) return "Gray"
+  if (/紫/.test(text)) return "Purple"
+  if (/橙/.test(text)) return "Orange"
+  if (/棕|咖|褐/.test(text)) return "Brown"
+  if (/卡其/.test(text)) return "Khaki"
+  return ""
 }
 
 function buildDimensionFieldGroups(fieldGroups: FieldGroup[]): DimensionFieldGroup[] {
@@ -1627,6 +1667,7 @@ function upsertListingChildren(db: ReturnType<typeof getDb>, listingId: number, 
   const mdmSkus = getSkus(db, sourceRow.id)
   const contentSkus = mdmSkus.length ? [] : getContentSkus(db, sourceRow.content_package_id)
   const skus = mdmSkus.length ? mdmSkus : contentSkus
+  const sourceSupplierSkuBySkuCode = buildPublishSupplierSkuMap(skus)
   const sizeConversions = activeSizeConversions(db)
   const priceConfig = getSheinPriceConfig(db)
   const discount = Number(activeDiscounts(db).get(readiness.spu_code)?.discount ?? priceConfig.defaultDiscount)
@@ -1791,7 +1832,7 @@ function upsertListingChildren(db: ReturnType<typeof getDb>, listingId: number, 
         Number(listingSkc.id),
         mdmSkus.length ? asNumber(sku.id) : null,
         skuCode,
-        skuCode,
+        sourceSupplierSkuBySkuCode.get(skuCode) ?? publishSupplierSku(sku),
         normalizeText(sku.ean_code) || normalizeText(sku.barcode),
         normalizeText(sku.size_name) || normalizeText(sku.size_code),
         finalSheinSize,
@@ -2281,9 +2322,13 @@ function getListingDetail(db: ReturnType<typeof getDb>, listingId: number) {
       sku.*,
       skc.skc_code,
       skc.color_name,
-      skc.image_url as skc_image_url
+      skc.image_url as skc_image_url,
+      source_sku.inner_code as source_inner_code,
+      source_sku.supplier_product_code as source_supplier_product_code,
+      source_sku.ean_code as source_ean_code
     from listing_sku sku
     join listing_skc skc on skc.id = sku.listing_skc_id
+    left join product_sku source_sku on source_sku.id = sku.product_sku_id
     where skc.listing_id = ?
     order by skc.skc_code, sku.size_name, sku.sku_code
   `).all(listingId) as SourceRow[]
@@ -2357,8 +2402,8 @@ function getListingDetail(db: ReturnType<typeof getDb>, listingId: number) {
 function heuristicEnglishTitle(row: ReadinessRow) {
   const title = normalizeText(row.title_cn || row.spu_name)
   const category = normalizeText(row.category.category_name)
-  const colorText = row.skcs.map((skc) => normalizeText(skc.color_name)).filter(Boolean).slice(0, 3).join("/")
-  const brand = normalizeText(row.brand_name) || "Balabala"
+  const colorText = row.skcs.map((skc) => englishColorName(skc.color_name)).filter(Boolean).slice(0, 3).join("/")
+  const brand = englishBrandName(row.brand_name)
   let productName = "Kids Clothing"
   if (category.includes("衬衫") || title.includes("衬衫")) productName = "Girls Long Sleeve Shirt"
   else if (category.includes("连衣裙") || title.includes("连衣裙") || title.includes("裙")) productName = "Girls Dress"
@@ -3000,12 +3045,6 @@ function selectedImageInfo(skc: SourceRow, assets: SourceRow[], allowSourceImage
   return { image_info_list: imageInfoList }
 }
 
-function normalizeBarcode(value: unknown) {
-  const compact = normalizeText(value).replace(/[\s-]/g, "")
-  if (!/^\d{1,32}$/.test(compact)) return ""
-  return compact
-}
-
 function buildSupplierBarcodePayload(value: unknown, publishFields: Map<string, PublishFieldRule>) {
   if (!fieldShown(publishFields, "supplier_barcode")) return undefined
   const barcode = normalizeBarcode(value)
@@ -3043,7 +3082,7 @@ function getSizeChartAttributes(db: ReturnType<typeof getDb>, productTypeId: unk
     where platform = 'SHEIN'
       and product_type_id = ?
       and attribute_type = 2
-      and attribute_status = 3
+      and attribute_status in (2, 3)
     order by attribute_id
   `).all(id) as SourceRow[]
 }
@@ -3093,13 +3132,14 @@ function buildSizeChartAttributeList({
   if (!sizeAttrId) return []
   const sizeChartAttrs = getSizeChartAttributes(db, listing.product_type_id)
   if (sizeChartAttrs.length === 0) return []
-  const rows = db.prepare(`
-    select *
-    from product_content_size_table_row
-    where spu_code = ?
-      and table_index in (1, 2)
-    order by table_index, row_index
-  `).all(listing.spu_code) as SourceRow[]
+  const { size_tables, size_table_rows } = getSizeTables(db, listing as ListingRow)
+  const mappedCharts = getMappedSizeCharts({
+    db,
+    listing: listing as ListingRow,
+    sizeTables: size_tables,
+    sizeTableRows: size_table_rows,
+  })
+  const rows = mappedCharts.flatMap((chart) => chart.rows as SourceRow[])
   const output: Array<Record<string, unknown>> = []
   for (const sku of skus) {
     const sizePayload = parseJsonObject(sku.size_attribute_payload_json)
@@ -3127,10 +3167,11 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
   skcCodes?: string[]
   allowSourceImages?: boolean
   requirePreparedImages?: boolean
+  allowDefaultSkuWeight?: boolean
 }) {
   const detail = getListingDetail(db, listingId)
   if (!detail) throw new HTTPException(404, { message: "草稿不存在" })
-  const listing = detail.listing as SourceRow
+  const listing = detail.listing as ListingRow
   const selectedSkcFilter = new Set((options?.skcCodes ?? []).map(normalizeText).filter(Boolean))
   const skcs = (detail.skcs as SourceRow[]).filter((skc) =>
     Number(skc.selected_for_publish ?? 1) === 1
@@ -3170,7 +3211,16 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
   const publishFields = publishFieldRules(standard)
   const defaultLanguage = normalizeText(standard?.default_language) || "zh-cn"
   const suggestedRetailPrice = buildSuggestedRetailPricePayload(readiness, publishFields)
+  const brandCode = normalizeText(listing.brand_code)
+  const supplierSkuBySkuCode = buildPublishSupplierSkuMap(skus)
+  const supplierSkuCounts = new Map<string, number>()
+  for (const sku of skus) {
+    const supplierSku = supplierSkuBySkuCode.get(normalizeText(sku.sku_code)) ?? publishSupplierSku(sku)
+    if (!supplierSku) continue
+    supplierSkuCounts.set(supplierSku, (supplierSkuCounts.get(supplierSku) ?? 0) + 1)
+  }
   const errors: string[] = []
+  const warnings: string[] = []
 
   if (isSheinOpenApiUnsupportedSuitCategory(listing.platform_category_name, listing.platform_category_path)) {
     errors.push(sheinOpenApiSuitCategoryMessage(listing.platform_category_name))
@@ -3181,6 +3231,7 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
   if (!colorAttr) errors.push("缺颜色销售属性元数据")
   if (!sizeAttr) errors.push("缺尺寸销售属性元数据")
   if (fieldRequired(publishFields, "suggest_price") && !suggestedRetailPrice) errors.push("缺 SKC 建议零售价")
+  if (fieldRequired(publishFields, "brand_code") && !brandCode) errors.push("缺产品品牌")
 
   const skcList = skcs.map((skc) => {
     const colorPayload = parseJsonObject(skc.color_attribute_payload_json)
@@ -3197,10 +3248,19 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
       }
     }
     const skuList = skcSkus.map((sku) => {
+      const supplierSku = supplierSkuBySkuCode.get(normalizeText(sku.sku_code)) ?? publishSupplierSku(sku)
       const sizePayload = parseJsonObject(sku.size_attribute_payload_json)
       const sizeValueId = asPositiveNumber(sizePayload.attribute_value_id)
+      if (!supplierSku) errors.push(`${sku.sku_code} 缺商家 SKU/69码`)
+      if (supplierSku && (supplierSkuCounts.get(supplierSku) ?? 0) > 1) {
+        errors.push(`${sku.sku_code} 商家 SKU/69码在本次发布中重复`)
+      }
       if (!sizeValueId && !normalizeText(sizePayload.custom_attribute_value)) errors.push(`${sku.sku_code} 缺 SHEIN 尺码枚举`)
-      if (!asPositiveNumber(sku.package_weight_g)) errors.push(`${sku.sku_code} 缺 SKU 毛重`)
+      if (!asPositiveNumber(sku.package_weight_g)) {
+        const message = `${sku.sku_code} 缺 SKU 毛重`
+        if (options?.allowDefaultSkuWeight) warnings.push(`${message}，本次临时按 500g 发布`)
+        else errors.push(message)
+      }
       if (!asPositiveNumber(sku.cost_price)) errors.push(`${sku.sku_code} 缺 SKU 供货价`)
       if (asPositiveNumber(sku.cost_price) && Number(sku.price_confirmed ?? 0) !== 1) errors.push(`${sku.sku_code} 供货价未确认`)
       let supplierBarcode = fieldShown(publishFields, "supplier_barcode")
@@ -3224,14 +3284,14 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
         saleAttribute.language = "zh-cn"
       }
       return {
-        supplier_sku: normalizeText(sku.sku_code),
+        supplier_sku: supplierSku,
         ...(supplierBarcode ? { supplier_barcode: supplierBarcode } : {}),
         ...(fieldShown(publishFields, "mall_state", true) ? { mall_state: Number(sku.mall_state ?? 1) || 1 } : {}),
         ...(fieldShown(publishFields, "stop_purchase", true) ? { stop_purchase: 1 } : {}),
         height: String(sku.package_height_cm ?? 1),
         length: String(sku.package_length_cm ?? 1),
         width: String(sku.package_width_cm ?? 1),
-        weight: String(sku.package_weight_g ?? ""),
+        weight: String(publishPackageWeight(sku.package_weight_g, options?.allowDefaultSkuWeight ? 500 : undefined) ?? ""),
         cost_info: sku.cost_price
           ? { cost_price: Number(sku.cost_price), currency: normalizeText(sku.currency) || "CNY" }
           : undefined,
@@ -3277,17 +3337,18 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
   }
 
   const titleCn = normalizeText(readinessFieldValue(readiness, "title_cn")) || normalizeText(readiness.title_cn) || normalizeText(listing.title) || normalizeText(listing.spu_code)
-  const titleEn = normalizeText(readinessFieldValue(readiness, "title_en")) || normalizeText(readiness.title_en) || normalizeText(listing.title) || titleCn
+  const titleEn = sanitizeSingleItemTitleEn(
+    normalizeText(readinessFieldValue(readiness, "title_en")) || normalizeText(readiness.title_en) || heuristicEnglishTitle(readiness),
+    listing.platform_category_name,
+  )
   const nameList = [
     {
-      language: defaultLanguage,
-      name: defaultLanguage.toLowerCase() === "zh-cn"
-        ? titleCn
-        : titleEn,
+      language: "en",
+      name: titleEn,
     },
   ]
-  if (defaultLanguage.toLowerCase() !== "en" && titleEn) {
-    nameList.push({ language: "en", name: titleEn })
+  if (defaultLanguage.toLowerCase() !== "en") {
+    nameList.push({ language: defaultLanguage, name: titleEn })
   }
 
   const payload = {
@@ -3297,6 +3358,8 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
     suit_flag: "0",
     supplier_code: normalizeText(listing.spu_code),
     is_spu_pic: false,
+    ...(fieldShown(publishFields, "brand_code") && brandCode ? { brand_code: normalizeText(listing.brand_code) } : {}),
+    ...(fieldShown(publishFields, "package_type") ? { package_type: resolvePackageRule(db, listing).type } : {}),
     multi_language_name_list: nameList,
     product_attribute_list: buildProductAttributeList(db, listing as ListingRow),
     ...(sizeAttributeList.length ? { size_attribute_list: sizeAttributeList } : {}),
@@ -3306,6 +3369,7 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
   return {
     payload: JSON.parse(JSON.stringify(payload)),
     errors,
+    warnings,
     detail,
   }
 }
@@ -4898,10 +4962,16 @@ prePublish.get("/drafts/:id/publish-payload", async (c) => {
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const skcCodes = csvTerms(c.req.query("skc_codes"))
-  const preview = buildPublishPayload(db, listingId, { skcCodes, allowSourceImages: true, requirePreparedImages: false })
+  const preview = buildPublishPayload(db, listingId, {
+    skcCodes,
+    allowSourceImages: true,
+    requirePreparedImages: false,
+    allowDefaultSkuWeight: boolConfigValue(Number(c.req.query("allow_default_sku_weight") ?? 0)) === 1,
+  })
   return c.json({
     ok: preview.errors.length === 0,
     errors: preview.errors,
+    warnings: preview.warnings,
     payload: preview.payload,
   })
 })
@@ -5029,14 +5099,17 @@ prePublish.post("/drafts/:id/publish", async (c) => {
     confirm?: boolean
     dry_run?: boolean
     skc_codes?: string[]
+    allow_default_sku_weight?: boolean
   }
   const skcCodes = Array.isArray(body.skc_codes) ? body.skc_codes : []
+  const allowDefaultSkuWeight = Boolean(body.allow_default_sku_weight)
   if (body.dry_run || !body.confirm) {
-    const preview = buildPublishPayload(db, listingId, { skcCodes })
+    const preview = buildPublishPayload(db, listingId, { skcCodes, allowDefaultSkuWeight })
     return c.json({
       ok: preview.errors.length === 0,
       dry_run: true,
       errors: preview.errors,
+      warnings: preview.warnings,
       payload: preview.payload,
     })
   }
@@ -5053,7 +5126,7 @@ prePublish.post("/drafts/:id/publish", async (c) => {
     versionType: "PUBLISH",
     changeSummary: "提交 SHEIN 发布",
   })
-  const preview = buildPublishPayload(db, listingId, { skcCodes, allowSourceImages: true, requirePreparedImages: false })
+  const preview = buildPublishPayload(db, listingId, { skcCodes, allowSourceImages: true, requirePreparedImages: false, allowDefaultSkuWeight })
   if (preview.errors.length > 0) {
     db.prepare(`
       update listing_publish_version
@@ -5091,7 +5164,7 @@ prePublish.post("/drafts/:id/publish", async (c) => {
   const built = await (async () => {
     try {
       await prepareListingImagesForPublish(db, listingId)
-      const prepared = buildPublishPayload(db, listingId, { skcCodes })
+      const prepared = buildPublishPayload(db, listingId, { skcCodes, allowDefaultSkuWeight })
       if (prepared.errors.length > 0) {
         throw new Error(`发布前仍有阻断项：${prepared.errors.join("；")}`)
       }

@@ -20,6 +20,7 @@ const STORE_INFO_PATH = "/open-api/openapi-business-backend/query-store-info";
 const DEFAULT_STANDARD_CONCURRENCY = 12;
 const DEFAULT_ATTRIBUTE_CONCURRENCY = 8;
 const ATTRIBUTE_BATCH_SIZE = 10;
+const DEFAULT_ROOTS = ["儿童", "婴儿"];
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDir, "..");
@@ -34,7 +35,7 @@ function parseArgs(argv) {
     baseUrl: readEnv("SHEIN_BASE_URL", PROD_BASE_URL_CN),
     language: readEnv("SHEIN_LANGUAGE", "zh-cn"),
     outDir: path.join(projectRoot, "data", "shein-metadata", timestampForPath()),
-    roots: [],
+    roots: [...DEFAULT_ROOTS],
     limitLeaves: null,
     standardConcurrency: DEFAULT_STANDARD_CONCURRENCY,
     attributeConcurrency: DEFAULT_ATTRIBUTE_CONCURRENCY,
@@ -54,6 +55,7 @@ function parseArgs(argv) {
     else if (arg === "--language") args.language = next();
     else if (arg === "--out") args.outDir = path.resolve(next());
     else if (arg === "--roots") args.roots = next().split(",").map((item) => item.trim()).filter(Boolean);
+    else if (arg === "--all-roots") args.roots = [];
     else if (arg === "--limit-leaves") args.limitLeaves = Number(next());
     else if (arg === "--standard-concurrency") args.standardConcurrency = Number(next());
     else if (arg === "--attribute-concurrency") args.attributeConcurrency = Number(next());
@@ -89,7 +91,8 @@ Optional environment:
 
 Options:
   --out <dir>                    Output directory.
-  --roots <name-or-id,...>       Sync only selected root category names or ids, e.g. 儿童,婴儿.
+  --roots <name-or-id,...>       Sync only selected root category names or ids. Default: 儿童,婴儿.
+  --all-roots                    Sync every SHEIN root category.
   --limit-leaves <n>             Limit leaf categories for smoke testing.
   --standard-concurrency <n>     Default ${DEFAULT_STANDARD_CONCURRENCY}.
   --attribute-concurrency <n>    Default ${DEFAULT_ATTRIBUTE_CONCURRENCY}.
@@ -99,6 +102,7 @@ Options:
 Examples:
   node scripts/shein_metadata_sync.mjs
   node scripts/shein_metadata_sync.mjs --roots 儿童,婴儿
+  node scripts/shein_metadata_sync.mjs --all-roots
 `);
 }
 
@@ -169,6 +173,16 @@ function selectLeaves(leaves, roots, limitLeaves) {
     selected = selected.slice(0, limitLeaves);
   }
   return selected;
+}
+
+function selectCategories(categories, selectedLeaves) {
+  if (selectedLeaves.length === 0) return [];
+  const selectedRootNames = new Set(selectedLeaves.map((leaf) => leaf.root_category_name).filter(Boolean));
+  const selectedCategoryIds = new Set(selectedLeaves.map((leaf) => String(leaf.category_id)));
+  return categories.filter((category) => (
+    selectedRootNames.has(category.root_category_name)
+    || selectedCategoryIds.has(String(category.category_id))
+  ));
 }
 
 function groupByProductType(leaves) {
@@ -302,11 +316,12 @@ async function main() {
   const roots = categoryTree.payload.info?.data || [];
   const { all, leaves } = flattenCategories(roots);
   const selectedLeaves = selectLeaves(leaves, args.roots, args.limitLeaves);
+  const selectedCategories = selectCategories(all, selectedLeaves);
   const productTypeToLeaves = groupByProductType(selectedLeaves);
   const productTypeIds = [...productTypeToLeaves.keys()].map(Number).sort((a, b) => a - b);
 
   const flatStream = fs.createWriteStream(files.categoriesFlat, { flags: "w" });
-  for (const category of all) {
+  for (const category of selectedCategories) {
     writeJsonl(flatStream, category);
   }
   flatStream.end();
@@ -315,6 +330,7 @@ async function main() {
 
   manifest.counts.root_categories = roots.length;
   manifest.counts.all_categories = all.length;
+  manifest.counts.categories_selected = selectedCategories.length;
   manifest.counts.leaf_categories_total = leaves.length;
   manifest.counts.leaf_categories_selected = selectedLeaves.length;
   manifest.counts.product_type_ids_selected = productTypeIds.length;

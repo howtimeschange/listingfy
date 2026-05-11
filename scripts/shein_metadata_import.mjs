@@ -19,6 +19,7 @@ function parseArgs(argv) {
     sourceDir: null,
     platform: "SHEIN",
     skipAttributeValues: false,
+    pruneToSource: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -33,6 +34,7 @@ function parseArgs(argv) {
     else if (arg === "--source") args.sourceDir = next();
     else if (arg === "--platform") args.platform = next();
     else if (arg === "--skip-attribute-values") args.skipAttributeValues = true;
+    else if (arg === "--prune-to-source") args.pruneToSource = true;
     else if (arg === "--help" || arg === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
   }
@@ -49,10 +51,11 @@ Options:
   --database-url <url>           PostgreSQL connection URL. Default: DATABASE_URL.
   --platform <name>              Platform key. Default: SHEIN
   --skip-attribute-values        Import attributes but skip full enum values.
+  --prune-to-source              Remove existing SHEIN metadata outside the source category/product-type set.
 
 Examples:
   npm run shein:metadata:import
-  npm run shein:metadata:import -- --source data/shein-metadata/20260424T113417Z
+  npm run shein:metadata:import -- --source data/shein-metadata/20260424T113417Z --prune-to-source
 `);
 }
 
@@ -103,6 +106,69 @@ async function readJsonl(filePath, onRow) {
     onRow(JSON.parse(line), count);
   }
   return count;
+}
+
+async function collectSourceScope(files) {
+  const categoryIds = new Set();
+  const categoryProductTypeIds = new Set();
+  const productTypeIds = new Set();
+  await readJsonl(files.categoriesFlat, (row) => {
+    categoryIds.add(Number(row.category_id));
+    if (row.product_type_id) {
+      productTypeIds.add(Number(row.product_type_id));
+      categoryProductTypeIds.add(`${Number(row.category_id)}:${Number(row.product_type_id)}`);
+    }
+  });
+  await readJsonl(files.attributeTemplates, (row) => {
+    if (row.product_type_id) productTypeIds.add(Number(row.product_type_id));
+  });
+  return { categoryIds, categoryProductTypeIds, productTypeIds };
+}
+
+function placeholders(values) {
+  return Array.from(values, () => "?").join(", ");
+}
+
+function pruneMetadataToSource(db, platform, scope) {
+  const categoryIds = Array.from(scope.categoryIds).filter(Number.isFinite);
+  const productTypeIds = Array.from(scope.productTypeIds).filter(Number.isFinite);
+  if (categoryIds.length === 0 || productTypeIds.length === 0) {
+    throw new Error("Refusing to prune SHEIN metadata without source category and product type ids.");
+  }
+  const categoryPlaceholders = placeholders(categoryIds);
+  const productTypePlaceholders = placeholders(productTypeIds);
+  const categoryParams = [platform, ...categoryIds];
+  const productTypeParams = [platform, ...productTypeIds];
+  const standardParams = [platform, ...categoryIds];
+
+  for (const table of ["channel_publish_field", "channel_picture_config", "channel_publish_standard"]) {
+    db.prepare(`
+      delete from ${table}
+      where platform = ?
+        and standard_scope = 'category'
+        and category_id not in (${categoryPlaceholders})
+    `).run(...standardParams);
+  }
+  db.prepare(`
+    delete from channel_required_attribute
+    where platform = ?
+      and (
+        category_id not in (${categoryPlaceholders})
+        or product_type_id not in (${productTypePlaceholders})
+      )
+  `).run(platform, ...categoryIds, ...productTypeIds);
+  for (const table of ["channel_attribute_value", "channel_attribute", "channel_attribute_template"]) {
+    db.prepare(`
+      delete from ${table}
+      where platform = ?
+        and product_type_id not in (${productTypePlaceholders})
+    `).run(...productTypeParams);
+  }
+  db.prepare(`
+    delete from channel_category
+    where platform = ?
+      and category_id not in (${categoryPlaceholders})
+  `).run(...categoryParams);
 }
 
 function currentIso() {
@@ -278,6 +344,8 @@ function prepareStatements(db) {
     deleteRequiredAttributes: db.prepare(`
       delete from channel_required_attribute
       where platform = ?
+        and category_id = ?
+        and product_type_id = ?
     `),
     requiredAttribute: db.prepare(`
       insert or replace into channel_required_attribute (
@@ -556,12 +624,17 @@ async function importAttributeTemplates(statements, {
 
 async function importRequiredAttributes(statements, { platform, batchId, files }) {
   let rows = 0;
-  statements.deleteRequiredAttributes.run(platform);
+  const resetKeys = new Set();
 
   await readJsonl(files.requiredAttributes, (row, count) => {
     const categoryRefs = row.category_refs || [];
     const now = currentIso();
     for (const category of categoryRefs) {
+      const resetKey = `${category.category_id}:${row.product_type_id}`;
+      if (!resetKeys.has(resetKey)) {
+        statements.deleteRequiredAttributes.run(platform, category.category_id, row.product_type_id);
+        resetKeys.add(resetKey);
+      }
       statements.requiredAttribute.run(
         platform,
         category.category_id,
@@ -594,6 +667,20 @@ function tableCount(db, tableName) {
   return db.prepare(`select count(*) as count from ${tableName}`).get().count;
 }
 
+async function analyzeMetadataTables(databaseUrl) {
+  const pool = createPostgresPool(databaseUrl);
+  try {
+    await pool.query("analyze");
+    return { ok: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Analyze skipped: ${message}\n`);
+    return { ok: false, error: message };
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
@@ -604,6 +691,7 @@ async function main() {
   const sourceDir = resolveSourceDir(args.sourceDir);
   const files = metadataFiles(sourceDir);
   const manifest = readJson(files.manifest);
+  const sourceScope = args.pruneToSource ? await collectSourceScope(files) : null;
   const config = getDatabaseConfig({
     ...process.env,
     DATABASE_PROVIDER: "postgres",
@@ -655,8 +743,15 @@ async function main() {
       batchId,
       files,
     });
+    if (args.pruneToSource && sourceScope) {
+      pruneMetadataToSource(db, args.platform, sourceScope);
+      summary.pruned_to_source = {
+        categories: sourceScope.categoryIds.size,
+        product_types: sourceScope.productTypeIds.size,
+      };
+    }
 
-    db.exec("analyze");
+    summary.analyze = await analyzeMetadataTables(config.url);
   } catch (error) {
     db.close();
     throw error;

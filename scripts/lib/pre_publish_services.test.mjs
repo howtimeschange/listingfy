@@ -95,6 +95,35 @@ test("payload service extracts SHEIN business validation messages", () => {
   assert.deepEqual(errors, ["商品信息：标题缺失", "商品信息：类目错误", "价格：价格未确认"]);
 });
 
+test("payload service falls back to 99-code supplier SKUs when 69-code barcodes repeat in one publish", () => {
+  const rows = [
+    {
+      sku_code: "SKU-73-A",
+      supplier_sku: "6904383443062",
+      supplier_barcode: "6904383443062",
+      source_inner_code: "9950013154034",
+    },
+    {
+      sku_code: "SKU-80-A",
+      supplier_sku: "6904383443062",
+      supplier_barcode: "6904383443062",
+      source_inner_code: "9950013154041",
+    },
+  ];
+
+  assert.equal(payload.publishSupplierSku(rows[0]), "6904383443062");
+  assert.deepEqual(Object.fromEntries(payload.buildPublishSupplierSkuMap(rows)), {
+    "SKU-73-A": "9950013154034",
+    "SKU-80-A": "9950013154041",
+  });
+});
+
+test("payload service supplies default SHEIN package weight when SKU gross weight is missing", () => {
+  assert.equal(payload.publishPackageWeight(null), null);
+  assert.equal(payload.publishPackageWeight("", 500), 500);
+  assert.equal(payload.publishPackageWeight(320), 320);
+});
+
 test("SHEIN API service exposes upload and transform helpers for platform-bound image calls", () => {
   assert.equal(typeof sheinApi.uploadLocalImageToShein, "function");
   assert.equal(typeof sheinApi.transformOnlineImageToShein, "function");
@@ -125,4 +154,50 @@ test("pre-publish route delegates extracted pure helpers to service modules", as
   assert.doesNotMatch(source, /function publishBusinessValidationErrors\(/);
   assert.doesNotMatch(source, /async function uploadLocalImageToShein\(/);
   assert.doesNotMatch(source, /async function transformOnlineImageToShein\(/);
+});
+
+test("SHEIN publish payload includes optional size chart attributes from mapped DeepDraw tables", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  assert.match(source, /attribute_status[^\n]+in\s*\(2,\s*3\)/i);
+  assert.doesNotMatch(source, /and\s+attribute_status\s*=\s*3/i);
+  assert.match(source, /getMappedSizeCharts\(\{\s*db,\s*listing,\s*sizeTables:/s);
+  assert.doesNotMatch(source, /table_index\s+in\s*\(1,\s*2\)/i);
+});
+
+test("SHEIN metadata sync and import can stay scoped to active category roots", async () => {
+  const syncSource = await readFile(path.join(PROJECT_ROOT, "scripts/shein_metadata_sync.mjs"), "utf8");
+  const importSource = await readFile(path.join(PROJECT_ROOT, "scripts/shein_metadata_import.mjs"), "utf8");
+  assert.match(syncSource, /const DEFAULT_ROOTS = \["儿童", "婴儿"\]/);
+  assert.match(syncSource, /roots: \[\.\.\.DEFAULT_ROOTS\]/);
+  assert.match(syncSource, /--all-roots/);
+  assert.match(syncSource, /function selectCategories\(/);
+  assert.match(syncSource, /const selectedCategories = selectCategories\(all, selectedLeaves\)/);
+  assert.match(syncSource, /for \(const category of selectedCategories\)/);
+  assert.match(importSource, /--prune-to-source/);
+  assert.match(importSource, /function analyzeMetadataTables\(/);
+  assert.match(importSource, /delete from channel_required_attribute[\s\S]+and category_id = \?[\s\S]+and product_type_id = \?/);
+  assert.doesNotMatch(importSource, /delete from channel_required_attribute\s+where platform = \?\s*`/);
+});
+
+test("SHEIN publish payload maps business feedback fields from existing source data", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  assert.match(source, /publishSupplierSku,/);
+  assert.match(source, /source_sku\.inner_code as source_inner_code/);
+  assert.match(source, /buildPublishSupplierSkuMap\(skus\)/);
+  assert.match(source, /supplier_sku:\s*supplierSku/);
+  assert.doesNotMatch(source, /supplier_sku:\s*normalizeText\(sku\.sku_code\)/);
+  assert.match(source, /weight:\s*String\(publishPackageWeight\(sku\.package_weight_g,\s*options\?\.allowDefaultSkuWeight\s*\?\s*500\s*:\s*undefined\)\s*\?\?\s*""\)/);
+  assert.match(source, /const message = `\$\{sku\.sku_code\} 缺 SKU 毛重`/);
+  assert.match(source, /errors\.push\(message\)/);
+  assert.match(source, /warnings\.push\([^)]*本次临时按 500g 发布/);
+  assert.match(source, /brand_code:\s*normalizeText\(listing\.brand_code\)/);
+  assert.match(source, /package_type:\s*resolvePackageRule\(db,\s*listing\)\.type/);
+  assert.match(source, /language:\s*"en"[\s\S]+name:\s*titleEn/);
+  assert.match(source, /language:\s*defaultLanguage[\s\S]+name:\s*titleEn/);
+  assert.doesNotMatch(source, /language:\s*defaultLanguage[\s\S]+name:\s*titleCn/);
+  assert.match(source, /function englishBrandName\(/);
+  assert.match(source, /function englishColorName\(/);
+  assert.match(source, /englishBrandName\(row\.brand_name\)/);
+  assert.match(source, /englishColorName\(skc\.color_name\)/);
+  assert.doesNotMatch(source, /language:\s*defaultLanguage,[\s\S]+defaultLanguage\.toLowerCase\(\) === "zh-cn"[\s\S]+titleCn/);
 });
