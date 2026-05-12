@@ -21,6 +21,17 @@ interface ProductListInput {
   search?: string
 }
 
+interface ProductSyncPlan {
+  mode: "incremental" | "full"
+  pageSize: number
+  maxPages: number
+  startPage: number
+  syncDetails: boolean
+  detailLimit: number
+  listPayloadBase: JsonRecord
+  incrementalWindowStart: string
+}
+
 interface LifecycleActor {
   id: number | null
   username: string | null
@@ -208,6 +219,23 @@ function readOffset(value: unknown) {
   return Math.max(0, Math.floor(number))
 }
 
+function readBoolean(value: unknown, fallback: boolean) {
+  if (typeof value === "boolean") return value
+  if (typeof value === "number") return value !== 0
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase()
+    if (["1", "true", "yes", "y", "on"].includes(normalized)) return true
+    if (["0", "false", "no", "n", "off"].includes(normalized)) return false
+  }
+  return fallback
+}
+
+function readPositiveInteger(value: unknown, fallback: number, max: number) {
+  const number = Number(value ?? fallback)
+  if (!Number.isFinite(number)) return fallback
+  return Math.max(1, Math.min(max, Math.floor(number)))
+}
+
 function actorFromUser(user: AuthUser | null | undefined): LifecycleActor | null {
   if (!user) return null
   return { id: user.id, username: user.username }
@@ -283,6 +311,11 @@ function shelfText(value: unknown) {
 
 function productListData(info: JsonRecord) {
   return arrayRecords(info.data ?? info.list ?? info.records ?? info.items)
+}
+
+function productListTotal(result: PlatformRequestResult) {
+  const info = responseInfo(result)
+  return numberValue(info.total ?? info.totalCount ?? info.total_count ?? info.count)
 }
 
 function normalizeProductRows(result: PlatformRequestResult): NormalizedListRow[] {
@@ -519,6 +552,70 @@ export function persistProductListResult(
   }
   for (const productId of touchedProductIds) refreshProductCounts(db, productId)
   return { rowCount: rows.length, productCount: touchedProductIds.size }
+}
+
+function latestListSyncTime(db: SyncPostgresDatabase, context: SheinPlatformContext) {
+  const row = db.prepare(`
+    select max(last_list_synced_at) as latest
+    from shein_platform_product
+    where platform = ?
+      and platform_account_key = ?
+  `).get(context.platform, context.platformAccountKey) as JsonRecord | undefined
+  return stringValue(row?.latest)
+}
+
+function platformTimeText(date: Date) {
+  const pad = (value: number, length = 2) => String(value).padStart(length, "0")
+  return [
+    date.getFullYear(),
+    "-",
+    pad(date.getMonth() + 1),
+    "-",
+    pad(date.getDate()),
+    " ",
+    pad(date.getHours()),
+    ":",
+    pad(date.getMinutes()),
+    ":",
+    pad(date.getSeconds()),
+  ].join("")
+}
+
+function incrementalStartFromLatest(latest: string) {
+  if (!latest) return ""
+  const parsed = new Date(latest)
+  if (Number.isNaN(parsed.getTime())) return ""
+  parsed.setMinutes(parsed.getMinutes() - 10)
+  return platformTimeText(parsed)
+}
+
+function syncPlanFromPayload(db: SyncPostgresDatabase, context: SheinPlatformContext, payload: unknown): ProductSyncPlan {
+  const object = recordValue(payload)
+  const mode = firstString(object.mode) === "full" ? "full" : "incremental"
+  const pageSize = readPositiveInteger(object.pageSize ?? object.page_size, 50, 100)
+  const defaultMaxPages = mode === "full" ? 200 : 50
+  const maxPages = readPositiveInteger(object.maxPages ?? object.max_pages, defaultMaxPages, 1000)
+  const startPage = readPositiveInteger(object.pageNum ?? object.page_num ?? object.startPage ?? object.start_page, 1, 100000)
+  const syncDetails = readBoolean(object.syncDetails ?? object.sync_details, true)
+  const detailLimit = readPositiveInteger(object.detailLimit ?? object.detail_limit, pageSize * maxPages, 100000)
+  const latest = latestListSyncTime(db, context)
+  const incrementalWindowStart = mode === "incremental" ? incrementalStartFromLatest(latest) : ""
+  const listPayloadBase = compactObject({
+    insertTimeStart: firstString(object.insertTimeStart, object.insert_time_start),
+    insertTimeEnd: firstString(object.insertTimeEnd, object.insert_time_end),
+    updateTimeStart: firstString(object.updateTimeStart, object.update_time_start) || incrementalWindowStart,
+    updateTimeEnd: firstString(object.updateTimeEnd, object.update_time_end),
+  })
+  return {
+    mode,
+    pageSize,
+    maxPages,
+    startPage,
+    syncDetails,
+    detailLimit,
+    listPayloadBase,
+    incrementalWindowStart,
+  }
 }
 
 export function persistProductDetailResult(
@@ -844,6 +941,27 @@ function serializeProductSummary(db: SyncPostgresDatabase, row: JsonRecord) {
     order by sku.sku_code asc
     limit 12
   `).all(row.id) as JsonRecord[]
+  const costRows = db.prepare(`
+    select sku.cost_price, sku.currency, sku.cost_text
+    from shein_platform_sku sku
+    join shein_platform_skc skc on skc.id = sku.skc_id
+    where skc.product_id = ?
+      and (
+        sku.cost_text is not null
+        or sku.cost_price is not null
+      )
+    order by sku.id asc
+  `).all(row.id) as JsonRecord[]
+  const costValues = Array.from(new Set(costRows
+    .map((sku) => {
+      const explicit = stringValue(sku.cost_text)
+      if (explicit) return explicit
+      const cost = stringValue(sku.cost_price)
+      const currency = stringValue(sku.currency)
+      return [cost, currency].filter(Boolean).join(" ")
+    })
+    .filter(Boolean)))
+  const imageUrl = skcs.map((skc) => stringValue(skc.image_url)).find(Boolean) || null
 
   return {
     id: Number(row.id),
@@ -863,6 +981,13 @@ function serializeProductSummary(db: SyncPostgresDatabase, row: JsonRecord) {
     lastListSyncedAt: stringValue(row.last_list_synced_at),
     lastDetailSyncedAt: stringValue(row.last_detail_synced_at),
     updatedAt: stringValue(row.updated_at),
+    imageUrl,
+    costSummary: costValues.length === 1
+      ? costValues[0]
+      : costValues.length > 1
+        ? `多价：${costValues.slice(0, 3).join(" / ")}`
+        : "",
+    costSkuCount: costRows.length,
     skcs: skcs.map((skc) => ({
       skcName: stringValue(skc.skc_name),
       supplierCode: stringValue(skc.supplier_code),
@@ -1037,18 +1162,98 @@ export function getProductDetail(spuName: string) {
 }
 
 export async function syncPlatformProducts(payload: unknown = {}, actor?: LifecycleActor | null) {
-  const requestPayload = recordValue(payload)
-  const { db, context, result } = await runLifecycleCall(
-    "SYNC_PRODUCT_LIST",
-    requestPayload,
-    actor,
-    {},
-    (context) => sheinAdapter.queryProductList({ credentials: context.credentials, payload: requestPayload }),
-  )
-  const persistence = responseOk(result)
-    ? persistProductListResult(db, context, result)
-    : { rowCount: 0, productCount: 0 }
-  return { result, persistence, list: listPlatformProducts({}) }
+  const initialDb = getDb()
+  const initialContext = platformContext(initialDb)
+  const plan = syncPlanFromPayload(initialDb, initialContext, payload)
+  const productSpuNames = new Set<string>()
+  let pagesSynced = 0
+  let rowCount = 0
+  let lastResult: PlatformRequestResult | null = null
+  let stoppedReason: "short_page" | "total_reached" | "max_pages" | "request_failed" = "max_pages"
+
+  for (let pageIndex = 0; pageIndex < plan.maxPages; pageIndex += 1) {
+    const pageNum = plan.startPage + pageIndex
+    const pageSize = plan.pageSize
+    const pagePayload = {
+      ...plan.listPayloadBase,
+      pageNum,
+      pageSize,
+    }
+    const { db, context, result } = await runLifecycleCall(
+      "SYNC_PRODUCT_LIST",
+      pagePayload,
+      actor,
+      {},
+      (context) => sheinAdapter.queryProductList({ credentials: context.credentials, payload: pagePayload }),
+    )
+    lastResult = result
+    if (!responseOk(result)) {
+      stoppedReason = "request_failed"
+      break
+    }
+
+    const rows = normalizeProductRows(result)
+    const persistence = persistProductListResult(db, context, result)
+    pagesSynced += 1
+    rowCount += persistence.rowCount
+    for (const row of rows) productSpuNames.add(row.spuName)
+
+    const total = productListTotal(result)
+    if (rows.length < pageSize) {
+      stoppedReason = "short_page"
+      break
+    }
+    if (total != null && pageNum * pageSize >= total) {
+      stoppedReason = "total_reached"
+      break
+    }
+  }
+
+  const detail = {
+    requested: plan.syncDetails,
+    attempted: 0,
+    succeeded: 0,
+    failed: [] as Array<{ spuName: string; message: string }>,
+  }
+  if (plan.syncDetails && lastResult && responseOk(lastResult)) {
+    for (const spuName of Array.from(productSpuNames).slice(0, plan.detailLimit)) {
+      detail.attempted += 1
+      try {
+        const detailResult = await syncProductDetail(spuName, {}, actor)
+        if (responseOk(detailResult.result) && detailResult.persistence.persisted) {
+          detail.succeeded += 1
+        } else {
+          detail.failed.push({ spuName, message: responseMessage(detailResult.result) || "详情同步未落库" })
+        }
+      } catch (error) {
+        detail.failed.push({ spuName, message: error instanceof Error ? error.message : String(error) })
+      }
+    }
+  }
+
+  const result = lastResult ?? {
+    status: 200,
+    payload: { code: "0", msg: "OK", info: { data: [] } },
+  }
+  return {
+    result,
+    persistence: {
+      rowCount,
+      productCount: productSpuNames.size,
+      pagesSynced,
+      pageSize: plan.pageSize,
+      maxPages: plan.maxPages,
+      stoppedReason,
+    },
+    detail,
+    sync: {
+      mode: plan.mode,
+      syncDetails: plan.syncDetails,
+      detailLimit: plan.detailLimit,
+      incrementalWindowStart: plan.incrementalWindowStart,
+    },
+    list: listPlatformProducts({}),
+  }
 }
 
 export async function syncStoreSites(payload: unknown = {}, actor?: LifecycleActor | null) {

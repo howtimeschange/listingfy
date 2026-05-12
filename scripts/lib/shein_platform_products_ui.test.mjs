@@ -140,3 +140,37 @@ test("SHEIN platform products page wires durable P0 lifecycle operations", async
   assert.doesNotMatch(page, /\/shein-lifecycle/);
   assert.doesNotMatch(page, /ComingSoonPage/);
 });
+
+test("SHEIN platform products page opens a dedicated sync dialog for time range and SPU sync", async () => {
+  const page = await fileText(PAGE_FILE);
+
+  assert.match(page, /syncDialogOpen/);
+  assert.match(page, /setSyncDialogOpen\(true\)/);
+  assert.match(page, /<DialogTitle>同步商品<\/DialogTitle>/);
+  assert.match(page, /按时间范围同步/);
+  assert.match(page, /按款号同步/);
+  assert.match(page, /spuNameSyncText/);
+  assert.match(page, /syncSpuProductsMutation/);
+  assert.match(page, /productSyncDetailUrl\(spuName\)/);
+  assert.match(page, /同步更新时间开始/);
+  assert.match(page, /同步创建时间开始/);
+  assert.match(page, /syncDetails/);
+  assert.match(page, /maxPages/);
+  assert.match(page, /detailLimit/);
+  assert.doesNotMatch(page, /syncProductsMutation\.mutate\("incremental"\)/);
+  assert.doesNotMatch(page, /syncProductsMutation\.mutate\("full"\)/);
+  assert.doesNotMatch(page, /pageSize:\s*queryParams\.pagination\.limit/);
+});
+
+test("SHEIN platform products page supports image, price exposure, and batch supply-price edits", async () => {
+  const page = await fileText(PAGE_FILE);
+
+  assert.match(page, /商品图片/);
+  assert.match(page, /供货价/);
+  assert.match(page, /批量更新供货价/);
+  assert.match(page, /openBatchCostDialog/);
+  assert.match(page, /costForm\.items/);
+  assert.match(page, /selectedItems\s*=\s*costForm\.items\.filter/);
+  assert.match(page, /sku_info_list:\s*items\.map/);
+  assert.match(page, /productDetailUrl\(row\.spuName\)/);
+});

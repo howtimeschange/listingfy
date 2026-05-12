@@ -188,6 +188,28 @@ test("SHEIN platform products page reads local durable data and exposes lifecycl
   assert.match(page, /最近操作/);
 });
 
+test("SHEIN platform product sync paginates list rows and hydrates SPU details incrementally", async () => {
+  const service = await fileText(SERVICE_FILE);
+  const adapter = await fileText(path.join(PROJECT_ROOT, "web/server/platform-adapters/shein.ts"));
+
+  assert.match(adapter, /\/open-api\/openapi-business-backend\/product\/query/);
+  assert.match(adapter, /\/open-api\/goods\/spu-info/);
+  assert.match(service, /maxPages/);
+  assert.match(service, /syncDetails/);
+  assert.match(service, /detailLimit/);
+  assert.match(service, /while\s*\(|for\s*\(/);
+  assert.match(service, /rows\.length\s*<\s*pageSize/);
+  assert.match(service, /syncProductDetail/);
+  assert.match(service, /last_list_synced_at/);
+  assert.match(service, /insertTimeStart/);
+  assert.match(service, /updateTimeStart/);
+  assert.match(service, /queryProductList\(\{ credentials: context\.credentials, payload: pagePayload \}\)/);
+  assert.match(service, /queryProductDetail\(\{ credentials: context\.credentials, payload: requestPayload \}\)/);
+  assert.match(service, /spuName: normalizedSpuName/);
+  assert.match(service, /languageList: \["zh-cn", "en"\]/);
+  assert.doesNotMatch(service, /queryProductList\(\{ credentials: context\.credentials, payload: requestPayload \}\),\s*\)\s*const persistence/s);
+});
+
 test("SHEIN common edit form payload preserves required published identifiers while applying safe fields", async () => {
   const service = await importService();
   const payload = service.buildEditPayloadFromForm(
