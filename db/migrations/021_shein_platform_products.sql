@@ -7,7 +7,9 @@ create table if not exists shein_platform_product (
   supplier_code text,
   product_name text,
   brand_code text,
+  brand_name text,
   category_id text,
+  category_name text,
   product_type_id text,
   product_status text,
   shelf_status_text text,
@@ -30,6 +32,9 @@ create index if not exists idx_shein_platform_product_updated
 
 create index if not exists idx_shein_platform_product_search
   on shein_platform_product(spu_name, supplier_code, product_name);
+
+create index if not exists idx_shein_platform_product_brand_category
+  on shein_platform_product(platform, platform_account_key, brand_name, category_name);
 
 create table if not exists shein_platform_skc (
   id integer primary key autoincrement,

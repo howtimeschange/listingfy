@@ -74,6 +74,8 @@ test("SHEIN platform products have persistent product, variant, site, and operat
   assert.match(migration, /raw_list_payload_json text not null default '\{\}'/);
   assert.match(migration, /raw_detail_payload_json text not null default '\{\}'/);
   assert.match(migration, /unique\(platform, platform_account_key, spu_name\)/);
+  assert.match(migration, /brand_name text/);
+  assert.match(migration, /category_name text/);
 
   assert.match(migration, /create table if not exists shein_platform_skc/);
   assert.match(migration, /skc_name text not null/);
@@ -203,11 +205,50 @@ test("SHEIN platform product sync paginates list rows and hydrates SPU details i
   assert.match(service, /last_list_synced_at/);
   assert.match(service, /insertTimeStart/);
   assert.match(service, /updateTimeStart/);
+  assert.match(service, /brandName/);
+  assert.match(service, /categoryName/);
+  assert.match(service, /product\.brand_name/);
+  assert.match(service, /product\.category_name/);
+  assert.match(service, /filters:\s*\{\s*brands/);
   assert.match(service, /queryProductList\(\{ credentials: context\.credentials, payload: pagePayload \}\)/);
   assert.match(service, /queryProductDetail\(\{ credentials: context\.credentials, payload: requestPayload \}\)/);
   assert.match(service, /spuName: normalizedSpuName/);
   assert.match(service, /languageList: \["zh-cn", "en"\]/);
   assert.doesNotMatch(service, /queryProductList\(\{ credentials: context\.credentials, payload: requestPayload \}\),\s*\)\s*const persistence/s);
+});
+
+test("SHEIN platform products list resolves brand and category display names from metadata tables", async () => {
+  const service = await fileText(SERVICE_FILE);
+
+  assert.match(service, /shein_brand_rule/);
+  assert.match(service, /channel_category/);
+  assert.match(service, /brand_display_name/);
+  assert.match(service, /category_display_name/);
+  assert.match(service, /brand_rule\.local_brand_name/);
+  assert.match(service, /brand_rule\.brand_name/);
+  assert.match(service, /category_mapping\.category_name/);
+  assert.doesNotMatch(service, /coalesce\(nullif\(brand_name, ''\), nullif\(brand_code, ''\)\) as label/);
+  assert.doesNotMatch(service, /coalesce\(nullif\(category_name, ''\), nullif\(category_id, ''\)\) as label/);
+});
+
+test("SHEIN platform products derive sale site details from synced SPU detail payloads", async () => {
+  const service = await fileText(SERVICE_FILE);
+
+  assert.match(service, /interface SaleSiteDetail/);
+  assert.match(service, /saleSitesFromProduct/);
+  assert.match(service, /shelfStatusInfoList/);
+  assert.match(service, /shelf_status_info_list/);
+  assert.match(service, /siteAbbr/);
+  assert.match(service, /shelfStatus/);
+  assert.match(service, /firstShelfTime/);
+  assert.match(service, /lastShelfTime/);
+  assert.match(service, /link/);
+  assert.match(service, /saleSites/);
+  assert.match(service, /saleSiteSummary/);
+  assert.match(service, /saleSiteCount/);
+  assert.match(service, /saleSiteSkcs/);
+  assert.match(service, /sites:\s*filters\.sites/);
+  assert.match(service, /input\.site/);
 });
 
 test("SHEIN common edit form payload preserves required published identifiers while applying safe fields", async () => {

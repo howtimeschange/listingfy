@@ -4,6 +4,7 @@ import { useNavigate, useParams } from "react-router"
 import {
   ArrowLeft,
   ClipboardCheck,
+  Download,
   DollarSign,
   Edit3,
   Eye,
@@ -17,6 +18,7 @@ import {
   RotateCcw,
   Search,
   Settings2,
+  Upload,
   Wand2,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -58,6 +60,7 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api-client"
 import { formatNumber } from "@/lib/format"
+import { exportSpreadsheet, exportWorkbook, readSpreadsheetFile, type SpreadsheetRow } from "@/lib/spreadsheet"
 
 type JsonRecord = Record<string, unknown>
 
@@ -85,13 +88,26 @@ interface LifecycleOperation {
   createdAt: string
 }
 
+interface SaleSiteDetail {
+  siteAbbr: string
+  siteName: string
+  shelfStatus: number | null
+  shelfStatusText: string
+  firstShelfTime: string
+  lastShelfTime: string
+  link: string
+  source: string
+}
+
 interface PlatformProductRow {
   id: number
   spuName: string
   supplierCode: string
   productName: string
   brandCode: string
+  brandName: string
   categoryId: string
+  categoryName: string
   productTypeId: string
   productStatus: string
   shelfStatusText: string
@@ -104,6 +120,9 @@ interface PlatformProductRow {
   lastDetailSyncedAt: string
   updatedAt: string
   imageUrl: string | null
+  saleSites: SaleSiteDetail[]
+  saleSiteCount: number
+  saleSiteSummary: string
   costSummary: string
   costSkuCount: number
   skcs: Array<{
@@ -120,6 +139,11 @@ interface ProductListResponse {
   items: PlatformProductRow[]
   pagination: ServerPaginationState
   operations: LifecycleOperation[]
+  filters: {
+    brands: Array<{ value: string; label: string; count: number }>
+    categories: Array<{ value: string; label: string; count: number }>
+    sites: Array<{ value: string; label: string; count: number }>
+  }
 }
 
 interface StoreSite {
@@ -294,21 +318,34 @@ interface JsonActionDialogState {
 interface ProductQueryParams {
   pagination: ServerPaginationState
   search: string
+  brandFilter: string
+  categoryFilter: string
+  siteFilter: string
 }
 
 type SyncRangeMode = "last-sync" | "custom" | "all"
 type SyncDialogMode = "time" | "spu"
+type SyncTimeField = "updateTime" | "insertTime"
 
 interface SyncFilters {
   rangeMode: SyncRangeMode
-  insertTimeStart: string
-  insertTimeEnd: string
-  updateTimeStart: string
-  updateTimeEnd: string
+  syncTimeField: SyncTimeField
+  timeStart: string
+  timeEnd: string
   pageSize: string
   maxPages: string
   detailLimit: string
   syncDetails: boolean
+}
+
+interface CostImportRow {
+  spuName: string
+  skcName: string
+  skuCode: string
+  cost: string
+  currency: string
+  changeReasonCode: string
+  rowNumber: number
 }
 
 interface SpuSyncItemResult {
@@ -380,16 +417,39 @@ const DEFAULT_JSON_ACTION: JsonActionDialogState = {
 }
 
 const DEFAULT_SYNC_FILTERS: SyncFilters = {
-  rangeMode: "last-sync",
-  insertTimeStart: "",
-  insertTimeEnd: "",
-  updateTimeStart: "",
-  updateTimeEnd: "",
+  rangeMode: "custom",
+  syncTimeField: "updateTime",
+  timeStart: "",
+  timeEnd: "",
   pageSize: "50",
   maxPages: "1000",
   detailLimit: "100000",
   syncDetails: true,
 }
+
+const syncRangeOptions: Array<{ value: SyncRangeMode; label: string }> = [
+  { value: "custom", label: "指定时间范围" },
+  { value: "last-sync", label: "上次同步后" },
+  { value: "all", label: "全量同步" },
+]
+
+const syncTimeFieldOptions: Array<{ value: SyncTimeField; label: string }> = [
+  { value: "updateTime", label: "按更新时间" },
+  { value: "insertTime", label: "按创建时间" },
+]
+
+const COST_IMPORT_TEMPLATE_ROWS: SpreadsheetRow[] = [
+  {
+    SPU: "s2409195445",
+    SKC: "sc2409195445",
+    SKU: "sku2409195445",
+    供货价: "10.55",
+    币种: "CNY",
+    涨价原因: "",
+  },
+]
+
+const ALL_FILTER_VALUE = "__all"
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
@@ -480,10 +540,38 @@ function platformTimeInputValue(value: string) {
   return normalized
 }
 
+function spreadsheetValue(row: SpreadsheetRow, ...keys: string[]) {
+  for (const key of keys) {
+    const value = row[key]
+    if (value != null && String(value).trim()) return String(value).trim()
+  }
+  return ""
+}
+
+function parseCostImportRows(rows: SpreadsheetRow[]): CostImportRow[] {
+  return rows.map((row, index) => ({
+    spuName: spreadsheetValue(row, "SPU", "spu", "spuName", "款号"),
+    skcName: spreadsheetValue(row, "SKC", "skc", "skcName"),
+    skuCode: spreadsheetValue(row, "SKU", "sku", "skuCode"),
+    cost: spreadsheetValue(row, "供货价", "成本价", "cost", "costPrice"),
+    currency: spreadsheetValue(row, "币种", "currency") || "CNY",
+    changeReasonCode: spreadsheetValue(row, "涨价原因", "changeReasonCode", "原因代码"),
+    rowNumber: index + 2,
+  })).filter((row) => row.spuName || row.skcName || row.skuCode || row.cost)
+}
+
 function siteStatusLabel(status: number | null) {
   if (status === 1) return "启用"
   if (status === 0) return "未启用"
   return "未知"
+}
+
+function saleSiteStatusVariant(status: number | null) {
+  return status === 1 ? "secondary" : "outline"
+}
+
+function saleSiteExportStatus(site: SaleSiteDetail) {
+  return site.shelfStatusText || (site.shelfStatus === 1 ? "已上架" : "未上架")
 }
 
 function mallStateLabel(state: number | null) {
@@ -578,14 +666,19 @@ function useStoreSites() {
 function usePlatformProducts(params: ProductQueryParams) {
   return useQuery<ProductListResponse>({
     queryKey: ["shein-platform-products", "list", params],
-    queryFn: () => {
-      const search = new URLSearchParams()
-      search.set("limit", String(params.pagination.limit))
-      search.set("offset", String(params.pagination.offset))
-      if (params.search.trim()) search.set("search", params.search.trim())
-      return api.get(`/shein-platform-products?${search.toString()}`)
-    },
+    queryFn: () => api.get(platformProductsListUrl(params)),
   })
+}
+
+function platformProductsListUrl(params: ProductQueryParams, pagination = params.pagination) {
+  const search = new URLSearchParams()
+  search.set("limit", String(pagination.limit))
+  search.set("offset", String(pagination.offset))
+  if (params.search.trim()) search.set("search", params.search.trim())
+  if (params.brandFilter.trim()) search.set("brand", params.brandFilter.trim())
+  if (params.categoryFilter.trim()) search.set("category", params.categoryFilter.trim())
+  if (params.siteFilter.trim()) search.set("site", params.siteFilter.trim())
+  return `/shein-platform-products?${search.toString()}`
 }
 
 function useProductDetail(spuName: string) {
@@ -650,6 +743,9 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const [localSelectedSpuName, setSelectedSpuName] = useState("")
   const selectedSpuName = view === "detail" ? routeSelectedSpuName : localSelectedSpuName
   const [costDialogOpen, setCostDialogOpen] = useState(false)
+  const [costImportDialogOpen, setCostImportDialogOpen] = useState(false)
+  const [costImportRows, setCostImportRows] = useState<CostImportRow[]>([])
+  const [costImportFileName, setCostImportFileName] = useState("")
   const [costForm, setCostForm] = useState<CostForm>(DEFAULT_COST_FORM)
   const [regressionDialogOpen, setRegressionDialogOpen] = useState(false)
   const [regressionForm, setRegressionForm] = useState<RegressionForm>(DEFAULT_REGRESSION_FORM)
@@ -661,12 +757,17 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const [operationsDialogOpen, setOperationsDialogOpen] = useState(false)
   const [jsonActionDialog, setJsonActionDialog] = useState<JsonActionDialogState>(DEFAULT_JSON_ACTION)
   const [syncDialogOpen, setSyncDialogOpen] = useState(false)
-  const [syncDialogMode, setSyncDialogMode] = useState<SyncDialogMode>("time")
+  const [syncDialogMode, setSyncDialogMode] = useState<SyncDialogMode>("spu")
   const [syncFilters, setSyncFilters] = useState<SyncFilters>(DEFAULT_SYNC_FILTERS)
   const [spuNameSyncText, setSpuNameSyncText] = useState("")
+  const [saleSitesDialogProduct, setSaleSitesDialogProduct] = useState<PlatformProductRow | null>(null)
+  const [exportingPlatformProducts, setExportingPlatformProducts] = useState(false)
   const [queryParams, setQueryParams] = useState<ProductQueryParams>({
     pagination: { limit: 50, offset: 0, total: 0 },
     search: "",
+    brandFilter: "",
+    categoryFilter: "",
+    siteFilter: "",
   })
 
   const sitesQuery = useStoreSites()
@@ -678,6 +779,9 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
 
   const siteRows = useMemo(() => sitesQuery.data?.items ?? [], [sitesQuery.data])
   const productRows = productsQuery.data?.items ?? []
+  const brandOptions = productsQuery.data?.filters?.brands ?? []
+  const categoryOptions = productsQuery.data?.filters?.categories ?? []
+  const siteOptions = productsQuery.data?.filters?.sites ?? []
   const detail = detailQuery.data ?? null
   const detailProduct = detail?.product
   const currencyOptions = useMemo(() => {
@@ -713,10 +817,10 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
         syncDetails: syncFilters.syncDetails,
       }
       if (syncFilters.rangeMode === "custom") {
-        if (syncFilters.insertTimeStart.trim()) payload.insertTimeStart = platformTimeInputValue(syncFilters.insertTimeStart)
-        if (syncFilters.insertTimeEnd.trim()) payload.insertTimeEnd = platformTimeInputValue(syncFilters.insertTimeEnd)
-        if (syncFilters.updateTimeStart.trim()) payload.updateTimeStart = platformTimeInputValue(syncFilters.updateTimeStart)
-        if (syncFilters.updateTimeEnd.trim()) payload.updateTimeEnd = platformTimeInputValue(syncFilters.updateTimeEnd)
+        const startKey = syncFilters.syncTimeField === "updateTime" ? "updateTimeStart" : "insertTimeStart"
+        const endKey = syncFilters.syncTimeField === "updateTime" ? "updateTimeEnd" : "insertTimeEnd"
+        if (syncFilters.timeStart.trim()) payload[startKey] = platformTimeInputValue(syncFilters.timeStart)
+        if (syncFilters.timeEnd.trim()) payload[endKey] = platformTimeInputValue(syncFilters.timeEnd)
       }
       return api.post<{
         result: PlatformRequestResult
@@ -982,6 +1086,67 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
     onError: (error) => toast.error(error instanceof Error ? error.message : "更新成本价失败"),
   })
 
+  const costImportMutation = useMutation({
+    mutationFn: async () => {
+      const validRows = costImportRows.filter((row) => row.spuName && row.skcName && row.skuCode && row.cost)
+      if (!validRows.length) throw new Error("请先上传包含 SPU、SKC、SKU、供货价的表格")
+      const invalidRow = validRows.find((row) => {
+        const cost = Number(row.cost)
+        return !Number.isFinite(cost) || cost <= 0 || cost >= 100000
+      })
+      if (invalidRow) throw new Error(`第 ${invalidRow.rowNumber} 行供货价需大于 0 且小于 100000`)
+
+      const groups = validRows.reduce<Record<string, CostImportRow[]>>((current, row) => {
+        const key = [row.spuName, row.currency || "CNY", row.changeReasonCode || ""].join("\u0001")
+        current[key] = [...(current[key] ?? []), row]
+        return current
+      }, {})
+      const results: Array<{ spuName: string; ok: boolean; message: string }> = []
+      for (const [key, rows] of Object.entries(groups)) {
+        const [spuName, currency, changeReasonCode] = key.split("\u0001")
+        const skcGroups = rows.reduce<Record<string, CostImportRow[]>>((current, row) => {
+          current[row.skcName] = [...(current[row.skcName] ?? []), row]
+          return current
+        }, {})
+        try {
+          const data = await api.post<{ result: PlatformRequestResult }>(productUpdateCostUrl(spuName), {
+            change_reason_code: changeReasonCode || undefined,
+            spu_name: spuName,
+            skc_info_list: Object.entries(skcGroups).map(([skcName, items]) => ({
+              skc_name: skcName,
+              sku_info_list: items.map((item) => ({
+                sku_code: item.skuCode,
+                cost: Number(item.cost).toFixed(2),
+                currency: item.currency || currency || "CNY",
+              })),
+            })),
+          })
+          results.push({
+            spuName,
+            ok: responseOk(data.result),
+            message: responseMessage(data.result) || responseCode(data.result) || "",
+          })
+        } catch (error) {
+          results.push({ spuName, ok: false, message: error instanceof Error ? error.message : "导入更新失败" })
+        }
+      }
+      return { results, rowCount: validRows.length }
+    },
+    onSuccess: ({ results, rowCount }) => {
+      const failed = results.filter((result) => !result.ok)
+      if (failed.length) {
+        toast.error(`表格导入供货价部分失败：${failed[0]?.spuName} ${failed[0]?.message}`)
+        return
+      }
+      toast.success(`表格导入供货价已提交：${formatNumber(rowCount)} 行 / ${formatNumber(results.length)} 组`)
+      setCostImportDialogOpen(false)
+      setCostImportRows([])
+      setCostImportFileName("")
+      void queryClient.invalidateQueries({ queryKey: ["shein-platform-products"] })
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "表格导入供货价失败"),
+  })
+
   const regressionLogMutation = useMutation({
     mutationFn: () => api.post("/shein-operations/p0-regression/logs", {
       ...regressionForm,
@@ -1109,6 +1274,107 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "本地尚未同步该 SPU 详情，请先同步详情")
     }
+  }
+
+  async function handleCostImportFile(file: File | null) {
+    if (!file) return
+    try {
+      const rows = await readSpreadsheetFile(file)
+      const parsedRows = parseCostImportRows(rows)
+      setCostImportRows(parsedRows)
+      setCostImportFileName(file.name)
+      if (!parsedRows.length) {
+        toast.error("表格中没有可识别的供货价行")
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "表格解析失败")
+    }
+  }
+
+  function downloadCostImportTemplate() {
+    exportSpreadsheet("SHEIN平台商品供货价导入模板.xlsx", COST_IMPORT_TEMPLATE_ROWS)
+  }
+
+  async function fetchAllPlatformProductsForExport() {
+    const pageSize = 200
+    const rows: PlatformProductRow[] = []
+    let offset = 0
+    let total = 0
+    do {
+      const response = await api.get<ProductListResponse>(platformProductsListUrl(queryParams, {
+        limit: pageSize,
+        offset,
+        total,
+      }))
+      rows.push(...response.items)
+      total = response.pagination.total
+      offset += pageSize
+    } while (rows.length < total)
+    return rows
+  }
+
+  async function exportPlatformProducts() {
+    setExportingPlatformProducts(true)
+    try {
+      const rows = await fetchAllPlatformProductsForExport()
+      if (!rows.length) {
+        toast.error("当前筛选条件下没有可导出的平台商品")
+        return
+      }
+      exportPlatformProductRows(rows)
+      toast.success(`已导出 ${formatNumber(rows.length)} 条平台商品`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "导出平台商品失败")
+    } finally {
+      setExportingPlatformProducts(false)
+    }
+  }
+
+  function exportPlatformProductRows(rows: PlatformProductRow[]) {
+    const overviewRows = rows.map((row) => ({
+      SPU: row.spuName,
+      商品名称: row.productName,
+      供应商货号: row.supplierCode,
+      品牌名称: row.brandName,
+      类目名称: row.categoryName,
+      商品图片: row.imageUrl || "",
+      供货价: row.costSummary,
+      上架站点数: row.saleSiteCount,
+      销售站点: row.saleSiteSummary || "详情同步后显示",
+      SKC数: row.skcCount,
+      SKU数: row.skuCount,
+      详情同步时间: row.lastDetailSyncedAt,
+      列表同步时间: row.lastListSyncedAt,
+    }))
+    const saleSiteDetailRows = rows.flatMap((row) =>
+      row.saleSites.map((site) => ({
+        SPU: row.spuName,
+        商品名称: row.productName,
+        供应商货号: row.supplierCode,
+        品牌名称: row.brandName,
+        类目名称: row.categoryName,
+        供货价: row.costSummary,
+        销售站点: site.siteAbbr,
+        上架状态: saleSiteExportStatus(site),
+        首次上架时间: site.firstShelfTime,
+        最近上架时间: site.lastShelfTime,
+      })),
+    )
+    exportWorkbook("SHEIN平台商品列表.xlsx", [
+      { name: "平台商品列表", rows: overviewRows },
+      { name: "销售站点明细", rows: saleSiteDetailRows.length ? saleSiteDetailRows : [{
+        SPU: "",
+        商品名称: "",
+        供应商货号: "",
+        品牌名称: "",
+        类目名称: "",
+        供货价: "",
+        销售站点: "",
+        上架状态: "",
+        首次上架时间: "",
+        最近上架时间: "",
+      }] },
+    ])
   }
 
   function openRegressionDialog() {
@@ -1242,6 +1508,14 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
               {batchSyncStatusMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />}
               批量同步状态
             </Button>
+            <Button variant="outline" onClick={() => setCostImportDialogOpen(true)}>
+              <Upload className="size-4" />
+              表格导入更新供货价
+            </Button>
+            <Button variant="outline" onClick={() => void exportPlatformProducts()} disabled={exportingPlatformProducts || pagination.total <= 0}>
+              {exportingPlatformProducts ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+              导出列表
+            </Button>
           </>
         ) : null}
         <Button variant="outline" onClick={() => setOperationsDialogOpen(true)}>
@@ -1279,6 +1553,72 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                   <Search className="size-4" />
                   搜索
                 </Button>
+                <Select
+                  value={queryParams.brandFilter || ALL_FILTER_VALUE}
+                  onValueChange={(value) =>
+                    setQueryParams((current) => ({
+                      ...current,
+                      brandFilter: value === ALL_FILTER_VALUE ? "" : value,
+                      pagination: { ...current.pagination, offset: 0 },
+                    }))
+                  }
+                >
+                  <SelectTrigger className="md:w-48">
+                    <SelectValue placeholder="品牌名称" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_FILTER_VALUE}>全部品牌</SelectItem>
+                    {brandOptions.map((brand) => (
+                      <SelectItem key={brand.value} value={brand.value}>
+                        {brand.label} ({formatNumber(brand.count)})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={queryParams.categoryFilter || ALL_FILTER_VALUE}
+                  onValueChange={(value) =>
+                    setQueryParams((current) => ({
+                      ...current,
+                      categoryFilter: value === ALL_FILTER_VALUE ? "" : value,
+                      pagination: { ...current.pagination, offset: 0 },
+                    }))
+                  }
+                >
+                  <SelectTrigger className="md:w-56">
+                    <SelectValue placeholder="类目名称" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_FILTER_VALUE}>全部类目</SelectItem>
+                    {categoryOptions.map((category) => (
+                      <SelectItem key={category.value} value={category.value}>
+                        {category.label} ({formatNumber(category.count)})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={queryParams.siteFilter || ALL_FILTER_VALUE}
+                  onValueChange={(value) =>
+                    setQueryParams((current) => ({
+                      ...current,
+                      siteFilter: value === ALL_FILTER_VALUE ? "" : value,
+                      pagination: { ...current.pagination, offset: 0 },
+                    }))
+                  }
+                >
+                  <SelectTrigger className="md:w-48">
+                    <SelectValue placeholder="销售站点" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_FILTER_VALUE}>全部销售站点</SelectItem>
+                    {siteOptions.map((site) => (
+                      <SelectItem key={site.value} value={site.value}>
+                        {site.label} ({formatNumber(site.count)})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <Button
                   type="button"
                   variant="outline"
@@ -1301,6 +1641,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                     <TableHead>商品</TableHead>
                     <TableHead>SKC/SKU</TableHead>
                     <TableHead>供货价</TableHead>
+                    <TableHead>销售站点</TableHead>
                     <TableHead>同步状态</TableHead>
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
@@ -1308,7 +1649,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                 <TableBody>
                   {productsQuery.isLoading ? (
                     <TableRow>
-                      <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+                      <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
                         加载本地平台商品...
                       </TableCell>
                     </TableRow>
@@ -1331,7 +1672,10 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                         <TableCell>
                           <div className="max-w-[280px] truncate text-sm font-medium">{row.productName || "—"}</div>
                           <div className="mt-1 text-xs text-muted-foreground">
-                            {[row.brandCode, row.categoryId, row.productTypeId].filter(Boolean).join(" / ") || "—"}
+                            品牌名称：{row.brandName || "—"}
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            类目名称：{row.categoryName || "—"}
                           </div>
                         </TableCell>
                         <TableCell>
@@ -1355,6 +1699,23 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                           <div className="mt-1 text-xs text-muted-foreground">
                             {row.costSkuCount ? `${formatNumber(row.costSkuCount)} 个 SKU` : "详情同步后显示"}
                           </div>
+                        </TableCell>
+                        <TableCell>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="max-w-[180px] justify-start truncate"
+                            onClick={() => setSaleSitesDialogProduct(row)}
+                          >
+                            <Globe2 className="size-4" />
+                            {row.saleSiteSummary || "详情同步后显示"}
+                          </Button>
+                          {row.saleSiteCount ? (
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              上架站点数 {formatNumber(row.saleSiteCount)}
+                            </div>
+                          ) : null}
                         </TableCell>
                         <TableCell>
                           <Badge variant={row.lastDetailSyncedAt ? "secondary" : "outline"}>
@@ -1432,7 +1793,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                     ))
                   ) : (
                     <TableRow>
-                      <TableCell colSpan={7} className="h-28 text-center text-muted-foreground">
+                      <TableCell colSpan={8} className="h-28 text-center text-muted-foreground">
                         暂无本地平台商品数据。先点击“同步平台商品”，将 SHEIN 已上架商品拉回本地台账。
                       </TableCell>
                     </TableRow>
@@ -1462,71 +1823,62 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             </DialogDescription>
           </DialogHeader>
           <Tabs value={syncDialogMode} onValueChange={(value) => setSyncDialogMode(value as SyncDialogMode)}>
-            <TabsList>
-              <TabsTrigger value="time">按时间范围同步</TabsTrigger>
-              <TabsTrigger value="spu">按款号同步</TabsTrigger>
+            <TabsList className="grid w-full grid-cols-2 rounded-lg border bg-muted/40 p-1">
+              <TabsTrigger value="spu" className="rounded-md data-[state=active]:bg-background data-[state=active]:shadow-sm">
+                按款号同步
+              </TabsTrigger>
+              <TabsTrigger value="time" className="rounded-md data-[state=active]:bg-background data-[state=active]:shadow-sm">
+                按时间范围同步
+              </TabsTrigger>
             </TabsList>
             <TabsContent value="time" className="mt-4 space-y-4">
               <div className="grid gap-3 md:grid-cols-3">
-                <button
-                  type="button"
-                  className={`rounded-md border px-3 py-2 text-left text-sm ${syncFilters.rangeMode === "last-sync" ? "border-primary bg-[var(--brand-light)]" : ""}`}
-                  onClick={() => setSyncFilters((current) => ({ ...current, rangeMode: "last-sync" }))}
-                >
-                  上次同步后
-                </button>
-                <button
-                  type="button"
-                  className={`rounded-md border px-3 py-2 text-left text-sm ${syncFilters.rangeMode === "custom" ? "border-primary bg-[var(--brand-light)]" : ""}`}
-                  onClick={() => setSyncFilters((current) => ({ ...current, rangeMode: "custom" }))}
-                >
-                  指定时间范围
-                </button>
-                <button
-                  type="button"
-                  className={`rounded-md border px-3 py-2 text-left text-sm ${syncFilters.rangeMode === "all" ? "border-primary bg-[var(--brand-light)]" : ""}`}
-                  onClick={() => setSyncFilters((current) => ({ ...current, rangeMode: "all" }))}
-                >
-                  全量同步
-                </button>
+                {syncRangeOptions.map((option) => (
+                  <Button
+                    key={option.value}
+                    type="button"
+                    variant={syncFilters.rangeMode === option.value ? "default" : "outline"}
+                    className="justify-start"
+                    onClick={() => setSyncFilters((current) => ({ ...current, rangeMode: option.value }))}
+                  >
+                    {option.label}
+                  </Button>
+                ))}
               </div>
               {syncFilters.rangeMode === "custom" ? (
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div className="grid gap-2">
-                    <Label htmlFor="sync-update-start">同步更新时间开始</Label>
-                    <Input
-                      id="sync-update-start"
-                      type="datetime-local"
-                      value={syncFilters.updateTimeStart}
-                      onChange={(event) => setSyncFilters((current) => ({ ...current, updateTimeStart: event.target.value }))}
-                    />
+                <div className="space-y-3">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {syncTimeFieldOptions.map((option) => (
+                      <Button
+                        key={option.value}
+                        type="button"
+                        variant={syncFilters.syncTimeField === option.value ? "default" : "outline"}
+                        className="justify-start"
+                        onClick={() => setSyncFilters((current) => ({ ...current, syncTimeField: option.value }))}
+                      >
+                        {option.label}
+                      </Button>
+                    ))}
                   </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="sync-update-end">同步更新时间结束</Label>
-                    <Input
-                      id="sync-update-end"
-                      type="datetime-local"
-                      value={syncFilters.updateTimeEnd}
-                      onChange={(event) => setSyncFilters((current) => ({ ...current, updateTimeEnd: event.target.value }))}
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="sync-insert-start">同步创建时间开始</Label>
-                    <Input
-                      id="sync-insert-start"
-                      type="datetime-local"
-                      value={syncFilters.insertTimeStart}
-                      onChange={(event) => setSyncFilters((current) => ({ ...current, insertTimeStart: event.target.value }))}
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="sync-insert-end">同步创建时间结束</Label>
-                    <Input
-                      id="sync-insert-end"
-                      type="datetime-local"
-                      value={syncFilters.insertTimeEnd}
-                      onChange={(event) => setSyncFilters((current) => ({ ...current, insertTimeEnd: event.target.value }))}
-                    />
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="grid gap-2">
+                      <Label htmlFor="sync-time-start">同步开始时间</Label>
+                      <Input
+                        id="sync-time-start"
+                        type="datetime-local"
+                        value={syncFilters.timeStart}
+                        onChange={(event) => setSyncFilters((current) => ({ ...current, timeStart: event.target.value }))}
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="sync-time-end">同步结束时间</Label>
+                      <Input
+                        id="sync-time-end"
+                        type="datetime-local"
+                        value={syncFilters.timeEnd}
+                        onChange={(event) => setSyncFilters((current) => ({ ...current, timeEnd: event.target.value }))}
+                      />
+                    </div>
                   </div>
                 </div>
               ) : null}
@@ -1613,6 +1965,76 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                 <PackageSearch className="size-4" />
               )}
               开始同步
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(saleSitesDialogProduct)}
+        onOpenChange={(open) => {
+          if (!open) setSaleSitesDialogProduct(null)
+        }}
+      >
+        <DialogContent className="max-h-[90dvh] overflow-hidden sm:max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>销售站点</DialogTitle>
+            <DialogDescription>
+              {saleSitesDialogProduct?.spuName || "当前商品"} 的上架国家站点、状态、链接和上架时间。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 overflow-auto rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>站点</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>首次上架</TableHead>
+                  <TableHead>最近上架</TableHead>
+                  <TableHead>来源</TableHead>
+                  <TableHead className="text-right">商品链接</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {saleSitesDialogProduct?.saleSites?.length ? (
+                  saleSitesDialogProduct.saleSites.map((site) => (
+                    <TableRow key={`${site.siteAbbr}-${site.source}`}>
+                      <TableCell>
+                        <div className="text-sm font-medium">{site.siteName || site.siteAbbr}</div>
+                        <div className="font-mono text-xs text-muted-foreground">{site.siteAbbr}</div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={saleSiteStatusVariant(site.shelfStatus)}>
+                          {site.shelfStatusText}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{site.firstShelfTime || "—"}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{site.lastShelfTime || "—"}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{site.source || "—"}</TableCell>
+                      <TableCell className="text-right">
+                        {site.link ? (
+                          <Button variant="ghost" size="sm" asChild>
+                            <a href={site.link} target="_blank" rel="noreferrer">打开链接</a>
+                          </Button>
+                        ) : (
+                          <span className="text-sm text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))
+                ) : (
+                  <TableRow>
+                    <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                      本地尚未同步到该 SPU 的销售站点明细
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSaleSitesDialogProduct(null)}>
+              关闭
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1797,10 +2219,8 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                   <p className="mt-1 truncate text-sm font-medium">{detailProduct?.supplierCode || "—"}</p>
                 </div>
                 <div className="rounded-md border p-3">
-                  <p className="text-xs text-muted-foreground">类目/类型</p>
-                  <p className="mt-1 text-sm font-medium">
-                    {detailProduct?.categoryId || "—"} / {detailProduct?.productTypeId || "—"}
-                  </p>
+                  <p className="text-xs text-muted-foreground">类目名称</p>
+                  <p className="mt-1 truncate text-sm font-medium">{detailProduct?.categoryName || "—"}</p>
                 </div>
                 <div className="rounded-md border p-3">
                   <p className="text-xs text-muted-foreground">可编辑</p>
@@ -1810,6 +2230,66 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                   <p className="text-xs text-muted-foreground">平台状态</p>
                   <p className="mt-1 truncate text-sm font-medium">{detailProduct?.productStatus || "未同步"}</p>
                 </div>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">销售站点</p>
+                  <p className="mt-1 truncate text-sm font-medium">
+                    {detailProduct?.saleSiteSummary || "详情同步后显示"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-md border">
+                <div className="flex items-center justify-between border-b px-3 py-2">
+                  <div className="text-sm font-medium">销售站点明细</div>
+                  <Badge variant="outline">上架站点数 {formatNumber(detailProduct?.saleSiteCount ?? 0)}</Badge>
+                </div>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>站点</TableHead>
+                      <TableHead>状态</TableHead>
+                      <TableHead>首次上架</TableHead>
+                      <TableHead>最近上架</TableHead>
+                      <TableHead>来源</TableHead>
+                      <TableHead className="text-right">链接</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {detailProduct?.saleSites?.length ? (
+                      detailProduct.saleSites.map((site) => (
+                        <TableRow key={`${site.siteAbbr}-${site.source}`}>
+                          <TableCell>
+                            <div className="text-sm font-medium">{site.siteName || site.siteAbbr}</div>
+                            <div className="font-mono text-xs text-muted-foreground">{site.siteAbbr}</div>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={saleSiteStatusVariant(site.shelfStatus)}>
+                              {site.shelfStatusText}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{site.firstShelfTime || "—"}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{site.lastShelfTime || "—"}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{site.source || "—"}</TableCell>
+                          <TableCell className="text-right">
+                            {site.link ? (
+                              <Button variant="ghost" size="sm" asChild>
+                                <a href={site.link} target="_blank" rel="noreferrer">打开链接</a>
+                              </Button>
+                            ) : (
+                              <span className="text-sm text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={6} className="h-20 text-center text-muted-foreground">
+                          SPU 详情里暂未找到销售站点明细
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
               </div>
 
               <div className="overflow-hidden rounded-md border">
@@ -1912,7 +2392,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
       ) : null}
 
       <Dialog open={costDialogOpen} onOpenChange={setCostDialogOpen}>
-        <DialogContent className="max-w-4xl">
+        <DialogContent className="max-h-[90dvh] max-w-5xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>批量更新成本价/供货价</DialogTitle>
             <DialogDescription>
@@ -1950,7 +2430,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                 </Button>
               </div>
               <div className="max-h-72 overflow-auto">
-                <Table>
+                <Table className="min-w-[760px]">
                   <TableHeader>
                     <TableRow>
                       <TableHead className="w-12">选</TableHead>
@@ -2055,6 +2535,94 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             </Button>
             <Button onClick={() => updateCostMutation.mutate()} disabled={updateCostMutation.isPending}>
               {updateCostMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <DollarSign className="size-4" />}
+              提交更新
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={costImportDialogOpen} onOpenChange={setCostImportDialogOpen}>
+        <DialogContent className="max-h-[90dvh] overflow-hidden sm:max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>表格导入更新供货价</DialogTitle>
+            <DialogDescription>
+              模板字段：SPU、SKC、SKU、供货价、币种、涨价原因；提交后按 SPU/SKC 聚合调用更新供货价接口。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 min-w-0 space-y-4 overflow-y-auto pr-1">
+            <div className="flex min-w-0 flex-col gap-3 rounded-md border p-3 md:flex-row md:items-center md:justify-between">
+              <div className="space-y-1 text-sm">
+                <div className="font-medium">模板字段</div>
+                <div className="text-muted-foreground">SPU / SKC / SKU / 供货价 / 币种 / 涨价原因</div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" onClick={downloadCostImportTemplate}>
+                  <Upload className="size-4" />
+                  下载模板
+                </Button>
+                <Label className="inline-flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-accent">
+                  <Upload className="size-4" />
+                  上传表格
+                  <Input
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    className="hidden"
+                    onChange={(event) => void handleCostImportFile(event.target.files?.[0] ?? null)}
+                  />
+                </Label>
+              </div>
+            </div>
+            <div className="flex min-w-0 flex-wrap gap-2 text-sm text-muted-foreground">
+              <Badge variant="outline" className="max-w-full truncate">
+                {costImportFileName || "未选择文件"}
+              </Badge>
+              <span>已解析 {formatNumber(costImportRows.length)} 行</span>
+            </div>
+            <div className="min-w-0 rounded-md border">
+              <div className="max-h-80 overflow-auto">
+                <Table className="w-full table-fixed">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-14">行号</TableHead>
+                      <TableHead className="w-[18%]">SPU</TableHead>
+                      <TableHead className="w-[18%]">SKC</TableHead>
+                      <TableHead className="w-[18%]">SKU</TableHead>
+                      <TableHead className="w-[14%]">供货价</TableHead>
+                      <TableHead className="w-[12%]">币种</TableHead>
+                      <TableHead>涨价原因</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {costImportRows.length ? (
+                      costImportRows.slice(0, 100).map((row) => (
+                        <TableRow key={`${row.rowNumber}-${row.spuName}-${row.skuCode}`}>
+                          <TableCell className="text-xs text-muted-foreground">{row.rowNumber}</TableCell>
+                          <TableCell className="truncate font-mono text-xs">{row.spuName || "—"}</TableCell>
+                          <TableCell className="truncate font-mono text-xs">{row.skcName || "—"}</TableCell>
+                          <TableCell className="truncate font-mono text-xs">{row.skuCode || "—"}</TableCell>
+                          <TableCell className="truncate">{row.cost || "—"}</TableCell>
+                          <TableCell className="truncate">{row.currency || "CNY"}</TableCell>
+                          <TableCell className="truncate">{row.changeReasonCode || "—"}</TableCell>
+                        </TableRow>
+                      ))
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+                          上传表格后在这里预览前 100 行
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCostImportDialogOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={() => costImportMutation.mutate()} disabled={costImportMutation.isPending || !costImportRows.length}>
+              {costImportMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <DollarSign className="size-4" />}
               提交更新
             </Button>
           </DialogFooter>

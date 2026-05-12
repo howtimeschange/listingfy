@@ -40,6 +40,9 @@ sheinPlatformProducts.get("/", (c) => {
     limit: Number(c.req.query("limit") ?? 50),
     offset: Number(c.req.query("offset") ?? 0),
     search: c.req.query("search") ?? "",
+    brand: c.req.query("brand") ?? "",
+    category: c.req.query("category") ?? "",
+    site: c.req.query("site") ?? "",
   }))
 })
 
