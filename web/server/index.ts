@@ -11,6 +11,9 @@ import deepdrawContent from "./routes/deepdraw-content"
 import imageLibrary from "./routes/image-library"
 import businessRules from "./routes/business-rules"
 import sheinProducts from "./routes/shein-products"
+import sheinLifecycle from "./routes/shein-lifecycle"
+import sheinPlatformProducts from "./routes/shein-platform-products"
+import sheinOperations from "./routes/shein-operations"
 import prePublish from "./routes/pre-publish"
 import publishTasks from "./routes/publish-tasks"
 import listingBatches from "./routes/listing-batches"
@@ -81,6 +84,9 @@ app.route("/api/deepdraw-content", deepdrawContent)
 app.route("/api/image-library", imageLibrary)
 app.route("/api/business-rules", businessRules)
 app.route("/api/shein-products", sheinProducts)
+app.route("/api/shein-lifecycle", sheinLifecycle)
+app.route("/api/shein-platform-products", sheinPlatformProducts)
+app.route("/api/shein-operations", sheinOperations)
 app.route("/api/pre-publish", prePublish)
 app.route("/api/publish-tasks", publishTasks)
 app.route("/api/listing-batches", listingBatches)

@@ -8,6 +8,14 @@ import ListingBatchesPage from "@/pages/listing-batches/page"
 import BatchDetailPage from "@/pages/listing-batches/[id]/page"
 import ImageManagementPage from "@/pages/image-management/page"
 import SheinProductsPage from "@/pages/shein-products/page"
+import SheinPlatformProductsPage from "@/pages/shein-platform-products/page"
+import SheinBarcodeSizePage from "@/pages/shein-operations/barcode-size/page"
+import SheinPlatformIdentitiesPage from "@/pages/shein-operations/platform-identities/page"
+import SheinAuditStatusPage from "@/pages/shein-operations/audit-status/page"
+import SheinCompliancePage from "@/pages/shein-operations/compliance/page"
+import SheinProcurementPage from "@/pages/shein-operations/procurement/page"
+import SheinInventoryPage from "@/pages/shein-operations/inventory/page"
+import SheinFinancePage from "@/pages/shein-operations/finance/page"
 import PrePublishValidationPage from "@/pages/pre-publish-validation/page"
 import PrePublishDraftDetailPage from "@/pages/pre-publish-validation/[listingId]/page"
 import PublishTasksPage from "@/pages/publish-tasks/page"
@@ -44,6 +52,16 @@ export const router = createBrowserRouter([
       { path: "draft-workbench/:batchId", element: <Navigate to="/pre-publish-validation" replace /> },
       { path: "image-management", element: <ImageManagementPage /> },
       { path: "shein-products", element: <SheinProductsPage /> },
+      { path: "shein-platform-products", element: <SheinPlatformProductsPage view="list" /> },
+      { path: "shein-platform-products/sites", element: <SheinPlatformProductsPage view="sites" /> },
+      { path: "shein-platform-products/:spuName", element: <SheinPlatformProductsPage view="detail" /> },
+      { path: "shein-operations/barcode-size", element: <SheinBarcodeSizePage /> },
+      { path: "shein-operations/platform-identities", element: <SheinPlatformIdentitiesPage /> },
+      { path: "shein-operations/audit-status", element: <SheinAuditStatusPage /> },
+      { path: "shein-operations/compliance", element: <SheinCompliancePage /> },
+      { path: "shein-operations/procurement", element: <SheinProcurementPage /> },
+      { path: "shein-operations/inventory", element: <SheinInventoryPage /> },
+      { path: "shein-operations/finance", element: <SheinFinancePage /> },
       { path: "pre-publish-validation", element: <PrePublishValidationPage /> },
       { path: "pre-publish-validation/:listingId", element: <PrePublishDraftDetailPage /> },
       { path: "publish-tasks", element: <PublishTasksPage /> },

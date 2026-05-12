@@ -4,6 +4,7 @@ import {
   markPublishTaskFailed,
   markPublishTaskStatusSynced,
 } from "./publish-job-service"
+import { upsertAuditStatusSnapshots } from "../shein-operations"
 
 type SourceRow = Record<string, unknown>
 
@@ -203,6 +204,11 @@ export async function syncPublishTaskStatus(db: SyncPostgresDatabase, taskId: nu
   const nextStatus = mapDocumentState(states)
   const reasons = failureReasons(result.payload)
   const message = reasons.join("；")
+  upsertAuditStatusSnapshots(db, {
+    sourceType: "PUBLISH_TASK",
+    sourceId: taskId,
+    result,
+  })
   const syncedTask = markPublishTaskStatusSynced(db, {
     taskId,
     status: nextStatus,

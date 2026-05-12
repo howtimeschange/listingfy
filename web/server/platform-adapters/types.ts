@@ -7,6 +7,21 @@ export const PLATFORM_ADAPTER_CAPABILITIES = {
   transformAsset: true,
   buildPublishPayload: true,
   publishListing: true,
+  addVariantsToListing: true,
+  checkEditPermission: true,
+  partialEditListing: true,
+  updateCost: true,
+  queryStoreSites: true,
+  queryProductList: true,
+  queryProductDetail: true,
+  queryDocumentState: true,
+  searchProducts: true,
+  revokeProduct: true,
+  queryNumberList: true,
+  checkSupplierSkuRepeated: true,
+  batchSkcSize: true,
+  printBarcode: true,
+  queryChangePriceReason: true,
   syncPublishStatus: true,
 } as const
 
@@ -34,6 +49,11 @@ export type PublishListingInput = {
   payload: unknown
 }
 
+export type PlatformPayloadInput = {
+  credentials: SheinCredentials
+  payload?: unknown
+}
+
 export interface PlatformAdapter {
   platform: PlatformKey
   fetchCategoryTree(input?: unknown): Promise<unknown>
@@ -42,5 +62,20 @@ export interface PlatformAdapter {
   transformAsset(input: TransformAssetInput): Promise<{ imageUrl: string; payload: unknown }>
   buildPublishPayload(input: unknown): Promise<unknown>
   publishListing(input: PublishListingInput): Promise<PlatformRequestResult>
+  addVariantsToListing(input: PublishListingInput): Promise<PlatformRequestResult>
+  checkEditPermission(input: PlatformPayloadInput): Promise<PlatformRequestResult>
+  partialEditListing(input: PlatformPayloadInput): Promise<PlatformRequestResult>
+  updateCost(input: PlatformPayloadInput): Promise<PlatformRequestResult>
+  queryStoreSites(input: PlatformPayloadInput): Promise<PlatformRequestResult>
+  queryProductList(input: PlatformPayloadInput): Promise<PlatformRequestResult>
+  queryProductDetail(input: PlatformPayloadInput): Promise<PlatformRequestResult>
+  queryDocumentState(input: PlatformPayloadInput): Promise<PlatformRequestResult>
+  searchProducts(input: PlatformPayloadInput): Promise<PlatformRequestResult>
+  revokeProduct(input: PlatformPayloadInput): Promise<PlatformRequestResult>
+  queryNumberList(input: PlatformPayloadInput): Promise<PlatformRequestResult>
+  checkSupplierSkuRepeated(input: PlatformPayloadInput): Promise<PlatformRequestResult>
+  batchSkcSize(input: PlatformPayloadInput): Promise<PlatformRequestResult>
+  printBarcode(input: PlatformPayloadInput): Promise<PlatformRequestResult>
+  queryChangePriceReason(input: PlatformPayloadInput): Promise<PlatformRequestResult>
   syncPublishStatus(input: unknown): Promise<unknown>
 }

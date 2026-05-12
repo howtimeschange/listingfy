@@ -3372,7 +3372,6 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
     }
   }
 
-  const titleCn = normalizeText(readinessFieldValue(readiness, "title_cn")) || normalizeText(readiness.title_cn) || normalizeText(listing.title) || normalizeText(listing.spu_code)
   const titleEn = sanitizeSingleItemTitleEn(
     normalizeText(readinessFieldValue(readiness, "title_en")) || normalizeText(readiness.title_en) || heuristicEnglishTitle(readiness),
     listing.platform_category_name,

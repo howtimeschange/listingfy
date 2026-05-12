@@ -18,6 +18,8 @@ const PATH_LABELS: Record<string, string> = {
   "draft-workbench": "SHEIN 发布草稿箱",
   "image-management": "图片管理",
   "shein-products": "SHEIN 商品分桶",
+  "shein-platform-products": "平台商品列表",
+  "shein-operations": "SHEIN运营中心",
   "pre-publish-validation": "SHEIN 发布草稿箱",
   "publish-tasks": "发布任务",
   "category-mapping": "SHEIN 类目映射",

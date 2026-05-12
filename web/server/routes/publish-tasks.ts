@@ -8,6 +8,7 @@ import {
   markPublishTaskStatusSynced,
   refreshBatchPublishSummary as refreshBatchPublishSummaryForBatch,
 } from "../services/publish/publish-job-service"
+import { upsertAuditStatusSnapshots } from "../services/shein-operations"
 
 const publishTasks = new Hono()
 
@@ -212,6 +213,8 @@ function buildListWhere(c: Context) {
   const q = normalizeText(c.req.query("q"))
   const batchSearch = readCsv(c.req.query("batch_search"))
   const statuses = readCsv(c.req.query("statuses") ?? c.req.query("status"))
+  const hasFailureReason = normalizeText(c.req.query("has_failure_reason") ?? c.req.query("hasFailureReason"))
+  const failureReason = normalizeText(c.req.query("failure_reason") ?? c.req.query("failureReason"))
   const clauses: string[] = []
   const params: unknown[] = []
 
@@ -222,6 +225,13 @@ function buildListWhere(c: Context) {
   if (statuses.length > 0) {
     clauses.push(`task.status in (${statuses.map(() => "?").join(", ")})`)
     params.push(...statuses)
+  }
+  if (hasFailureReason === "1" || hasFailureReason.toLowerCase() === "true") {
+    clauses.push("coalesce(task.error_message, '') <> ''")
+  }
+  if (failureReason) {
+    clauses.push("coalesce(task.error_message, '') like ?")
+    params.push(`%${failureReason}%`)
   }
 
   const terms = Array.from(new Set([q, ...batchSearch].filter(Boolean)))
@@ -276,12 +286,25 @@ publishTasks.get("/", (c) => {
     group by task.status
     order by count(*) desc
   `).all(...params) as SourceRow[]
+  const failureReasonRows = db.prepare(`
+    select task.error_message as reason, count(*) as count
+    ${from}
+    ${where}
+      ${where ? "and" : "where"} coalesce(task.error_message, '') <> ''
+    group by task.error_message
+    order by count(*) desc
+    limit 8
+  `).all(...params) as SourceRow[]
 
   return c.json({
     items,
     summary: {
       total: Number(total.count ?? 0),
       by_status: Object.fromEntries(statusRows.map((row) => [row.status, Number(row.count ?? 0)])),
+      failure_reason_groups: failureReasonRows.map((row) => ({
+        reason: normalizeText(row.reason),
+        count: Number(row.count ?? 0),
+      })),
     },
     pagination: {
       total: Number(total.count ?? 0),
@@ -305,7 +328,94 @@ publishTasks.get("/filters", (c) => {
     group by status
     order by status
   `).all() as SourceRow[]
-  return c.json({ platforms, statuses })
+  const failureReasons = db.prepare(`
+    select error_message as reason, count(*) as count
+    from listing_publish_task
+    where coalesce(error_message, '') <> ''
+    group by error_message
+    order by count(*) desc
+    limit 20
+  `).all() as SourceRow[]
+  return c.json({ platforms, statuses, failure_reasons: failureReasons })
+})
+
+publishTasks.post("/audit-status/sync", async (c) => {
+  const db = getDb()
+  const body = await c.req.json().catch(() => ({})) as SourceRow
+  const taskIds = parseJsonArray(body.taskIds ?? body.task_ids)
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0)
+  const tasks = taskIds.length
+    ? db.prepare(`
+        ${taskSelect()}
+        ${taskBaseFrom()}
+        where task.id in (${taskIds.map(() => "?").join(", ")})
+        order by task.id desc
+      `).all(...taskIds) as SourceRow[]
+    : db.prepare(`
+        ${taskSelect()}
+        ${taskBaseFrom()}
+        where task.platform = 'SHEIN'
+          and task.status in ('PUBLISH_SUBMITTED', 'SUBMITTED', 'UNDER_REVIEW', 'PARTIALLY_APPROVED')
+        order by task.created_at desc, task.id desc
+        limit 50
+      `).all() as SourceRow[]
+
+  const results = []
+  for (const task of tasks) {
+    const platformVersion = normalizeText(task.platform_version)
+    const spuIdentity = firstPlatformIdentity(db, task, "SPU")
+    const spuName = normalizeText(spuIdentity?.platform_id)
+    if (!spuName) {
+      results.push({ task_id: task.id, ok: false, error_message: "缺少 SHEIN spu_name" })
+      continue
+    }
+    const body = {
+      spuList: [
+        {
+          spuName,
+          ...(platformVersion ? { version: platformVersion } : {}),
+        },
+      ],
+    }
+    const result = await requestSheinWithRetry("/open-api/goods/query-document-state", { body })
+    if (responseCode(result.payload) === "0") {
+      upsertAuditStatusSnapshots(db, {
+        sourceType: "PUBLISH_TASK",
+        sourceId: task.id == null ? "" : String(task.id),
+        result,
+      })
+      const states = documentStates(result.payload)
+      const nextStatus = mapDocumentState(states)
+      const reasons = failureReasons(result.payload)
+      markPublishTaskStatusSynced(db, {
+        taskId: Number(task.id),
+        status: nextStatus,
+        responsePayload: result.payload,
+        errorCode: nextStatus === "REJECTED" ? "SHEIN_AUDIT_REJECTED" : null,
+        errorMessage: nextStatus === "REJECTED" ? reasons.join("；") || "SHEIN 审核驳回" : null,
+      })
+      updateListingAndBucketStatus(db, task.listing_id, nextStatus)
+      refreshBatchPublishSummary(db, task.listing_id)
+      results.push({ task_id: task.id, ok: true, status: nextStatus })
+    } else {
+      const message = responseMessage(result.payload) || "SHEIN 审核状态查询失败"
+      markPublishTaskFailed(db, {
+        taskId: Number(task.id),
+        responsePayload: result.payload,
+        errorCode: responseCode(result.payload) || String(result.status),
+        errorMessage: message,
+      })
+      results.push({ task_id: task.id, ok: false, error_message: message })
+    }
+  }
+
+  return c.json({
+    ok: true,
+    synced: results.filter((row) => row.ok).length,
+    failed: results.filter((row) => !row.ok).length,
+    results,
+  })
 })
 
 publishTasks.get("/:id", (c) => {
@@ -476,6 +586,11 @@ publishTasks.post("/:id/sync-status", async (c) => {
   const nextStatus = mapDocumentState(states)
   const reasons = failureReasons(result.payload)
   const message = reasons.join("；")
+  upsertAuditStatusSnapshots(db, {
+    sourceType: "PUBLISH_TASK",
+    sourceId: task.id == null ? "" : String(task.id),
+    result,
+  })
   markPublishTaskStatusSynced(db, {
     taskId: Number(task.id),
     status: nextStatus,

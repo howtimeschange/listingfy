@@ -51,7 +51,7 @@ async function request<T>(
     try {
       body = text ? JSON.parse(text) : null
     } catch {
-      body = text
+      // Keep the raw response text when the error body is not JSON.
     }
     throw new ApiError(res.status, body)
   }
