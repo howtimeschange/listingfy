@@ -5,7 +5,6 @@ import {
   ArrowLeft,
   Bot,
   Camera,
-  CheckCircle2,
   ChevronRight,
   FileClock,
   FolderTree,
@@ -33,7 +32,6 @@ import { ConfirmDialog } from "@/components/confirm-dialog"
 import { EmptyState } from "@/components/empty-state"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
-import { StatCard } from "@/components/stat-card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -88,6 +86,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 
 interface AttributeOption {
@@ -386,6 +385,8 @@ interface ListingDetail {
   }>
 }
 
+type ValidationIssue = ListingDetail["validation_issues"][number]
+
 type SkuCommercialDraft = {
   costPrice: string
   currency: string
@@ -491,6 +492,65 @@ function fieldBadge(field: FillField) {
 
 function isEditableField(field: FillField) {
   return !["category", "skc_code", "skc_image", "color", "size_conversion", "package_weight", "size_chart"].includes(field.key)
+}
+
+function isAiGeneratableField(field: FillField) {
+  return field.key === "title_en" || field.key.startsWith("attr:")
+}
+
+function isPublishFocusedField(field: FillField) {
+  if (["category", "title_cn", "title_en", "brand"].includes(field.key)) return true
+  if (field.key.startsWith("attr:")) return true
+  if (["skc_code", "skc_image", "color", "size_conversion", "supply_price", "package_weight", "size_chart"].includes(field.key)) return true
+  return field.status === "MISSING" || field.status === "NEEDS_AI" || field.status === "WARNING"
+}
+
+function publishFocusedGroups(groups: FieldGroup[]) {
+  return groups
+    .map((group) => ({
+      ...group,
+      fields: group.fields.filter(isPublishFocusedField),
+    }))
+    .filter((group) => group.fields.length > 0)
+}
+
+const issueFieldAliases: Record<string, string[]> = {
+  category: ["SHEIN 类目", "SHEIN OpenAPI 套装类目限制"],
+  title_cn: ["中文标题"],
+  title_en: ["英文标题"],
+  brand: ["商品品牌", "品牌"],
+  skc_code: ["SKC", "SKC 款色"],
+  skc_image: ["SKC 图片"],
+  color: ["颜色", "发布颜色"],
+  size_conversion: ["尺寸", "尺码", "SHEIN 尺码"],
+  supply_price: ["供货价(人民币)", "供货价"],
+  package_weight: ["产品毛重/g", "毛重"],
+  size_chart: ["尺码表"],
+}
+
+function normalizeIssueKey(value: unknown) {
+  return String(value ?? "").trim()
+}
+
+function issueMatchesField(issue: ValidationIssue, field: FillField) {
+  const key = normalizeIssueKey(issue.field_key)
+  if (!key) return false
+  if (key === field.key || key === field.label) return true
+  return (issueFieldAliases[field.key] ?? []).includes(key)
+}
+
+function issuesByFieldKey(issues: ValidationIssue[], groups: FieldGroup[]) {
+  const map = new Map<string, ValidationIssue[]>()
+  for (const field of groups.flatMap((group) => group.fields)) {
+    const matched = issues.filter((issue) => issueMatchesField(issue, field))
+    if (matched.length > 0) map.set(field.key, matched)
+  }
+  return map
+}
+
+function issuesForKeys(issues: ValidationIssue[], keys: string[]) {
+  const keySet = new Set(keys)
+  return issues.filter((issue) => keySet.has(normalizeIssueKey(issue.field_key)))
 }
 
 function splitMultiEnumValue(value: string) {
@@ -829,47 +889,102 @@ function FieldGroupsTable({
   groups,
   manualValues,
   onChange,
+  onGenerateAi,
+  generatingFieldKey,
+  validationIssues,
 }: {
   groups: FieldGroup[]
   manualValues: Record<string, string>
   onChange: (key: string, value: string) => void
+  onGenerateAi?: (field: FillField) => void
+  generatingFieldKey?: string | null
+  validationIssues?: Map<string, ValidationIssue[]>
 }) {
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {groups.map((group) => (
         <div key={group.group} className="space-y-3">
           <div className="flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold">{group.group}</h3>
-            <Badge variant="outline">平台类目所需字段</Badge>
+            <Badge variant="outline">上新需要关注</Badge>
           </div>
           <div className="overflow-hidden rounded border">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[190px]">字段</TableHead>
+                  <TableHead className="w-[180px]">字段</TableHead>
                   <TableHead>字段值</TableHead>
-                  <TableHead className="w-[150px]">来源</TableHead>
+                  <TableHead className="w-[128px]">状态</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {group.fields.map((field) => (
-                  <TableRow key={field.key}>
-                    <TableCell className="font-medium">{field.label}</TableCell>
-                    <TableCell>
-                      <FieldValueEditor
-                        field={field}
-                        value={manualValues[field.key] ?? toInputValue(field.value)}
-                        onChange={(value) => onChange(field.key, value)}
-                      />
-                      {field.note ? <p className="mt-1 text-xs text-muted-foreground">{field.note}</p> : null}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className={statusClass[field.status]}>
-                        {fieldBadge(field)}
-                      </Badge>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {group.fields.map((field) => {
+                  const generating = generatingFieldKey === field.key
+                  const fieldIssues = validationIssues?.get(field.key) ?? []
+                  const hasError = fieldIssues.some((issue) => issue.severity === "ERROR") || field.status === "MISSING"
+                  return (
+                    <TableRow
+                      key={field.key}
+                      className={cn(
+                        hasError && "bg-[#fff1f1] hover:bg-[#fff1f1]",
+                      )}
+                    >
+                      <TableCell className="align-top">
+                        <div className="space-y-1">
+                          <p className={cn("font-medium", hasError && "text-destructive")}>{field.label}</p>
+                          {field.attribute_id ? (
+                            <p className="font-mono text-[11px] text-muted-foreground">#{field.attribute_id}</p>
+                          ) : null}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex min-w-0 gap-2">
+                          <div className="min-w-0 flex-1">
+                            <FieldValueEditor
+                              field={field}
+                              value={manualValues[field.key] ?? toInputValue(field.value)}
+                              onChange={(value) => onChange(field.key, value)}
+                            />
+                            {field.note ? <p className={cn("mt-1 text-xs text-muted-foreground", hasError && "text-destructive/80")}>{field.note}</p> : null}
+                            {fieldIssues.length > 0 ? (
+                              <div className="mt-2 space-y-1 text-xs text-destructive">
+                                {fieldIssues.map((issue) => (
+                                  <p key={issue.id}>
+                                    {issue.message}
+                                    {issue.suggestion ? `；${issue.suggestion}` : ""}
+                                  </p>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                          {onGenerateAi && isAiGeneratableField(field) ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="shrink-0"
+                              disabled={generating}
+                              onClick={() => onGenerateAi(field)}
+                            >
+                              {generating ? <Loader2 className="mr-1 size-3.5 animate-spin" /> : <Sparkles className="mr-1 size-3.5" />}
+                              AI 生成
+                            </Button>
+                          ) : null}
+                        </div>
+                      </TableCell>
+                      <TableCell className="align-top">
+                        <div className="space-y-1">
+                          <Badge variant="outline" className={statusClass[field.status]}>
+                            {fieldBadge(field)}
+                          </Badge>
+                          {field.source && field.status !== "MISSING" ? (
+                            <p className="truncate text-[11px] text-muted-foreground">{field.source}</p>
+                          ) : null}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
               </TableBody>
             </Table>
           </div>
@@ -1621,6 +1736,12 @@ export default function PrePublishDraftDetailPage() {
   const dimensionGroups = data?.dimension_field_groups ?? data?.readiness.dimension_field_groups ?? []
   const skcImageRequirements = data?.image_requirements.filter((requirement) => requirement.level === "SKC" && requirement.show !== 0) ?? []
   const spuImageRequirements = data?.image_requirements.filter((requirement) => requirement.level === "SPU" && requirement.show !== 0) ?? []
+  const focusedFieldGroups = publishFocusedGroups(
+    dimensionGroups.find((group) => group.dimension === "SPU")?.groups ?? data?.readiness.field_groups ?? [],
+  )
+  const fieldValidationIssues = issuesByFieldKey(data?.validation_issues ?? [], focusedFieldGroups)
+  const imageValidationIssues = issuesForKeys(data?.validation_issues ?? [], ["SKC 图片", "skc_image"])
+  const skuCommercialValidationIssues = issuesForKeys(data?.validation_issues ?? [], ["产品毛重/g", "package_weight"])
   const openApiSuitCategoryBlocked = Boolean(
     data?.listing.platform_category_name?.includes("套装")
     || data?.listing.platform_category_path?.includes("套装"),
@@ -1801,6 +1922,27 @@ export default function PrePublishDraftDetailPage() {
     onError: () => toast.error("AI 处理失败"),
   })
 
+  const aiFieldMutation = useMutation({
+    mutationFn: (field: FillField) =>
+      api.post<{ field?: { field_key: string; field_label: string; field_value: string } }>(
+        `/pre-publish/drafts/${listingId}/ai-field`,
+        { field_key: field.key },
+      ),
+    onSuccess: (result, field) => {
+      const fieldValue = result.field?.field_value ?? ""
+      if (fieldValue) {
+        setManualValues((prev) => ({ ...prev, [field.key]: fieldValue }))
+      }
+      toast.success(`${field.label} 已 AI 生成`)
+      queryClient.invalidateQueries({ queryKey: ["pre-publish", "draft", listingId] })
+      queryClient.invalidateQueries({ queryKey: ["pre-publish", "drafts"] })
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "AI 生成字段失败"
+      toast.error(message)
+    },
+  })
+
   const updateCategoryMutation = useMutation({
     mutationFn: (category: CategoryTreeItem) =>
       api.patch(`/pre-publish/drafts/${listingId}/category`, {
@@ -1971,10 +2113,12 @@ export default function PrePublishDraftDetailPage() {
   const skuDimension = dimensionGroups.find((group) => group.dimension === "SKU")
 
   return (
-    <PageContainer className="space-y-6">
+    <PageContainer className="space-y-5 px-4 py-4 md:px-6">
       <PageHeader
-        title={`${data.listing.spu_code} 发布草稿`}
-        description="平台类目所需字段、字段填充情况、颜色尺码选择、尺码表、图片确认和版本历史都在这个单款详情页维护。"
+        compact
+        title="上新填写工作台"
+        description={`${data.listing.spu_code} · ${data.listing.title || data.readiness.field_groups.flatMap((group) => group.fields).find((field) => field.key === "title_cn")?.value || "发布草稿"}`}
+        className="rounded-lg px-5 py-5"
         actionsClassName="lg:max-w-[560px] [&>button]:h-9 [&>button]:px-3 [&>a]:h-9 [&>a]:px-3"
       >
         <Button asChild variant="outline">
@@ -2084,12 +2228,42 @@ export default function PrePublishDraftDetailPage() {
         </DialogContent>
       </Dialog>
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <StatCard title="发布平台" value={data.listing.platform} />
-        <StatCard title="字段完整度" value={`${data.listing.completeness}%`} icon={CheckCircle2} />
-        <StatCard title="当前版本" value={`v${data.listing.latest_version_no ?? 0}`} icon={FileClock} />
-        <StatCard title="阻断项" value={formatNumber(data.listing.blocker_count)} icon={ShieldAlert} />
-      </div>
+      <section className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="rounded-lg border bg-card p-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline">{data.listing.platform}</Badge>
+                <Badge variant={data.listing.blocker_count > 0 ? "destructive" : "outline"}>
+                  阻断项 {formatNumber(data.listing.blocker_count)}
+                </Badge>
+                <Badge variant="outline">{data.listing.skc_count} 款色 / {data.listing.sku_count} SKU</Badge>
+              </div>
+              <h2 className="mt-3 truncate text-lg font-semibold">{data.listing.title || data.listing.spu_code}</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {data.listing.platform_category_name || data.readiness.category.category_name || "未匹配类目"}
+              </p>
+              <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">
+                {data.listing.platform_category_path || data.readiness.category.path || "类目路径待同步"}
+              </p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => setCategoryDialogOpen(true)}>
+              <FolderTree className="mr-2 size-4" />
+              类目树选择
+            </Button>
+          </div>
+        </div>
+        <div className="rounded-lg border bg-card p-4">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-medium">字段完整度</p>
+            <span className="text-2xl font-semibold tabular-nums">{data.listing.completeness}%</span>
+          </div>
+          <Progress value={data.listing.completeness} className="mt-3 h-2" />
+          <p className="mt-2 text-xs text-muted-foreground">
+            当前版本 v{data.listing.latest_version_no ?? 0} · 状态 {data.listing.validation_status}
+          </p>
+        </div>
+      </section>
 
       <CategoryTreeDialog
         open={categoryDialogOpen}
@@ -2112,175 +2286,61 @@ export default function PrePublishDraftDetailPage() {
         pending={addLibraryImageMutation.isPending}
       />
 
-      <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
-        <div className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>平台与类目</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4 text-sm">
-              <div>
-                <p className="text-xs text-muted-foreground">SHEIN 类目</p>
-                <p className="mt-1 font-medium">{data.listing.platform_category_name || data.readiness.category.category_name || "未匹配类目"}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{data.listing.platform_category_path || data.readiness.category.path}</p>
+      {openApiSuitCategoryBlocked ? (
+        <div className="rounded-lg border border-[#f4ddb3] bg-[#fff8e8] p-3 text-sm text-[#8a5a08]">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div className="flex items-center gap-2 font-medium">
+                <ShieldAlert className="size-4" />
+                OpenAPI 套装类目限制
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded border p-3">
-                  <p className="text-xs text-muted-foreground">Category ID</p>
-                  <p className="mt-1 font-mono">{data.listing.platform_category_id ?? "-"}</p>
-                </div>
-                <div className="rounded border p-3">
-                  <p className="text-xs text-muted-foreground">Product Type</p>
-                  <p className="mt-1 font-mono">{data.listing.product_type_id ?? "-"}</p>
-                </div>
-              </div>
-              <Button variant="outline" className="w-full justify-start" onClick={() => setCategoryDialogOpen(true)}>
-                <FolderTree className="mr-2 size-4" />
-                类目树选择
-              </Button>
-              {openApiSuitCategoryBlocked ? (
-                <div className="rounded border border-[#f4ddb3] bg-[#fff8e8] p-3 text-sm text-[#8a5a08]">
-                  <div className="flex items-center gap-2 font-medium">
-                    <ShieldAlert className="size-4" />
-                    OpenAPI 套装类目限制
-                  </div>
-                  <p className="mt-1 text-xs">
-                    SHEIN `publishOrEdit` 暂不支持套装商品结构。可转为非套装叶子类目后按主售单品发布，系统会同步清理标题里的 Set/套装语义。
-                  </p>
-                  <Button
-                    variant="outline"
-                    className="mt-3 w-full justify-start bg-white"
-                    onClick={() => convertOpenApiSingleItemMutation.mutate()}
-                    disabled={convertOpenApiSingleItemMutation.isPending}
-                  >
-                    {convertOpenApiSingleItemMutation.isPending ? (
-                      <Loader2 className="mr-2 size-4 animate-spin" />
-                    ) : (
-                      <Layers3 className="mr-2 size-4" />
-                    )}
-                    转为 OpenAPI 单品发布
-                  </Button>
-                </div>
-              ) : null}
-              <div>
-                <p className="text-xs text-muted-foreground">校验进度</p>
-                <div className="mt-2 flex items-center gap-3">
-                  <Progress value={data.listing.completeness} className="h-2" />
-                  <span className="w-12 text-right text-xs tabular-nums">{data.listing.completeness}%</span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>维度导航</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm">
-              {dimensionGroups.map((group) => (
-                <div key={group.dimension} className="rounded border p-3">
-                  <div className="flex items-center gap-2">
-                    <Layers3 className="size-4 text-muted-foreground" />
-                    <p className="font-medium">{group.title}</p>
-                  </div>
-                  <p className="mt-1 text-xs text-muted-foreground">{group.description}</p>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>版本历史</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {data.versions.map((version) => (
-                <div key={version.id} className="rounded border p-3 text-sm">
-                  <div className="flex items-center justify-between gap-3">
-                    <Badge variant="outline">v{version.version_no}</Badge>
-                    <span className="text-xs text-muted-foreground">{formatDateTime(version.created_at)}</span>
-                  </div>
-                  <p className="mt-2 font-medium">{version.change_summary || version.version_type}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">{version.status}</p>
-                  {version.platform_version ? (
-                    <p className="mt-1 text-xs text-muted-foreground">平台版本：{version.platform_version}</p>
-                  ) : null}
-                  {version.error_message ? (
-                    <p className="mt-1 text-xs text-destructive">{version.error_code ? `${version.error_code} · ` : ""}{version.error_message}</p>
-                  ) : null}
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>发布回显</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm">
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="outline">{data.listing.status}</Badge>
-                <Badge variant="outline">{data.listing.validation_status}</Badge>
-              </div>
-              {data.publish_tasks.length ? (
-                <div className="rounded border p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <Badge variant="outline">{data.publish_tasks[0].status}</Badge>
-                    <span className="text-xs text-muted-foreground">{formatDateTime(data.publish_tasks[0].created_at)}</span>
-                  </div>
-                  {data.publish_tasks[0].platform_trace_id ? (
-                    <p className="mt-2 text-xs text-muted-foreground">Trace：{data.publish_tasks[0].platform_trace_id}</p>
-                  ) : null}
-                  {data.publish_tasks[0].platform_version ? (
-                    <p className="mt-1 text-xs text-muted-foreground">平台版本：{data.publish_tasks[0].platform_version}</p>
-                  ) : null}
-                  {data.publish_tasks[0].error_message ? (
-                    <p className="mt-2 text-xs text-destructive">
-                      {data.publish_tasks[0].error_code ? `${data.publish_tasks[0].error_code} · ` : ""}
-                      {data.publish_tasks[0].error_message}
-                    </p>
-                  ) : null}
-                </div>
+              <p className="mt-1 text-xs">SHEIN `publishOrEdit` 暂不支持套装商品结构，可转为非套装叶子类目后按主售单品发布。</p>
+            </div>
+            <Button
+              variant="outline"
+              className="bg-white"
+              onClick={() => convertOpenApiSingleItemMutation.mutate()}
+              disabled={convertOpenApiSingleItemMutation.isPending}
+            >
+              {convertOpenApiSingleItemMutation.isPending ? (
+                <Loader2 className="mr-2 size-4 animate-spin" />
               ) : (
-                <p className="text-xs text-muted-foreground">还没有提交过 SHEIN 发布。</p>
+                <Layers3 className="mr-2 size-4" />
               )}
-              {data.platform_identities.length ? (
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-muted-foreground">SHEIN 平台标识</p>
-                  {data.platform_identities.slice(0, 8).map((identity) => (
-                    <div key={identity.id} className="flex items-center justify-between gap-3 rounded border px-3 py-2 text-xs">
-                      <span>{identity.platform_type}</span>
-                      <span className="truncate font-mono">{identity.platform_id}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </CardContent>
-          </Card>
+              转为 OpenAPI 单品发布
+            </Button>
+          </div>
         </div>
+      ) : null}
 
-        <div className="space-y-6">
-          <Card>
+      <Tabs defaultValue="listing" className="space-y-5">
+        <TabsList className="w-fit">
+          <TabsTrigger value="listing">上新填写</TabsTrigger>
+          <TabsTrigger value="records">更多发布记录</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="listing" className="space-y-5">
+          <Card className="rounded-lg">
             <CardHeader>
-              <CardTitle>{spuDimension?.title ?? "SPU 款维度"}</CardTitle>
+              <CardTitle>需要填写的字段</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                {spuDimension?.description || "只保留类目要求、缺失项、标题、品牌、属性、图片和包装价格等上新必填信息。"}
+              </p>
             </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
-                <div className="rounded border p-4">
-                  <p className="text-xs text-muted-foreground">款号 / 标题</p>
-                  <p className="mt-1 font-mono text-sm">{data.listing.spu_code}</p>
-                  <p className="mt-2 text-sm">{data.listing.title || data.readiness.field_groups.flatMap((group) => group.fields).find((field) => field.key === "title_cn")?.value || "-"}</p>
-                </div>
-                <div className="rounded border p-4">
-                  <p className="text-xs text-muted-foreground">SPU 图片规则</p>
-                  <p className="mt-1 text-sm">{spuImageRequirements.length} 个展示规则</p>
-                  <p className="mt-1 text-xs text-muted-foreground">SPU 轮播图 / SPU 方形图 按类目配置显示，当前发布以 SKC 图片为主。</p>
-                </div>
-              </div>
-              <div className="space-y-3">
+            <CardContent className="space-y-5">
+              <FieldGroupsTable
+                groups={focusedFieldGroups}
+                manualValues={manualValues}
+                onChange={(key, value) => setManualValues((prev) => ({ ...prev, [key]: value }))}
+                onGenerateAi={(field) => aiFieldMutation.mutate(field)}
+                generatingFieldKey={aiFieldMutation.variables?.key ?? null}
+                validationIssues={fieldValidationIssues}
+              />
+              {spuImageRequirements.length ? (
+                <div className="space-y-3">
                 <div className="flex items-center gap-2">
                   <ImageIcon className="size-4 text-muted-foreground" />
-                  <h3 className="text-sm font-semibold">图片规则</h3>
+                  <h3 className="text-sm font-semibold">SPU 图片规则</h3>
                 </div>
                 <ImageRequirementManager
                   requirements={spuImageRequirements}
@@ -2292,16 +2352,12 @@ export default function PrePublishDraftDetailPage() {
                   onDeleteAsset={(assetId) => deleteImageAssetMutation.mutate(assetId)}
                   pending={updateImageAssetMutation.isPending || deleteImageAssetMutation.isPending}
                 />
-              </div>
-              <FieldGroupsTable
-                groups={spuDimension?.groups ?? data.readiness.field_groups}
-                manualValues={manualValues}
-                onChange={(key, value) => setManualValues((prev) => ({ ...prev, [key]: value }))}
-              />
+                </div>
+              ) : null}
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="rounded-lg">
             <CardHeader>
               <CardTitle>{skcDimension?.title ?? "SKC 款色维度"}</CardTitle>
             </CardHeader>
@@ -2404,10 +2460,20 @@ export default function PrePublishDraftDetailPage() {
                         <div className="space-y-3">
                           <div className="flex items-center justify-between gap-3">
                             <div>
-                              <h4 className="text-sm font-semibold">图片确认</h4>
-                              <p className="mt-1 text-xs text-muted-foreground">
+                              <h4 className={cn("text-sm font-semibold", imageValidationIssues.length > 0 && "text-destructive")}>图片确认</h4>
+                              <p className={cn("mt-1 text-xs text-muted-foreground", imageValidationIssues.length > 0 && "text-destructive/80")}>
                                 TMALL 款色图 {checklist?.has_tmall_color_image ? "已满足" : "缺失"}，人工导入 {checklist?.imported_asset_count ?? 0} 张。
                               </p>
+                              {imageValidationIssues.length > 0 ? (
+                                <div className="mt-2 space-y-1 text-xs text-destructive">
+                                  {imageValidationIssues.map((issue) => (
+                                    <p key={issue.id}>
+                                      {issue.message}
+                                      {issue.suggestion ? `；${issue.suggestion}` : ""}
+                                    </p>
+                                  ))}
+                                </div>
+                              ) : null}
                             </div>
                             <label className="flex items-center gap-2 text-sm">
                               <Checkbox
@@ -2437,8 +2503,18 @@ export default function PrePublishDraftDetailPage() {
                         <div className="space-y-3">
                           <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                             <div>
-                              <h4 className="text-sm font-semibold">按 SKC 选择发布尺码</h4>
-                              <p className="mt-1 text-xs text-muted-foreground">SKU 作为尺码、条码、毛重的细化行；发布选择先按 SKC 聚合。</p>
+                              <h4 className={cn("text-sm font-semibold", skuCommercialValidationIssues.length > 0 && "text-destructive")}>按 SKC 选择发布尺码</h4>
+                              <p className={cn("mt-1 text-xs text-muted-foreground", skuCommercialValidationIssues.length > 0 && "text-destructive/80")}>SKU 作为尺码、条码、毛重的细化行；发布选择先按 SKC 聚合。</p>
+                              {skuCommercialValidationIssues.length > 0 ? (
+                                <div className="mt-2 space-y-1 text-xs text-destructive">
+                                  {skuCommercialValidationIssues.map((issue) => (
+                                    <p key={issue.id}>
+                                      {issue.message}
+                                      {issue.suggestion ? `；${issue.suggestion}` : ""}
+                                    </p>
+                                  ))}
+                                </div>
+                              ) : null}
                             </div>
                             <label className="flex items-center gap-2 text-sm">
                               <Checkbox checked={allSkuSelected} onCheckedChange={() => toggleSkcSelection(group)} />
@@ -2668,35 +2744,80 @@ export default function PrePublishDraftDetailPage() {
             </CardContent>
           </Card>
 
-          <Card>
+        </TabsContent>
+
+        <TabsContent value="records">
+          <Card className="rounded-lg">
             <CardHeader>
-              <CardTitle>校验阻断</CardTitle>
+              <CardTitle>更多发布记录</CardTitle>
+              <p className="text-sm text-muted-foreground">版本历史、发布回显和 SHEIN 平台标识集中查看。</p>
             </CardHeader>
-            <CardContent className="space-y-2">
-              {data.validation_issues.length === 0 ? (
-                <div className="rounded border border-[#b9f4d8] bg-[#f4fff9] p-4 text-sm text-[#0f8a5f]">
-                  当前草稿没有阻断项。
-                </div>
-              ) : (
-                data.validation_issues.map((issue) => (
-                  <div key={issue.id} className="rounded border p-3 text-sm">
-                    <div className="flex items-center gap-2">
-                      <Badge variant={issue.severity === "ERROR" ? "destructive" : "outline"}>{issue.severity}</Badge>
-                      <span className="font-medium">{issue.message}</span>
+            <CardContent className="grid gap-4 lg:grid-cols-3">
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold">版本历史</h3>
+                {data.versions.map((version) => (
+                  <div key={version.id} className="rounded border p-3 text-sm">
+                    <div className="flex items-center justify-between gap-3">
+                      <Badge variant="outline">v{version.version_no}</Badge>
+                      <span className="text-xs text-muted-foreground">{formatDateTime(version.created_at)}</span>
                     </div>
-                    {issue.suggestion ? <p className="mt-1 text-xs text-muted-foreground">{issue.suggestion}</p> : null}
+                    <p className="mt-2 font-medium">{version.change_summary || version.version_type}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{version.status}</p>
+                    {version.platform_version ? (
+                      <p className="mt-1 text-xs text-muted-foreground">平台版本：{version.platform_version}</p>
+                    ) : null}
+                    {version.error_message ? (
+                      <p className="mt-1 text-xs text-destructive">{version.error_code ? `${version.error_code} · ` : ""}{version.error_message}</p>
+                    ) : null}
                   </div>
-                ))
-              )}
+                ))}
+              </div>
+              <div className="space-y-3 text-sm">
+                <h3 className="text-sm font-semibold">发布回显</h3>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="outline">{data.listing.status}</Badge>
+                  <Badge variant="outline">{data.listing.validation_status}</Badge>
+                </div>
+                {data.publish_tasks.length ? (
+                  <div className="rounded border p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <Badge variant="outline">{data.publish_tasks[0].status}</Badge>
+                      <span className="text-xs text-muted-foreground">{formatDateTime(data.publish_tasks[0].created_at)}</span>
+                    </div>
+                    {data.publish_tasks[0].platform_trace_id ? (
+                      <p className="mt-2 text-xs text-muted-foreground">Trace：{data.publish_tasks[0].platform_trace_id}</p>
+                    ) : null}
+                    {data.publish_tasks[0].platform_version ? (
+                      <p className="mt-1 text-xs text-muted-foreground">平台版本：{data.publish_tasks[0].platform_version}</p>
+                    ) : null}
+                    {data.publish_tasks[0].error_message ? (
+                      <p className="mt-2 text-xs text-destructive">
+                        {data.publish_tasks[0].error_code ? `${data.publish_tasks[0].error_code} · ` : ""}
+                        {data.publish_tasks[0].error_message}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">还没有提交过 SHEIN 发布。</p>
+                )}
+              </div>
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold">SHEIN 平台标识</h3>
+                {data.platform_identities.length ? (
+                  data.platform_identities.slice(0, 8).map((identity) => (
+                    <div key={identity.id} className="flex items-center justify-between gap-3 rounded border px-3 py-2 text-xs">
+                      <span>{identity.platform_type}</span>
+                      <span className="truncate font-mono">{identity.platform_id}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-xs text-muted-foreground">暂无平台标识回写。</p>
+                )}
+              </div>
             </CardContent>
           </Card>
-        </div>
-      </div>
-
-      <div className="hidden">
-        <Sparkles />
-        字段填充情况 发布颜色 规格与图片 发布尺码 SPU 轮播图 SKC 主图/细节图 SKC 方形图 SKC 色块图
-      </div>
+        </TabsContent>
+      </Tabs>
     </PageContainer>
   )
 }

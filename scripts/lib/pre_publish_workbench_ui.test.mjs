@@ -101,6 +101,14 @@ test("pre publish route builds readiness rows from SHEIN product bucket data", a
   assert.match(route, /sku_commercial_values/);
   assert.match(route, /updateListingSkuCommercials/);
   assert.match(route, /\/drafts\/:id\/images\/upload/);
+  assert.match(route, /selectedListingSkcWhere/);
+  assert.match(route, /selectedListingSkuWhere/);
+  assert.match(route, /onlySelected:\s*true/);
+  assert.match(route, /skc\.selected_for_publish = 1/);
+  assert.match(route, /displayListingForSelectedSkcs/);
+  assert.match(route, /withoutUnselectedSkcColors/);
+  assert.match(route, /displayReadinessForSelectedSkcs/);
+  assert.match(route, /readiness:\s*selectedReadiness/);
 });
 
 test("publish task center shows submitted platform tasks and task detail payloads", async () => {
@@ -184,30 +192,42 @@ test("pre publish validation page is now a draft list after selection moved to S
 });
 
 test("pre publish has a single listing detail route with editable fields and version history", async () => {
-  const [detailPage, router] = await Promise.all([
+  const [detailPage, router, route] = await Promise.all([
     readFile(DETAIL_PAGE_FILE, "utf8"),
     readFile(ROUTER_FILE, "utf8"),
+    readFile(ROUTE_FILE, "utf8"),
   ]);
 
   assert.match(router, /PrePublishDraftDetailPage/);
   assert.match(router, /pre-publish-validation\/:listingId/);
   assert.match(detailPage, /useParams/);
+  assert.match(route, /\/drafts\/:id\/ai-field/);
+  assert.match(route, /generateSingleAiField/);
+  assert.match(detailPage, /上新填写工作台/);
+  assert.match(detailPage, /更多发布记录/);
+  assert.match(detailPage, /Tabs/);
+  assert.match(detailPage, /TabsTrigger value="listing"/);
+  assert.match(detailPage, /TabsTrigger value="records"/);
+  assert.match(detailPage, /issuesByFieldKey/);
+  assert.match(detailPage, /validationIssues=\{fieldValidationIssues\}/);
+  assert.match(detailPage, /bg-\[#fff1f1\]/);
+  assert.doesNotMatch(detailPage, /Collapsible/);
+  assert.match(detailPage, /aiFieldMutation/);
+  assert.match(detailPage, /AI 生成/);
   assert.match(detailPage, /AI 转换类目/);
   assert.match(detailPage, /AI 翻译标题/);
   assert.match(detailPage, /AI 推荐补齐空字段/);
   assert.match(detailPage, /保存草稿/);
-  assert.match(detailPage, /平台类目所需字段/);
-  assert.match(detailPage, /字段填充情况/);
-  assert.match(detailPage, /SPU 款维度/);
+  assert.match(detailPage, /上新需要关注/);
+  assert.match(detailPage, /只保留类目要求、缺失项、标题、品牌、属性、图片和包装价格等上新必填信息/);
+  assert.match(detailPage, /需要填写的字段/);
   assert.match(detailPage, /SKC 款色维度/);
   assert.match(detailPage, /SHEIN 类目尺码表/);
   assert.match(detailPage, /dimension_field_groups/);
   assert.match(detailPage, /image_requirements/);
   assert.match(detailPage, /图片规则/);
-  assert.match(detailPage, /SPU 轮播图/);
-  assert.match(detailPage, /SKC 主图\/细节图/);
-  assert.match(detailPage, /SKC 方形图/);
-  assert.match(detailPage, /SKC 色块图/);
+  assert.match(detailPage, /SPU 图片规则/);
+  assert.match(detailPage, /主图、方形图和色块图/);
   assert.match(detailPage, /类目树选择/);
   assert.match(detailPage, /转为 OpenAPI 单品发布/);
   assert.match(detailPage, /convert-openapi-single-item/);
@@ -218,8 +238,6 @@ test("pre publish has a single listing detail route with editable fields and ver
   assert.match(detailPage, /按 SKC 选择发布尺码/);
   assert.match(detailPage, /selectedSkuIdsBySkc/);
   assert.doesNotMatch(detailPage, /保存字段/);
-  assert.match(detailPage, /发布颜色/);
-  assert.match(detailPage, /规格与图片/);
   assert.match(detailPage, /skcGroups/);
   assert.match(detailPage, /sale_attribute/);
   assert.match(detailPage, /attribute_value_id/);
@@ -246,6 +264,7 @@ test("pre publish has a single listing detail route with editable fields and ver
   assert.match(detailPage, /发布回显/);
   assert.match(detailPage, /publish_tasks/);
   assert.match(detailPage, /platform_identities/);
+  assert.doesNotMatch(detailPage, /<CardTitle>校验阻断<\/CardTitle>/);
   assert.match(detailPage, /创建版本快照/);
   assert.match(detailPage, /发布到 SHEIN/);
   assert.match(detailPage, /\/publish/);

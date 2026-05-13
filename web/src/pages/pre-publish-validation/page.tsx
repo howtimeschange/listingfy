@@ -210,6 +210,8 @@ export default function PrePublishValidationPage() {
   const [selectedDraftIds, setSelectedDraftIds] = useState<Set<number>>(new Set())
   const [createDraftDialogOpen, setCreateDraftDialogOpen] = useState(false)
   const [createDraftText, setCreateDraftText] = useState("")
+  const [batchImageDialogOpen, setBatchImageDialogOpen] = useState(false)
+  const [batchImageFolderPath, setBatchImageFolderPath] = useState("")
   const { data: platformData } = usePlatforms()
   const { data: categoryData } = useDraftCategories(platform)
   const { data: draftData, isLoading } = useDrafts(platform, batchSearchText, categoryFilter, draftPagination)
@@ -275,6 +277,19 @@ export default function PrePublishValidationPage() {
       await queryClient.invalidateQueries({ queryKey: ["shein-products"] })
     },
     onError: (error) => toast.error(errorMessage(error, "删除草稿失败")),
+  })
+  const batchImportFoldersMutation = useMutation({
+    mutationFn: () =>
+      api.post<{ imported_count: number }>("/pre-publish/drafts/batch-import-folders", {
+        listing_ids: Array.from(selectedDraftIds),
+        folder_path: batchImageFolderPath,
+      }),
+    onSuccess: async (result) => {
+      toast.success(`批量导入图片目录完成：${formatNumber(result.imported_count)} 张`)
+      setBatchImageDialogOpen(false)
+      await queryClient.invalidateQueries({ queryKey: ["pre-publish", "drafts"] })
+    },
+    onError: (error) => toast.error(errorMessage(error, "批量导入图片目录失败")),
   })
   function updateBatchSearch(value: string) {
     const next = new URLSearchParams(searchParams)
@@ -376,6 +391,36 @@ export default function PrePublishValidationPage() {
           triggerLabel="批量提交发布"
           disabled={selectedDraftIds.size === 0}
         />
+        <Dialog open={batchImageDialogOpen} onOpenChange={setBatchImageDialogOpen}>
+          <DialogTrigger asChild>
+            <Button type="button" variant="outline" disabled={selectedDraftIds.size === 0}>
+              <ImageIcon className="mr-2 size-4" />
+              批量导入图片目录
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>批量导入图片目录</DialogTitle>
+              <DialogDescription>对已勾选草稿批量执行本地目录导入；系统按目录名和文件名匹配 SKC。</DialogDescription>
+            </DialogHeader>
+            <Textarea
+              value={batchImageFolderPath}
+              onChange={(event) => setBatchImageFolderPath(event.target.value)}
+              rows={3}
+              placeholder="/Users/xingyicheng/Downloads/20112210410530435"
+            />
+            <DialogFooter>
+              <Button
+                type="button"
+                onClick={() => batchImportFoldersMutation.mutate()}
+                disabled={batchImportFoldersMutation.isPending || !batchImageFolderPath.trim()}
+              >
+                {batchImportFoldersMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+                批量导入图片目录
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </PageHeader>
 
       <Card>

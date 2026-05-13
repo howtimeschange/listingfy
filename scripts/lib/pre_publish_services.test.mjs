@@ -54,6 +54,13 @@ test("field-fill helpers coerce enum values without losing manual text values", 
   assert.deepEqual(fieldFills.coerceFieldValues(textField, "   "), []);
 });
 
+test("field-fill helpers normalize cotton blend material to platform fabric", () => {
+  assert.equal(fieldFills.normalizeMaterialValue("棉混纺"), "织物");
+  assert.equal(fieldFills.normalizeMaterialValue("  棉 混 纺  "), "织物");
+  assert.equal(fieldFills.normalizeMaterialValue("Cotton Blend"), "织物");
+  assert.equal(fieldFills.normalizeMaterialValue("聚酯纤维"), "聚酯纤维");
+});
+
 test("image service builds SHEIN picture requirements and validates common image constraints", () => {
   const requirements = images.buildPictureRequirements([
     { field_key: "skc_image_square_show", is_true: 1 },
@@ -204,4 +211,28 @@ test("SHEIN publish payload maps business feedback fields from existing source d
   assert.match(source, /englishBrandName\(row\.brand_name\)/);
   assert.match(source, /englishColorName\(skc\.color_name\)/);
   assert.doesNotMatch(source, /language:\s*defaultLanguage,[\s\S]+defaultLanguage\.toLowerCase\(\) === "zh-cn"[\s\S]+titleCn/);
+});
+
+test("pre-publish AI and batch fixes keep critical fields rule-owned", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const dialog = await readFile(path.join(PROJECT_ROOT, "web/src/components/pre-publish/batch-publish-dialog.tsx"), "utf8");
+  const draftList = await readFile(path.join(PROJECT_ROOT, "web/src/pages/pre-publish-validation/page.tsx"), "utf8");
+
+  assert.match(source, /normalizeMaterialValue/);
+  assert.match(source, /normalizeFillFieldValue/);
+  assert.match(source, /shouldAutoApplyCategory/);
+  assert.match(source, /AI_CATEGORY_SUGGESTED/);
+  assert.doesNotMatch(source, /if \(mode === "all" \|\| mode === "category"\) \{\s*persistCategoryFill\(db, readiness\)\s*if \(readiness\.category\.category_id/s);
+  assert.match(source, /quick_fixes:\s*\{\s*fields/);
+  assert.match(source, /sku_commercials/);
+  assert.match(source, /batch-import-folders/);
+
+  assert.match(dialog, /commonPackageEdits/);
+  assert.match(dialog, /批量标题/);
+  assert.match(dialog, /批量包装/);
+  assert.match(dialog, /批量类目/);
+  assert.match(dialog, /sku_commercial_values/);
+
+  assert.match(draftList, /批量导入图片目录/);
+  assert.match(draftList, /batch-import-folders/);
 });

@@ -15,7 +15,7 @@ import {
   updatePublishTaskRequestPayload,
 } from "../services/publish/publish-job-service"
 import { canTransitionDraftStatus } from "../services/pre-publish/drafts"
-import { coerceFieldValues } from "../services/pre-publish/field-fills"
+import { coerceFieldValues, normalizeMaterialValue } from "../services/pre-publish/field-fills"
 import {
   boolConfigValue,
   buildPictureRequirements,
@@ -1056,8 +1056,9 @@ function existingSalePayloadIsValid(payload: Record<string, unknown>, attr: Requ
 
 function inferMaterialValue(attr: RequiredAttribute, context: string) {
   const needles: string[] = []
-  if (/卫衣/.test(context)) needles.push("棉混纺", "棉", "聚酯纤维", "织物")
-  if (/棉/.test(context)) needles.push("棉混纺", "棉布", "棉")
+  if (/卫衣/.test(context)) needles.push("织物", "棉", "聚酯纤维")
+  if (/棉混纺|棉混/.test(context)) needles.push("织物")
+  if (/棉/.test(context)) needles.push("织物", "棉布", "棉")
   if (/聚酯|涤纶/.test(context)) needles.push("聚酯纤维")
   if (/粘纤|粘胶/.test(context)) needles.push("粘胶纤维", "粘纤")
   if (/腈纶/.test(context)) needles.push("腈纶")
@@ -2098,7 +2099,128 @@ function refreshListingAfterFill(db: ReturnType<typeof getDb>, listingId: number
   return { listing, readiness, version }
 }
 
-function summarizeListing(db: ReturnType<typeof getDb>, listing: SourceRow) {
+function selectedListingSkcWhere(alias = "skc", options?: { onlySelected?: boolean }) {
+  return options?.onlySelected ? `and ${alias}.selected_for_publish = 1` : ""
+}
+
+function selectedListingSkuWhere(alias = "sku", skcAlias = "skc", options?: { onlySelected?: boolean }) {
+  if (!options?.onlySelected) return ""
+  return `and ${alias}.selected_for_publish = 1 and ${skcAlias}.selected_for_publish = 1`
+}
+
+function regexEscape(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+function skcDisplayTokens(skc: SourceRow, spuCode?: unknown) {
+  const skcCode = normalizeText(skc.skc_code)
+  const normalizedSpu = normalizeText(spuCode)
+  const suffix = normalizedSpu && skcCode.startsWith(normalizedSpu)
+    ? skcCode.slice(normalizedSpu.length)
+    : ""
+  const numericSuffix = normalizeText(skcCode.match(/(\d{3,8})$/)?.[1])
+  return uniqueStrings([
+    skc.color_name,
+    suffix,
+    numericSuffix,
+  ]).filter((token) => token.length >= 3)
+}
+
+function withoutUnselectedSkcColors(title: unknown, selectedSkcs: SourceRow[], allSkcs: SourceRow[], spuCode?: unknown) {
+  let text = normalizeText(title)
+  if (!text || selectedSkcs.length === 0 || allSkcs.length <= selectedSkcs.length) return text
+  const selectedCodes = new Set(selectedSkcs.map((skc) => normalizeText(skc.skc_code)).filter(Boolean))
+  const selectedTokens = new Set(selectedSkcs.flatMap((skc) => skcDisplayTokens(skc, spuCode)))
+  const removableTokens = uniqueStrings(
+    allSkcs
+      .filter((skc) => !selectedCodes.has(normalizeText(skc.skc_code)))
+      .flatMap((skc) => skcDisplayTokens(skc, spuCode)),
+  )
+    .filter((token) => !selectedTokens.has(token))
+    .sort((left, right) => right.length - left.length)
+
+  for (const token of removableTokens) {
+    const pattern = new RegExp(`\\s*(?:[/／|、,，;；]+\\s*)?${regexEscape(token)}(?:\\s*[/／|、,，;；]+)?`, "g")
+    text = text.replace(pattern, " ")
+  }
+  return text
+    .replace(/\s*([/／|、,，;；])\s*(?=$)/g, "")
+    .replace(/(^|\s)([/／|、,，;；])\s*/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+}
+
+function displayListingForSelectedSkcs<T extends SourceRow>(listing: T, selectedSkcs: SourceRow[], allSkcs: SourceRow[]) {
+  if (selectedSkcs.length === 0 || allSkcs.length <= selectedSkcs.length) return listing
+  return {
+    ...listing,
+    title: withoutUnselectedSkcColors(listing.title, selectedSkcs, allSkcs, listing.spu_code),
+  }
+}
+
+function displayFieldForSelectedSkcs(field: FillField, selectedSkcs: SourceRow[], allSkcs: SourceRow[], spuCode: unknown): FillField {
+  if (!["title_en", "title_cn", "color", "skc_code", "skc_image"].includes(field.key)) return field
+  if (field.key === "title_en" || field.key === "title_cn") {
+    return {
+      ...field,
+      value: withoutUnselectedSkcColors(field.value, selectedSkcs, allSkcs, spuCode) || field.value,
+    }
+  }
+  if (field.key === "skc_code") {
+    return {
+      ...field,
+      value: `${selectedSkcs.length} 个款色`,
+      status: selectedSkcs.length > 0 ? "READY" : "MISSING",
+    }
+  }
+  if (field.key === "skc_image") {
+    const selectedWithImage = selectedSkcs.filter((skc) =>
+      normalizeText(skc.tmall_color_image_url)
+      || normalizeText(skc.tmall_color_url)
+      || normalizeText(skc.pic_url)
+      || normalizeText(skc.image_url),
+    ).length
+    return {
+      ...field,
+      value: `${selectedWithImage}/${selectedSkcs.length}`,
+      status: selectedWithImage === selectedSkcs.length && selectedSkcs.length > 0 ? "READY" : "MISSING",
+    }
+  }
+  return {
+    ...field,
+    value: selectedSkcs.map((skc) =>
+      `${normalizeText(skc.color_code)} ${normalizeText(skc.color_name)}`.trim(),
+    ).filter(Boolean).join(" | "),
+    status: selectedSkcs.some((skc) => normalizeText(skc.color_name)) ? "READY" : "MISSING",
+  }
+}
+
+function displayReadinessForSelectedSkcs(readiness: ReadinessRow, selectedSkcs: SourceRow[], allSkcs: SourceRow[]) {
+  if (selectedSkcs.length === 0 || allSkcs.length <= selectedSkcs.length) return readiness
+  const fieldGroups = readiness.field_groups.map((group) => ({
+    ...group,
+    fields: group.fields.map((field) => displayFieldForSelectedSkcs(field, selectedSkcs, allSkcs, readiness.spu_code)),
+  }))
+  return {
+    ...readiness,
+    title_cn: withoutUnselectedSkcColors(readiness.title_cn, selectedSkcs, allSkcs, readiness.spu_code) || readiness.title_cn,
+    title_en: withoutUnselectedSkcColors(readiness.title_en, selectedSkcs, allSkcs, readiness.spu_code) || readiness.title_en,
+    skcs: selectedSkcs,
+    field_groups: fieldGroups,
+    dimension_field_groups: buildDimensionFieldGroups(fieldGroups),
+  }
+}
+
+function summarizeListing(db: ReturnType<typeof getDb>, listing: SourceRow, options?: { onlySelected?: boolean }) {
+  const allSkcs = db.prepare(`
+    select skc_code, color_name, image_url, selected_for_publish
+    from listing_skc
+    where listing_id = ?
+    order by selected_for_publish desc, skc_code
+  `).all(listing.id) as SourceRow[]
+  const selectedSkcs = options?.onlySelected
+    ? allSkcs.filter((skc) => Number(skc.selected_for_publish ?? 1) === 1)
+    : allSkcs
   const latestVersion = db.prepare(`
     select version_no, status, change_summary, created_at
     from listing_publish_version
@@ -2113,12 +2235,18 @@ function summarizeListing(db: ReturnType<typeof getDb>, listing: SourceRow) {
     from listing_validation_result
     where listing_id = ?
   `).get(listing.id) as SourceRow
-  const skcCount = db.prepare("select count(*) as count from listing_skc where listing_id = ?").get(listing.id) as SourceRow
+  const skcCount = db.prepare(`
+    select count(*) as count
+    from listing_skc skc
+    where skc.listing_id = ?
+      ${selectedListingSkcWhere("skc", options)}
+  `).get(listing.id) as SourceRow
   const skuCount = db.prepare(`
     select count(*) as count
     from listing_sku sku
     join listing_skc skc on skc.id = sku.listing_skc_id
     where skc.listing_id = ?
+      ${selectedListingSkuWhere("sku", "skc", options)}
   `).get(listing.id) as SourceRow
   const hero = db.prepare(`
     select
@@ -2127,19 +2255,21 @@ function summarizeListing(db: ReturnType<typeof getDb>, listing: SourceRow) {
       skc.skc_code
     from listing_skc skc
     where skc.listing_id = ?
+      ${selectedListingSkcWhere("skc", options)}
       and coalesce(skc.image_url, '') <> ''
     order by skc.selected_for_publish desc, skc.skc_code
     limit 1
   `).get(listing.id) as SourceRow | undefined
   const skcPreview = db.prepare(`
     select skc_code, color_name, image_url
-    from listing_skc
-    where listing_id = ?
-    order by selected_for_publish desc, skc_code
+    from listing_skc skc
+    where skc.listing_id = ?
+      ${selectedListingSkcWhere("skc", options)}
+    order by skc.selected_for_publish desc, skc.skc_code
     limit 4
   `).all(listing.id) as SourceRow[]
   return {
-    ...listing,
+    ...displayListingForSelectedSkcs(listing, selectedSkcs, allSkcs),
     latest_version_no: latestVersion?.version_no ?? null,
     latest_version_status: latestVersion?.status ?? null,
     latest_version_summary: latestVersion?.change_summary ?? null,
@@ -2299,7 +2429,7 @@ function getImageRequirements(db: ReturnType<typeof getDb>, listing: ListingRow)
   return buildPictureRequirements(rows)
 }
 
-function getListingAssets(db: ReturnType<typeof getDb>, listingId: number) {
+function getListingAssets(db: ReturnType<typeof getDb>, listingId: number, options?: { onlySelected?: boolean }) {
   return db.prepare(`
     select
       asset.*,
@@ -2308,6 +2438,7 @@ function getListingAssets(db: ReturnType<typeof getDb>, listingId: number) {
     from listing_asset asset
     left join listing_skc skc on skc.id = asset.listing_skc_id
     where asset.listing_id = ?
+      ${options?.onlySelected ? "and (asset.listing_skc_id is null or skc.selected_for_publish = 1)" : ""}
     order by coalesce(asset.skc_code, skc.skc_code), asset.image_sort, asset.id
   `).all(listingId) as SourceRow[]
 }
@@ -2386,10 +2517,11 @@ function getListingDetail(db: ReturnType<typeof getDb>, listingId: number) {
   const readiness = getReadinessForListing(db, listing)
   if (!readiness) return null
   const skcs = db.prepare(`
-    select *
-    from listing_skc
-    where listing_id = ?
-    order by skc_code
+    select skc.*
+    from listing_skc skc
+    where skc.listing_id = ?
+      ${selectedListingSkcWhere("skc", { onlySelected: true })}
+    order by skc.skc_code
   `).all(listingId) as SourceRow[]
   const skus = db.prepare(`
     select
@@ -2404,6 +2536,7 @@ function getListingDetail(db: ReturnType<typeof getDb>, listingId: number) {
     join listing_skc skc on skc.id = sku.listing_skc_id
     left join product_sku source_sku on source_sku.id = sku.product_sku_id
     where skc.listing_id = ?
+      ${selectedListingSkuWhere("sku", "skc", { onlySelected: true })}
     order by skc.skc_code, sku.size_name, sku.sku_code
   `).all(listingId) as SourceRow[]
   const validationIssues = db.prepare(`
@@ -2432,31 +2565,36 @@ function getListingDetail(db: ReturnType<typeof getDb>, listingId: number) {
       and identity.channel_account_id = ?
       and (
         (identity.local_type = 'listing' and identity.local_id = ?)
-        or (identity.local_type = 'listing_skc' and identity.local_id in (
-          select id from listing_skc where listing_id = ?
-        ))
-        or (identity.local_type = 'listing_sku' and identity.local_id in (
-          select sku.id
-          from listing_sku sku
-          join listing_skc skc on skc.id = sku.listing_skc_id
-          where skc.listing_id = ?
-        ))
-      )
+	        or (identity.local_type = 'listing_skc' and identity.local_id in (
+	          select id
+	          from listing_skc skc
+	          where skc.listing_id = ?
+	            ${selectedListingSkcWhere("skc", { onlySelected: true })}
+	        ))
+	        or (identity.local_type = 'listing_sku' and identity.local_id in (
+	          select sku.id
+	          from listing_sku sku
+	          join listing_skc skc on skc.id = sku.listing_skc_id
+	          where skc.listing_id = ?
+	            ${selectedListingSkuWhere("sku", "skc", { onlySelected: true })}
+	        ))
+	      )
     order by
       case identity.local_type when 'listing' then 1 when 'listing_skc' then 2 else 3 end,
       identity.id
   `).all(listing.platform, listing.channel_account_id, listing.id, listing.id, listing.id) as SourceRow[]
   const { size_tables, size_table_rows } = getSizeTables(db, listing)
-  const assets = getListingAssets(db, listingId)
+  const assets = getListingAssets(db, listingId, { onlySelected: true })
   const mapped_size_charts = getMappedSizeCharts({ db, listing, sizeTables: size_tables, sizeTableRows: size_table_rows })
   const image_requirements = getImageRequirements(db, listing)
   const sale_attributes = getRequiredAttributes(db, asNumber(listing.platform_category_id), asNumber(listing.product_type_id))
     .filter((attr) => attr.attribute_type === 1)
 
+  const selectedReadiness = displayReadinessForSelectedSkcs(readiness, skcs, readiness.skcs)
   return {
-    listing: summarizeListing(db, listing),
-    readiness,
-    dimension_field_groups: readiness.dimension_field_groups,
+    listing: summarizeListing(db, listing, { onlySelected: true }),
+    readiness: selectedReadiness,
+    dimension_field_groups: selectedReadiness.dimension_field_groups,
     skcs,
     skus,
     assets,
@@ -2579,6 +2717,25 @@ function persistCategoryFill(db: ReturnType<typeof getDb>, row: ReadinessRow) {
       source: row.category.source,
     },
   })
+}
+
+function shouldAutoApplyCategory(category: ReadinessRow["category"]) {
+  const source = normalizeText(category.source)
+  return Boolean(
+    category.category_id
+    && category.product_type_id
+    && category.status === "READY"
+    && !["AI_CATEGORY", "RULE_FALLBACK", "MISSING"].includes(source),
+  )
+}
+
+function normalizeFillFieldValue(fieldKey: unknown, fieldLabel: unknown, value: unknown) {
+  const key = normalizeText(fieldKey)
+  const label = normalizeText(fieldLabel)
+  if (key.startsWith("attr:") && (label.includes("材质") || label.includes("成分"))) {
+    return normalizeMaterialValue(value)
+  }
+  return normalizeText(value)
 }
 
 function heuristicAiValue(field: FillField, row: ReadinessRow) {
@@ -2756,6 +2913,56 @@ async function callAiFill(row: ReadinessRow) {
     }
   }
   return []
+}
+
+async function generateSingleAiField(readiness: ReadinessRow, fieldKey: string) {
+  const field = readiness.field_groups
+    .flatMap((group) => group.fields)
+    .find((item) => item.key === fieldKey)
+  if (!field) {
+    throw new HTTPException(404, { message: "字段不存在" })
+  }
+  if (field.key !== "title_en" && !field.key.startsWith("attr:")) {
+    throw new HTTPException(400, { message: "当前字段不支持 AI 单字段生成" })
+  }
+
+  if (field.key === "title_en") {
+    const fieldValue = await callAiTranslateTitle(readiness)
+    return {
+      field,
+      fieldValue: normalizeFillFieldValue(field.key, field.label, fieldValue),
+      source: "AI_TRANSLATED",
+      confidence: 0.78,
+      payload: { title_cn: readiness.title_cn, category: readiness.category, context: "draft_ai_field" },
+    }
+  }
+
+  const scopedReadiness: ReadinessRow = {
+    ...readiness,
+    manual_fields: [field],
+  }
+  const aiFills = await callAiFill(scopedReadiness)
+    .catch(() => [] as Array<Record<string, unknown>>) as Array<Record<string, unknown>>
+  const aiFill = aiFills.find((fill) => normalizeText(fill.field_key) === field.key)
+  const candidateValue = normalizeFillFieldValue(field.key, field.label, aiFill?.field_value)
+  const validValues = new Set((field.options ?? []).map((option) => option.attribute_value))
+  const fieldValue = candidateValue && (validValues.size === 0 || validValues.has(candidateValue))
+    ? candidateValue
+    : heuristicAiValue(field, readiness)
+  if (!fieldValue) {
+    throw new HTTPException(400, { message: "AI 未生成可用字段值" })
+  }
+  const confidence = Number(aiFill?.confidence)
+  return {
+    field,
+    fieldValue: normalizeFillFieldValue(field.key, field.label, fieldValue),
+    source: aiFill ? "AI_SUGGESTED" : "AI_RULE_FALLBACK",
+    confidence: Number.isFinite(confidence) ? confidence : 0.62,
+    payload: aiFill ?? {
+      fallback: true,
+      context: "draft_ai_field",
+    },
+  }
 }
 
 function persistFill({
@@ -3857,7 +4064,7 @@ prePublish.get("/drafts", (c) => {
     where ${clauses.join(" and ")}
   `).get(...params) as { count: number }
   return c.json({
-    items: rows.map((row) => summarizeListing(db, row)),
+    items: rows.map((row) => summarizeListing(db, row, { onlySelected: true })),
     pagination: {
       total: total.count,
       limit,
@@ -4268,7 +4475,7 @@ prePublish.patch("/drafts/:id/fields", async (c) => {
         field.sku_code ?? null,
         fieldKey,
         normalizeText(field.field_label),
-        normalizeText(field.field_value),
+        normalizeFillFieldValue(fieldKey, field.field_label, field.field_value),
         normalizeText(field.source ?? "MANUAL") || "MANUAL",
         field.confidence ?? null,
         JSON.stringify({ listing_id: listingId, saved_from: "draft_detail" }),
@@ -4381,7 +4588,7 @@ prePublish.post("/drafts/:id/save", async (c) => {
         field.sku_code ?? null,
         fieldKey,
         normalizeText(field.field_label),
-        normalizeText(field.field_value),
+        normalizeFillFieldValue(fieldKey, field.field_label, field.field_value),
         normalizeText(field.source ?? "MANUAL") || "MANUAL",
         field.confidence ?? null,
         JSON.stringify({ listing_id: listingId, saved_from: "draft_whole_save" }),
@@ -4453,8 +4660,8 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
   const saved: Array<Record<string, unknown>> = []
 
   if (mode === "all" || mode === "category") {
-    persistCategoryFill(db, readiness)
-    if (readiness.category.category_id && readiness.category.product_type_id) {
+    if (shouldAutoApplyCategory(readiness.category)) {
+      persistCategoryFill(db, readiness)
       db.prepare(`
         update listing
         set platform_category_id = ?,
@@ -4474,6 +4681,31 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
         field_key: "category",
         field_label: "SHEIN 类目",
         field_value: readiness.category.category_name,
+        source: "CATEGORY_RULE",
+      })
+    } else if (readiness.category.category_id && readiness.category.product_type_id) {
+      persistFill({
+        db,
+        spuCode: readiness.spu_code,
+        fieldKey: "category",
+        fieldLabel: "SHEIN 类目候选",
+        fieldValue: readiness.category.category_name || String(readiness.category.category_id),
+        source: "AI_CATEGORY_SUGGESTED",
+        confidence: 0.58,
+        payload: {
+          category_id: readiness.category.category_id,
+          product_type_id: readiness.category.product_type_id,
+          category_name: readiness.category.category_name,
+          path: readiness.category.path,
+          source: readiness.category.source,
+          requires_manual_confirm: true,
+        },
+      })
+      saved.push({
+        field_key: "category",
+        field_label: "SHEIN 类目候选",
+        field_value: readiness.category.category_name,
+        source: "AI_CATEGORY_SUGGESTED",
       })
     }
   }
@@ -4505,7 +4737,7 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
     const byKey = new Map(aiFills.map((fill) => [String(fill.field_key), fill]))
     for (const field of readiness.manual_fields) {
       const aiFill = byKey.get(field.key)
-      const candidateValue = normalizeText(aiFill?.field_value)
+      const candidateValue = normalizeFillFieldValue(field.key, field.label, aiFill?.field_value)
       const validValues = new Set((field.options ?? []).map((option) => option.attribute_value))
       const fieldValue = candidateValue && validValues.has(candidateValue)
         ? candidateValue
@@ -4517,7 +4749,7 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
         spuCode: readiness.spu_code,
         fieldKey: field.key,
         fieldLabel: field.label,
-        fieldValue,
+        fieldValue: normalizeFillFieldValue(field.key, field.label, fieldValue),
         source: aiFill ? "AI_SUGGESTED" : "AI_RULE_FALLBACK",
         confidence: Number.isFinite(confidence) ? confidence : 0.62,
         payload: aiFill ?? {
@@ -4540,6 +4772,50 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
   return c.json({ ok: true, saved_count: saved.length, fills: saved, detail: getListingDetail(db, listingId) })
 })
 
+prePublish.post("/drafts/:id/ai-field", async (c) => {
+  const db = getDb()
+  const listingId = Number(c.req.param("id"))
+  const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
+  if (!listing) {
+    throw new HTTPException(404, { message: "草稿不存在" })
+  }
+  const body = await c.req.json().catch(() => ({})) as { field_key?: string }
+  const fieldKey = normalizeText(body.field_key)
+  if (!fieldKey) {
+    throw new HTTPException(400, { message: "缺少字段 key" })
+  }
+  const readiness = getReadinessForListing(db, listing)
+  if (!readiness) {
+    throw new HTTPException(404, { message: "商品档案不存在" })
+  }
+  const generated = await generateSingleAiField(readiness, fieldKey)
+  persistFill({
+    db,
+    spuCode: readiness.spu_code,
+    fieldKey: generated.field.key,
+    fieldLabel: generated.field.label,
+    fieldValue: generated.fieldValue,
+    source: generated.source,
+    confidence: generated.confidence,
+    payload: generated.payload,
+  })
+  const refreshed = refreshListingAfterFill(db, listingId, `AI 生成字段：${generated.field.label}`)
+  if (!refreshed) {
+    throw new HTTPException(500, { message: "AI 生成字段后刷新草稿失败" })
+  }
+  return c.json({
+    ok: true,
+    field: {
+      field_key: generated.field.key,
+      field_label: generated.field.label,
+      field_value: generated.fieldValue,
+      source: generated.source,
+      confidence: generated.confidence,
+    },
+    detail: getListingDetail(db, listingId),
+  })
+})
+
 function skcFingerprint(value: unknown) {
   return normalizeText(value).replace(/[^a-zA-Z0-9]/g, "").toLowerCase()
 }
@@ -4555,15 +4831,11 @@ function imageContentType(fileName: string) {
   return "image/jpeg"
 }
 
-prePublish.post("/drafts/:id/images/import-folder", async (c) => {
-  const db = getDb()
-  const listingId = Number(c.req.param("id"))
+function importListingImagesFromFolder(db: ReturnType<typeof getDb>, listingId: number, folderPath: string) {
   const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
   if (!listing) {
     throw new HTTPException(404, { message: "草稿不存在" })
   }
-  const body = await c.req.json().catch(() => ({})) as { folder_path?: string }
-  const folderPath = normalizeText(body.folder_path)
   if (!folderPath || !fs.existsSync(folderPath) || !fs.statSync(folderPath).isDirectory()) {
     throw new HTTPException(400, { message: "本地图片目录不存在" })
   }
@@ -4631,10 +4903,41 @@ prePublish.post("/drafts/:id/images/import-folder", async (c) => {
     }
   })
   transaction()
+  return { listing, assets: saved }
+}
+
+prePublish.post("/drafts/batch-import-folders", async (c) => {
+  const db = getDb()
+  const body = await c.req.json().catch(() => ({})) as { listing_ids?: unknown[]; folder_path?: string }
+  const listingIds = Array.from(new Set((Array.isArray(body.listing_ids) ? body.listing_ids : []).map(Number).filter((id) => Number.isFinite(id) && id > 0)))
+  const folderPath = normalizeText(body.folder_path)
+  if (listingIds.length === 0) throw new HTTPException(400, { message: "请先勾选草稿" })
+  const items = listingIds.map((listingId) => {
+    try {
+      const result = importListingImagesFromFolder(db, listingId, folderPath)
+      return { listing_id: listingId, ok: true, imported_count: result.assets.length }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "图片目录导入失败"
+      return { listing_id: listingId, ok: false, imported_count: 0, message }
+    }
+  })
+  return c.json({
+    ok: items.every((item) => item.ok),
+    imported_count: items.reduce((sum, item) => sum + item.imported_count, 0),
+    items,
+  })
+})
+
+prePublish.post("/drafts/:id/images/import-folder", async (c) => {
+  const db = getDb()
+  const listingId = Number(c.req.param("id"))
+  const body = await c.req.json().catch(() => ({})) as { folder_path?: string }
+  const folderPath = normalizeText(body.folder_path)
+  const result = importListingImagesFromFolder(db, listingId, folderPath)
   return c.json({
     ok: true,
-    imported_count: saved.length,
-    assets: saved,
+    imported_count: result.assets.length,
+    assets: result.assets,
     detail: getListingDetail(db, listingId),
   })
 })
@@ -5075,7 +5378,9 @@ prePublish.post("/drafts/batch-publish-check", async (c) => {
         errors: ["草稿不存在"],
         fields: [],
         quick_fixes: {
+          fields: [],
           sku_weights: [],
+          sku_commercials: [],
           image_confirmations: [],
         },
       }
@@ -5149,7 +5454,21 @@ prePublish.post("/drafts/batch-publish-check", async (c) => {
       errors: preview.errors,
       fields,
       quick_fixes: {
+        fields,
         sku_weights: skuWeights,
+        sku_commercials: (detail.skus as SourceRow[])
+          .filter((sku) => Number(sku.selected_for_publish ?? 1) === 1)
+          .map((sku) => ({
+            sku_id: sku.id,
+            sku_code: sku.sku_code,
+            skc_code: sku.skc_code,
+            size_name: sku.size_name,
+            cost_price: sku.cost_price,
+            currency: sku.currency,
+            package_length_cm: sku.package_length_cm,
+            package_width_cm: sku.package_width_cm,
+            package_height_cm: sku.package_height_cm,
+          })),
         image_confirmations: imageConfirmations,
       },
     }

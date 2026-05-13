@@ -45,6 +45,7 @@ interface BatchPublishCheckItem {
   errors: string[]
   fields: BlockingField[]
   quick_fixes?: {
+    fields?: BlockingField[]
     sku_weights: Array<{
       sku_id: number
       sku_code: string
@@ -52,6 +53,17 @@ interface BatchPublishCheckItem {
       size_name: string | null
       package_weight_g: number | null
       selected_for_publish?: boolean
+    }>
+    sku_commercials?: Array<{
+      sku_id: number
+      sku_code: string
+      skc_code: string | null
+      size_name: string | null
+      cost_price: number | null
+      currency: string | null
+      package_length_cm: number | null
+      package_width_cm: number | null
+      package_height_cm: number | null
     }>
     image_confirmations: Array<{
       skc_id: number
@@ -127,6 +139,17 @@ export function BatchPublishDialog({
   const [batchCheck, setBatchCheck] = useState<BatchPublishCheckResponse | null>(null)
   const [fieldEdits, setFieldEdits] = useState<Record<string, string>>({})
   const [skuWeightEdits, setSkuWeightEdits] = useState<Record<string, string>>({})
+  const [commonFieldEdits, setCommonFieldEdits] = useState({
+    titleEn: "",
+    categoryId: "",
+    productTypeId: "",
+  })
+  const [commonPackageEdits, setCommonPackageEdits] = useState({
+    weightG: "",
+    lengthCm: "",
+    widthCm: "",
+    heightCm: "",
+  })
   const [imageConfirmEdits, setImageConfirmEdits] = useState<Record<string, boolean>>({})
 
   function applyBatchCheck(result: BatchPublishCheckResponse) {
@@ -147,6 +170,8 @@ export function BatchPublishDialog({
     }
     setFieldEdits(nextEdits)
     setSkuWeightEdits(nextWeights)
+    setCommonFieldEdits({ titleEn: "", categoryId: "", productTypeId: "" })
+    setCommonPackageEdits({ weightG: "", lengthCm: "", widthCm: "", heightCm: "" })
     setImageConfirmEdits(nextConfirmations)
   }
 
@@ -190,21 +215,49 @@ export function BatchPublishDialog({
         const skuWeightValues = (item.quick_fixes?.sku_weights ?? [])
           .map((sku) => ({
             sku_id: sku.sku_id,
-            package_weight_g: skuWeightEdits[batchEditKey(item.listing_id, sku.sku_id)] ?? "",
+            package_weight_g: commonPackageEdits.weightG || skuWeightEdits[batchEditKey(item.listing_id, sku.sku_id)] || "",
           }))
           .filter((sku) => sku.package_weight_g.trim())
+        const skuCommercialValues = (item.quick_fixes?.sku_commercials ?? [])
+          .map((sku) => ({
+            sku_id: sku.sku_id,
+            cost_price: "",
+            currency: sku.currency || "CNY",
+            package_length_cm: commonPackageEdits.lengthCm,
+            package_width_cm: commonPackageEdits.widthCm,
+            package_height_cm: commonPackageEdits.heightCm,
+          }))
+          .filter((sku) => sku.package_length_cm.trim() || sku.package_width_cm.trim() || sku.package_height_cm.trim())
         const imageFixes = item.quick_fixes?.image_confirmations ?? []
         const imageConfirmedSkcIds = imageFixes
           .filter((skc) => imageConfirmEdits[batchEditKey(item.listing_id, skc.skc_id)])
           .map((skc) => skc.skc_id)
         const savePayload: {
           sku_weight_values?: typeof skuWeightValues
+          sku_commercial_values?: typeof skuCommercialValues
           image_confirmed_skc_ids?: number[]
         } = {}
         if (skuWeightValues.length > 0) savePayload.sku_weight_values = skuWeightValues
+        if (skuCommercialValues.length > 0) savePayload.sku_commercial_values = skuCommercialValues
         if (imageFixes.length > 0) savePayload.image_confirmed_skc_ids = imageConfirmedSkcIds
         if (Object.keys(savePayload).length > 0) {
           await api.post(`/pre-publish/drafts/${item.listing_id}/save`, savePayload)
+        }
+        if (commonFieldEdits.titleEn.trim()) {
+          await api.patch(`/pre-publish/drafts/${item.listing_id}/fields`, {
+            fields: [{
+              field_key: "title_en",
+              field_label: "英文标题",
+              field_value: commonFieldEdits.titleEn.trim(),
+              source: "MANUAL_BATCH_FIX",
+            }],
+          })
+        }
+        if (commonFieldEdits.categoryId.trim() && commonFieldEdits.productTypeId.trim()) {
+          await api.patch(`/pre-publish/drafts/${item.listing_id}/category`, {
+            category_id: Number(commonFieldEdits.categoryId),
+            product_type_id: Number(commonFieldEdits.productTypeId),
+          })
         }
       }
       return api.post<BatchPublishCheckResponse>("/pre-publish/drafts/batch-publish-check", {
@@ -303,6 +356,57 @@ export function BatchPublishDialog({
             <div className="rounded border border-[#f1cccc] bg-[#fff8f8] p-3">
               <p className="text-xs text-[#d45656]">有阻断</p>
               <p className="mt-1 text-2xl font-semibold text-[#d45656]">{formatNumber(blockedItems.length)}</p>
+            </div>
+          </div>
+
+          <div className="grid gap-3 rounded border bg-muted/25 p-3 lg:grid-cols-3">
+            <div className="space-y-2">
+              <p className="text-sm font-medium">批量标题</p>
+              <Input
+                value={commonFieldEdits.titleEn}
+                onChange={(event) => setCommonFieldEdits((current) => ({ ...current, titleEn: event.target.value }))}
+                placeholder="统一英文标题，留空则不改"
+              />
+            </div>
+            <div className="space-y-2">
+              <p className="text-sm font-medium">批量类目</p>
+              <div className="grid grid-cols-2 gap-2">
+                <Input
+                  value={commonFieldEdits.categoryId}
+                  onChange={(event) => setCommonFieldEdits((current) => ({ ...current, categoryId: event.target.value }))}
+                  placeholder="Category ID"
+                />
+                <Input
+                  value={commonFieldEdits.productTypeId}
+                  onChange={(event) => setCommonFieldEdits((current) => ({ ...current, productTypeId: event.target.value }))}
+                  placeholder="Product Type"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <p className="text-sm font-medium">批量包装</p>
+              <div className="grid grid-cols-4 gap-2">
+                <Input
+                  value={commonPackageEdits.weightG}
+                  onChange={(event) => setCommonPackageEdits((current) => ({ ...current, weightG: event.target.value }))}
+                  placeholder="g"
+                />
+                <Input
+                  value={commonPackageEdits.lengthCm}
+                  onChange={(event) => setCommonPackageEdits((current) => ({ ...current, lengthCm: event.target.value }))}
+                  placeholder="长"
+                />
+                <Input
+                  value={commonPackageEdits.widthCm}
+                  onChange={(event) => setCommonPackageEdits((current) => ({ ...current, widthCm: event.target.value }))}
+                  placeholder="宽"
+                />
+                <Input
+                  value={commonPackageEdits.heightCm}
+                  onChange={(event) => setCommonPackageEdits((current) => ({ ...current, heightCm: event.target.value }))}
+                  placeholder="高"
+                />
+              </div>
             </div>
           </div>
 
