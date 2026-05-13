@@ -310,6 +310,75 @@ function skcRows(db: ReturnType<typeof getDb>, row: SourceRow) {
   `).all(row.content_package_id ?? -1) as SourceRow[]
 }
 
+function bucketSkcDetails(db: ReturnType<typeof getDb>, row: SourceRow) {
+  const mdm = db.prepare(`
+    select
+      skc.skc_code,
+      skc.skc_name,
+      skc.color_code,
+      skc.color_name,
+      skc.pic_url,
+      (
+        select asset.normalized_url
+        from product_asset asset
+        where asset.skc_code = skc.skc_code
+          and asset.source_kind = 'PICTURE'
+          and asset.asset_type in ('COLOR_BLOCK', 'COLOR', 'MAIN')
+          and coalesce(asset.normalized_url, '') <> ''
+        order by
+          case
+            when asset.place = 'TMALL' and asset.asset_type = 'COLOR_BLOCK' then 0
+            when asset.place = 'TMALL' and asset.asset_type = 'COLOR' then 1
+            when asset.place = 'TMALL' then 2
+            else 3
+          end,
+          coalesce(asset.sort_no, 999999),
+          asset.id
+        limit 1
+      ) as image_url,
+      (
+        select count(*)
+        from product_sku sku
+        where sku.skc_id = skc.id
+      ) as sku_count
+    from product_skc skc
+    where skc.spu_id = ?
+    order by skc.skc_code
+  `).all(row.product_spu_id ?? row.id) as SourceRow[]
+  if (mdm.length) return mdm
+
+  return db.prepare(`
+    select
+      cskc.skc_code,
+      null as skc_name,
+      null as color_code,
+      cskc.color_name,
+      null as pic_url,
+      (
+        select asset.normalized_url
+        from product_asset asset
+        where asset.skc_code = cskc.skc_code
+          and asset.source_kind = 'PICTURE'
+          and asset.asset_type in ('COLOR_BLOCK', 'COLOR', 'MAIN')
+          and coalesce(asset.normalized_url, '') <> ''
+        order by
+          case
+            when asset.place = 'TMALL' and asset.asset_type = 'COLOR_BLOCK' then 0
+            when asset.place = 'TMALL' and asset.asset_type = 'COLOR' then 1
+            when asset.place = 'TMALL' then 2
+            else 3
+          end,
+          coalesce(asset.sort_no, 999999),
+          asset.id
+        limit 1
+      ) as image_url,
+      cskc.sku_count
+    from product_content_skc cskc
+    where cskc.content_package_id = ?
+    order by cskc.skc_code
+  `).all(row.content_package_id ?? -1) as SourceRow[]
+}
+
 function latestListing(db: ReturnType<typeof getDb>, productSpuId: number) {
   return db.prepare(`
     select listing.*,
@@ -595,11 +664,25 @@ function listWhere(query: {
         or bucket.title_en like ?
         or spu.spu_name like ?
         or pkg.title like ?
+        or exists (
+          select 1
+          from product_skc search_skc
+          where search_skc.spu_id = bucket.product_spu_id
+            and search_skc.skc_code like ?
+        )
+        or exists (
+          select 1
+          from product_content_skc search_cskc
+          join product_content_package search_pkg
+            on search_pkg.id = search_cskc.content_package_id
+          where search_pkg.spu_code = bucket.spu_code
+            and search_cskc.skc_code like ?
+        )
       )
     `).join(" or ")})`)
     for (const term of terms) {
       const like = likeQuery(term)
-      params.push(like, like, like, like, like)
+      params.push(like, like, like, like, like, like, like)
     }
   }
   const addIn = (values: string[] | undefined, sql: string) => {
@@ -622,6 +705,7 @@ function listWhere(query: {
 const bucketSelect = `
   select
     bucket.*,
+    pkg.id as content_package_id,
     spu.spu_name,
     spu.brand_code,
     spu.brand_name,
@@ -728,7 +812,10 @@ sheinProducts.get("/", (c) => {
     where bucket_status <> 'REMOVED'
   `).get() as SourceRow
   return c.json({
-    items: rows,
+    items: rows.map((row) => ({
+      ...row,
+      skc_details: bucketSkcDetails(db, row),
+    })),
     summary,
     pagination: {
       total: total.count,

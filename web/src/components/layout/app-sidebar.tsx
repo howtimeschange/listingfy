@@ -48,6 +48,7 @@ type NavItem = {
   to: string
   icon: typeof LayoutDashboard
   permission?: string
+  disabled?: boolean
 }
 
 type NavGroup = {
@@ -70,14 +71,14 @@ const NAV_GROUPS: NavGroup[] = [
     label: "SHEIN运营中心",
     items: [
       { label: "平台商品列表", to: "/shein-platform-products", icon: PackageSearch, permission: "LISTING_READ" },
-      { label: "站点币种", to: "/shein-platform-products/sites", icon: Globe2, permission: "LISTING_READ" },
-      { label: "条码尺码", to: "/shein-operations/barcode-size", icon: Barcode, permission: "LISTING_READ" },
-      { label: "平台标识对账", to: "/shein-operations/platform-identities", icon: Tags, permission: "LISTING_READ" },
+      { label: "站点币种", to: "/shein-platform-products/sites", icon: Globe2, permission: "LISTING_READ", disabled: true },
+      { label: "条码尺码", to: "/shein-operations/barcode-size", icon: Barcode, permission: "LISTING_READ", disabled: true },
+      { label: "平台标识对账", to: "/shein-operations/platform-identities", icon: Tags, permission: "LISTING_READ", disabled: true },
       { label: "审核状态", to: "/shein-operations/audit-status", icon: ClipboardList, permission: "LISTING_READ" },
-      { label: "合规证书", to: "/shein-operations/compliance", icon: FileText, permission: "LISTING_READ" },
-      { label: "采购备货", to: "/shein-operations/procurement", icon: Truck, permission: "LISTING_READ" },
-      { label: "库存运营", to: "/shein-operations/inventory", icon: Warehouse, permission: "LISTING_READ" },
-      { label: "财务经营", to: "/shein-operations/finance", icon: WalletCards, permission: "LISTING_READ" },
+      { label: "合规证书", to: "/shein-operations/compliance", icon: FileText, permission: "LISTING_READ", disabled: true },
+      { label: "采购备货", to: "/shein-operations/procurement", icon: Truck, permission: "LISTING_READ", disabled: true },
+      { label: "库存运营", to: "/shein-operations/inventory", icon: Warehouse, permission: "LISTING_READ", disabled: true },
+      { label: "财务经营", to: "/shein-operations/finance", icon: WalletCards, permission: "LISTING_READ", disabled: true },
     ],
   },
   {
@@ -143,26 +144,38 @@ export function AppSidebar() {
                 <SidebarMenu>
                   {visibleItems.map((item) => {
                     const active =
-                      pathname === item.to || pathname.startsWith(`${item.to}/`)
+                      !item.disabled && (pathname === item.to || pathname.startsWith(`${item.to}/`))
                     const Icon = item.icon
                     return (
                       <SidebarMenuItem key={item.to}>
                         <SidebarMenuButton
-                          asChild
+                          asChild={!item.disabled}
+                          disabled={item.disabled}
                           isActive={active}
-                          tooltip={item.label}
-                          className="h-9 rounded-lg px-3 text-[14px] font-medium data-[active=true]:bg-[var(--brand-light)] data-[active=true]:text-foreground"
+                          tooltip={item.disabled ? `${item.label}暂不可用` : item.label}
+                          className={cn(
+                            "h-9 rounded-lg px-3 text-[14px] font-medium data-[active=true]:bg-[var(--brand-light)] data-[active=true]:text-foreground",
+                            item.disabled &&
+                              "cursor-not-allowed text-muted-foreground/60 opacity-55 hover:bg-transparent hover:text-muted-foreground/60 data-[active=true]:bg-transparent data-[active=true]:text-muted-foreground/60",
+                          )}
                         >
-                          <NavLink
-                            to={item.to}
-                            className={cn(
-                              "flex items-center gap-2",
-                              active && "font-medium",
-                            )}
-                          >
-                            <Icon className="size-4 shrink-0" />
-                            <span className="truncate whitespace-nowrap">{item.label}</span>
-                          </NavLink>
+                          {item.disabled ? (
+                            <>
+                              <Icon className="size-4 shrink-0" />
+                              <span className="truncate whitespace-nowrap">{item.label}</span>
+                            </>
+                          ) : (
+                            <NavLink
+                              to={item.to}
+                              className={cn(
+                                "flex items-center gap-2",
+                                active && "font-medium",
+                              )}
+                            >
+                              <Icon className="size-4 shrink-0" />
+                              <span className="truncate whitespace-nowrap">{item.label}</span>
+                            </NavLink>
+                          )}
                         </SidebarMenuButton>
                       </SidebarMenuItem>
                     )

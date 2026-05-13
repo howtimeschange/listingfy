@@ -1,9 +1,11 @@
-import { useMemo, useState } from "react"
+import { Fragment, useMemo, useState } from "react"
 import { Link, useNavigate } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   ArrowRight,
   Bot,
+  ChevronDown,
+  ChevronRight,
   ImageIcon,
   Loader2,
   RefreshCw,
@@ -90,7 +92,18 @@ interface SheinBucketItem {
   deepdraw_brand_name: string | null
   deepdraw_category_name: string | null
   hero_image_url: string | null
+  skc_details?: SheinBucketSkcDetail[]
   updated_at: string
+}
+
+interface SheinBucketSkcDetail {
+  skc_code: string
+  skc_name: string | null
+  color_code: string | null
+  color_name: string | null
+  pic_url: string | null
+  image_url: string | null
+  sku_count: number
 }
 
 interface SheinBucketResponse {
@@ -134,6 +147,12 @@ interface CreateDraftResult {
 
 interface AiFillResult {
   saved_count: number
+}
+
+type ImagePreviewState = {
+  src: string
+  alt: string
+  title: string
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -192,22 +211,41 @@ function useSheinFilters() {
   })
 }
 
-function ProductThumb({ src, alt }: { src: string | null; alt: string }) {
+function ProductThumb({
+  src,
+  alt,
+  previewTitle,
+  onPreview,
+}: {
+  src: string | null
+  alt: string
+  previewTitle?: string
+  onPreview?: (image: ImagePreviewState) => void
+}) {
+  const frameClass = "flex aspect-square h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-background"
   if (!src) {
     return (
-      <div className="flex h-14 w-14 items-center justify-center rounded-lg border bg-muted text-muted-foreground">
+      <div className={`${frameClass} text-muted-foreground`}>
         <ImageIcon className="size-5" />
       </div>
     )
   }
   return (
-    <img
-      src={src}
-      alt={alt}
-      className="h-14 w-14 rounded-lg border object-cover"
-      loading="lazy"
-      referrerPolicy="no-referrer"
-    />
+    <button
+      type="button"
+      className={`${frameClass} group cursor-zoom-in transition hover:border-[var(--brand-deep)] hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
+      title="查看大图"
+      aria-label={`查看大图：${alt}`}
+      onClick={() => onPreview?.({ src, alt, title: previewTitle ?? alt })}
+    >
+      <img
+        src={src}
+        alt={alt}
+        className="h-full w-full object-contain transition duration-150 group-hover:scale-105"
+        loading="lazy"
+        referrerPolicy="no-referrer"
+      />
+    </button>
   )
 }
 
@@ -327,6 +365,9 @@ export default function SheinProductsPage() {
   const [readinessStatusFilter, setReadinessStatusFilter] = useState<string[]>([])
   const [imageStatusFilter] = useState<string[]>([])
   const [selectedSpus, setSelectedSpus] = useState<string[]>([])
+  const [selectedSkcCodesBySpu, setSelectedSkcCodesBySpu] = useState<Record<string, string[]>>({})
+  const [expandedSpus, setExpandedSpus] = useState<string[]>([])
+  const [previewImage, setPreviewImage] = useState<ImagePreviewState | null>(null)
   const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -345,6 +386,7 @@ export default function SheinProductsPage() {
   const { data: filters } = useSheinFilters()
   const items = data?.items ?? []
   const selectedSet = useMemo(() => new Set(selectedSpus), [selectedSpus])
+  const selectedSkcCount = Object.values(selectedSkcCodesBySpu).reduce((sum, codes) => sum + codes.length, 0)
   const allVisibleSelected = items.length > 0 && items.every((item) => selectedSet.has(item.spu_code))
   const batchCount = parseBatchSearch(batchSearchText).length
 
@@ -374,6 +416,7 @@ export default function SheinProductsPage() {
       api.post<CreateDraftResult>("/pre-publish/drafts", {
         platform: "SHEIN",
         spu_codes: selectedSpus,
+        skc_codes_by_spu: selectedSkcCodesBySpu,
       }),
     onSuccess: (result) => {
       toast.success(`已创建/更新 ${result.created_count} 个发布草稿`)
@@ -385,15 +428,60 @@ export default function SheinProductsPage() {
   })
 
   function toggleSpu(spuCode: string) {
-    setSelectedSpus((prev) => toggleValue(prev, spuCode))
+    const item = items.find((row) => row.spu_code === spuCode)
+    const skcCodes = item?.skc_details?.map((skc) => skc.skc_code).filter(Boolean) ?? []
+    setSelectedSpus((prev) => {
+      const next = toggleValue(prev, spuCode)
+      const selected = next.includes(spuCode)
+      setSelectedSkcCodesBySpu((current) => {
+        const copy = { ...current }
+        if (selected && skcCodes.length) copy[spuCode] = skcCodes
+        else delete copy[spuCode]
+        return copy
+      })
+      return next
+    })
   }
 
   function toggleAllVisible(checked: boolean) {
     if (!checked) {
       setSelectedSpus((prev) => prev.filter((spuCode) => !items.some((item) => item.spu_code === spuCode)))
+      setSelectedSkcCodesBySpu((current) => {
+        const copy = { ...current }
+        for (const item of items) delete copy[item.spu_code]
+        return copy
+      })
       return
     }
     setSelectedSpus((prev) => Array.from(new Set([...prev, ...items.map((item) => item.spu_code)])))
+    setSelectedSkcCodesBySpu((current) => {
+      const copy = { ...current }
+      for (const item of items) {
+        const codes = item.skc_details?.map((skc) => skc.skc_code).filter(Boolean) ?? []
+        if (codes.length) copy[item.spu_code] = codes
+      }
+      return copy
+    })
+  }
+
+  function toggleExpandedSpu(spuCode: string) {
+    setExpandedSpus((current) => toggleValue(current, spuCode))
+  }
+
+  function toggleSkcSelection(spuCode: string, skcCode: string) {
+    setSelectedSkcCodesBySpu((current) => {
+      const nextCodes = toggleValue(current[spuCode] ?? [], skcCode)
+      const copy = { ...current }
+      if (nextCodes.length) copy[spuCode] = nextCodes
+      else delete copy[spuCode]
+      setSelectedSpus((prev) => {
+        const hasSpu = prev.includes(spuCode)
+        if (nextCodes.length && !hasSpu) return [...prev, spuCode]
+        if (!nextCodes.length && hasSpu) return prev.filter((item) => item !== spuCode)
+        return prev
+      })
+      return copy
+    })
   }
 
   const summary = data?.summary
@@ -404,7 +492,7 @@ export default function SheinProductsPage() {
     `平均完整度 ${Math.round(Number(summary?.avg_completeness ?? 0))}%`,
     `需 AI 判断 ${formatNumber(summary?.needs_ai_count ?? 0)}`,
     `已建草稿 ${formatNumber(summary?.drafted_count ?? 0)}`,
-    `已勾选 ${formatNumber(selectedSpus.length)}`,
+    `已勾选 ${formatNumber(selectedSpus.length)} 款 / ${formatNumber(selectedSkcCount)} 款色`,
   ].join(" / ")
 
   return (
@@ -428,7 +516,7 @@ export default function SheinProductsPage() {
           disabled={createDraftMutation.isPending || selectedSpus.length === 0}
         >
           {createDraftMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
-          创建发布草稿
+          创建所选款色草稿
         </Button>
       </PageHeader>
 
@@ -537,6 +625,7 @@ export default function SheinProductsPage() {
                       aria-label="全选当前分桶商品"
                     />
                   </TableHead>
+                  <TableHead className="w-10" />
                   <TableHead className="w-[88px]">款色图</TableHead>
                   <TableHead>商品</TableHead>
                   <TableHead>SHEIN 类目</TableHead>
@@ -550,127 +639,185 @@ export default function SheinProductsPage() {
               <TableBody>
                 {isLoading ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">
+                    <TableCell colSpan={10} className="h-24 text-center text-muted-foreground">
                       加载中...
                     </TableCell>
                   </TableRow>
                 ) : items.length ? (
-                  items.map((item) => (
-                    <TableRow key={item.id}>
-                      <TableCell>
-                        <Checkbox
-                          checked={selectedSet.has(item.spu_code)}
-                          onCheckedChange={() => toggleSpu(item.spu_code)}
-                          aria-label={`选择 ${item.spu_code}`}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <ProductThumb src={item.hero_image_url} alt={item.title_cn ?? item.spu_code} />
-                      </TableCell>
-                      <TableCell>
-                        <div className="space-y-1">
-                          <Link
-                            to={`/product-archives/${item.spu_code}`}
-                            className="font-medium hover:text-[var(--brand-deep)] hover:underline"
-                          >
-                            {item.spu_code}
-                          </Link>
-                          <div className="max-w-[340px] truncate text-sm text-muted-foreground">
-                            {item.title_cn ?? item.spu_name ?? item.deepdraw_title ?? "—"}
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            {[item.brand_name ?? item.deepdraw_brand_name, item.year, item.season_name]
-                              .filter(Boolean)
-                              .join(" / ") || "—"}
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="max-w-[260px] text-sm">
-                          <div>{item.platform_category_name ?? "未匹配类目"}</div>
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            {item.category_source ?? "—"}
-                          </div>
-                          <Badge variant="outline" className="mt-1">
-                            {labelFor(item.category_status)}
-                          </Badge>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-sm">
-                        <div className="space-y-2">
-                          <div className="h-2 w-28 overflow-hidden rounded-full bg-muted">
-                            <div
-                              className="h-full rounded-full bg-[var(--brand-deep)]"
-                              style={{ width: `${fieldCompleteness(item).completeness}%` }}
+                  items.map((item) => {
+                    const expanded = expandedSpus.includes(item.spu_code)
+                    const skcDetails = item.skc_details ?? []
+                    const selectedSkcs = new Set(selectedSkcCodesBySpu[item.spu_code] ?? [])
+                    return (
+                      <Fragment key={item.id}>
+                        <TableRow key={item.id}>
+                          <TableCell>
+                            <Checkbox
+                              checked={selectedSet.has(item.spu_code)}
+                              onCheckedChange={() => toggleSpu(item.spu_code)}
+                              aria-label={`选择 ${item.spu_code}`}
                             />
-                          </div>
-                          <div className="text-xs tabular-nums text-muted-foreground">
-                            字段完整度 {fieldCompleteness(item).completeness}%
-                          </div>
-                          <div className="flex flex-wrap gap-1">
-                            <Badge variant="outline">缺失 {formatNumber(fieldCompleteness(item).missing)}</Badge>
-                            <Badge variant="outline" className="border-[#d7e5fb] bg-[#eef5ff] text-[#3772cf]">
-                              判断 {formatNumber(fieldCompleteness(item).needsAi)}
-                            </Badge>
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-sm">
-                        <div>尺码 {formatNumber(item.size_match_count)} / {formatNumber(item.sku_count)}</div>
-                        <div className="text-muted-foreground">
-                          {formatPercent(item.supply_discount)} / {formatCurrency(item.supply_price_cny)}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {item.package_size_text ?? "—"} / 毛重记录 {formatNumber(item.weight_record_count)}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-sm">
-                        <Badge variant="outline">{labelFor(item.image_status)}</Badge>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {formatNumber(item.skc_count)} 款色 / {formatNumber(item.sku_count)} SKU
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-sm">
-                        <div className="flex flex-wrap gap-1">
-                          <Badge variant="outline">{labelFor(item.bucket_status)}</Badge>
-                          <Badge variant="outline">{labelFor(item.readiness_status)}</Badge>
-                        </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {item.latest_listing_id ? `草稿 #${item.latest_listing_id} / v${item.latest_version_no ?? 0}` : "暂无草稿"}
-                        </div>
-                        <div className="text-xs text-muted-foreground">{formatDateTime(item.updated_at)}</div>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-1">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon-sm"
-                            onClick={() => refreshMutation.mutate(item.spu_code)}
-                            disabled={refreshMutation.isPending}
-                            aria-label="刷新分桶"
-                          >
-                            {refreshMutation.isPending && refreshMutation.variables === item.spu_code ? (
-                              <Loader2 className="size-4 animate-spin" />
-                            ) : (
-                              <RefreshCw className="size-4" />
-                            )}
-                          </Button>
-                          {item.latest_listing_id ? (
-                            <Button asChild variant="ghost" size="sm">
-                              <Link to={`/pre-publish-validation/${item.latest_listing_id}`}>
-                                草稿
-                                <ArrowRight className="size-4" />
-                              </Link>
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              onClick={() => toggleExpandedSpu(item.spu_code)}
+                              aria-label={`${expanded ? "收起" : "展开"} ${item.spu_code} SKC 款色`}
+                            >
+                              {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
                             </Button>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))
+                          </TableCell>
+                          <TableCell>
+                            <ProductThumb
+                              src={item.hero_image_url}
+                              alt={item.title_cn ?? item.spu_code}
+                              previewTitle={`${item.spu_code} SPU 款色图`}
+                              onPreview={setPreviewImage}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <div className="space-y-1">
+                              <Link
+                                to={`/product-archives/${item.spu_code}`}
+                                className="font-medium hover:text-[var(--brand-deep)] hover:underline"
+                              >
+                                {item.spu_code}
+                              </Link>
+                              <div className="max-w-[340px] truncate text-sm text-muted-foreground">
+                                {item.title_cn ?? item.spu_name ?? item.deepdraw_title ?? "—"}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                {[item.brand_name ?? item.deepdraw_brand_name, item.year, item.season_name]
+                                  .filter(Boolean)
+                                  .join(" / ") || "—"}
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="max-w-[260px] text-sm">
+                              <div>{item.platform_category_name ?? "未匹配类目"}</div>
+                              <div className="mt-1 text-xs text-muted-foreground">
+                                {item.category_source ?? "—"}
+                              </div>
+                              <Badge variant="outline" className="mt-1">
+                                {labelFor(item.category_status)}
+                              </Badge>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            <div className="space-y-2">
+                              <div className="h-2 w-28 overflow-hidden rounded-full bg-muted">
+                                <div
+                                  className="h-full rounded-full bg-[var(--brand-deep)]"
+                                  style={{ width: `${fieldCompleteness(item).completeness}%` }}
+                                />
+                              </div>
+                              <div className="text-xs tabular-nums text-muted-foreground">
+                                字段完整度 {fieldCompleteness(item).completeness}%
+                              </div>
+                              <div className="flex flex-wrap gap-1">
+                                <Badge variant="outline">缺失 {formatNumber(fieldCompleteness(item).missing)}</Badge>
+                                <Badge variant="outline" className="border-[#d7e5fb] bg-[#eef5ff] text-[#3772cf]">
+                                  判断 {formatNumber(fieldCompleteness(item).needsAi)}
+                                </Badge>
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            <div>尺码 {formatNumber(item.size_match_count)} / {formatNumber(item.sku_count)}</div>
+                            <div className="text-muted-foreground">
+                              {formatPercent(item.supply_discount)} / {formatCurrency(item.supply_price_cny)}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {item.package_size_text ?? "—"} / 毛重记录 {formatNumber(item.weight_record_count)}
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            <Badge variant="outline">{labelFor(item.image_status)}</Badge>
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {formatNumber(item.skc_count)} 款色 / {formatNumber(item.sku_count)} SKU
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            <div className="flex flex-wrap gap-1">
+                              <Badge variant="outline">{labelFor(item.bucket_status)}</Badge>
+                              <Badge variant="outline">{labelFor(item.readiness_status)}</Badge>
+                            </div>
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {item.latest_listing_id ? `草稿 #${item.latest_listing_id} / v${item.latest_version_no ?? 0}` : "暂无草稿"}
+                            </div>
+                            <div className="text-xs text-muted-foreground">{formatDateTime(item.updated_at)}</div>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-1">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-sm"
+                                onClick={() => refreshMutation.mutate(item.spu_code)}
+                                disabled={refreshMutation.isPending}
+                                aria-label="刷新分桶"
+                              >
+                                {refreshMutation.isPending && refreshMutation.variables === item.spu_code ? (
+                                  <Loader2 className="size-4 animate-spin" />
+                                ) : (
+                                  <RefreshCw className="size-4" />
+                                )}
+                              </Button>
+                              {item.latest_listing_id ? (
+                                <Button asChild variant="ghost" size="sm">
+                                  <Link to={`/pre-publish-validation/${item.latest_listing_id}`}>
+                                    草稿
+                                    <ArrowRight className="size-4" />
+                                  </Link>
+                                </Button>
+                              ) : null}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                        {expanded ? (
+                          <TableRow key={`${item.id}-skc`}>
+                            <TableCell />
+                            <TableCell colSpan={9} className="bg-muted/30 p-0">
+                              <div className="grid gap-2 p-3 md:grid-cols-2 xl:grid-cols-3">
+                                {skcDetails.length ? skcDetails.map((skc) => (
+                                  <div key={skc.skc_code} className="flex items-center gap-3 rounded-md border bg-background p-2">
+                                    <Checkbox
+                                      checked={selectedSkcs.has(skc.skc_code)}
+                                      onCheckedChange={() => toggleSkcSelection(item.spu_code, skc.skc_code)}
+                                      aria-label={`选择 ${item.spu_code} ${skc.skc_code}`}
+                                    />
+                                    <ProductThumb
+                                      src={skc.image_url ?? skc.pic_url}
+                                      alt={skc.skc_code}
+                                      previewTitle={`${item.spu_code} / ${skc.skc_code} SKC 款色图`}
+                                      onPreview={setPreviewImage}
+                                    />
+                                    <div className="min-w-0 flex-1 text-sm">
+                                      <div className="font-medium">SKC 款色 {skc.skc_code}</div>
+                                      <div className="truncate text-muted-foreground">
+                                        {[skc.color_name, skc.color_code].filter(Boolean).join(" / ") || "未识别颜色"}
+                                      </div>
+                                      <div className="text-xs text-muted-foreground">
+                                        {formatNumber(Number(skc.sku_count ?? 0))} SKU
+                                      </div>
+                                    </div>
+                                  </div>
+                                )) : (
+                                  <div className="text-sm text-muted-foreground">暂无 SKC 款色明细。</div>
+                                )}
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ) : null}
+                      </Fragment>
+                    )
+                  })
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={9} className="h-28 text-center text-muted-foreground">
+                    <TableCell colSpan={10} className="h-28 text-center text-muted-foreground">
                       暂无 SHEIN 商品分桶数据，可先从商品档案勾选加入。
                     </TableCell>
                   </TableRow>
@@ -685,6 +832,24 @@ export default function SheinProductsPage() {
           />
         </CardContent>
       </Card>
+      <Dialog open={Boolean(previewImage)} onOpenChange={(open) => !open && setPreviewImage(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>{previewImage?.title ?? "查看大图"}</DialogTitle>
+            <DialogDescription>SPU / SKC 款色图预览。</DialogDescription>
+          </DialogHeader>
+          {previewImage ? (
+            <div className="flex max-h-[72vh] items-center justify-center overflow-hidden rounded-lg border bg-muted/30 p-3">
+              <img
+                src={previewImage.src}
+                alt={previewImage.alt}
+                className="max-h-[68vh] max-w-full object-contain"
+                referrerPolicy="no-referrer"
+              />
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </PageContainer>
   )
 }

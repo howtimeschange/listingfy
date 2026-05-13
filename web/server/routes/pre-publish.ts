@@ -1898,6 +1898,37 @@ function upsertListingChildren(db: ReturnType<typeof getDb>, listingId: number, 
   }
 }
 
+function applyDraftSkcSelection(
+  db: ReturnType<typeof getDb>,
+  listingId: number,
+  skcCodes: string[] | undefined,
+) {
+  if (!skcCodes) return
+  const selected = new Set(skcCodes.map(normalizeText).filter(Boolean))
+  if (selected.size === 0) return
+  db.prepare(`
+    update listing_skc
+    set selected_for_publish = case when skc_code in (
+        ${Array.from(selected).map(() => "?").join(",")}
+      ) then 1 else 0 end,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where listing_id = ?
+  `).run(...Array.from(selected), listingId)
+  db.prepare(`
+    update listing_sku
+    set selected_for_publish = case when listing_skc_id in (
+        select id
+        from listing_skc
+        where listing_id = ?
+          and selected_for_publish = 1
+      ) then 1 else 0 end,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where listing_skc_id in (
+      select id from listing_skc where listing_id = ?
+    )
+  `).run(listingId, listingId)
+}
+
 function nextPublishUnitNo(db: ReturnType<typeof getDb>, platform: string, accountId: number, productSpuId: number) {
   const row = db.prepare(`
     select coalesce(max(
@@ -1960,7 +1991,13 @@ function updateBucketLatestForSpu(db: ReturnType<typeof getDb>, spuCode: string)
   )
 }
 
-function createDraft(db: ReturnType<typeof getDb>, row: ReadinessRow, sourceRow: SourceRow, platform = "SHEIN") {
+function createDraft(
+  db: ReturnType<typeof getDb>,
+  row: ReadinessRow,
+  sourceRow: SourceRow,
+  platform = "SHEIN",
+  skcCodes?: string[],
+) {
   const account = getDefaultChannelAccount(db, platform)
   const publishUnitNo = nextPublishUnitNo(db, platform, Number(account.id), row.product_spu_id)
 
@@ -2007,6 +2044,7 @@ function createDraft(db: ReturnType<typeof getDb>, row: ReadinessRow, sourceRow:
   )
   const listing = db.prepare("select * from listing where id = ?").get(result.lastInsertRowid) as ListingRow
   upsertListingChildren(db, listing.id, sourceRow, row)
+  applyDraftSkcSelection(db, listing.id, skcCodes)
   persistListingValidation(db, listing.id, row)
   const version = createPublishVersion({
     db,
@@ -3833,6 +3871,7 @@ prePublish.post("/drafts", async (c) => {
   const body = await c.req.json().catch(() => ({})) as {
     platform?: string
     spu_codes?: string[]
+    skc_codes_by_spu?: Record<string, string[]>
     batch_search?: string
   }
   const platform = normalizeText(body.platform || "SHEIN").toUpperCase()
@@ -3867,7 +3906,7 @@ prePublish.post("/drafts", async (c) => {
         missing.push(spuCode)
         continue
       }
-      const result = createDraft(db, readiness, sourceRow, platform)
+      const result = createDraft(db, readiness, sourceRow, platform, body.skc_codes_by_spu?.[spuCode])
       created.push({
         listing_id: result.listing.id,
         spu_code: readiness.spu_code,

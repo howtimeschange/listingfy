@@ -6,6 +6,7 @@ import test from "node:test";
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/010_shein_product_bucket.sql");
 const ROUTE_FILE = path.join(PROJECT_ROOT, "web/server/routes/shein-products.ts");
+const PRE_PUBLISH_ROUTE_FILE = path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts");
 const SERVER_INDEX = path.join(PROJECT_ROOT, "web/server/index.ts");
 const PAGE_FILE = path.join(PROJECT_ROOT, "web/src/pages/shein-products/page.tsx");
 const ROUTER_FILE = path.join(PROJECT_ROOT, "web/src/router.tsx");
@@ -60,4 +61,37 @@ test("SHEIN product bucket has its own table, API, page, and navigation", async 
   assert.match(page, /\/pre-publish\/ai-fill/);
   assert.match(page, /\/shein-products/);
   assert.doesNotMatch(page, /StatCard/);
+});
+
+test("SHEIN product bucket drills into SKC rows and creates drafts from selected SKCs", async () => {
+  const [route, prePublishRoute, page] = await Promise.all([
+    readFile(ROUTE_FILE, "utf8"),
+    readFile(PRE_PUBLISH_ROUTE_FILE, "utf8"),
+    readFile(PAGE_FILE, "utf8"),
+  ]);
+
+  assert.match(route, /skc_details/);
+  assert.match(route, /bucketSkcDetails/);
+  assert.match(route, /normalized_url/);
+  assert.match(prePublishRoute, /skc_codes_by_spu/);
+  assert.match(prePublishRoute, /applyDraftSkcSelection/);
+
+  assert.match(page, /selectedSkcCodesBySpu/);
+  assert.match(page, /expandedSpus/);
+  assert.match(page, /toggleSkcSelection/);
+  assert.match(page, /skc_details/);
+  assert.match(page, /SKC 款色/);
+  assert.match(page, /创建所选款色草稿/);
+  assert.match(page, /skc_codes_by_spu/);
+});
+
+test("SHEIN product bucket keeps product images square and previewable", async () => {
+  const page = await readFile(PAGE_FILE, "utf8");
+
+  assert.match(page, /ImagePreviewState/);
+  assert.match(page, /setPreviewImage/);
+  assert.match(page, /aspect-square/);
+  assert.match(page, /object-contain/);
+  assert.match(page, /查看大图/);
+  assert.match(page, /previewImage/);
 });
