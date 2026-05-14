@@ -35,6 +35,7 @@ tar zcf package.tgz -C .yunxiao-package listingfy
 
 echo "===== Build artifact ====="
 ls -lh package.tgz
-tar tzf package.tgz | head -40
-tar tzf package.tgz | grep -q '^listingfy/ci/yunxiao-deploy.sh$'
+tar tzf package.tgz > .yunxiao-package/package-files.txt
+head -40 .yunxiao-package/package-files.txt
+grep -q '^listingfy/ci/yunxiao-deploy.sh$' .yunxiao-package/package-files.txt
 echo "package.tgz contains ci/yunxiao-deploy.sh"
