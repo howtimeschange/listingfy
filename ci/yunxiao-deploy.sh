@@ -56,32 +56,62 @@ echo "===== Write production env ====="
 } > .env.local
 
 echo "===== Check runtime ====="
-node -v
-npm -v
-NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-if [ "$NODE_MAJOR" -lt 24 ]; then
-  echo "ERROR: Listingify requires Node >=24. Install Node 24 on this server, then rerun."
-  exit 20
+HOST_NODE_MAJOR=0
+if command -v node >/dev/null 2>&1; then
+  node -v
+  npm -v
+  HOST_NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 fi
 
-echo "===== Install dependencies ====="
-npm --prefix web ci
+if [ "$HOST_NODE_MAJOR" -ge 24 ]; then
+  echo "===== Install dependencies on host ====="
+  npm --prefix web ci
 
-echo "===== Build web ====="
-npm --prefix web run build
+  echo "===== Build web on host ====="
+  npm --prefix web run build
 
-echo "===== Migrate and seed database ====="
-npm run db:migrate
-npm run seed:import
+  echo "===== Migrate and seed database on host ====="
+  npm run db:migrate
+  npm run seed:import
 
-echo "===== Restart API ====="
-if ! command -v pm2 >/dev/null 2>&1; then
-  npm install -g pm2
+  echo "===== Restart API with pm2 ====="
+  if ! command -v pm2 >/dev/null 2>&1; then
+    npm install -g pm2
+  fi
+
+  pm2 delete listingfy-api || true
+  pm2 start ./web/node_modules/.bin/tsx --name listingfy-api -- web/server/index.ts
+  pm2 save
+else
+  echo "Host Node >=24 is unavailable; deploying with Docker Node runtime."
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "ERROR: Docker is required on CentOS 7 because Node 24 requires glibc >= 2.28 on host."
+    echo "Install Docker, then rerun this pipeline."
+    exit 21
+  fi
+
+  NODE_IMAGE="${LISTINGIFY_NODE_IMAGE:-node:24-bookworm}"
+  echo "Using Docker image: $NODE_IMAGE"
+
+  docker run --rm --network host \
+    -v "$APP_DIR:/app" \
+    -w /app \
+    --env-file "$APP_DIR/.env.local" \
+    "$NODE_IMAGE" \
+    bash -lc 'set -e; node -v; npm -v; npm --prefix web ci; npm --prefix web run build; npm run db:migrate; npm run seed:import'
+
+  echo "===== Restart API container ====="
+  docker rm -f listingfy-api >/dev/null 2>&1 || true
+  docker run -d \
+    --name listingfy-api \
+    --restart unless-stopped \
+    --network host \
+    -v "$APP_DIR:/app" \
+    -w /app \
+    --env-file "$APP_DIR/.env.local" \
+    "$NODE_IMAGE" \
+    bash -lc './web/node_modules/.bin/tsx web/server/index.ts'
 fi
-
-pm2 delete listingfy-api || true
-pm2 start ./web/node_modules/.bin/tsx --name listingfy-api -- web/server/index.ts
-pm2 save
 
 echo "===== Health check ====="
 sleep 3
