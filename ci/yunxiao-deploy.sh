@@ -65,7 +65,7 @@ fi
 
 if [ "$HOST_NODE_MAJOR" -ge 24 ]; then
   echo "===== Install dependencies on host ====="
-  npm --prefix web ci
+  npm --prefix web ci --include=dev
 
   echo "===== Build web on host ====="
   npm --prefix web run build
@@ -98,7 +98,7 @@ else
     -w /app \
     --env-file "$APP_DIR/.env.local" \
     "$NODE_IMAGE" \
-    bash -lc 'set -e; node -v; npm -v; npm --prefix web ci; npm --prefix web run build; npm run db:migrate; npm run seed:import'
+    bash -lc 'set -e; node -v; npm -v; npm --prefix web ci --include=dev; npm --prefix web run build; npm run db:migrate; npm run seed:import'
 
   echo "===== Restart API container ====="
   docker rm -f listingfy-api >/dev/null 2>&1 || true
