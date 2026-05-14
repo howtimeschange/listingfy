@@ -214,6 +214,8 @@ test("pre publish has a single listing detail route with editable fields and ver
   assert.doesNotMatch(detailPage, /Collapsible/);
   assert.match(detailPage, /aiFieldMutation/);
   assert.match(detailPage, /AI 生成/);
+  assert.match(detailPage, /generatingFieldKey=\{aiFieldMutation\.isPending \? aiFieldMutation\.variables\?\.key \?\? null : null\}/);
+  assert.doesNotMatch(detailPage, /generatingFieldKey=\{aiFieldMutation\.variables\?\.key \?\? null\}/);
   assert.match(detailPage, /AI 转换类目/);
   assert.match(detailPage, /AI 翻译标题/);
   assert.match(detailPage, /AI 推荐补齐空字段/);

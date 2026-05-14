@@ -200,6 +200,33 @@ npm run web:server
 npm run web:dev
 ```
 
+初始化 SHEIN 元数据和业务规则快照：
+
+```bash
+npm run db:migrate
+npm run seed:import
+```
+
+`seed:import` 会从 `db/seeds/listingify-baseline` 导入项目内置的 SHEIN 元数据快照，并从 `db/seeds/listingify-baseline/business` 导入业务规则快照。业务规则快照包含 SHEIN 尺码转换、包装规则、产品毛重、价格规则、价格配置和品牌规则；这两部分会一起随项目提交，方便新服务器一键初始化。
+
+从当前数据库重新生成快照：
+
+```bash
+npm run seed:export
+```
+
+只更新项目内 SHEIN 元数据快照：
+
+```bash
+npm run seed:export -- --metadata-only
+```
+
+只更新业务规则快照到指定目录：
+
+```bash
+npm run seed:export -- --business-only --business-dir /secure/listingify-business-seed
+```
+
 PostgreSQL 迁移示例：
 
 ```bash

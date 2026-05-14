@@ -1,0 +1,42 @@
+{
+  "kind": "business",
+  "exported_at": "2026-05-14T05:44:37.069Z",
+  "format": "jsonl.gz",
+  "tables": [
+    {
+      "table": "business_import_batch",
+      "rows": 5,
+      "file": "db/seeds/listingify-baseline/business/business_import_batch.jsonl.gz"
+    },
+    {
+      "table": "size_conversion_rule",
+      "rows": 42,
+      "file": "db/seeds/listingify-baseline/business/size_conversion_rule.jsonl.gz"
+    },
+    {
+      "table": "shein_package_rule",
+      "rows": 4,
+      "file": "db/seeds/listingify-baseline/business/shein_package_rule.jsonl.gz"
+    },
+    {
+      "table": "product_weight_import",
+      "rows": 62137,
+      "file": "db/seeds/listingify-baseline/business/product_weight_import.jsonl.gz"
+    },
+    {
+      "table": "supply_discount_rule",
+      "rows": 728,
+      "file": "db/seeds/listingify-baseline/business/supply_discount_rule.jsonl.gz"
+    },
+    {
+      "table": "shein_price_config",
+      "rows": 1,
+      "file": "db/seeds/listingify-baseline/business/shein_price_config.jsonl.gz"
+    },
+    {
+      "table": "shein_brand_rule",
+      "rows": 2,
+      "file": "db/seeds/listingify-baseline/business/shein_brand_rule.jsonl.gz"
+    }
+  ]
+}

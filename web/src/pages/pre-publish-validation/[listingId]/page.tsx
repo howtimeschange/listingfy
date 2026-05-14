@@ -2333,7 +2333,7 @@ export default function PrePublishDraftDetailPage() {
                 manualValues={manualValues}
                 onChange={(key, value) => setManualValues((prev) => ({ ...prev, [key]: value }))}
                 onGenerateAi={(field) => aiFieldMutation.mutate(field)}
-                generatingFieldKey={aiFieldMutation.variables?.key ?? null}
+                generatingFieldKey={aiFieldMutation.isPending ? aiFieldMutation.variables?.key ?? null : null}
                 validationIssues={fieldValidationIssues}
               />
               {spuImageRequirements.length ? (

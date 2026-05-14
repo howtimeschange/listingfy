@@ -357,7 +357,7 @@ export default function SheinMetadataPage() {
                   id="metadata-sync-roots"
                   value={syncRoots}
                   onChange={(event) => setSyncRoots(event.target.value)}
-                  placeholder="留空同步全部；可填 儿童,婴儿 或类目 ID"
+                  placeholder="默认同步儿童、婴儿；可填根类目名或类目 ID 覆盖范围"
                 />
               </div>
               <div className="grid gap-3 sm:grid-cols-3">

@@ -1,0 +1,57 @@
+{
+  "kind": "metadata",
+  "exported_at": "2026-05-14T05:20:41.594Z",
+  "format": "jsonl.gz",
+  "tables": [
+    {
+      "table": "sync_batch",
+      "rows": 4,
+      "file": "db/seeds/listingify-baseline/sync_batch.jsonl.gz"
+    },
+    {
+      "table": "channel_store_metadata",
+      "rows": 3,
+      "file": "db/seeds/listingify-baseline/channel_store_metadata.jsonl.gz"
+    },
+    {
+      "table": "channel_category",
+      "rows": 914,
+      "file": "db/seeds/listingify-baseline/channel_category.jsonl.gz"
+    },
+    {
+      "table": "channel_publish_standard",
+      "rows": 774,
+      "file": "db/seeds/listingify-baseline/channel_publish_standard.jsonl.gz"
+    },
+    {
+      "table": "channel_publish_field",
+      "rows": 13928,
+      "file": "db/seeds/listingify-baseline/channel_publish_field.jsonl.gz"
+    },
+    {
+      "table": "channel_picture_config",
+      "rows": 8503,
+      "file": "db/seeds/listingify-baseline/channel_picture_config.jsonl.gz"
+    },
+    {
+      "table": "channel_attribute_template",
+      "rows": 773,
+      "file": "db/seeds/listingify-baseline/channel_attribute_template.jsonl.gz"
+    },
+    {
+      "table": "channel_attribute",
+      "rows": 33570,
+      "file": "db/seeds/listingify-baseline/channel_attribute.jsonl.gz"
+    },
+    {
+      "table": "channel_attribute_value",
+      "rows": 638603,
+      "file": "db/seeds/listingify-baseline/channel_attribute_value.jsonl.gz"
+    },
+    {
+      "table": "channel_required_attribute",
+      "rows": 8789,
+      "file": "db/seeds/listingify-baseline/channel_required_attribute.jsonl.gz"
+    }
+  ]
+}

@@ -15,6 +15,8 @@ test("SHEIN metadata sync is launched from the metadata page", async () => {
 
   assert.match(page, /DialogTrigger\s+asChild/);
   assert.match(page, /<DialogTitle>同步元数据<\/DialogTitle>/);
+  assert.match(page, /默认同步儿童、婴儿；可填根类目名或类目 ID 覆盖范围/);
+  assert.doesNotMatch(page, /留空同步全部/);
   assert.match(page, /api\.post<MetadataSyncJob>\("\/metadata\/sync-jobs"/);
   assert.match(page, /api\.get\(`\/metadata\/sync-jobs\/\$\{syncJobId\}`\)/);
 
