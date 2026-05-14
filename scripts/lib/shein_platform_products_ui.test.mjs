@@ -61,6 +61,7 @@ test("SHEIN platform products separates list, sites, and detail routes without e
   assert.match(page, /view === "sites"/);
   assert.match(page, /view === "detail"/);
   assert.match(page, /navigate\(`\/shein-platform-products\/\$\{encodeURIComponent\(row\.spuName\)\}`\)/);
+  assert.doesNotMatch(page, /navigate\("\/shein-platform-products\/sites"\)/);
 
   assert.match(sidebar, /平台商品列表/);
   assert.match(sidebar, /站点币种/);
@@ -99,7 +100,8 @@ test("SHEIN platform products page wires durable P0 lifecycle operations", async
   assert.match(page, /useCostChangeReasons/);
   assert.match(page, /changeReasonCode/);
   assert.match(page, /regressionLogMutation/);
-  assert.match(page, /真实数据回归/);
+  assert.doesNotMatch(page, /openRegressionDialog/);
+  assert.doesNotMatch(page, /<ClipboardCheck className="size-4" \/>\s*真实数据回归/);
   assert.match(page, /fieldEditMutation/);
   assert.match(page, /addVariantTemplateMutation/);
   assert.match(page, /sourceType: "ADD_VARIANTS"/);

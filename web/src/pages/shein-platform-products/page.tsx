@@ -1377,14 +1377,6 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
     ])
   }
 
-  function openRegressionDialog() {
-    setRegressionForm((current) => ({
-      ...current,
-      spuName: selectedSpuName || detailProduct?.spuName || "",
-    }))
-    setRegressionDialogOpen(true)
-  }
-
   function openEditDialog(spuName: string) {
     const normalized = spuName.trim()
     if (!normalized) {
@@ -1478,12 +1470,6 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             返回列表
           </Button>
         ) : null}
-        {view === "list" ? (
-          <Button variant="outline" onClick={() => navigate("/shein-platform-products/sites")}>
-            <Globe2 className="size-4" />
-            站点币种
-          </Button>
-        ) : null}
         {view === "sites" ? (
           <Button variant="outline" onClick={() => syncSitesMutation.mutate()} disabled={syncSitesMutation.isPending}>
             {syncSitesMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Globe2 className="size-4" />}
@@ -1521,10 +1507,6 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
         <Button variant="outline" onClick={() => setOperationsDialogOpen(true)}>
           <History className="size-4" />
           查看最近操作
-        </Button>
-        <Button variant="outline" onClick={openRegressionDialog}>
-          <ClipboardCheck className="size-4" />
-          真实数据回归
         </Button>
       </PageHeader>
 
