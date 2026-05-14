@@ -117,4 +117,55 @@ echo "===== Health check ====="
 sleep 3
 curl -fsS "http://127.0.0.1:${PORT:-3001}/api/health"
 echo
+
+echo "===== Restart web container ====="
+if command -v docker >/dev/null 2>&1; then
+  test -f "$APP_DIR/web/dist/index.html"
+  cat > "$APP_DIR/nginx.conf" <<'NGINXEOF'
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    client_max_body_size 100m;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:3001/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /assets/ {
+        try_files $uri =404;
+        expires 7d;
+        add_header Cache-Control "public";
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+NGINXEOF
+
+  docker rm -f listingfy-web >/dev/null 2>&1 || true
+  docker run -d \
+    --name listingfy-web \
+    --restart unless-stopped \
+    --network host \
+    -v "$APP_DIR/web/dist:/usr/share/nginx/html:ro" \
+    -v "$APP_DIR/nginx.conf:/etc/nginx/conf.d/default.conf:ro" \
+    nginx:1.27-alpine
+
+  sleep 2
+  curl -fsSI http://127.0.0.1/ >/dev/null
+  echo "WEB_OK"
+else
+  echo "Docker is unavailable; skipping web container."
+fi
+
 echo "DEPLOY_OK"
