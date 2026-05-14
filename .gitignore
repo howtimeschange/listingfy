@@ -9,6 +9,8 @@ node_modules/
 dist/
 .vite/
 tmp/
+package.tgz
+.yunxiao-package/
 docs/reference/integration-handoffs/private/
 data/*.sqlite
 data/*.sqlite-*
