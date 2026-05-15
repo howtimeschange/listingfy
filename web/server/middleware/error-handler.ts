@@ -10,7 +10,7 @@ export async function errorHandler(err: Error, c: Context) {
     {
       error: {
         code: "INTERNAL_ERROR",
-        message: err.message || "Internal server error",
+        message: "Internal server error",
       },
     },
     500,

@@ -95,7 +95,7 @@ const port = Number(process.env.PORT ?? 3001)
 console.log(`API server listening on http://localhost:${port}`)
 console.log(`Database: ${DB_PROVIDER} ${DB_DSN_SAFE}`)
 if (appliedMigrations.length) console.log(`Applied migrations: ${appliedMigrations.join(", ")}`)
-if (adminSeeded) console.log("Seeded default admin user")
+if (adminSeeded) console.log("Seeded configured admin user")
 if (sheinConfigSeeded) console.log("Migrated SHEIN env credentials into platform_integration")
 if (encryptedPlatformCredentials) console.log(`Encrypted platform credentials: ${encryptedPlatformCredentials}`)
 

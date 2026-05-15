@@ -227,13 +227,13 @@ export async function clearSession(c: Context) {
 }
 
 export function ensureAdminUser(db: SyncPostgresDatabase) {
-  const username = process.env.LISTINGIFY_ADMIN_USERNAME || "admin"
+  const username = process.env.LISTINGIFY_ADMIN_USERNAME?.trim()
   const password = process.env.LISTINGIFY_ADMIN_PASSWORD
   const displayName = process.env.LISTINGIFY_ADMIN_DISPLAY_NAME || "系统管理员"
 
+  if (!username || !password) return false
   const existing = db.prepare("select id from app_user where username = ?").get(username) as { id: number } | undefined
   if (existing) return false
-  if (!password) return false
 
   const { salt, hash } = hashPassword(password)
   const result = db.prepare(`

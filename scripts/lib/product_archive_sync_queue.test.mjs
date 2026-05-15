@@ -23,6 +23,18 @@ test("parseSpuCodes splits pasted text, trims noise, and deduplicates codes", ()
   );
 });
 
+test("parseSpuCodes drops script-like and path-like payloads", () => {
+  assert.deepEqual(
+    parseSpuCodes([
+      "208226102001",
+      "<iframe src=javascript:alert(1)>",
+      "../config",
+      "208226103201<script>alert(1)</script>",
+    ]),
+    ["208226102001"],
+  );
+});
+
 test("queue processes product sync jobs serially with a delay between codes", async () => {
   const events = [];
   let now = 1000;

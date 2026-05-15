@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 const DEFAULT_INTERVAL_MS = 1500;
 const MAX_CODES_PER_JOB = 500;
+const PRODUCT_ARCHIVE_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 function clampInterval(value) {
   const number = Number(value ?? DEFAULT_INTERVAL_MS);
@@ -15,7 +16,7 @@ export function parseSpuCodes(input) {
   const codes = [];
   for (const value of values) {
     const code = String(value ?? "").trim();
-    if (!code || seen.has(code)) continue;
+    if (!code || !PRODUCT_ARCHIVE_CODE_PATTERN.test(code) || seen.has(code)) continue;
     seen.add(code);
     codes.push(code);
     if (codes.length >= MAX_CODES_PER_JOB) break;

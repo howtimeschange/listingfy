@@ -14,6 +14,10 @@ import {
 import { queryMdmProduct } from "../../../scripts/lib/mdm_client.mjs"
 import { importMdmProductRows } from "../../../scripts/lib/mdm_product_importer.mjs"
 import { createProductArchiveSyncQueue } from "../../../scripts/lib/product_archive_sync_queue.mjs"
+import {
+  assertAllowedProductArchiveQuery,
+  assertSafeProductArchiveCode,
+} from "../lib/product-archive-security"
 
 const productArchives = new Hono()
 
@@ -333,6 +337,7 @@ function listWhere({
 }
 
 productArchives.get("/", (c) => {
+  assertAllowedProductArchiveQuery(c.req.url, ["q", "brand", "limit", "offset"])
   const db = getDb()
   const q = c.req.query("q")
   const brand = c.req.query("brand")
@@ -375,6 +380,7 @@ productArchives.get("/", (c) => {
 })
 
 productArchives.get("/summary", (c) => {
+  assertAllowedProductArchiveQuery(c.req.url, [])
   const db = getDb()
   const row = db.prepare(`
     ${codesCte}
@@ -390,12 +396,16 @@ productArchives.get("/summary", (c) => {
   return c.json(row)
 })
 
-productArchives.get("/config", (c) => c.json({
-  brands: BRAND_MAPPINGS,
-  deepdraw_tenants: DEEPDRAW_TENANT_OPTIONS,
-}))
+productArchives.get("/config", (c) => {
+  assertAllowedProductArchiveQuery(c.req.url, [])
+  return c.json({
+    brands: BRAND_MAPPINGS,
+    deepdraw_tenants: DEEPDRAW_TENANT_OPTIONS,
+  })
+})
 
 productArchives.get("/sync-jobs/:jobId", (c) => {
+  assertAllowedProductArchiveQuery(c.req.url, [])
   const job = syncQueue.getJob(c.req.param("jobId"))
   if (!job) {
     throw new HTTPException(404, { message: "Sync job not found" })
@@ -404,6 +414,7 @@ productArchives.get("/sync-jobs/:jobId", (c) => {
 })
 
 productArchives.post("/sync-jobs", async (c) => {
+  assertAllowedProductArchiveQuery(c.req.url, [])
   const body = await c.req.json().catch(() => ({})) as {
     source?: string
     codes?: unknown
@@ -430,8 +441,9 @@ productArchives.post("/sync-jobs", async (c) => {
 })
 
 productArchives.get("/:spuCode", (c) => {
+  assertAllowedProductArchiveQuery(c.req.url, [])
   const db = getDb()
-  const spuCode = c.req.param("spuCode")
+  const spuCode = assertSafeProductArchiveCode(c.req.param("spuCode"))
 
   const spu = (db.prepare(`
     select
@@ -558,8 +570,9 @@ productArchives.get("/:spuCode", (c) => {
 })
 
 productArchives.post("/:spuCode/sync/mdm", async (c) => {
+  assertAllowedProductArchiveQuery(c.req.url, [])
   const db = getDb()
-  const spuCode = c.req.param("spuCode")
+  const spuCode = assertSafeProductArchiveCode(c.req.param("spuCode"))
   try {
     return c.json(await syncMdmProduct(db, spuCode))
   } catch (error) {
@@ -573,8 +586,9 @@ productArchives.post("/:spuCode/sync/mdm", async (c) => {
 })
 
 productArchives.post("/:spuCode/sync/deepdraw", async (c) => {
+  assertAllowedProductArchiveQuery(c.req.url, [])
   const db = getDb()
-  const spuCode = c.req.param("spuCode")
+  const spuCode = assertSafeProductArchiveCode(c.req.param("spuCode"))
   try {
     return c.json(await syncDeepdrawProduct(db, spuCode))
   } catch (error) {

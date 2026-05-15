@@ -15,7 +15,7 @@ npm run web:dev
 
 2. 打开 Vite 地址，例如 `http://localhost:5173`。
 3. 使用管理员账号登录。
-4. 开发环境默认账号为 `admin`，默认密码为 `admin123456`。如已通过环境变量覆盖，以实际配置为准。
+4. 系统不再内置默认管理员账号。首次部署请通过 `npm run admin:create -- --username <账号> --password <强密码>` 创建管理员，或同时配置 `LISTINGIFY_ADMIN_USERNAME` 和 `LISTINGIFY_ADMIN_PASSWORD` 后启动服务自动初始化。
 
 ## 2. 工作流总览
 

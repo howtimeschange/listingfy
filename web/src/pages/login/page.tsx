@@ -15,7 +15,7 @@ export default function LoginPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const queryClient = useQueryClient()
-  const [username, setUsername] = useState("admin")
+  const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const from = (location.state as { from?: string } | null)?.from ?? "/dashboard"
 

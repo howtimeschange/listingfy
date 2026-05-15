@@ -1,13 +1,5 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { test } from "node:test";
-
-const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
-const requireFromWeb = createRequire(path.join(PROJECT_ROOT, "web/package.json"));
-const Database = requireFromWeb("better-sqlite3");
 
 const {
   clearLoginFailures,
@@ -18,46 +10,125 @@ const {
 } = await import("../../web/server/lib/auth.ts");
 
 async function createTempDb() {
-  const tempPath = await mkdtemp(path.join(os.tmpdir(), "listingify-auth-security-"));
-  const db = new Database(path.join(tempPath, "test.sqlite"));
-  db.pragma("foreign_keys = ON");
-  db.exec(`
-    create table app_user (
-      id integer primary key autoincrement,
-      username text not null unique,
-      display_name text not null,
-      email text,
-      password_hash text not null,
-      password_salt text not null,
-      status text not null default 'ACTIVE',
-      failed_login_count integer not null default 0,
-      locked_until text,
-      last_login_at text,
-      created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    );
-    create table rbac_role (
-      id integer primary key autoincrement,
-      role_key text not null unique,
-      role_name text not null,
-      description text,
-      is_system integer not null default 1,
-      created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    );
-    create table app_user_role (
-      user_id integer not null references app_user(id) on delete cascade,
-      role_id integer not null references rbac_role(id) on delete cascade,
-      primary key(user_id, role_id)
-    );
-    insert into rbac_role(role_key, role_name) values ('ADMIN', '管理员');
-  `);
+  const db = new MemoryAuthDb();
   return {
     db,
-    async cleanup() {
-      db.close();
-      await rm(tempPath, { recursive: true, force: true });
-    },
+    async cleanup() {},
   };
+}
+
+class MemoryAuthDb {
+  users = [];
+  roles = [{ id: 1, role_key: "ADMIN", role_name: "管理员" }];
+  userRoles = [];
+  nextUserId = 1;
+
+  prepare(sql) {
+    const normalized = sql.replace(/\s+/g, " ").trim().toLowerCase();
+    return {
+      all: () => this.all(normalized),
+      get: (...params) => this.get(normalized, params),
+      run: (...params) => this.run(normalized, params),
+    };
+  }
+
+  all(sql) {
+    if (sql === "pragma table_info(app_user)") {
+      return [
+        "id",
+        "username",
+        "display_name",
+        "email",
+        "password_hash",
+        "password_salt",
+        "status",
+        "failed_login_count",
+        "locked_until",
+        "last_login_at",
+        "created_at",
+        "updated_at",
+      ].map((name) => ({ name }));
+    }
+    throw new Error(`Unsupported all query: ${sql}`);
+  }
+
+  get(sql, params) {
+    if (sql === "select count(*) as count from app_user") {
+      return { count: this.users.length };
+    }
+    if (sql === "select id from app_user where username = ?") {
+      const user = this.users.find((row) => row.username === params[0]);
+      return user ? { id: user.id } : undefined;
+    }
+    if (sql === "select * from app_user where username = ?") {
+      return this.users.find((row) => row.username === params[0]);
+    }
+    if (sql === "select * from app_user where id = ?") {
+      return this.users.find((row) => row.id === params[0]);
+    }
+    if (sql === "select failed_login_count from app_user where id = ?") {
+      const user = this.users.find((row) => row.id === params[0]);
+      return user ? { failed_login_count: user.failed_login_count } : undefined;
+    }
+    if (sql === "select id from rbac_role where role_key = 'admin'") {
+      return this.roles.find((row) => row.role_key === "ADMIN");
+    }
+    if (sql.includes("from app_user_role user_role join rbac_role role")) {
+      const role = this.userRoles
+        .filter((row) => row.user_id === params[0])
+        .map((row) => this.roles.find((candidate) => candidate.id === row.role_id))
+        .find(Boolean);
+      return role ? { role_key: role.role_key } : undefined;
+    }
+    throw new Error(`Unsupported get query: ${sql}`);
+  }
+
+  run(sql, params) {
+    if (sql.startsWith("insert into app_user(")) {
+      const [username, displayName, passwordHash, passwordSalt] = params;
+      const id = this.nextUserId;
+      this.nextUserId += 1;
+      this.users.push({
+        id,
+        username,
+        display_name: displayName,
+        email: null,
+        password_hash: passwordHash,
+        password_salt: passwordSalt,
+        status: "ACTIVE",
+        failed_login_count: 0,
+        locked_until: null,
+        last_login_at: null,
+      });
+      return { lastInsertRowid: id };
+    }
+    if (sql === "insert or ignore into app_user_role(user_id, role_id) values (?, ?)") {
+      const [userId, roleId] = params;
+      if (!this.userRoles.some((row) => row.user_id === userId && row.role_id === roleId)) {
+        this.userRoles.push({ user_id: userId, role_id: roleId });
+      }
+      return { changes: 1 };
+    }
+    if (sql.startsWith("update app_user set failed_login_count = ?,")) {
+      const [failedLoginCount, lockedUntil, userId] = params;
+      const user = this.users.find((row) => row.id === userId);
+      if (user) {
+        user.failed_login_count = failedLoginCount;
+        user.locked_until = lockedUntil;
+      }
+      return { changes: user ? 1 : 0 };
+    }
+    if (sql.startsWith("update app_user set failed_login_count = 0,")) {
+      const [userId] = params;
+      const user = this.users.find((row) => row.id === userId);
+      if (user) {
+        user.failed_login_count = 0;
+        user.locked_until = null;
+      }
+      return { changes: user ? 1 : 0 };
+    }
+    throw new Error(`Unsupported run query: ${sql}`);
+  }
 }
 
 function withEnv(values, fn) {
@@ -83,6 +154,24 @@ test("ensureAdminUser does not create a default weak admin without an explicit p
     await withEnv({
       LISTINGIFY_ADMIN_USERNAME: undefined,
       LISTINGIFY_ADMIN_PASSWORD: undefined,
+      LISTINGIFY_ADMIN_DISPLAY_NAME: undefined,
+    }, () => {
+      assert.equal(ensureAdminUser(db), false);
+    });
+
+    const count = db.prepare("select count(*) as count from app_user").get().count;
+    assert.equal(count, 0);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("ensureAdminUser requires an explicit administrator username", async () => {
+  const { db, cleanup } = await createTempDb();
+  try {
+    await withEnv({
+      LISTINGIFY_ADMIN_USERNAME: undefined,
+      LISTINGIFY_ADMIN_PASSWORD: "S3cure-admin-password-2026",
       LISTINGIFY_ADMIN_DISPLAY_NAME: undefined,
     }, () => {
       assert.equal(ensureAdminUser(db), false);
