@@ -204,8 +204,8 @@ test("SHEIN platform products page supports brand/category filters and price imp
   assert.match(page, /selectedItems\s*=\s*costForm\.items\.filter/);
   assert.match(page, /sku_info_list:\s*items\.map/);
   assert.match(page, /productDetailUrl\(row\.spuName\)/);
-  assert.match(page, /DialogContent className="max-h-\[90dvh\] max-w-5xl overflow-y-auto"/);
-  assert.match(page, /DialogContent className="max-h-\[90dvh\] overflow-hidden sm:max-w-4xl"/);
+  assert.match(page, /DialogContent className="flex max-h-\[90dvh\] w-\[min\(96vw,96rem\)\] flex-col overflow-hidden p-0 sm:max-w-none"/);
+  assert.match(page, /DialogContent className="max-h-\[90dvh\] overflow-hidden sm:max-w-5xl lg:max-w-6xl"/);
   assert.match(page, /Table className="w-full table-fixed"/);
   assert.doesNotMatch(page, /min-w-\[820px\]/);
 });
@@ -235,5 +235,24 @@ test("SHEIN platform products page exposes sale sites, filters, and export", asy
   assert.match(page, /最近上架时间/);
   assert.match(page, /上架站点数/);
   assert.match(page, /exportSpreadsheet/);
+  assert.doesNotMatch(page, /销售站点明细:\s*row\.saleSites\.map/);
+});
+
+test("SHEIN platform products detail page splits product and site views while widening dialogs", async () => {
+  const page = await fileText(PAGE_FILE);
+
+  assert.match(page, /type DetailSection = "product" \| "sites"/);
+  assert.match(page, /detailSectionTabs/);
+  assert.match(page, /detailSection/);
+  assert.match(page, /detailSaleSiteRows/);
+  assert.match(page, /detailSaleSiteSummary/);
+  assert.match(page, /displayName: site\.siteName \|\| site\.siteAbbr \|\| "—"/);
+  assert.match(page, /siteCode: site\.siteAbbr \|\| "—"/);
+  assert.match(page, /Tabs value=\{detailSection\}/);
+  assert.match(page, /TabsContent value="product"/);
+  assert.match(page, /TabsContent value="sites"/);
+  assert.match(page, /sm:max-w-5xl lg:max-w-6xl/);
+  assert.match(page, /sm:max-w-6xl/);
+  assert.match(page, /detailSaleSiteSummary/);
   assert.doesNotMatch(page, /销售站点明细:\s*row\.saleSites\.map/);
 });

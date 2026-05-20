@@ -251,6 +251,13 @@ test("SHEIN platform products derive sale site details from synced SPU detail pa
   assert.match(service, /input\.site/);
 });
 
+test("SHEIN platform product detail passes platform context into summary serialization", async () => {
+  const service = await fileText(SERVICE_FILE);
+
+  assert.match(service, /serializeProductSummary\(db, product, context\)/);
+  assert.match(service, /product:\s*serializeProductSummary\(db, product, context\)/);
+});
+
 test("SHEIN platform products merge duplicate sale-site rows by site code", async () => {
   const service = await importService();
 

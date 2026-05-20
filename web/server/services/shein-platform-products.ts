@@ -1535,7 +1535,7 @@ function serializeProductDetail(db: SyncPostgresDatabase, context: SheinPlatform
   `).all(product.id) as JsonRecord[]
 
   return {
-    product: serializeProductSummary(db, product),
+    product: serializeProductSummary(db, product, context),
     skcs: skcs.map((skc) => {
       const skus = db.prepare(`
         select *

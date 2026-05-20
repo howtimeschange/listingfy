@@ -61,6 +61,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api-client"
 import { formatNumber } from "@/lib/format"
 import { exportSpreadsheet, exportWorkbook, readSpreadsheetFile, type SpreadsheetRow } from "@/lib/spreadsheet"
+import { ScrollArea } from "@/components/ui/scroll-area"
 
 type JsonRecord = Record<string, unknown>
 
@@ -199,6 +200,8 @@ interface ProductDetailResponse {
   rawInfo: JsonRecord
   operations: LifecycleOperation[]
 }
+
+type DetailSection = "product" | "sites"
 
 interface CostItem {
   skcName: string
@@ -355,6 +358,7 @@ interface SpuSyncItemResult {
 }
 
 type PlatformProductView = "list" | "sites" | "detail"
+const EMPTY_SALE_SITES: SaleSiteDetail[] = []
 
 interface SheinPlatformProductsPageProps {
   view?: PlatformProductView
@@ -670,7 +674,10 @@ function usePlatformProducts(params: ProductQueryParams) {
   })
 }
 
-function platformProductsListUrl(params: ProductQueryParams, pagination = params.pagination) {
+function platformProductsListUrl(
+  params: ProductQueryParams,
+  pagination: Pick<ServerPaginationState, "limit" | "offset"> = params.pagination,
+) {
   const search = new URLSearchParams()
   search.set("limit", String(pagination.limit))
   search.set("offset", String(pagination.offset))
@@ -761,6 +768,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const [syncFilters, setSyncFilters] = useState<SyncFilters>(DEFAULT_SYNC_FILTERS)
   const [spuNameSyncText, setSpuNameSyncText] = useState("")
   const [saleSitesDialogProduct, setSaleSitesDialogProduct] = useState<PlatformProductRow | null>(null)
+  const [detailSection, setDetailSection] = useState<DetailSection>("product")
   const [exportingPlatformProducts, setExportingPlatformProducts] = useState(false)
   const [queryParams, setQueryParams] = useState<ProductQueryParams>({
     pagination: { limit: 50, offset: 0, total: 0 },
@@ -784,6 +792,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const siteOptions = productsQuery.data?.filters?.sites ?? []
   const detail = detailQuery.data ?? null
   const detailProduct = detail?.product
+  const detailSaleSites = detailProduct?.saleSites ?? EMPTY_SALE_SITES
   const currencyOptions = useMemo(() => {
     const currencies = Array.from(new Set(siteRows.map((site) => site.currency).filter(Boolean)))
     return currencies.length ? currencies : ["CNY", "USD", "EUR"]
@@ -805,6 +814,13 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const selectedCostItems = costForm.items.filter((item) => item.selected)
   const costIncreased = selectedCostItems.some((item) => Number(costForm.cost) > Number(item.originalCost || 0))
   const spuNamesToSync = useMemo(() => splitSpuNames(spuNameSyncText), [spuNameSyncText])
+  const detailSectionTabs = useMemo(
+    () => [
+      { value: "product" as const, label: "商品明细" },
+      { value: "sites" as const, label: "销售站点明细" },
+    ],
+    [],
+  )
 
   const syncProductsMutation = useMutation({
     mutationFn: () => {
@@ -883,6 +899,26 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "按款号同步失败"),
   })
+
+  const detailSaleSiteRows = useMemo(
+    () =>
+      detailSaleSites.map((site) => ({
+        ...site,
+        displayName: site.siteName || site.siteAbbr || "—",
+        siteCode: site.siteAbbr || "—",
+      })),
+    [detailSaleSites],
+  )
+  const detailSaleSiteSummary = useMemo(() => {
+    if (!detailSaleSiteRows.length) return detailProduct?.saleSiteSummary || "详情同步后显示"
+    const activeSites = detailSaleSiteRows.filter((site) => site.shelfStatus === 1)
+    if (!activeSites.length) return "未上架"
+    const preview = activeSites
+      .slice(0, 4)
+      .map((site) => `${site.displayName} (${site.siteCode})`)
+      .join("、")
+    return `上架 ${formatNumber(activeSites.length)} 站：${preview}${activeSites.length > 4 ? "..." : ""}`
+  }, [detailProduct?.saleSiteSummary, detailSaleSiteRows])
 
   const syncSitesMutation = useMutation({
     mutationFn: () =>
@@ -1299,17 +1335,16 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
     const pageSize = 200
     const rows: PlatformProductRow[] = []
     let offset = 0
-    let total = 0
-    do {
+    while (true) {
       const response = await api.get<ProductListResponse>(platformProductsListUrl(queryParams, {
         limit: pageSize,
         offset,
-        total,
       }))
       rows.push(...response.items)
-      total = response.pagination.total
+      const total = Number(response.pagination.total ?? 0)
+      if (rows.length >= total) break
       offset += pageSize
-    } while (rows.length < total)
+    }
     return rows
   }
 
@@ -1321,7 +1356,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
         toast.error("当前筛选条件下没有可导出的平台商品")
         return
       }
-      exportPlatformProductRows(rows)
+      exportPlatformProductsWorkbook(rows)
       toast.success(`已导出 ${formatNumber(rows.length)} 条平台商品`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "导出平台商品失败")
@@ -1330,7 +1365,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
     }
   }
 
-  function exportPlatformProductRows(rows: PlatformProductRow[]) {
+  function exportPlatformProductsWorkbook(rows: PlatformProductRow[]) {
     const overviewRows = rows.map((row) => ({
       SPU: row.spuName,
       商品名称: row.productName,
@@ -1797,7 +1832,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
       ) : null}
 
       <Dialog open={syncDialogOpen} onOpenChange={setSyncDialogOpen}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="sm:max-w-5xl lg:max-w-6xl">
           <DialogHeader>
             <DialogTitle>同步商品</DialogTitle>
             <DialogDescription>
@@ -1958,63 +1993,65 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
           if (!open) setSaleSitesDialogProduct(null)
         }}
       >
-        <DialogContent className="max-h-[90dvh] overflow-hidden sm:max-w-4xl">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[90dvh] w-[min(96vw,88rem)] flex-col overflow-hidden p-0 sm:max-w-none">
+          <DialogHeader className="px-6 pt-6">
             <DialogTitle>销售站点</DialogTitle>
             <DialogDescription>
               {saleSitesDialogProduct?.spuName || "当前商品"} 的上架国家站点、状态、链接和上架时间。
             </DialogDescription>
           </DialogHeader>
-          <div className="min-h-0 overflow-auto rounded-md border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>站点</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>首次上架</TableHead>
-                  <TableHead>最近上架</TableHead>
-                  <TableHead>来源</TableHead>
-                  <TableHead className="text-right">商品链接</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {saleSitesDialogProduct?.saleSites?.length ? (
-                  saleSitesDialogProduct.saleSites.map((site) => (
-                    <TableRow key={`${site.siteAbbr}-${site.source}`}>
-                      <TableCell>
-                        <div className="text-sm font-medium">{site.siteName || site.siteAbbr}</div>
-                        <div className="font-mono text-xs text-muted-foreground">{site.siteAbbr}</div>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={saleSiteStatusVariant(site.shelfStatus)}>
-                          {site.shelfStatusText}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{site.firstShelfTime || "—"}</TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{site.lastShelfTime || "—"}</TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{site.source || "—"}</TableCell>
-                      <TableCell className="text-right">
-                        {site.link ? (
-                          <Button variant="ghost" size="sm" asChild>
-                            <a href={site.link} target="_blank" rel="noreferrer">打开链接</a>
-                          </Button>
-                        ) : (
-                          <span className="text-sm text-muted-foreground">—</span>
-                        )}
+          <ScrollArea className="min-h-0 flex-1 px-6">
+            <div className="min-w-[760px] rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>站点</TableHead>
+                    <TableHead>状态</TableHead>
+                    <TableHead>首次上架</TableHead>
+                    <TableHead>最近上架</TableHead>
+                    <TableHead>来源</TableHead>
+                    <TableHead className="text-right">商品链接</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {saleSitesDialogProduct?.saleSites?.length ? (
+                    saleSitesDialogProduct.saleSites.map((site) => (
+                      <TableRow key={`${site.siteAbbr}-${site.source}`}>
+                        <TableCell>
+                          <div className="text-sm font-medium">{site.siteName || site.siteAbbr}</div>
+                          <div className="font-mono text-xs text-muted-foreground">{site.siteAbbr}</div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={saleSiteStatusVariant(site.shelfStatus)}>
+                            {site.shelfStatusText}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{site.firstShelfTime || "—"}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{site.lastShelfTime || "—"}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{site.source || "—"}</TableCell>
+                        <TableCell className="text-right">
+                          {site.link ? (
+                            <Button variant="ghost" size="sm" asChild>
+                              <a href={site.link} target="_blank" rel="noreferrer">打开链接</a>
+                            </Button>
+                          ) : (
+                            <span className="text-sm text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                        本地尚未同步到该 SPU 的销售站点明细
                       </TableCell>
                     </TableRow>
-                  ))
-                ) : (
-                  <TableRow>
-                    <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
-                      本地尚未同步到该 SPU 的销售站点明细
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
-          <DialogFooter>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </ScrollArea>
+          <DialogFooter className="px-6 pb-6">
             <Button variant="outline" onClick={() => setSaleSitesDialogProduct(null)}>
               关闭
             </Button>
@@ -2091,91 +2128,91 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
 
       {view === "detail" ? (
         <Card>
-        <CardHeader className="gap-2">
-          <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-            <div>
-              <CardTitle>商品详情</CardTitle>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {selectedSpuName ? `当前 SPU：${selectedSpuName}` : "从平台商品列表选择 SPU，或手动输入 spuName 查询。"}
-              </p>
-              {detailQuery.isError ? (
-                <p className="mt-1 text-xs text-destructive">
-                  本地尚未同步该 SPU 详情，可点击“同步详情”从 SHEIN 拉取并入库。
+          <CardHeader className="gap-2">
+            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+              <div>
+                <CardTitle>商品详情</CardTitle>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {selectedSpuName ? `当前 SPU：${selectedSpuName}` : "从平台商品列表选择 SPU，或手动输入 spuName 查询。"}
                 </p>
-              ) : null}
-            </div>
-            <div className="flex flex-wrap justify-end gap-2">
-              {selectedSpuName ? (
-                <>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => syncDetailMutation.mutate(selectedSpuName)}
-                    disabled={syncDetailMutation.isPending}
-                  >
-                    <PackageSearch className="size-4" />
-                    同步详情
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => checkEditMutation.mutate(selectedSpuName)}
-                    disabled={checkEditMutation.isPending}
-                  >
-                    <ClipboardCheck className="size-4" />
-                    检查可编辑
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => syncStatusMutation.mutate(selectedSpuName)}
-                    disabled={syncStatusMutation.isPending}
-                  >
-                    {syncStatusMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                    同步状态
-                  </Button>
-                  <Button type="button" variant="outline" onClick={() => openEditDialog(selectedSpuName)}>
-                    <Edit3 className="size-4" />
-                    常用字段编辑
-                  </Button>
-                  <Button type="button" variant="outline" onClick={() => openVariantDialog(selectedSpuName)}>
-                    <GitMerge className="size-4" />
-                    拼款模板
-                  </Button>
-                  {detail ? (
+                {detailQuery.isError ? (
+                  <p className="mt-1 text-xs text-destructive">
+                    本地尚未同步该 SPU 详情，可点击“同步详情”从 SHEIN 拉取并入库。
+                  </p>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap justify-end gap-2">
+                {selectedSpuName ? (
+                  <>
                     <Button
                       type="button"
                       variant="outline"
-                      onClick={() => openBatchCostDialog(selectedSpuName, detailCostItems(detail), detail.skcs.flatMap((skc) => skc.skus).find((sku) => sku.currency)?.currency)}
+                      onClick={() => syncDetailMutation.mutate(selectedSpuName)}
+                      disabled={syncDetailMutation.isPending}
                     >
-                      <DollarSign className="size-4" />
-                      批量更新供货价
+                      <PackageSearch className="size-4" />
+                      同步详情
                     </Button>
-                  ) : null}
-                  <Button type="button" variant="ghost" onClick={() => openJsonAction("partial-edit", selectedSpuName)}>
-                    <Wand2 className="size-4" />
-                    高级 JSON 编辑
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => revokeMutation.mutate(selectedSpuName)}
-                    disabled={revokeMutation.isPending}
-                  >
-                    <RotateCcw className="size-4" />
-                    撤回商品
-                  </Button>
-                </>
-              ) : null}
-              {detailQuery.isFetching ? (
-                <Badge variant="outline">
-                  <Loader2 className="size-3 animate-spin" />
-                  读取中
-                </Badge>
-              ) : null}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => checkEditMutation.mutate(selectedSpuName)}
+                      disabled={checkEditMutation.isPending}
+                    >
+                      <ClipboardCheck className="size-4" />
+                      检查可编辑
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => syncStatusMutation.mutate(selectedSpuName)}
+                      disabled={syncStatusMutation.isPending}
+                    >
+                      {syncStatusMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                      同步状态
+                    </Button>
+                    <Button type="button" variant="outline" onClick={() => openEditDialog(selectedSpuName)}>
+                      <Edit3 className="size-4" />
+                      常用字段编辑
+                    </Button>
+                    <Button type="button" variant="outline" onClick={() => openVariantDialog(selectedSpuName)}>
+                      <GitMerge className="size-4" />
+                      拼款模板
+                    </Button>
+                    {detail ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => openBatchCostDialog(selectedSpuName, detailCostItems(detail), detail.skcs.flatMap((skc) => skc.skus).find((sku) => sku.currency)?.currency)}
+                      >
+                        <DollarSign className="size-4" />
+                        批量更新供货价
+                      </Button>
+                    ) : null}
+                    <Button type="button" variant="ghost" onClick={() => openJsonAction("partial-edit", selectedSpuName)}>
+                      <Wand2 className="size-4" />
+                      高级 JSON 编辑
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => revokeMutation.mutate(selectedSpuName)}
+                      disabled={revokeMutation.isPending}
+                    >
+                      <RotateCcw className="size-4" />
+                      撤回商品
+                    </Button>
+                  </>
+                ) : null}
+                {detailQuery.isFetching ? (
+                  <Badge variant="outline">
+                    <Loader2 className="size-3 animate-spin" />
+                    读取中
+                  </Badge>
+                ) : null}
+              </div>
             </div>
-          </div>
-        </CardHeader>
+          </CardHeader>
         <CardContent>
           {!selectedSpuName ? (
             <div className="flex h-36 items-center justify-center rounded-md border text-sm text-muted-foreground">
@@ -2187,181 +2224,197 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             </div>
           ) : detail ? (
             <div className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-5">
-                <div className="rounded-md border p-3">
-                  <p className="text-xs text-muted-foreground">SPU</p>
-                  <p className="mt-1 font-mono text-sm font-medium">{detailProduct?.spuName || selectedSpuName}</p>
+              <Tabs value={detailSection} onValueChange={(value) => setDetailSection(value as DetailSection)}>
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <TabsList>
+                    {detailSectionTabs.map((tab) => (
+                      <TabsTrigger key={tab.value} value={tab.value}>
+                        {tab.label}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                  <div className="grid gap-3 md:grid-cols-5">
+                    <div className="rounded-md border p-3">
+                      <p className="text-xs text-muted-foreground">SPU</p>
+                      <p className="mt-1 font-mono text-sm font-medium">{detailProduct?.spuName || selectedSpuName}</p>
+                    </div>
+                    <div className="rounded-md border p-3">
+                      <p className="text-xs text-muted-foreground">商品名称</p>
+                      <p className="mt-1 truncate text-sm font-medium">{detailProduct?.productName || "—"}</p>
+                    </div>
+                    <div className="rounded-md border p-3">
+                      <p className="text-xs text-muted-foreground">供应商货号</p>
+                      <p className="mt-1 truncate text-sm font-medium">{detailProduct?.supplierCode || "—"}</p>
+                    </div>
+                    <div className="rounded-md border p-3">
+                      <p className="text-xs text-muted-foreground">类目名称</p>
+                      <p className="mt-1 truncate text-sm font-medium">{detailProduct?.categoryName || "—"}</p>
+                    </div>
+                    <div className="rounded-md border p-3">
+                      <p className="text-xs text-muted-foreground">可编辑</p>
+                      <p className="mt-1 truncate text-sm font-medium">{detailProduct?.editableStatus || "未检查"}</p>
+                    </div>
+                    <div className="rounded-md border p-3">
+                      <p className="text-xs text-muted-foreground">平台状态</p>
+                      <p className="mt-1 truncate text-sm font-medium">{detailProduct?.productStatus || "未同步"}</p>
+                    </div>
+                    <div className="rounded-md border p-3">
+                      <p className="text-xs text-muted-foreground">销售站点</p>
+                      <p className="mt-1 truncate text-sm font-medium">
+                        {detailSaleSiteSummary}
+                      </p>
+                    </div>
+                  </div>
                 </div>
-                <div className="rounded-md border p-3">
-                  <p className="text-xs text-muted-foreground">商品名称</p>
-                  <p className="mt-1 truncate text-sm font-medium">{detailProduct?.productName || "—"}</p>
-                </div>
-                <div className="rounded-md border p-3">
-                  <p className="text-xs text-muted-foreground">供应商货号</p>
-                  <p className="mt-1 truncate text-sm font-medium">{detailProduct?.supplierCode || "—"}</p>
-                </div>
-                <div className="rounded-md border p-3">
-                  <p className="text-xs text-muted-foreground">类目名称</p>
-                  <p className="mt-1 truncate text-sm font-medium">{detailProduct?.categoryName || "—"}</p>
-                </div>
-                <div className="rounded-md border p-3">
-                  <p className="text-xs text-muted-foreground">可编辑</p>
-                  <p className="mt-1 truncate text-sm font-medium">{detailProduct?.editableStatus || "未检查"}</p>
-                </div>
-                <div className="rounded-md border p-3">
-                  <p className="text-xs text-muted-foreground">平台状态</p>
-                  <p className="mt-1 truncate text-sm font-medium">{detailProduct?.productStatus || "未同步"}</p>
-                </div>
-                <div className="rounded-md border p-3">
-                  <p className="text-xs text-muted-foreground">销售站点</p>
-                  <p className="mt-1 truncate text-sm font-medium">
-                    {detailProduct?.saleSiteSummary || "详情同步后显示"}
-                  </p>
-                </div>
-              </div>
 
-              <div className="overflow-hidden rounded-md border">
-                <div className="flex items-center justify-between border-b px-3 py-2">
-                  <div className="text-sm font-medium">销售站点明细</div>
-                  <Badge variant="outline">上架站点数 {formatNumber(detailProduct?.saleSiteCount ?? 0)}</Badge>
-                </div>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>站点</TableHead>
-                      <TableHead>状态</TableHead>
-                      <TableHead>首次上架</TableHead>
-                      <TableHead>最近上架</TableHead>
-                      <TableHead>来源</TableHead>
-                      <TableHead className="text-right">链接</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {detailProduct?.saleSites?.length ? (
-                      detailProduct.saleSites.map((site) => (
-                        <TableRow key={`${site.siteAbbr}-${site.source}`}>
-                          <TableCell>
-                            <div className="text-sm font-medium">{site.siteName || site.siteAbbr}</div>
-                            <div className="font-mono text-xs text-muted-foreground">{site.siteAbbr}</div>
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={saleSiteStatusVariant(site.shelfStatus)}>
-                              {site.shelfStatusText}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-sm text-muted-foreground">{site.firstShelfTime || "—"}</TableCell>
-                          <TableCell className="text-sm text-muted-foreground">{site.lastShelfTime || "—"}</TableCell>
-                          <TableCell className="text-sm text-muted-foreground">{site.source || "—"}</TableCell>
-                          <TableCell className="text-right">
-                            {site.link ? (
-                              <Button variant="ghost" size="sm" asChild>
-                                <a href={site.link} target="_blank" rel="noreferrer">打开链接</a>
-                              </Button>
-                            ) : (
-                              <span className="text-sm text-muted-foreground">—</span>
-                            )}
-                          </TableCell>
+                <TabsContent value="product" className="mt-4 space-y-4">
+                  <div className="overflow-hidden rounded-md border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-[82px]">图片</TableHead>
+                          <TableHead>SKC</TableHead>
+                          <TableHead>SKU</TableHead>
+                          <TableHead>供货价</TableHead>
+                          <TableHead>售价</TableHead>
+                          <TableHead>状态</TableHead>
+                          <TableHead className="text-right">操作</TableHead>
                         </TableRow>
-                      ))
-                    ) : (
-                      <TableRow>
-                        <TableCell colSpan={6} className="h-20 text-center text-muted-foreground">
-                          SPU 详情里暂未找到销售站点明细
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </div>
+                      </TableHeader>
+                      <TableBody>
+                        {detail.skcs.length ? (
+                          detail.skcs.flatMap((skc) =>
+                            skc.skus.length
+                              ? skc.skus.map((sku, index) => (
+                                  <TableRow key={`${skc.skcName}-${sku.skuCode}`}>
+                                    <TableCell>{index === 0 ? <ProductThumb src={skc.imageUrl} alt={skc.skcName} /> : null}</TableCell>
+                                    <TableCell>
+                                      {index === 0 ? (
+                                        <div className="space-y-1">
+                                          <div className="font-mono text-xs font-medium">{skc.skcName || "—"}</div>
+                                          <div className="text-xs text-muted-foreground">{skc.supplierCode || "—"}</div>
+                                          <div className="text-xs text-muted-foreground">{skc.saleText || "—"}</div>
+                                          <Badge variant="outline">{skc.shelfText || "—"}</Badge>
+                                        </div>
+                                      ) : null}
+                                    </TableCell>
+                                    <TableCell>
+                                      <div className="space-y-1">
+                                        <div className="font-mono text-xs font-medium">{sku.skuCode || "—"}</div>
+                                        <div className="text-xs text-muted-foreground">{sku.supplierSku || "—"}</div>
+                                        <div className="text-xs text-muted-foreground">{sku.saleText || "—"}</div>
+                                      </div>
+                                    </TableCell>
+                                    <TableCell className="text-sm">{sku.costs || "—"}</TableCell>
+                                    <TableCell className="max-w-[260px] text-sm text-muted-foreground">{sku.prices || "—"}</TableCell>
+                                    <TableCell className="text-sm">
+                                      <div>{mallStateLabel(sku.mallState)}</div>
+                                      <div className="text-xs text-muted-foreground">
+                                        {sku.stopPurchase === 2 ? "停采" : "在采"} / {sku.weight ?? "—"}g
+                                      </div>
+                                      <div className="text-xs text-muted-foreground">{sku.dimensions || "—"}</div>
+                                    </TableCell>
+                                    <TableCell className="text-right">
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() =>
+                                          openCostDialog({
+                                            spuName: detailProduct?.spuName || selectedSpuName,
+                                            skcName: skc.skcName,
+                                            skuCode: sku.skuCode,
+                                            supplierSku: sku.supplierSku,
+                                            cost: sku.currentCost,
+                                            currency: sku.currency,
+                                          })
+                                        }
+                                      >
+                                        <DollarSign className="size-4" />
+                                        更新成本价
+                                      </Button>
+                                    </TableCell>
+                                  </TableRow>
+                                ))
+                              : [
+                                  <TableRow key={`${skc.skcName}-empty`}>
+                                    <TableCell><ProductThumb src={skc.imageUrl} alt={skc.skcName} /></TableCell>
+                                    <TableCell className="font-mono text-xs">{skc.skcName || "—"}</TableCell>
+                                    <TableCell colSpan={5} className="text-sm text-muted-foreground">
+                                      该 SKC 暂未同步到 SKU 明细
+                                    </TableCell>
+                                  </TableRow>,
+                                ],
+                          )
+                        ) : (
+                          <TableRow>
+                            <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+                              SPU 详情没有 SKC/SKU 明细
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </TabsContent>
 
-              <div className="overflow-hidden rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-[82px]">图片</TableHead>
-                      <TableHead>SKC</TableHead>
-                      <TableHead>SKU</TableHead>
-                      <TableHead>供货价</TableHead>
-                      <TableHead>售价</TableHead>
-                      <TableHead>状态</TableHead>
-                      <TableHead className="text-right">操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {detail.skcs.length ? (
-                      detail.skcs.flatMap((skc) =>
-                        skc.skus.length
-                          ? skc.skus.map((sku, index) => (
-                              <TableRow key={`${skc.skcName}-${sku.skuCode}`}>
-                                <TableCell>{index === 0 ? <ProductThumb src={skc.imageUrl} alt={skc.skcName} /> : null}</TableCell>
-                                <TableCell>
-                                  {index === 0 ? (
-                                    <div className="space-y-1">
-                                      <div className="font-mono text-xs font-medium">{skc.skcName || "—"}</div>
-                                      <div className="text-xs text-muted-foreground">{skc.supplierCode || "—"}</div>
-                                      <div className="text-xs text-muted-foreground">{skc.saleText || "—"}</div>
-                                      <Badge variant="outline">{skc.shelfText || "—"}</Badge>
-                                    </div>
-                                  ) : null}
-                                </TableCell>
-                                <TableCell>
-                                  <div className="space-y-1">
-                                    <div className="font-mono text-xs font-medium">{sku.skuCode || "—"}</div>
-                                    <div className="text-xs text-muted-foreground">{sku.supplierSku || "—"}</div>
-                                    <div className="text-xs text-muted-foreground">{sku.saleText || "—"}</div>
-                                  </div>
-                                </TableCell>
-                                <TableCell className="text-sm">{sku.costs || "—"}</TableCell>
-                                <TableCell className="max-w-[260px] text-sm text-muted-foreground">{sku.prices || "—"}</TableCell>
-                                <TableCell className="text-sm">
-                                  <div>{mallStateLabel(sku.mallState)}</div>
-                                  <div className="text-xs text-muted-foreground">
-                                    {sku.stopPurchase === 2 ? "停采" : "在采"} / {sku.weight ?? "—"}g
-                                  </div>
-                                  <div className="text-xs text-muted-foreground">{sku.dimensions || "—"}</div>
-                                </TableCell>
-                                <TableCell className="text-right">
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() =>
-                                      openCostDialog({
-                                        spuName: detailProduct?.spuName || selectedSpuName,
-                                        skcName: skc.skcName,
-                                        skuCode: sku.skuCode,
-                                        supplierSku: sku.supplierSku,
-                                        cost: sku.currentCost,
-                                        currency: sku.currency,
-                                      })
-                                    }
-                                  >
-                                    <DollarSign className="size-4" />
-                                    更新成本价
+                <TabsContent value="sites" className="mt-4 space-y-4">
+                  <div className="overflow-hidden rounded-md border">
+                    <div className="flex items-center justify-between border-b px-3 py-2">
+                      <div className="text-sm font-medium">销售站点明细</div>
+                      <Badge variant="outline">上架站点数 {formatNumber(detailProduct?.saleSiteCount ?? 0)}</Badge>
+                    </div>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>站点</TableHead>
+                          <TableHead>状态</TableHead>
+                          <TableHead>首次上架</TableHead>
+                          <TableHead>最近上架</TableHead>
+                          <TableHead>来源</TableHead>
+                          <TableHead className="text-right">链接</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {detailSaleSiteRows.length ? (
+                          detailSaleSiteRows.map((site) => (
+                            <TableRow key={`${site.siteAbbr}-${site.source}`}>
+                              <TableCell>
+                                <div className="text-sm font-medium">{site.displayName}</div>
+                                <div className="font-mono text-xs text-muted-foreground">{site.siteCode}</div>
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant={saleSiteStatusVariant(site.shelfStatus)}>
+                                  {site.shelfStatusText}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-sm text-muted-foreground">{site.firstShelfTime || "—"}</TableCell>
+                              <TableCell className="text-sm text-muted-foreground">{site.lastShelfTime || "—"}</TableCell>
+                              <TableCell className="text-sm text-muted-foreground">{site.source || "—"}</TableCell>
+                              <TableCell className="text-right">
+                                {site.link ? (
+                                  <Button variant="ghost" size="sm" asChild>
+                                    <a href={site.link} target="_blank" rel="noreferrer">打开链接</a>
                                   </Button>
-                                </TableCell>
-                              </TableRow>
-                            ))
-                          : [
-                              <TableRow key={`${skc.skcName}-empty`}>
-                                <TableCell><ProductThumb src={skc.imageUrl} alt={skc.skcName} /></TableCell>
-                                <TableCell className="font-mono text-xs">{skc.skcName || "—"}</TableCell>
-                                <TableCell colSpan={5} className="text-sm text-muted-foreground">
-                                  该 SKC 暂未同步到 SKU 明细
-                                </TableCell>
-                              </TableRow>,
-                            ],
-                      )
-                    ) : (
-                      <TableRow>
-                        <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
-                          SPU 详情没有 SKC/SKU 明细
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </div>
+                                ) : (
+                                  <span className="text-sm text-muted-foreground">—</span>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        ) : (
+                          <TableRow>
+                            <TableCell colSpan={6} className="h-20 text-center text-muted-foreground">
+                              SPU 详情里暂未找到销售站点明细
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </TabsContent>
+              </Tabs>
+
               <JsonViewer data={detail.rawInfo} label="SPU 详情原始 info" />
             </div>
           ) : (
@@ -2374,144 +2427,148 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
       ) : null}
 
       <Dialog open={costDialogOpen} onOpenChange={setCostDialogOpen}>
-        <DialogContent className="max-h-[90dvh] max-w-5xl overflow-y-auto">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[90dvh] w-[min(96vw,96rem)] flex-col overflow-hidden p-0 sm:max-w-none">
+          <DialogHeader className="px-6 pt-6">
             <DialogTitle>批量更新成本价/供货价</DialogTitle>
             <DialogDescription>
               供货价通过 SHEIN `/open-api/goods/update-cost` 提交，成功后会记录生命周期操作并更新本地 SKU 成本价。
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="cost-spu">SPU</Label>
-              <Input
-                id="cost-spu"
-                value={costForm.spuName}
-                onChange={(event) => setCostForm((current) => ({ ...current, spuName: event.target.value.trim() }))}
-              />
-            </div>
-            <div className="rounded-md border">
-              <div className="flex items-center justify-between border-b px-3 py-2">
-                <div className="text-sm font-medium">
-                  已选 SKU {formatNumber(selectedCostItems.length)} / {formatNumber(costForm.items.length)}
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    const allSelected = selectedCostItems.length === costForm.items.length
-                    setCostForm((current) => ({
-                      ...current,
-                      items: current.items.map((item) => ({ ...item, selected: !allSelected })),
-                    }))
-                  }}
-                >
-                  <Settings2 className="size-4" />
-                  {selectedCostItems.length === costForm.items.length ? "取消全选" : "全选"}
-                </Button>
-              </div>
-              <div className="max-h-72 overflow-auto">
-                <Table className="min-w-[760px]">
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-12">选</TableHead>
-                      <TableHead>SKC</TableHead>
-                      <TableHead>SKU</TableHead>
-                      <TableHead>商家 SKU</TableHead>
-                      <TableHead>原供货价</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {costForm.items.length ? (
-                      costForm.items.map((item, index) => (
-                        <TableRow key={`${item.skcName}-${item.skuCode}`}>
-                          <TableCell>
-                            <Checkbox
-                              checked={item.selected}
-                              onCheckedChange={(checked) => setCostForm((current) => ({
-                                ...current,
-                                items: current.items.map((currentItem, itemIndex) =>
-                                  itemIndex === index ? { ...currentItem, selected: checked === true } : currentItem,
-                                ),
-                              }))}
-                            />
-                          </TableCell>
-                          <TableCell className="font-mono text-xs">{item.skcName || "—"}</TableCell>
-                          <TableCell className="font-mono text-xs">{item.skuCode || "—"}</TableCell>
-                          <TableCell className="text-xs text-muted-foreground">{item.supplierSku || "—"}</TableCell>
-                          <TableCell className="text-sm">{item.originalCost || "—"}</TableCell>
-                        </TableRow>
-                      ))
-                    ) : (
-                      <TableRow>
-                        <TableCell colSpan={5} className="h-20 text-center text-muted-foreground">
-                          本地尚未同步 SKU 明细
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </div>
-            </div>
-            <div className="grid gap-3 md:grid-cols-[1fr_160px]">
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
+            <div className="grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="cost-value">新成本价</Label>
+                <Label htmlFor="cost-spu">SPU</Label>
                 <Input
-                  id="cost-value"
-                  type="number"
-                  min="0.01"
-                  max="99999.99"
-                  step="0.01"
-                  value={costForm.cost}
-                  onChange={(event) => setCostForm((current) => ({ ...current, cost: event.target.value }))}
-                  placeholder="10.55"
+                  id="cost-spu"
+                  value={costForm.spuName}
+                  onChange={(event) => setCostForm((current) => ({ ...current, spuName: event.target.value.trim() }))}
                 />
               </div>
-              <div className="grid gap-2">
-                <Label>币种</Label>
-                <Select
-                  value={costForm.currency}
-                  onValueChange={(currency) => setCostForm((current) => ({ ...current, currency }))}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {currencyOptions.map((currency) => (
-                      <SelectItem key={currency} value={currency}>
-                        {currency}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <div className="rounded-md border">
+                <div className="flex items-center justify-between border-b px-3 py-2">
+                  <div className="text-sm font-medium">
+                    已选 SKU {formatNumber(selectedCostItems.length)} / {formatNumber(costForm.items.length)}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      const allSelected = selectedCostItems.length === costForm.items.length
+                      setCostForm((current) => ({
+                        ...current,
+                        items: current.items.map((item) => ({ ...item, selected: !allSelected })),
+                      }))
+                    }}
+                  >
+                    <Settings2 className="size-4" />
+                    {selectedCostItems.length === costForm.items.length ? "取消全选" : "全选"}
+                  </Button>
+                </div>
+                <div className="max-h-72 overflow-auto">
+                  <Table className="min-w-[760px]">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-12">选</TableHead>
+                        <TableHead>SKC</TableHead>
+                        <TableHead>SKU</TableHead>
+                        <TableHead>商家 SKU</TableHead>
+                        <TableHead>原供货价</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {costForm.items.length ? (
+                        costForm.items.map((item, index) => (
+                          <TableRow key={`${item.skcName}-${item.skuCode}`}>
+                            <TableCell>
+                              <Checkbox
+                                checked={item.selected}
+                                onCheckedChange={(checked) =>
+                                  setCostForm((current) => ({
+                                    ...current,
+                                    items: current.items.map((currentItem, itemIndex) =>
+                                      itemIndex === index ? { ...currentItem, selected: checked === true } : currentItem,
+                                    ),
+                                  }))
+                                }
+                              />
+                            </TableCell>
+                            <TableCell className="font-mono text-xs">{item.skcName || "—"}</TableCell>
+                            <TableCell className="font-mono text-xs">{item.skuCode || "—"}</TableCell>
+                            <TableCell className="text-xs text-muted-foreground">{item.supplierSku || "—"}</TableCell>
+                            <TableCell className="text-sm">{item.originalCost || "—"}</TableCell>
+                          </TableRow>
+                        ))
+                      ) : (
+                        <TableRow>
+                          <TableCell colSpan={5} className="h-20 text-center text-muted-foreground">
+                            本地尚未同步 SKU 明细
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
               </div>
+              <div className="grid gap-3 md:grid-cols-[1fr_160px]">
+                <div className="grid gap-2">
+                  <Label htmlFor="cost-value">新成本价</Label>
+                  <Input
+                    id="cost-value"
+                    type="number"
+                    min="0.01"
+                    max="99999.99"
+                    step="0.01"
+                    value={costForm.cost}
+                    onChange={(event) => setCostForm((current) => ({ ...current, cost: event.target.value }))}
+                    placeholder="10.55"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label>币种</Label>
+                  <Select
+                    value={costForm.currency}
+                    onValueChange={(currency) => setCostForm((current) => ({ ...current, currency }))}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {currencyOptions.map((currency) => (
+                        <SelectItem key={currency} value={currency}>
+                          {currency}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              {costIncreased ? (
+                <div className="grid gap-2">
+                  <Label>涨价原因</Label>
+                  <Select
+                    value={costForm.changeReasonCode}
+                    onValueChange={(changeReasonCode) => setCostForm((current) => ({ ...current, changeReasonCode }))}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="选择 query-change-price-reason 原因" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {costChangeReasons.map((reason) => (
+                        <SelectItem key={reason.reasonCode} value={reason.reasonCode}>
+                          {reason.reasonCode} - {reason.reasonText}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    原因来源：{costReasonSource === "DOCUMENT_FALLBACK" ? "文档枚举兜底" : "SHEIN 接口 query-change-price-reason"}
+                  </p>
+                </div>
+              ) : null}
             </div>
-            {costIncreased ? (
-              <div className="grid gap-2">
-                <Label>涨价原因</Label>
-                <Select
-                  value={costForm.changeReasonCode}
-                  onValueChange={(changeReasonCode) => setCostForm((current) => ({ ...current, changeReasonCode }))}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="选择 query-change-price-reason 原因" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {costChangeReasons.map((reason) => (
-                      <SelectItem key={reason.reasonCode} value={reason.reasonCode}>
-                        {reason.reasonCode} - {reason.reasonText}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  原因来源：{costReasonSource === "DOCUMENT_FALLBACK" ? "文档枚举兜底" : "SHEIN 接口 query-change-price-reason"}
-                </p>
-              </div>
-            ) : null}
           </div>
-          <DialogFooter>
+          <DialogFooter className="px-6 pb-6">
             <Button variant="outline" onClick={() => setCostDialogOpen(false)}>
               取消
             </Button>
@@ -2524,7 +2581,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
       </Dialog>
 
       <Dialog open={costImportDialogOpen} onOpenChange={setCostImportDialogOpen}>
-        <DialogContent className="max-h-[90dvh] overflow-hidden sm:max-w-4xl">
+        <DialogContent className="max-h-[90dvh] overflow-hidden sm:max-w-5xl lg:max-w-6xl">
           <DialogHeader>
             <DialogTitle>表格导入更新供货价</DialogTitle>
             <DialogDescription>
@@ -2612,7 +2669,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
       </Dialog>
 
       <Dialog open={regressionDialogOpen} onOpenChange={setRegressionDialogOpen}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-5xl lg:max-w-6xl">
           <DialogHeader>
             <DialogTitle>真实数据回归</DialogTitle>
             <DialogDescription>
@@ -2710,7 +2767,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
       </Dialog>
 
       <Dialog open={operationsDialogOpen} onOpenChange={setOperationsDialogOpen}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="sm:max-w-5xl lg:max-w-6xl">
           <DialogHeader>
             <DialogTitle>最近操作</DialogTitle>
             <DialogDescription>{operationSourceLabel}</DialogDescription>
@@ -2766,7 +2823,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
       </Dialog>
 
       <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent className="max-w-5xl">
+        <DialogContent className="sm:max-w-6xl">
           <DialogHeader>
             <DialogTitle>常用字段编辑</DialogTitle>
             <DialogDescription>
@@ -2946,7 +3003,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
       </Dialog>
 
       <Dialog open={variantDialogOpen} onOpenChange={setVariantDialogOpen}>
-        <DialogContent className="max-w-4xl">
+        <DialogContent className="sm:max-w-5xl lg:max-w-6xl">
           <DialogHeader>
             <DialogTitle>拼款模板</DialogTitle>
             <DialogDescription>
@@ -3110,7 +3167,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
         open={jsonActionDialog.open}
         onOpenChange={(open) => setJsonActionDialog((current) => ({ ...current, open }))}
       >
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="sm:max-w-5xl lg:max-w-6xl">
           <DialogHeader>
             <DialogTitle>{actionTitle(jsonActionDialog.kind)}</DialogTitle>
             <DialogDescription>
