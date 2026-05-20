@@ -251,6 +251,73 @@ test("SHEIN platform products derive sale site details from synced SPU detail pa
   assert.match(service, /input\.site/);
 });
 
+test("SHEIN platform products merge duplicate sale-site rows by site code", async () => {
+  const service = await importService();
+
+  const merged = service.saleSitesFromProduct(
+    {
+      raw_detail_payload_json: {
+        info: {
+          shelfStatusInfoList: [
+            {
+              siteAbbr: "shein-ar",
+              shelfStatus: 1,
+              firstShelfTime: "2026-05-15 13:58:27",
+              lastShelfTime: "2026-05-15 13:58:27",
+              link: "https://example.invalid/ar-1",
+            },
+          ],
+        },
+      },
+    },
+    [
+      {
+        raw_payload_json: {
+          shelfStatusInfoList: [
+            {
+              siteAbbr: "shein-ar",
+              shelfStatus: 1,
+              firstShelfTime: "2026-05-15 13:58:28",
+              lastShelfTime: "2026-05-15 13:58:28",
+              link: "https://example.invalid/ar-2",
+            },
+            {
+              siteAbbr: "shein-asia",
+              shelfStatus: 1,
+              firstShelfTime: "2026-05-15 13:58:30",
+              lastShelfTime: "2026-05-15 13:58:30",
+              link: "https://example.invalid/asia",
+            },
+          ],
+        },
+        skc_name: "SKC001",
+      },
+      {
+        raw_payload_json: {
+          shelfStatusInfoList: [
+            {
+              siteAbbr: "shein-ar",
+              shelfStatus: 0,
+              firstShelfTime: "2026-05-15 13:58:29",
+              lastShelfTime: "2026-05-15 13:58:29",
+              link: "https://example.invalid/ar-3",
+            },
+          ],
+        },
+        skc_name: "SKC002",
+      },
+    ],
+  );
+
+  assert.equal(merged.length, 2);
+  assert.deepEqual(merged.map((site) => site.siteAbbr), ["shein-ar", "shein-asia"]);
+  assert.equal(merged[0].source, "SPU / SKC001 / SKC002");
+  assert.equal(merged[0].link, "https://example.invalid/ar-1");
+  assert.equal(merged[0].shelfStatus, 1);
+  assert.equal(merged[1].source, "SKC001");
+  assert.equal(merged[1].link, "https://example.invalid/asia");
+});
+
 test("SHEIN common edit form payload preserves required published identifiers while applying safe fields", async () => {
   const service = await importService();
   const payload = service.buildEditPayloadFromForm(

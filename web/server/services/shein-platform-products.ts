@@ -381,8 +381,26 @@ function saleSiteStatusText(shelfStatus: number | null) {
   return `状态 ${shelfStatus}`
 }
 
-function saleSiteKey(site: SaleSiteDetail) {
-  return `${site.siteAbbr}::${site.source}`
+function mergeSaleSiteSources(existing: string, source: string) {
+  const sources = new Set(
+    [existing, source]
+      .flatMap((item) => item.split(/\s*\/\s*/))
+      .map((item) => item.trim())
+      .filter(Boolean),
+  )
+  return Array.from(sources).join(" / ")
+}
+
+function pickEarlierText(existing: string, next: string) {
+  if (!existing) return next
+  if (!next) return existing
+  return existing <= next ? existing : next
+}
+
+function pickLaterText(existing: string, next: string) {
+  if (!existing) return next
+  if (!next) return existing
+  return existing >= next ? existing : next
 }
 
 function siteNameLookup(db: SyncPostgresDatabase, context: SheinPlatformContext) {
@@ -421,25 +439,24 @@ function normalizeSaleSite(
 function mergeSaleSites(sites: SaleSiteDetail[]) {
   const byKey = new Map<string, SaleSiteDetail>()
   for (const site of sites) {
-    const key = site.source === "SPU" ? site.siteAbbr : saleSiteKey(site)
+    const key = site.siteAbbr
     const existing = byKey.get(key)
     if (!existing) {
       byKey.set(key, site)
       continue
     }
-    const shelfStatus = existing.shelfStatus === 1 ? existing.shelfStatus : site.shelfStatus
-    const source = existing.source.includes(site.source)
-      ? existing.source
-      : [existing.source, site.source].filter(Boolean).join(" / ")
+    const shelfStatus = [existing.shelfStatus, site.shelfStatus].includes(1)
+      ? 1
+      : site.shelfStatus ?? existing.shelfStatus
     byKey.set(key, {
       siteAbbr: existing.siteAbbr,
       siteName: existing.siteName || site.siteName,
       shelfStatus,
       shelfStatusText: saleSiteStatusText(shelfStatus),
-      firstShelfTime: existing.firstShelfTime || site.firstShelfTime,
-      lastShelfTime: site.lastShelfTime || existing.lastShelfTime,
-      link: site.link || existing.link,
-      source,
+      firstShelfTime: pickEarlierText(existing.firstShelfTime, site.firstShelfTime),
+      lastShelfTime: pickLaterText(existing.lastShelfTime, site.lastShelfTime),
+      link: existing.link || site.link,
+      source: mergeSaleSiteSources(existing.source, site.source),
     })
   }
   return Array.from(byKey.values()).sort((left, right) => {
@@ -449,7 +466,7 @@ function mergeSaleSites(sites: SaleSiteDetail[]) {
   })
 }
 
-function saleSitesFromProduct(
+export function saleSitesFromProduct(
   row: JsonRecord,
   skcs: JsonRecord[],
   siteNames: Map<string, string> = new Map(),
