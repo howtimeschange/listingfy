@@ -79,9 +79,14 @@ if [ "$HOST_NODE_MAJOR" -ge 24 ]; then
   echo "===== Build web on host ====="
   npm --prefix web run build
 
-  echo "===== Migrate and seed database on host ====="
+  echo "===== Migrate database on host ====="
   npm run db:migrate
-  npm run seed:import
+  if [ "${RUN_SEED_IMPORT:-0}" = "1" ]; then
+    echo "===== Import seed data on host ====="
+    npm run seed:import
+  else
+    echo "===== Skip seed import; set RUN_SEED_IMPORT=1 to enable ====="
+  fi
 
   echo "===== Restart API with pm2 ====="
   if ! command -v pm2 >/dev/null 2>&1; then
@@ -106,8 +111,9 @@ else
     -v "$APP_DIR:/app" \
     -w /app \
     --env-file "$APP_DIR/.env.local" \
+    -e RUN_SEED_IMPORT="${RUN_SEED_IMPORT:-0}" \
     "$NODE_IMAGE" \
-    bash -lc 'set -e; node -v; npm -v; npm --prefix web ci --include=dev; npm --prefix web run build; npm run db:migrate; npm run seed:import'
+    bash -lc 'set -e; node -v; npm -v; npm --prefix web ci --include=dev; npm --prefix web run build; npm run db:migrate; if [ "${RUN_SEED_IMPORT:-0}" = "1" ]; then echo "===== Import seed data in Docker ====="; npm run seed:import; else echo "===== Skip seed import; set RUN_SEED_IMPORT=1 to enable ====="; fi'
 
   echo "===== Restart API container ====="
   docker rm -f listingfy-api >/dev/null 2>&1 || true
