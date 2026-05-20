@@ -61,7 +61,6 @@ import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api-client"
 import { formatNumber } from "@/lib/format"
 import { exportSpreadsheet, exportWorkbook, readSpreadsheetFile, type SpreadsheetRow } from "@/lib/spreadsheet"
-import { ScrollArea } from "@/components/ui/scroll-area"
 
 type JsonRecord = Record<string, unknown>
 
@@ -2000,7 +1999,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
               {saleSitesDialogProduct?.spuName || "当前商品"} 的上架国家站点、状态、链接和上架时间。
             </DialogDescription>
           </DialogHeader>
-          <ScrollArea className="min-h-0 flex-1 px-6">
+          <div className="min-h-0 flex-1 overflow-auto px-6">
             <div className="min-w-[760px] rounded-md border">
               <Table>
                 <TableHeader>
@@ -2050,7 +2049,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                 </TableBody>
               </Table>
             </div>
-          </ScrollArea>
+          </div>
           <DialogFooter className="px-6 pb-6">
             <Button variant="outline" onClick={() => setSaleSitesDialogProduct(null)}>
               关闭

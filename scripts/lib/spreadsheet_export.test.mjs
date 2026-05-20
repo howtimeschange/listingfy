@@ -33,5 +33,7 @@ test("spreadsheet export can write multiple named sheets", async () => {
   assert.match(spreadsheet, /exportWorkbook/);
   assert.match(spreadsheet, /SpreadsheetSheet/);
   assert.match(spreadsheet, /sheet\.name/);
-  assert.match(spreadsheet, /XLSX\.utils\.book_append_sheet\(workbook, worksheet, sheet\.name\)/);
+  assert.match(spreadsheet, /sheetNameWithIndex/);
+  assert.match(spreadsheet, /SHEET_ROW_LIMIT/);
+  assert.match(spreadsheet, /XLSX\.utils\.book_append_sheet\(workbook, worksheet, sheetNameWithIndex\(sheet\.name, index, chunkCount\)\)/);
 });
