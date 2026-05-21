@@ -3,6 +3,7 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  Loader2,
 } from "lucide-react"
 import { formatNumber } from "@/lib/format"
 import { Button } from "@/components/ui/button"
@@ -29,6 +30,7 @@ interface ServerPaginationProps {
   pageSizeOptions?: number[]
   beforeContent?: ReactNode
   className?: string
+  isLoading?: boolean
 }
 
 export function ServerPagination({
@@ -38,6 +40,7 @@ export function ServerPagination({
   pageSizeOptions = [10, 20, 50, 100, 200],
   beforeContent,
   className,
+  isLoading = false,
 }: ServerPaginationProps) {
   if (!pagination) return null
 
@@ -60,6 +63,12 @@ export function ServerPagination({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-sm text-muted-foreground tabular-nums">
           共 {formatNumber(total)} 条，当前第 {currentPage || 1} / {pageCount} 页
+          {isLoading ? (
+            <span className="ml-2 inline-flex items-center gap-1 text-xs">
+              <Loader2 className="size-3 animate-spin" />
+              更新中
+            </span>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">

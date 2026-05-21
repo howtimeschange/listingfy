@@ -22,6 +22,7 @@ interface ProductListInput {
   brand?: string
   category?: string
   site?: string
+  includeDetails?: boolean | number | string
 }
 
 interface ProductSyncPlan {
@@ -83,6 +84,22 @@ interface SaleSiteDetail {
   lastShelfTime: string
   link: string
   source: string
+}
+
+interface ProductFilterOption {
+  value: string
+  label: string
+  count: number
+}
+
+interface ProductFilterOptions {
+  brands: ProductFilterOption[]
+  categories: ProductFilterOption[]
+  sites: ProductFilterOption[]
+}
+
+interface ProductSummaryOptions {
+  includeDetails?: boolean
 }
 
 interface NormalizedSku {
@@ -246,6 +263,10 @@ function readBoolean(value: unknown, fallback: boolean) {
     if (["0", "false", "no", "n", "off"].includes(normalized)) return false
   }
   return fallback
+}
+
+function readListIncludeDetails(value: unknown) {
+  return readBoolean(value, false)
 }
 
 function readPositiveInteger(value: unknown, fallback: number, max: number) {
@@ -758,6 +779,7 @@ export function persistProductListResult(
     }
   }
   for (const productId of touchedProductIds) refreshProductCounts(db, productId)
+  if (touchedProductIds.size) clearProductFilterCache()
   return { rowCount: rows.length, productCount: touchedProductIds.size }
 }
 
@@ -935,6 +957,7 @@ export function persistProductDetailResult(
     }
   }
   refreshProductCounts(db, productId)
+  clearProductFilterCache()
   return { persisted: true, skcCount: detail.skcs.length, skuCount }
 }
 
@@ -995,6 +1018,7 @@ function persistSitesResult(
       nowIso(),
     )
   }
+  if (sites.length) clearProductFilterCache()
   return { siteCount: sites.length }
 }
 
@@ -1098,6 +1122,18 @@ function productWhereForContext(context: SheinPlatformContext) {
   }
 }
 
+const PRODUCT_FILTER_CACHE_TTL_MS = 30_000
+
+const productFilterCache = new Map<string, { expiresAt: number; filters: ProductFilterOptions }>()
+
+function productFilterCacheKey(context: SheinPlatformContext) {
+  return `${context.platform}\u0001${context.platformAccountKey}`
+}
+
+function clearProductFilterCache() {
+  productFilterCache.clear()
+}
+
 const productBrandDisplaySql = `coalesce(
   nullif(product.brand_name, ''),
   nullif(brand_rule.local_brand_name, ''),
@@ -1168,6 +1204,7 @@ function serializeProductSummary(
   row: JsonRecord,
   context?: SheinPlatformContext,
   siteNames?: Map<string, string>,
+  options: ProductSummaryOptions = {},
 ) {
   const skcs = db.prepare(`
     select *
@@ -1175,32 +1212,21 @@ function serializeProductSummary(
     where product_id = ?
     order by id asc
   `).all(row.id) as JsonRecord[]
-  const skuDetailRows = db.prepare(`
-    select sku.*, skc.id as skc_id
-    from shein_platform_sku sku
-    join shein_platform_skc skc on skc.id = sku.skc_id
-    where skc.product_id = ?
-    order by skc.id asc, sku.id asc
-  `).all(row.id) as JsonRecord[]
+  const includeDetails = Boolean(options.includeDetails)
+  const skuDetailRows = includeDetails
+    ? db.prepare(`
+      select sku.*, skc.id as skc_id
+      from shein_platform_sku sku
+      join shein_platform_skc skc on skc.id = sku.skc_id
+      where skc.product_id = ?
+      order by skc.id asc, sku.id asc
+    `).all(row.id) as JsonRecord[]
+    : []
   const skuDetailsBySkc = new Map<number, JsonRecord[]>()
   for (const sku of skuDetailRows) {
     const skcId = Number(sku.skc_id)
     skuDetailsBySkc.set(skcId, [...(skuDetailsBySkc.get(skcId) ?? []), sku])
   }
-  const saleSiteSkcs = db.prepare(`
-    select *
-    from shein_platform_skc
-    where product_id = ?
-    order by id asc
-  `).all(row.id) as JsonRecord[]
-  const skuRows = db.prepare(`
-    select distinct sku.sku_code
-    from shein_platform_sku sku
-    join shein_platform_skc skc on skc.id = sku.skc_id
-    where skc.product_id = ?
-    order by sku.sku_code asc
-    limit 12
-  `).all(row.id) as JsonRecord[]
   const costRows = db.prepare(`
     select sku.cost_price, sku.currency, sku.cost_text
     from shein_platform_sku sku
@@ -1224,7 +1250,7 @@ function serializeProductSummary(
   const imageUrl = skcs.map((skc) => stringValue(skc.image_url)).find(Boolean) || null
   const saleSites = saleSitesFromProduct(
     row,
-    saleSiteSkcs,
+    skcs,
     siteNames ?? (context ? siteNameLookup(db, context) : new Map()),
   )
   const activeSites = activeSaleSiteAbbrs(saleSites)
@@ -1264,8 +1290,10 @@ function serializeProductSummary(
       supplierCode: stringValue(skc.supplier_code),
       imageUrl: stringValue(skc.image_url) || null,
       shelfStatusText: stringValue(skc.shelf_status_text),
-      skuCount: skuDetailsBySkc.get(Number(skc.id))?.length ?? 0,
-      skus: (skuDetailsBySkc.get(Number(skc.id)) ?? []).map((sku) => ({
+      skuCount: includeDetails
+        ? skuDetailsBySkc.get(Number(skc.id))?.length ?? 0
+        : 0,
+      skus: includeDetails ? (skuDetailsBySkc.get(Number(skc.id)) ?? []).map((sku) => ({
         skuCode: stringValue(sku.sku_code),
         supplierSku: stringValue(sku.supplier_sku),
         saleText: stringValue(sku.sale_attribute_text),
@@ -1273,9 +1301,11 @@ function serializeProductSummary(
         stopPurchase: numberValue(sku.stop_purchase),
         costs: stringValue(sku.cost_text),
         prices: stringValue(sku.price_text),
-      })),
+      })) : [],
     })),
-    skuCodeList: skuRows.map((sku) => stringValue(sku.sku_code)).filter(Boolean),
+    skuCodeList: includeDetails
+      ? skuDetailRows.map((sku) => stringValue(sku.sku_code)).filter(Boolean).slice(0, 12)
+      : [],
     rawListPayload: parseJsonText(row.raw_list_payload_json),
   }
 }
@@ -1343,6 +1373,10 @@ function productIdsForSaleSite(
 }
 
 function productFilterOptions(db: SyncPostgresDatabase, context: SheinPlatformContext, siteNames = siteNameLookup(db, context)) {
+  const cacheKey = productFilterCacheKey(context)
+  const cached = productFilterCache.get(cacheKey)
+  if (cached && cached.expiresAt > Date.now()) return cached.filters
+
   const params = [context.platform, context.platformAccountKey]
   const brands = db.prepare(`
     select
@@ -1372,7 +1406,7 @@ function productFilterOptions(db: SyncPostgresDatabase, context: SheinPlatformCo
     order by label asc
     limit 200
   `).all(...params) as JsonRecord[]
-  return {
+  const filters = {
     brands: brands.map((row) => ({
       value: stringValue(row.value),
       label: stringValue(row.label),
@@ -1385,6 +1419,11 @@ function productFilterOptions(db: SyncPostgresDatabase, context: SheinPlatformCo
     })).filter((row) => row.value),
     sites: saleSiteFilterOptions(db, context, siteNames),
   }
+  productFilterCache.set(cacheKey, {
+    expiresAt: Date.now() + PRODUCT_FILTER_CACHE_TTL_MS,
+    filters,
+  })
+  return filters
 }
 
 export function listPlatformProducts(input: ProductListInput = {}) {
@@ -1396,6 +1435,7 @@ export function listPlatformProducts(input: ProductListInput = {}) {
   const brand = normalizeText(input.brand)
   const category = normalizeText(input.category)
   const site = normalizeText(input.site)
+  const includeDetails = readListIncludeDetails(input.includeDetails)
   const siteNames = siteNameLookup(db, context)
   const params: unknown[] = [context.platform, context.platformAccountKey]
   const where = [
@@ -1497,7 +1537,7 @@ export function listPlatformProducts(input: ProductListInput = {}) {
   const filters = productFilterOptions(db, context, siteNames)
 
   return {
-    items: rows.map((row) => serializeProductSummary(db, row, context, siteNames)),
+    items: rows.map((row) => serializeProductSummary(db, row, context, siteNames, { includeDetails })),
     pagination: {
       total: Number(totalRow.count ?? 0),
       limit,
@@ -1556,7 +1596,7 @@ function serializeProductDetail(db: SyncPostgresDatabase, context: SheinPlatform
   `).all(product.id) as JsonRecord[]
 
   return {
-    product: serializeProductSummary(db, product, context),
+    product: serializeProductSummary(db, product, context, undefined, { includeDetails: true }),
     skcs: skcs.map((skc) => {
       const skus = db.prepare(`
         select *
@@ -2102,7 +2142,7 @@ export function getProductEditTemplate(spuName: string) {
   if (!firstString(rawInfo.spuName, rawInfo.spu_name)) return null
   const form = editFormFromRawInfo(rawInfo)
   return {
-    product: serializeProductSummary(db, product),
+    product: serializeProductSummary(db, product, undefined, undefined, { includeDetails: true }),
     form,
     payload: buildEditPayloadFromForm(rawInfo, form),
     warnings: [
@@ -2120,7 +2160,7 @@ export function getProductVariantTemplate(spuName: string) {
   const rawInfo = productRawInfo(product)
   if (!firstString(rawInfo.spuName, rawInfo.spu_name)) return null
   return {
-    product: serializeProductSummary(db, product),
+    product: serializeProductSummary(db, product, undefined, undefined, { includeDetails: true }),
     ...buildVariantTemplateFromDetail(rawInfo, {}),
   }
 }

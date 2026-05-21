@@ -93,6 +93,7 @@ test("SHEIN platform products page wires durable P0 lifecycle operations", async
 
   assert.match(page, /useStoreSites/);
   assert.match(page, /usePlatformProducts/);
+  assert.match(page, /placeholderData:\s*keepPreviousData/);
   assert.match(page, /useProductDetail/);
   assert.match(page, /useEditTemplate/);
   assert.match(page, /useVariantTemplate/);
@@ -114,6 +115,7 @@ test("SHEIN platform products page wires durable P0 lifecycle operations", async
   assert.match(page, /currency/);
 
   assert.match(page, /ServerPagination/);
+  assert.match(page, /isLoading=\{productsQuery\.isFetching && !productsQuery\.isLoading\}/);
   assert.match(page, /JsonViewer/);
   assert.match(page, /更新成本价/);
   assert.match(page, /站点币种/);
@@ -211,7 +213,10 @@ test("SHEIN platform products page supports brand/category filters and price imp
 });
 
 test("SHEIN platform products page exposes sale sites, filters, and export", async () => {
-  const page = await fileText(PAGE_FILE);
+  const [page, exportSource] = await Promise.all([
+    fileText(PAGE_FILE),
+    fileText(path.join(PROJECT_ROOT, "web/src/lib/shein-platform-product-export.ts")),
+  ]);
 
   assert.match(page, /interface SaleSiteDetail/);
   assert.match(page, /saleSites: SaleSiteDetail\[\]/);
@@ -226,13 +231,14 @@ test("SHEIN platform products page exposes sale sites, filters, and export", asy
   assert.match(page, /saleSitesDialogProduct/);
   assert.match(page, /exportPlatformProducts/);
   assert.match(page, /fetchAllPlatformProductsForExport/);
+  assert.match(page, /includeDetails:\s*true/);
   assert.match(page, /SHEIN平台商品列表/);
   assert.match(page, /销售站点明细/);
   assert.match(page, /exportWorkbook/);
-  assert.match(page, /saleSiteDetailRows/);
-  assert.match(page, /上架状态/);
-  assert.match(page, /首次上架时间/);
-  assert.match(page, /最近上架时间/);
+  assert.match(exportSource, /saleSiteDetailRows/);
+  assert.match(exportSource, /上架状态/);
+  assert.match(exportSource, /首次上架时间/);
+  assert.match(exportSource, /最近上架时间/);
   assert.match(page, /上架站点数/);
   assert.match(page, /exportSpreadsheet/);
   assert.doesNotMatch(page, /销售站点明细:\s*row\.saleSites\.map/);

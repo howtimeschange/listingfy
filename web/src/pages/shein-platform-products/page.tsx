@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate, useParams } from "react-router"
 import {
   ArrowLeft,
@@ -688,16 +688,19 @@ function usePlatformProducts(params: ProductQueryParams) {
   return useQuery<ProductListResponse>({
     queryKey: ["shein-platform-products", "list", params],
     queryFn: () => api.get(platformProductsListUrl(params)),
+    placeholderData: keepPreviousData,
   })
 }
 
 function platformProductsListUrl(
   params: ProductQueryParams,
   pagination: Pick<ServerPaginationState, "limit" | "offset"> = params.pagination,
+  options: { includeDetails?: boolean } = {},
 ) {
   const search = new URLSearchParams()
   search.set("limit", String(pagination.limit))
   search.set("offset", String(pagination.offset))
+  if (options.includeDetails) search.set("includeDetails", "1")
   if (params.search.trim()) search.set("search", params.search.trim())
   if (params.brandFilter.trim()) search.set("brand", params.brandFilter.trim())
   if (params.categoryFilter.trim()) search.set("category", params.categoryFilter.trim())
@@ -823,7 +826,11 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
     return currencies.length ? currencies : ["CNY", "USD", "EUR"]
   }, [siteRows])
 
-  const pagination = productsQuery.data?.pagination ?? queryParams.pagination
+  const pagination = {
+    total: productsQuery.data?.pagination.total ?? queryParams.pagination.total,
+    limit: queryParams.pagination.limit,
+    offset: queryParams.pagination.offset,
+  }
   const activeSites = siteRows.filter((site) => site.status === 1)
   const recentOperations = detail?.operations?.length ? detail.operations : productsQuery.data?.operations ?? []
   const visibleEditForm = editFormDirty
@@ -1378,7 +1385,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
       const response = await api.get<ProductListResponse>(platformProductsListUrl(queryParams, {
         limit: pageSize,
         offset,
-      }))
+      }, { includeDetails: true }))
       rows.push(...response.items)
       const total = Number(response.pagination.total ?? 0)
       if (rows.length >= total) break
@@ -1855,6 +1862,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                 </div>
               }
               pagination={pagination}
+              isLoading={productsQuery.isFetching && !productsQuery.isLoading}
               onLimitChange={(limit) =>
                 setQueryParams((current) => ({ ...current, pagination: { ...current.pagination, limit, offset: 0 } }))
               }

@@ -43,6 +43,7 @@ sheinPlatformProducts.get("/", (c) => {
     brand: c.req.query("brand") ?? "",
     category: c.req.query("category") ?? "",
     site: c.req.query("site") ?? "",
+    includeDetails: c.req.query("includeDetails") ?? c.req.query("details") ?? "",
   }))
 })
 

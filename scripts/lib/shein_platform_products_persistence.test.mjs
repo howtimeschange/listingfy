@@ -246,16 +246,36 @@ test("SHEIN platform products derive sale site details from synced SPU detail pa
   assert.match(service, /saleSites/);
   assert.match(service, /saleSiteSummary/);
   assert.match(service, /saleSiteCount/);
-  assert.match(service, /saleSiteSkcs/);
+  assert.match(service, /saleSitesFromProduct\(\s*row,\s*skcs/);
   assert.match(service, /sites:\s*filters\.sites/);
   assert.match(service, /input\.site/);
+});
+
+test("SHEIN platform products keep list pagination light and cache filter options", async () => {
+  const [route, service, page] = await Promise.all([
+    fileText(ROUTE_FILE),
+    fileText(SERVICE_FILE),
+    fileText(PAGE_FILE),
+  ]);
+
+  assert.match(route, /includeDetails/);
+  assert.match(service, /includeDetails\?: boolean \| number \| string/);
+  assert.match(service, /PRODUCT_FILTER_CACHE_TTL_MS/);
+  assert.match(service, /productFilterCache/);
+  assert.match(service, /clearProductFilterCache/);
+  assert.match(service, /readListIncludeDetails\(input\.includeDetails\)/);
+  assert.match(service, /serializeProductSummary\(db, row, context, siteNames, \{ includeDetails \}\)/);
+  assert.match(service, /skuDetailRows = includeDetails/);
+  assert.match(service, /skus: includeDetails \?/);
+  assert.match(page, /placeholderData:\s*keepPreviousData/);
+  assert.match(page, /includeDetails:\s*true/);
 });
 
 test("SHEIN platform product detail passes platform context into summary serialization", async () => {
   const service = await fileText(SERVICE_FILE);
 
-  assert.match(service, /serializeProductSummary\(db, product, context\)/);
-  assert.match(service, /product:\s*serializeProductSummary\(db, product, context\)/);
+  assert.match(service, /serializeProductSummary\(db, product, context/);
+  assert.match(service, /product:\s*serializeProductSummary\(db, product, context/);
 });
 
 test("SHEIN platform products merge duplicate sale-site rows by site code", async () => {
@@ -539,12 +559,12 @@ test("SHEIN platform product list summary includes every SKC with nested SKU row
   const page = await fileText(PAGE_FILE);
 
   assert.match(service, /const skuDetailsBySkc = new Map/);
-  assert.match(service, /skuCount:\s*skuDetailsBySkc\.get\(Number\(skc\.id\)\)\?\.length/);
-  assert.match(service, /skus:\s*\(skuDetailsBySkc\.get\(Number\(skc\.id\)\) \?\? \[\]\)\.map/);
+  assert.match(service, /skuCount:\s*includeDetails/);
+  assert.match(service, /skus:\s*includeDetails \?/);
   assert.doesNotMatch(service, /from shein_platform_skc[\s\S]{0,120}limit 8/);
 
   assert.match(page, /platformProductWorkbookSheets/);
   assert.match(page, /SKC供方/);
-  assert.match(page, /详情同步后显示 SKC\/SKU/);
-  assert.match(page, /<ProductThumb src=\{skc\.imageUrl\} alt=\{skc\.skcName\} size="sm" \/>/);
+  assert.match(page, /详情同步后显示 SKC/);
+  assert.match(page, /<ProductThumb src=\{skc\.imageUrl\} alt=\{skc\.skcName\} size="xs" \/>/);
 });
