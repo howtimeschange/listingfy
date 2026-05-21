@@ -22,7 +22,7 @@ export async function readSpreadsheetFile(file: File): Promise<SpreadsheetRow[]>
 }
 
 function downloadWorkbook(filename: string, workbook: XLSX.WorkBook) {
-  const buffer = XLSX.write(workbook, { bookType: "xlsx", type: "array" }) as ArrayBuffer
+  const buffer = XLSX.write(workbook, { bookType: "xlsx", type: "array", compression: true }) as ArrayBuffer
   const blob = new Blob([buffer], {
     type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   })

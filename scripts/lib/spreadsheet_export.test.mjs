@@ -18,6 +18,7 @@ test("spreadsheet export uses an explicit browser download link", async () => {
   const spreadsheet = await fileText(SPREADSHEET_FILE);
 
   assert.match(spreadsheet, /XLSX\.write\(workbook/);
+  assert.match(spreadsheet, /compression:\s*true/);
   assert.match(spreadsheet, /new Blob/);
   assert.match(spreadsheet, /URL\.createObjectURL/);
   assert.match(spreadsheet, /document\.createElement\("a"\)/);
