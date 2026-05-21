@@ -533,3 +533,18 @@ test("SHEIN platform product persistence stores list rows and SPU detail variant
     await cleanup();
   }
 });
+
+test("SHEIN platform product list summary includes every SKC with nested SKU rows for display and export", async () => {
+  const service = await fileText(SERVICE_FILE);
+  const page = await fileText(PAGE_FILE);
+
+  assert.match(service, /const skuDetailsBySkc = new Map/);
+  assert.match(service, /skuCount:\s*skuDetailsBySkc\.get\(Number\(skc\.id\)\)\?\.length/);
+  assert.match(service, /skus:\s*\(skuDetailsBySkc\.get\(Number\(skc\.id\)\) \?\? \[\]\)\.map/);
+  assert.doesNotMatch(service, /from shein_platform_skc[\s\S]{0,120}limit 8/);
+
+  assert.match(page, /platformProductWorkbookSheets/);
+  assert.match(page, /SKC供方/);
+  assert.match(page, /详情同步后显示 SKC\/SKU/);
+  assert.match(page, /<ProductThumb src=\{skc\.imageUrl\} alt=\{skc\.skcName\} size="sm" \/>/);
+});

@@ -60,6 +60,9 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api-client"
 import { formatNumber } from "@/lib/format"
+import {
+  platformProductWorkbookSheets,
+} from "@/lib/shein-platform-product-export"
 import { exportSpreadsheet, exportWorkbook, readSpreadsheetFile, type SpreadsheetRow } from "@/lib/spreadsheet"
 
 type JsonRecord = Record<string, unknown>
@@ -130,6 +133,16 @@ interface PlatformProductRow {
     supplierCode: string
     imageUrl: string | null
     shelfStatusText: string
+    skuCount: number
+    skus: Array<{
+      skuCode: string
+      supplierSku: string
+      saleText: string
+      mallState: number | null
+      stopPurchase: number | null
+      costs: string
+      prices: string
+    }>
   }>
   skuCodeList: string[]
   rawListPayload: JsonRecord
@@ -573,10 +586,6 @@ function saleSiteStatusVariant(status: number | null) {
   return status === 1 ? "secondary" : "outline"
 }
 
-function saleSiteExportStatus(site: SaleSiteDetail) {
-  return site.shelfStatusText || (site.shelfStatus === 1 ? "已上架" : "未上架")
-}
-
 function mallStateLabel(state: number | null) {
   if (state === 1) return "在售"
   if (state === 2) return "停售"
@@ -721,11 +730,17 @@ function useCostChangeReasons() {
   })
 }
 
-function ProductThumb({ src, alt }: { src: string | null; alt: string }) {
+function ProductThumb({ src, alt, size = "md" }: { src: string | null; alt: string; size?: "xs" | "sm" | "md" }) {
+  const sizes = {
+    xs: { box: "h-9 w-9", icon: "size-4" },
+    sm: { box: "h-10 w-10", icon: "size-4" },
+    md: { box: "h-14 w-14", icon: "size-5" },
+  }[size]
+  const className = `${sizes.box} rounded-md border object-cover`
   if (!src) {
     return (
-      <div className="flex h-14 w-14 items-center justify-center rounded-md border bg-muted text-muted-foreground">
-        <ImageIcon className="size-5" />
+      <div className={`flex ${sizes.box} items-center justify-center rounded-md border bg-muted text-muted-foreground`}>
+        <ImageIcon className={sizes.icon} />
       </div>
     )
   }
@@ -733,7 +748,7 @@ function ProductThumb({ src, alt }: { src: string | null; alt: string }) {
     <img
       src={src}
       alt={alt}
-      className="h-14 w-14 rounded-md border object-cover"
+      className={className}
       loading="lazy"
       referrerPolicy="no-referrer"
     />
@@ -799,7 +814,6 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
 
   const pagination = productsQuery.data?.pagination ?? queryParams.pagination
   const activeSites = siteRows.filter((site) => site.status === 1)
-  const skuCount = productRows.reduce((total, row) => total + row.skuCount, 0)
   const recentOperations = detail?.operations?.length ? detail.operations : productsQuery.data?.operations ?? []
   const visibleEditForm = editFormDirty
     ? editForm
@@ -1365,50 +1379,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   }
 
   function exportPlatformProductsWorkbook(rows: PlatformProductRow[]) {
-    const overviewRows = rows.map((row) => ({
-      SPU: row.spuName,
-      商品名称: row.productName,
-      供应商货号: row.supplierCode,
-      品牌名称: row.brandName,
-      类目名称: row.categoryName,
-      商品图片: row.imageUrl || "",
-      供货价: row.costSummary,
-      上架站点数: row.saleSiteCount,
-      销售站点: row.saleSiteSummary || "详情同步后显示",
-      SKC数: row.skcCount,
-      SKU数: row.skuCount,
-      详情同步时间: row.lastDetailSyncedAt,
-      列表同步时间: row.lastListSyncedAt,
-    }))
-    const saleSiteDetailRows = rows.flatMap((row) =>
-      row.saleSites.map((site) => ({
-        SPU: row.spuName,
-        商品名称: row.productName,
-        供应商货号: row.supplierCode,
-        品牌名称: row.brandName,
-        类目名称: row.categoryName,
-        供货价: row.costSummary,
-        销售站点: site.siteAbbr,
-        上架状态: saleSiteExportStatus(site),
-        首次上架时间: site.firstShelfTime,
-        最近上架时间: site.lastShelfTime,
-      })),
-    )
-    exportWorkbook("SHEIN平台商品列表.xlsx", [
-      { name: "平台商品列表", rows: overviewRows },
-      { name: "销售站点明细", rows: saleSiteDetailRows.length ? saleSiteDetailRows : [{
-        SPU: "",
-        商品名称: "",
-        供应商货号: "",
-        品牌名称: "",
-        类目名称: "",
-        供货价: "",
-        销售站点: "",
-        上架状态: "",
-        首次上架时间: "",
-        最近上架时间: "",
-      }] },
-    ])
+    exportWorkbook("SHEIN平台商品列表.xlsx", platformProductWorkbookSheets(rows))
   }
 
   function openEditDialog(spuName: string) {
@@ -1480,14 +1451,13 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const productSummary = [
     `本地 SPU ${formatNumber(pagination.total)}`,
     `当前页 ${formatNumber(productRows.length)}`,
-    `SKU ${formatNumber(skuCount)}`,
     selectedSpuName ? `当前 ${selectedSpuName}` : "",
   ].filter(Boolean).join(" / ")
 
   const operationSourceLabel = selectedSpuName ? `当前 SPU：${selectedSpuName}` : "最近平台商品操作"
 
   return (
-    <PageContainer className="space-y-6">
+    <PageContainer className={view === "list" ? "flex min-h-0 flex-col gap-6 overflow-hidden pb-0" : "space-y-6"}>
       <PageHeader
         title={view === "sites" ? "站点币种" : view === "detail" ? "SPU 商品详情" : "平台商品列表"}
         description={
@@ -1545,8 +1515,8 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
       </PageHeader>
 
       {view === "list" ? (
-        <Card>
-          <CardHeader className="gap-4">
+        <Card className="min-h-0 flex-1 gap-0 overflow-hidden py-0">
+          <CardHeader className="shrink-0 gap-4 py-6">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
               <div className="space-y-1">
                 <CardTitle>平台商品列表</CardTitle>
@@ -1561,7 +1531,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                     onKeyDown={(event) => {
                       if (event.key === "Enter") submitSearch()
                     }}
-                    placeholder="搜索 SPU、SKC、SKU、商家货号"
+                    placeholder="搜索 SPU、SKC、供方货号"
                     className="pl-9"
                   />
                 </div>
@@ -1647,15 +1617,25 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
               </div>
             </div>
           </CardHeader>
-          <CardContent>
-            <div className="overflow-hidden rounded-md border">
-              <Table>
+          <CardContent className="flex min-h-0 flex-1 flex-col px-6 pb-0">
+            <div className="min-h-0 flex-1 overflow-auto rounded-md border">
+              <Table className="min-w-[1600px] table-fixed">
+                <colgroup>
+                  <col className="w-[82px]" />
+                  <col className="w-[230px]" />
+                  <col className="w-[320px]" />
+                  <col className="w-[430px]" />
+                  <col className="w-[150px]" />
+                  <col className="w-[230px]" />
+                  <col className="w-[190px]" />
+                  <col className="w-[260px]" />
+                </colgroup>
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-[82px]">商品图片</TableHead>
                     <TableHead>SPU</TableHead>
                     <TableHead>商品</TableHead>
-                    <TableHead>SKC/SKU</TableHead>
+                    <TableHead>SKC</TableHead>
                     <TableHead>供货价</TableHead>
                     <TableHead>销售站点</TableHead>
                     <TableHead>同步状态</TableHead>
@@ -1672,10 +1652,10 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                   ) : productRows.length ? (
                     productRows.map((row) => (
                       <TableRow key={row.id}>
-                        <TableCell>
+                        <TableCell className="align-top">
                           <ProductThumb src={row.imageUrl} alt={row.productName || row.spuName} />
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="align-top">
                           <button
                             type="button"
                             className="font-mono text-sm font-medium hover:text-[var(--brand-deep)] hover:underline"
@@ -1685,7 +1665,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                           </button>
                           <div className="mt-1 text-xs text-muted-foreground">{row.supplierCode || "—"}</div>
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="align-top whitespace-normal">
                           <div className="max-w-[280px] truncate text-sm font-medium">{row.productName || "—"}</div>
                           <div className="mt-1 text-xs text-muted-foreground">
                             品牌名称：{row.brandName || "—"}
@@ -1694,38 +1674,47 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                             类目名称：{row.categoryName || "—"}
                           </div>
                         </TableCell>
-                        <TableCell>
-                          <div className="text-sm">
-                            SKC {formatNumber(row.skcCount)} / SKU {formatNumber(row.skuCount)}
+                        <TableCell className="align-top whitespace-normal">
+                          <div className="text-sm font-medium">
+                            SKC {formatNumber(row.skcCount)}
                           </div>
-                          <div className="mt-1 flex max-w-[340px] flex-wrap gap-1">
-                            {row.skuCodeList.length ? (
-                              row.skuCodeList.slice(0, 6).map((skuCode) => (
-                                <Badge key={skuCode} variant="outline" className="font-mono">
-                                  {skuCode}
-                                </Badge>
-                              ))
+                          <div className="mt-2 max-h-[252px] overflow-y-auto pr-1">
+                            {row.skcs.length ? (
+                              <div className="grid gap-1.5">
+                                {row.skcs.map((skc) => (
+                                  <div key={skc.skcName} className="grid min-h-14 grid-cols-[36px_minmax(0,1fr)] gap-2 rounded-md border bg-background/80 p-1.5">
+                                    <ProductThumb src={skc.imageUrl} alt={skc.skcName} size="xs" />
+                                    <div className="min-w-0">
+                                      <div className="flex min-w-0 items-center gap-1.5">
+                                        <span className="min-w-0 truncate font-mono text-[11px] font-medium" title={skc.skcName || undefined}>
+                                          {skc.skcName || "—"}
+                                        </span>
+                                      </div>
+                                      <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={skc.supplierCode || undefined}>
+                                        SKC供方：{skc.supplierCode || "—"}
+                                      </div>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
                             ) : (
-                              <span className="text-xs text-muted-foreground">详情同步后显示 SKU</span>
+                              <span className="text-xs text-muted-foreground">详情同步后显示 SKC</span>
                             )}
                           </div>
                         </TableCell>
-                        <TableCell>
-                          <div className="max-w-[180px] truncate text-sm">{row.costSummary || "—"}</div>
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            {row.costSkuCount ? `${formatNumber(row.costSkuCount)} 个 SKU` : "详情同步后显示"}
-                          </div>
+                        <TableCell className="align-top whitespace-normal">
+                          <div className="max-w-[150px] truncate text-sm">{row.costSummary || "—"}</div>
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="align-top whitespace-normal">
                           <Button
                             type="button"
                             variant="outline"
                             size="sm"
-                            className="max-w-[180px] justify-start truncate"
+                            className="w-full max-w-full justify-start truncate"
                             onClick={() => setSaleSitesDialogProduct(row)}
                           >
-                            <Globe2 className="size-4" />
-                            {row.saleSiteSummary || "详情同步后显示"}
+                            <Globe2 className="size-4 shrink-0" />
+                            <span className="truncate">{row.saleSiteSummary || "详情同步后显示"}</span>
                           </Button>
                           {row.saleSiteCount ? (
                             <div className="mt-1 text-xs text-muted-foreground">
@@ -1733,7 +1722,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                             </div>
                           ) : null}
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="align-top whitespace-normal">
                           <Badge variant={row.lastDetailSyncedAt ? "secondary" : "outline"}>
                             {row.lastDetailSyncedAt ? "已同步详情" : "仅列表"}
                           </Badge>
@@ -1749,11 +1738,11 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                               可编辑：{row.editableStatus}
                             </div>
                           ) : null}
-                          <div className="mt-1 text-xs text-muted-foreground">
+                          <div className="mt-1 break-all text-xs text-muted-foreground">
                             {row.lastDetailSyncedAt || row.lastListSyncedAt || row.updatedAt || "—"}
                           </div>
                         </TableCell>
-                        <TableCell className="text-right">
+                        <TableCell className="align-top text-right">
                           <div className="flex flex-wrap justify-end gap-1">
                             <Button
                               type="button"
@@ -1818,6 +1807,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
               </Table>
             </div>
             <ServerPagination
+              className="-mx-6 mt-0 shrink-0 border-t bg-card px-6 py-4 shadow-[0_-12px_28px_rgba(15,23,42,0.08)]"
               pagination={pagination}
               onLimitChange={(limit) =>
                 setQueryParams((current) => ({ ...current, pagination: { ...current.pagination, limit, offset: 0 } }))

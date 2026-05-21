@@ -1174,8 +1174,19 @@ function serializeProductSummary(
     from shein_platform_skc
     where product_id = ?
     order by id asc
-    limit 8
   `).all(row.id) as JsonRecord[]
+  const skuDetailRows = db.prepare(`
+    select sku.*, skc.id as skc_id
+    from shein_platform_sku sku
+    join shein_platform_skc skc on skc.id = sku.skc_id
+    where skc.product_id = ?
+    order by skc.id asc, sku.id asc
+  `).all(row.id) as JsonRecord[]
+  const skuDetailsBySkc = new Map<number, JsonRecord[]>()
+  for (const sku of skuDetailRows) {
+    const skcId = Number(sku.skc_id)
+    skuDetailsBySkc.set(skcId, [...(skuDetailsBySkc.get(skcId) ?? []), sku])
+  }
   const saleSiteSkcs = db.prepare(`
     select *
     from shein_platform_skc
@@ -1253,6 +1264,16 @@ function serializeProductSummary(
       supplierCode: stringValue(skc.supplier_code),
       imageUrl: stringValue(skc.image_url) || null,
       shelfStatusText: stringValue(skc.shelf_status_text),
+      skuCount: skuDetailsBySkc.get(Number(skc.id))?.length ?? 0,
+      skus: (skuDetailsBySkc.get(Number(skc.id)) ?? []).map((sku) => ({
+        skuCode: stringValue(sku.sku_code),
+        supplierSku: stringValue(sku.supplier_sku),
+        saleText: stringValue(sku.sale_attribute_text),
+        mallState: numberValue(sku.mall_state),
+        stopPurchase: numberValue(sku.stop_purchase),
+        costs: stringValue(sku.cost_text),
+        prices: stringValue(sku.price_text),
+      })),
     })),
     skuCodeList: skuRows.map((sku) => stringValue(sku.sku_code)).filter(Boolean),
     rawListPayload: parseJsonText(row.raw_list_payload_json),

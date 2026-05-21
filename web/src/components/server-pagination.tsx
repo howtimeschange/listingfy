@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { cn } from "@/lib/utils"
 
 export interface ServerPaginationState {
   total: number
@@ -25,6 +26,7 @@ interface ServerPaginationProps {
   onLimitChange: (limit: number) => void
   onOffsetChange: (offset: number) => void
   pageSizeOptions?: number[]
+  className?: string
 }
 
 export function ServerPagination({
@@ -32,6 +34,7 @@ export function ServerPagination({
   onLimitChange,
   onOffsetChange,
   pageSizeOptions = [10, 20, 50, 100, 200],
+  className,
 }: ServerPaginationProps) {
   if (!pagination) return null
 
@@ -49,7 +52,7 @@ export function ServerPagination({
   }
 
   return (
-    <div className="mt-4 flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
+    <div className={cn("mt-4 flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between", className)}>
       <div className="text-sm text-muted-foreground tabular-nums">
         共 {formatNumber(total)} 条，当前第 {currentPage || 1} / {pageCount} 页
       </div>
