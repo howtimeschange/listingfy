@@ -115,7 +115,7 @@ export function platformProductWorkbookSheets(rows: PlatformProductExportRow[]):
   )
   return [
     { name: "平台商品列表", rows: overviewRows },
-    { name: "SKC/SKU明细", rows: detailRows.length ? detailRows : [{
+    { name: "SKC-SKU明细", rows: detailRows.length ? detailRows : [{
       SPU: "",
       SPU供应商货号: "",
       商品名称: "",

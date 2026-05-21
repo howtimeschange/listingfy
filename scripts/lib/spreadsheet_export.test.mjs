@@ -113,9 +113,10 @@ test("SHEIN platform product export expands SKC/SKU rows with matching SKC image
     },
   ]);
 
-  assert.deepEqual(sheets.map((sheet) => sheet.name), ["平台商品列表", "SKC/SKU明细", "销售站点明细"]);
+  assert.deepEqual(sheets.map((sheet) => sheet.name), ["平台商品列表", "SKC-SKU明细", "销售站点明细"]);
+  assert.ok(sheets.every((sheet) => !/[:\\/?*[\]]/.test(sheet.name)), "export sheet names must be valid Excel sheet names");
 
-  const detailRows = sheets.find((sheet) => sheet.name === "SKC/SKU明细")?.rows ?? [];
+  const detailRows = sheets.find((sheet) => sheet.name === "SKC-SKU明细")?.rows ?? [];
   assert.equal(detailRows.length, 3);
   assert.deepEqual(detailRows.map((row) => row.SKC), ["SKC-A", "SKC-B", "SKC-B"]);
   assert.deepEqual(detailRows.map((row) => row.SKC供应商货号), ["SKC-SUP-A", "SKC-SUP-B", "SKC-SUP-B"]);

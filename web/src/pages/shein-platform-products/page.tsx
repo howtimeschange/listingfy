@@ -1617,7 +1617,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
               </div>
             </div>
           </CardHeader>
-          <CardContent className="flex min-h-0 flex-1 flex-col px-6 pb-0">
+          <CardContent className="flex min-h-0 flex-1 flex-col px-6 pb-28">
             <div className="min-h-0 flex-1 overflow-auto rounded-md border">
               <Table className="min-w-[1600px] table-fixed">
                 <colgroup>
@@ -1807,7 +1807,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
               </Table>
             </div>
             <ServerPagination
-              className="-mx-6 mt-0 shrink-0 border-t bg-card px-6 py-4 shadow-[0_-12px_28px_rgba(15,23,42,0.08)]"
+              className="fixed bottom-0 left-0 right-0 z-40 mt-0 border-t bg-card/95 px-6 py-4 shadow-[0_-12px_28px_rgba(15,23,42,0.12)] backdrop-blur md:left-[var(--sidebar-width-icon)] lg:left-[var(--sidebar-width)]"
               pagination={pagination}
               onLimitChange={(limit) =>
                 setQueryParams((current) => ({ ...current, pagination: { ...current.pagination, limit, offset: 0 } }))
