@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate, useParams } from "react-router"
 import {
@@ -13,6 +13,7 @@ import {
   History,
   ImageIcon,
   Loader2,
+  MoreHorizontal,
   PackageSearch,
   RefreshCw,
   RotateCcw,
@@ -39,6 +40,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -759,6 +768,8 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { spuName: routeSpuName } = useParams()
+  const productTableScrollRef = useRef<HTMLDivElement>(null)
+  const productTableBottomScrollRef = useRef<HTMLDivElement>(null)
   const routeSelectedSpuName = view === "detail" ? routeSpuName?.trim() ?? "" : ""
   const [searchInput, setSearchInput] = useState("")
   const [localSelectedSpuName, setSelectedSpuName] = useState("")
@@ -932,6 +943,21 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
       .join("、")
     return `上架 ${formatNumber(activeSites.length)} 站：${preview}${activeSites.length > 4 ? "..." : ""}`
   }, [detailProduct?.saleSiteSummary, detailSaleSiteRows])
+
+  function syncProductTableScroll(source: "table" | "bottom") {
+    const tableScroller = productTableScrollRef.current
+    const bottomScroller = productTableBottomScrollRef.current
+    if (!tableScroller || !bottomScroller) return
+    if (source === "table") {
+      if (bottomScroller.scrollLeft !== tableScroller.scrollLeft) {
+        bottomScroller.scrollLeft = tableScroller.scrollLeft
+      }
+      return
+    }
+    if (tableScroller.scrollLeft !== bottomScroller.scrollLeft) {
+      tableScroller.scrollLeft = bottomScroller.scrollLeft
+    }
+  }
 
   const syncSitesMutation = useMutation({
     mutationFn: () =>
@@ -1618,8 +1644,13 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             </div>
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col px-6 pb-28">
-            <div className="min-h-0 flex-1 overflow-auto rounded-md border">
-              <Table className="min-w-[1600px] table-fixed">
+            <div className="min-h-0 flex-1 overflow-hidden rounded-md border">
+              <Table
+                className="min-w-[1600px] table-fixed"
+                containerRef={productTableScrollRef}
+                containerClassName="hide-horizontal-scrollbar h-full overflow-x-hidden overflow-y-auto"
+                containerOnScroll={() => syncProductTableScroll("table")}
+              >
                 <colgroup>
                   <col className="w-[82px]" />
                   <col className="w-[230px]" />
@@ -1628,7 +1659,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                   <col className="w-[150px]" />
                   <col className="w-[230px]" />
                   <col className="w-[190px]" />
-                  <col className="w-[260px]" />
+                  <col className="w-[190px]" />
                 </colgroup>
                 <TableHeader>
                   <TableRow>
@@ -1639,7 +1670,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                     <TableHead>供货价</TableHead>
                     <TableHead>销售站点</TableHead>
                     <TableHead>同步状态</TableHead>
-                    <TableHead className="text-right">操作</TableHead>
+                    <TableHead className="sticky right-0 z-20 bg-muted text-right shadow-[-12px_0_18px_-18px_rgba(15,23,42,0.55)]">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1742,12 +1773,13 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                             {row.lastDetailSyncedAt || row.lastListSyncedAt || row.updatedAt || "—"}
                           </div>
                         </TableCell>
-                        <TableCell className="align-top text-right">
-                          <div className="flex flex-wrap justify-end gap-1">
+                        <TableCell className="sticky right-0 z-10 bg-card align-top text-right shadow-[-12px_0_18px_-18px_rgba(15,23,42,0.55)] group-hover:bg-accent">
+                          <div className="flex flex-col items-end gap-1.5">
                             <Button
                               type="button"
                               variant="ghost"
                               size="sm"
+                              className="w-full justify-end"
                               onClick={() => void openBatchCostDialogFromList(row)}
                             >
                               <DollarSign className="size-4" />
@@ -1757,41 +1789,45 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                               type="button"
                               variant="ghost"
                               size="sm"
+                              className="w-full justify-end"
                               onClick={() => navigate(`/shein-platform-products/${encodeURIComponent(row.spuName)}`)}
                             >
                               <Eye className="size-4" />
                               SPU 详情
                             </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => syncDetailMutation.mutate(row.spuName)}
-                              disabled={syncDetailMutation.isPending}
-                            >
-                              <PackageSearch className="size-4" />
-                              同步详情
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => checkEditMutation.mutate(row.spuName)}
-                              disabled={checkEditMutation.isPending}
-                            >
-                              <ClipboardCheck className="size-4" />
-                              检查可编辑
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => syncStatusMutation.mutate(row.spuName)}
-                              disabled={syncStatusMutation.isPending}
-                            >
-                              <RefreshCw className={syncStatusMutation.isPending ? "size-4 animate-spin" : "size-4"} />
-                              同步状态
-                            </Button>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button type="button" variant="ghost" size="sm" className="w-full justify-end">
+                                  <MoreHorizontal className="size-4" />
+                                  更多
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="w-44">
+                                <DropdownMenuLabel>更多操作</DropdownMenuLabel>
+                                <DropdownMenuItem
+                                  onSelect={() => syncDetailMutation.mutate(row.spuName)}
+                                  disabled={syncDetailMutation.isPending}
+                                >
+                                  <PackageSearch className="size-4" />
+                                  同步详情
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onSelect={() => checkEditMutation.mutate(row.spuName)}
+                                  disabled={checkEditMutation.isPending}
+                                >
+                                  <ClipboardCheck className="size-4" />
+                                  检查可编辑
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  onSelect={() => syncStatusMutation.mutate(row.spuName)}
+                                  disabled={syncStatusMutation.isPending}
+                                >
+                                  <RefreshCw className={syncStatusMutation.isPending ? "size-4 animate-spin" : "size-4"} />
+                                  同步状态
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </div>
                         </TableCell>
                       </TableRow>
@@ -1807,7 +1843,17 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
               </Table>
             </div>
             <ServerPagination
-              className="fixed bottom-0 left-0 right-0 z-40 mt-0 border-t bg-card/95 px-6 py-4 shadow-[0_-12px_28px_rgba(15,23,42,0.12)] backdrop-blur md:left-[var(--sidebar-width-icon)] lg:left-[var(--sidebar-width)]"
+              className="fixed bottom-0 left-0 right-0 z-40 mt-0 border-t bg-card/95 px-6 pb-4 pt-2 shadow-[0_-12px_28px_rgba(15,23,42,0.12)] backdrop-blur md:left-[var(--sidebar-width-icon)] lg:left-[var(--sidebar-width)]"
+              beforeContent={
+                <div
+                  ref={productTableBottomScrollRef}
+                  className="mb-3 overflow-x-auto overflow-y-hidden border-b pb-2"
+                  onScroll={() => syncProductTableScroll("bottom")}
+                  aria-label="平台商品列表横向滚动"
+                >
+                  <div className="h-1 w-[1822px]" />
+                </div>
+              }
               pagination={pagination}
               onLimitChange={(limit) =>
                 setQueryParams((current) => ({ ...current, pagination: { ...current.pagination, limit, offset: 0 } }))

@@ -141,6 +141,17 @@
   }
 }
 
+@layer utilities {
+  .hide-horizontal-scrollbar {
+    scrollbar-width: thin;
+  }
+
+  .hide-horizontal-scrollbar::-webkit-scrollbar:horizontal {
+    display: none;
+    height: 0;
+  }
+}
+
 .dark {
   --background: #0d0d0d;
   --foreground: #ededed;
