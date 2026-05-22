@@ -39,6 +39,14 @@ test("spreadsheet export can write multiple named sheets", async () => {
   assert.match(spreadsheet, /XLSX\.utils\.book_append_sheet\(workbook, worksheet, sheetNameWithIndex\(sheet\.name, index, chunkCount\)\)/);
 });
 
+test("spreadsheet export streams sheet chunks without copying million-row ranges", async () => {
+  const spreadsheet = await fileText(SPREADSHEET_FILE);
+
+  assert.match(spreadsheet, /function appendRowsToWorksheet\(rows: SpreadsheetRow\[\], start = 0, end = rows\.length\)/);
+  assert.match(spreadsheet, /appendRowsToWorksheet\(rows, start, end\)/);
+  assert.doesNotMatch(spreadsheet, /appendRowsToWorksheet\(rows\.slice\(start, end\)\)/);
+});
+
 test("SHEIN platform product export expands SKC/SKU rows with matching SKC images and supplier codes", async () => {
   const { platformProductWorkbookSheets } = await import("../../web/src/lib/shein-platform-product-export.ts");
 
@@ -119,6 +127,7 @@ test("SHEIN platform product export expands SKC/SKU rows with matching SKC image
 
   const detailRows = sheets.find((sheet) => sheet.name === "SKC-SKU明细")?.rows ?? [];
   assert.equal(detailRows.length, 3);
+  assert.deepEqual(Object.keys(detailRows[0]).slice(0, 4), ["SPU", "SKC", "SKC供应商货号", "SPU供应商货号"]);
   assert.deepEqual(detailRows.map((row) => row.SKC), ["SKC-A", "SKC-B", "SKC-B"]);
   assert.deepEqual(detailRows.map((row) => row.SKC供应商货号), ["SKC-SUP-A", "SKC-SUP-B", "SKC-SUP-B"]);
   assert.deepEqual(detailRows.map((row) => row.SKC图片), [
@@ -129,4 +138,99 @@ test("SHEIN platform product export expands SKC/SKU rows with matching SKC image
   assert.equal(detailRows[0].SPU供应商货号, "SPU-SUP");
   assert.equal(detailRows[0].SKU, "SKU-A1");
   assert.equal(detailRows[0].SKU供应商货号, "SKU-SUP-A1");
+});
+
+test("SHEIN platform product export keeps sale-site rows at SKC granularity", async () => {
+  const { platformProductWorkbookSheets } = await import("../../web/src/lib/shein-platform-product-export.ts");
+
+  const sheets = platformProductWorkbookSheets([
+    {
+      spuName: "SPU001",
+      supplierCode: "SPU-SUP",
+      productName: "Test Product",
+      brandName: "Brand",
+      categoryName: "Category",
+      imageUrl: null,
+      costSummary: "10 CNY",
+      saleSiteCount: 2,
+      saleSiteSummary: "上架 2 站：shein-us、shein-uk",
+      skcCount: 2,
+      skuCount: 2,
+      lastDetailSyncedAt: "2026-05-21T01:00:00.000Z",
+      lastListSyncedAt: "2026-05-21T00:00:00.000Z",
+      saleSites: [
+        {
+          siteAbbr: "shein-us",
+          siteName: "US",
+          shelfStatus: 1,
+          shelfStatusText: "已上架",
+          firstShelfTime: "2026-05-20 10:00:00",
+          lastShelfTime: "2026-05-21 10:00:00",
+          link: "https://example.invalid/us",
+          source: "SKC-A / SKC-B",
+        },
+      ],
+      saleSiteDetails: [
+        {
+          siteAbbr: "shein-us",
+          siteName: "US",
+          shelfStatus: 1,
+          shelfStatusText: "已上架",
+          firstShelfTime: "2026-05-20 10:00:00",
+          lastShelfTime: "2026-05-21 10:00:00",
+          link: "https://example.invalid/us-a",
+          source: "SKC-A",
+          skcName: "SKC-A",
+          skcSupplierCode: "SKC-SUP-A",
+        },
+        {
+          siteAbbr: "shein-uk",
+          siteName: "UK",
+          shelfStatus: 1,
+          shelfStatusText: "已上架",
+          firstShelfTime: "2026-05-19 10:00:00",
+          lastShelfTime: "2026-05-21 09:00:00",
+          link: "https://example.invalid/uk-b",
+          source: "SKC-B",
+          skcName: "SKC-B",
+          skcSupplierCode: "SKC-SUP-B",
+        },
+        {
+          siteAbbr: "shein-us",
+          siteName: "US",
+          shelfStatus: 0,
+          shelfStatusText: "未上架",
+          firstShelfTime: "",
+          lastShelfTime: "",
+          link: "",
+          source: "SKC-B",
+          skcName: "SKC-B",
+          skcSupplierCode: "SKC-SUP-B",
+        },
+      ],
+      skcs: [
+        {
+          skcName: "SKC-A",
+          supplierCode: "SKC-SUP-A",
+          imageUrl: null,
+          shelfStatusText: "已上架",
+          skus: [{ skuCode: "SKU-A1", supplierSku: "SKU-SUP-A1", saleText: "", costs: "10 CNY", prices: "" }],
+        },
+        {
+          skcName: "SKC-B",
+          supplierCode: "SKC-SUP-B",
+          imageUrl: null,
+          shelfStatusText: "已上架",
+          skus: [{ skuCode: "SKU-B1", supplierSku: "SKU-SUP-B1", saleText: "", costs: "10 CNY", prices: "" }],
+        },
+      ],
+    },
+  ]);
+
+  const siteRows = sheets.find((sheet) => sheet.name === "销售站点明细")?.rows ?? [];
+  assert.equal(siteRows.length, 3);
+  assert.deepEqual(siteRows.map((row) => row.SKC), ["SKC-A", "SKC-B", "SKC-B"]);
+  assert.deepEqual(siteRows.map((row) => row.SKC供应商货号), ["SKC-SUP-A", "SKC-SUP-B", "SKC-SUP-B"]);
+  assert.deepEqual(siteRows.map((row) => row.销售站点), ["shein-us", "shein-uk", "shein-us"]);
+  assert.deepEqual(siteRows.map((row) => row.上架状态), ["已上架", "已上架", "未上架"]);
 });

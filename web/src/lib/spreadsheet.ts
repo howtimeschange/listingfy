@@ -43,11 +43,11 @@ function sheetNameWithIndex(baseName: string, index: number, total: number) {
   return `${baseName.slice(0, Math.max(1, maxBaseLength))}${suffix}`
 }
 
-function appendRowsToWorksheet(rows: SpreadsheetRow[]) {
-  const firstChunk = rows.slice(0, SHEET_WRITE_CHUNK)
+function appendRowsToWorksheet(rows: SpreadsheetRow[], start = 0, end = rows.length) {
+  const firstChunk = rows.slice(start, Math.min(start + SHEET_WRITE_CHUNK, end))
   const worksheet = XLSX.utils.json_to_sheet(firstChunk)
-  for (let index = SHEET_WRITE_CHUNK; index < rows.length; index += SHEET_WRITE_CHUNK) {
-    XLSX.utils.sheet_add_json(worksheet, rows.slice(index, index + SHEET_WRITE_CHUNK), {
+  for (let index = start + SHEET_WRITE_CHUNK; index < end; index += SHEET_WRITE_CHUNK) {
+    XLSX.utils.sheet_add_json(worksheet, rows.slice(index, Math.min(index + SHEET_WRITE_CHUNK, end)), {
       origin: -1,
       skipHeader: true,
     })
@@ -64,7 +64,7 @@ export function exportWorkbook(filename: string, sheets: SpreadsheetSheet[]) {
     for (let index = 0; index < chunkCount; index += 1) {
       const start = index * SHEET_ROW_LIMIT
       const end = Math.min(start + SHEET_ROW_LIMIT, rows.length)
-      const worksheet = appendRowsToWorksheet(rows.slice(start, end))
+      const worksheet = appendRowsToWorksheet(rows, start, end)
       XLSX.utils.book_append_sheet(workbook, worksheet, sheetNameWithIndex(sheet.name, index, chunkCount))
     }
   }

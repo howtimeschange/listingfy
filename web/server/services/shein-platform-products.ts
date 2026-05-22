@@ -86,6 +86,11 @@ interface SaleSiteDetail {
   source: string
 }
 
+interface SkcSaleSiteDetail extends SaleSiteDetail {
+  skcName: string
+  skcSupplierCode: string
+}
+
 interface ProductFilterOption {
   value: string
   label: string
@@ -484,6 +489,31 @@ function mergeSaleSites(sites: SaleSiteDetail[]) {
     if (left.shelfStatus === 1 && right.shelfStatus !== 1) return -1
     if (left.shelfStatus !== 1 && right.shelfStatus === 1) return 1
     return `${left.siteAbbr} ${left.source}`.localeCompare(`${right.siteAbbr} ${right.source}`)
+  })
+}
+
+export function skcSaleSitesFromProduct(
+  skcs: JsonRecord[],
+  siteNames: Map<string, string> = new Map(),
+) {
+  return skcs.flatMap((skc) => {
+    const rawSkc = parseJsonText(skc.raw_payload_json)
+    const skcName = firstString(skc.skc_name, rawSkc.skcName, rawSkc.skc_name)
+    const skcSupplierCode = firstString(skc.supplier_code, rawSkc.supplierCode, rawSkc.supplier_code)
+    const source = skcName || "SKC"
+    return arrayRecords(rawSkc.shelfStatusInfoList ?? rawSkc.shelf_status_info_list)
+      .map((item) => normalizeSaleSite(item, source, siteNames))
+      .filter((site): site is SaleSiteDetail => Boolean(site))
+      .map((site): SkcSaleSiteDetail => ({
+        ...site,
+        skcName,
+        skcSupplierCode,
+      }))
+  }).sort((left, right) => {
+    if (left.skcName !== right.skcName) return left.skcName.localeCompare(right.skcName)
+    if (left.shelfStatus === 1 && right.shelfStatus !== 1) return -1
+    if (left.shelfStatus !== 1 && right.shelfStatus === 1) return 1
+    return left.siteAbbr.localeCompare(right.siteAbbr)
   })
 }
 
@@ -1253,6 +1283,10 @@ function serializeProductSummary(
     skcs,
     siteNames ?? (context ? siteNameLookup(db, context) : new Map()),
   )
+  const saleSiteDetails = skcSaleSitesFromProduct(
+    skcs,
+    siteNames ?? (context ? siteNameLookup(db, context) : new Map()),
+  )
   const activeSites = activeSaleSiteAbbrs(saleSites)
 
   return {
@@ -1277,6 +1311,7 @@ function serializeProductSummary(
     updatedAt: stringValue(row.updated_at),
     imageUrl,
     saleSites,
+    saleSiteDetails,
     saleSiteCount: activeSites.length,
     saleSiteSummary: saleSiteSummary(saleSites),
     costSummary: costValues.length === 1

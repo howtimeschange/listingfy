@@ -244,6 +244,9 @@ test("SHEIN platform products derive sale site details from synced SPU detail pa
   assert.match(service, /lastShelfTime/);
   assert.match(service, /link/);
   assert.match(service, /saleSites/);
+  assert.match(service, /skcSaleSitesFromProduct/);
+  assert.match(service, /saleSiteDetails/);
+  assert.match(service, /skcSupplierCode/);
   assert.match(service, /saleSiteSummary/);
   assert.match(service, /saleSiteCount/);
   assert.match(service, /saleSitesFromProduct\(\s*row,\s*skcs/);
