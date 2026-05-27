@@ -119,6 +119,21 @@ function fallbackCategory(row: SourceRow) {
       }
     }
   }
+  if (/t恤/i.test(text)) {
+    if (isMale || isFemale) {
+      const genderLabel = isMale ? "男童" : "女童"
+      const ageLabel = isSmallKid ? "小" : "大"
+      const categoryName = `${genderLabel}（${ageLabel}）T恤`
+      return {
+        category_id: isMale ? (isSmallKid ? 2105 : 1997) : (isSmallKid ? 2116 : 2013),
+        product_type_id: isMale ? (isSmallKid ? 9740 : 9736) : (isSmallKid ? 9739 : 9738),
+        category_name: categoryName,
+        path: `儿童 > ${genderLabel}（${ageLabel}）服装 > ${genderLabel}（${ageLabel}）上衣 > ${categoryName}`,
+        source: "RULE_FALLBACK",
+        status: "READY",
+      }
+    }
+  }
   if (text.includes("衬衫")) {
     return {
       category_id: 2062,

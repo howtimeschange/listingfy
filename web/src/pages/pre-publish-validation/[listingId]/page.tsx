@@ -2329,13 +2329,26 @@ export default function PrePublishDraftDetailPage() {
         title="上新填写工作台"
         description={`${data.listing.spu_code} · ${data.listing.title || data.readiness.field_groups.flatMap((group) => group.fields).find((field) => field.key === "title_cn")?.value || "发布草稿"}`}
         className="rounded-lg px-5 py-5"
-        actionsClassName="lg:max-w-[560px] [&>button]:h-9 [&>button]:px-3 [&>a]:h-9 [&>a]:px-3"
+        actionsClassName="lg:max-w-[760px] [&>button]:h-9 [&>button]:px-3 [&>a]:h-9 [&>a]:px-3"
       >
         <Button asChild variant="outline">
           <Link to="/pre-publish-validation">
             <ArrowLeft className="mr-2 size-4" />
             返回草稿箱
           </Link>
+        </Button>
+        <Button
+          variant="outline"
+          className="border-[#b9f4d8] bg-[#eafbf2] text-[#0b8f5a] hover:bg-[#d4fae8] hover:text-[#08764b]"
+          onClick={() => aiEnrichMutation.mutate("all")}
+          disabled={aiEnrichMutation.isPending}
+        >
+          {aiEnrichMutation.isPending && aiEnrichMutation.variables === "all" ? (
+            <Loader2 className="mr-2 size-4 animate-spin" />
+          ) : (
+            <Sparkles className="mr-2 size-4" />
+          )}
+          AI 推荐补齐空字段
         </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -2359,13 +2372,6 @@ export default function PrePublishDraftDetailPage() {
             >
               <Languages className="size-4" />
               AI 翻译标题
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => aiEnrichMutation.mutate("all")}
-              disabled={aiEnrichMutation.isPending}
-            >
-              <Sparkles className="size-4" />
-              AI 推荐补齐空字段
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => setCategoryDialogOpen(true)}>

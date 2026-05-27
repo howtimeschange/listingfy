@@ -236,3 +236,23 @@ test("pre-publish AI and batch fixes keep critical fields rule-owned", async () 
   assert.match(draftList, /批量导入图片目录/);
   assert.match(draftList, /batch-import-folders/);
 });
+
+test("draft category AI recomputes from source data instead of replaying the draft category", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const bucketSource = await readFile(path.join(PROJECT_ROOT, "web/server/routes/shein-products.ts"), "utf8");
+
+  assert.match(source, /ignoreListingCategory\?:\s*boolean/);
+  assert.match(source, /ignoreStoredCategory\?:\s*boolean/);
+  assert.match(source, /const storedCategory = ignoreStoredCategory\s*\?\s*null\s*:\s*readStoredCategoryOverride\(fills,\s*spuCode\)/);
+  assert.match(source, /getReadinessForListing\(db,\s*listing,\s*\{\s*ignoreListingCategory:\s*true,\s*ignoreStoredCategory:\s*true,\s*\}\)/);
+  assert.match(source, /shouldAutoApplyCategory\(categoryReadiness\.category,\s*\{\s*allowRuleFallback:\s*mode === "category" \|\| mode === "all"\s*\}\)/);
+  assert.match(source, /const enrichmentReadiness = mode === "all" \? categoryReadiness : readiness/);
+  assert.match(source, /function safeAiTranslateTitle/);
+  assert.match(source, /const titleEn = await safeAiTranslateTitle\(enrichmentReadiness\)/);
+  assert.match(source, /const aiFills = await callAiFill\(enrichmentReadiness\)/);
+  assert.match(source, /女童（大）T恤/);
+  assert.match(source, /isSmallKid \? 2116 : 2013/);
+
+  assert.match(bucketSource, /女童（大）T恤/);
+  assert.match(bucketSource, /isSmallKid \? 2116 : 2013/);
+});

@@ -241,6 +241,8 @@ test("pre publish has a single listing detail route with editable fields and ver
   assert.match(detailPage, /AI 转换类目/);
   assert.match(detailPage, /AI 翻译标题/);
   assert.match(detailPage, /AI 推荐补齐空字段/);
+  assert.match(detailPage, /<Button[\s\S]+onClick=\{\(\) => aiEnrichMutation\.mutate\("all"\)\}[\s\S]+AI 推荐补齐空字段[\s\S]+<\/Button>[\s\S]+<DropdownMenu>/);
+  assert.doesNotMatch(detailPage, /<DropdownMenuItem[\s\S]+aiEnrichMutation\.mutate\("all"\)[\s\S]+AI 推荐补齐空字段[\s\S]+<\/DropdownMenuItem>/);
   assert.match(detailPage, /保存草稿/);
   assert.match(detailPage, /上新需要关注/);
   assert.match(detailPage, /只保留类目要求、缺失项、标题、品牌、属性、图片和包装价格等上新必填信息/);

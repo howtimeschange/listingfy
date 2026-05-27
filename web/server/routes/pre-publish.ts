@@ -173,6 +173,10 @@ type CategoryOverride = {
   status?: string
 }
 
+type CategoryReadinessOptions = {
+  ignoreListingCategory?: boolean
+  ignoreStoredCategory?: boolean
+}
 
 function activeFillMap(db: ReturnType<typeof getDb>, spuCodes: string[]) {
   if (spuCodes.length === 0) return new Map<string, SourceRow>()
@@ -628,6 +632,21 @@ function fallbackCategory(row: SourceRow) {
         path: isSmallKid
           ? `儿童 > 女童（小）服装 > 女童（小）套装 > ${sweatshirt ? "女童（小）卫衣套装" : "女童（小）T恤套装"}`
           : `儿童 > 女童（大）服装 > 女童（大）套装 > ${sweatshirt ? "女童（大）卫衣套装" : "女童（大）T恤套装"}`,
+        source: "RULE_FALLBACK",
+        status: "READY",
+      }
+    }
+  }
+  if (/t恤/i.test(text)) {
+    if (isMale || isFemale) {
+      const genderLabel = isMale ? "男童" : "女童"
+      const ageLabel = isSmallKid ? "小" : "大"
+      const categoryName = `${genderLabel}（${ageLabel}）T恤`
+      return {
+        category_id: isMale ? (isSmallKid ? 2105 : 1997) : (isSmallKid ? 2116 : 2013),
+        product_type_id: isMale ? (isSmallKid ? 9740 : 9736) : (isSmallKid ? 9739 : 9738),
+        category_name: categoryName,
+        path: `儿童 > ${genderLabel}（${ageLabel}）服装 > ${genderLabel}（${ageLabel}）上衣 > ${categoryName}`,
         source: "RULE_FALLBACK",
         status: "READY",
       }
@@ -1195,6 +1214,7 @@ function buildRow({
   weights,
   fills,
   categoryOverride,
+  ignoreStoredCategory = false,
 }: {
   db: ReturnType<typeof getDb>
   row: SourceRow
@@ -1203,6 +1223,7 @@ function buildRow({
   weights: Map<string, SourceRow>
   fills: Map<string, SourceRow>
   categoryOverride?: CategoryOverride | null
+  ignoreStoredCategory?: boolean
 }): ReadinessRow {
   const spuCode = String(row.spu_code)
   const fields = getProductFields(db, row.content_package_id)
@@ -1210,7 +1231,8 @@ function buildRow({
   const mdmSkus = getSkus(db, row.id)
   const skcs = mdmSkcs.length ? mdmSkcs : getContentSkcs(db, row.content_package_id)
   const skus = mdmSkus.length ? mdmSkus : getContentSkus(db, row.content_package_id)
-  const category = categoryOverride ?? readStoredCategoryOverride(fills, spuCode) ?? resolveCategory(row)
+  const storedCategory = ignoreStoredCategory ? null : readStoredCategoryOverride(fills, spuCode)
+  const category = categoryOverride ?? storedCategory ?? resolveCategory(row)
   const attrs = getRequiredAttributes(db, category.category_id, category.product_type_id)
   const priceConfig = getSheinPriceConfig(db)
   const discountRule = discounts.get(spuCode)
@@ -1605,15 +1627,28 @@ function listingCategoryOverride(listing: ListingRow): CategoryOverride | null {
   }
 }
 
-function getReadinessForListing(db: ReturnType<typeof getDb>, listing: ListingRow) {
+function getReadinessForListing(
+  db: ReturnType<typeof getDb>,
+  listing: ListingRow,
+  options: CategoryReadinessOptions = {},
+) {
   const row = getSourceProductRow(db, listing.spu_code)
   if (!row) return null
   const sizeConversions = activeSizeConversions(db)
   const discounts = activeDiscounts(db)
   const weights = activeWeights(db)
   const fills = activeFillMap(db, [listing.spu_code])
-  const override = listingCategoryOverride(listing)
-  return buildRow({ db, row, sizeConversions, discounts, weights, fills, categoryOverride: override })
+  const override = options.ignoreListingCategory ? null : listingCategoryOverride(listing)
+  return buildRow({
+    db,
+    row,
+    sizeConversions,
+    discounts,
+    weights,
+    fills,
+    categoryOverride: override,
+    ignoreStoredCategory: options.ignoreStoredCategory,
+  })
 }
 
 function validationStatusFor(row: ReadinessRow) {
@@ -2713,6 +2748,10 @@ async function callAiTranslateTitle(row: ReadinessRow) {
   return heuristicEnglishTitle(row)
 }
 
+async function safeAiTranslateTitle(row: ReadinessRow) {
+  return callAiTranslateTitle(row).catch(() => heuristicEnglishTitle(row))
+}
+
 function persistCategoryFill(db: ReturnType<typeof getDb>, row: ReadinessRow) {
   if (!row.category.category_id || !row.category.product_type_id) return
   persistFill({
@@ -2733,13 +2772,19 @@ function persistCategoryFill(db: ReturnType<typeof getDb>, row: ReadinessRow) {
   })
 }
 
-function shouldAutoApplyCategory(category: ReadinessRow["category"]) {
+function shouldAutoApplyCategory(
+  category: ReadinessRow["category"],
+  options: { allowRuleFallback?: boolean } = {},
+) {
   const source = normalizeText(category.source)
+  const blockedSources = options.allowRuleFallback
+    ? ["AI_CATEGORY", "MISSING"]
+    : ["AI_CATEGORY", "RULE_FALLBACK", "MISSING"]
   return Boolean(
     category.category_id
     && category.product_type_id
     && category.status === "READY"
-    && !["AI_CATEGORY", "RULE_FALLBACK", "MISSING"].includes(source),
+    && !blockedSources.includes(source),
   )
 }
 
@@ -4876,11 +4921,18 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
   if (!readiness) {
     throw new HTTPException(404, { message: "商品档案不存在" })
   }
+  const categoryReadiness = mode === "all" || mode === "category"
+    ? getReadinessForListing(db, listing, {
+        ignoreListingCategory: true,
+        ignoreStoredCategory: true,
+      }) ?? readiness
+    : readiness
+  const enrichmentReadiness = mode === "all" ? categoryReadiness : readiness
   const saved: Array<Record<string, unknown>> = []
 
   if (mode === "all" || mode === "category") {
-    if (shouldAutoApplyCategory(readiness.category)) {
-      persistCategoryFill(db, readiness)
+    if (shouldAutoApplyCategory(categoryReadiness.category, { allowRuleFallback: mode === "category" || mode === "all" })) {
+      persistCategoryFill(db, categoryReadiness)
       db.prepare(`
         update listing
         set platform_category_id = ?,
@@ -4890,57 +4942,57 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         where id = ?
       `).run(
-        readiness.category.category_id,
-        readiness.category.product_type_id,
-        readiness.category.category_name,
-        readiness.category.path,
+        categoryReadiness.category.category_id,
+        categoryReadiness.category.product_type_id,
+        categoryReadiness.category.category_name,
+        categoryReadiness.category.path,
         listingId,
       )
       saved.push({
         field_key: "category",
         field_label: "SHEIN 类目",
-        field_value: readiness.category.category_name,
+        field_value: categoryReadiness.category.category_name,
         source: "CATEGORY_RULE",
       })
-    } else if (readiness.category.category_id && readiness.category.product_type_id) {
+    } else if (categoryReadiness.category.category_id && categoryReadiness.category.product_type_id) {
       persistFill({
         db,
-        spuCode: readiness.spu_code,
+        spuCode: categoryReadiness.spu_code,
         fieldKey: "category",
         fieldLabel: "SHEIN 类目候选",
-        fieldValue: readiness.category.category_name || String(readiness.category.category_id),
+        fieldValue: categoryReadiness.category.category_name || String(categoryReadiness.category.category_id),
         source: "AI_CATEGORY_SUGGESTED",
         confidence: 0.58,
         payload: {
-          category_id: readiness.category.category_id,
-          product_type_id: readiness.category.product_type_id,
-          category_name: readiness.category.category_name,
-          path: readiness.category.path,
-          source: readiness.category.source,
+          category_id: categoryReadiness.category.category_id,
+          product_type_id: categoryReadiness.category.product_type_id,
+          category_name: categoryReadiness.category.category_name,
+          path: categoryReadiness.category.path,
+          source: categoryReadiness.category.source,
           requires_manual_confirm: true,
         },
       })
       saved.push({
         field_key: "category",
         field_label: "SHEIN 类目候选",
-        field_value: readiness.category.category_name,
+        field_value: categoryReadiness.category.category_name,
         source: "AI_CATEGORY_SUGGESTED",
       })
     }
   }
 
   if (mode === "all" || mode === "title") {
-    const titleEn = await callAiTranslateTitle(readiness)
+    const titleEn = await safeAiTranslateTitle(enrichmentReadiness)
     if (titleEn) {
       persistFill({
         db,
-        spuCode: readiness.spu_code,
+        spuCode: enrichmentReadiness.spu_code,
         fieldKey: "title_en",
         fieldLabel: "英文标题",
         fieldValue: titleEn,
         source: "AI_TRANSLATED",
         confidence: 0.78,
-        payload: { title_cn: readiness.title_cn, category: readiness.category },
+        payload: { title_cn: enrichmentReadiness.title_cn, category: enrichmentReadiness.category },
       })
       saved.push({
         field_key: "title_en",
@@ -4951,21 +5003,21 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
   }
 
   if (mode === "all" || mode === "attributes") {
-    const aiFills = await callAiFill(readiness)
+    const aiFills = await callAiFill(enrichmentReadiness)
       .catch(() => [] as Array<Record<string, unknown>>) as Array<Record<string, unknown>>
     const byKey = new Map(aiFills.map((fill) => [String(fill.field_key), fill]))
-    for (const field of readiness.manual_fields) {
+    for (const field of enrichmentReadiness.manual_fields) {
       const aiFill = byKey.get(field.key)
       const candidateValue = normalizeFillFieldValue(field.key, field.label, aiFill?.field_value)
       const validValues = new Set((field.options ?? []).map((option) => option.attribute_value))
       const fieldValue = candidateValue && validValues.has(candidateValue)
         ? candidateValue
-        : heuristicAiValue(field, readiness)
+        : heuristicAiValue(field, enrichmentReadiness)
       if (!fieldValue) continue
       const confidence = Number(aiFill?.confidence)
       persistFill({
         db,
-        spuCode: readiness.spu_code,
+        spuCode: enrichmentReadiness.spu_code,
         fieldKey: field.key,
         fieldLabel: field.label,
         fieldValue: normalizeFillFieldValue(field.key, field.label, fieldValue),
