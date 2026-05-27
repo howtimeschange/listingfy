@@ -19,13 +19,26 @@ function apiErrorMessage(status: number, body: unknown) {
   }
   if (body && typeof body === "object") {
     const error = "error" in body ? (body as { error?: unknown }).error : null
-    if (error && typeof error === "object" && "message" in error) {
-      const message = String((error as { message?: unknown }).message ?? "").trim()
-      if (message) return message
+    if (error && typeof error === "object") {
+      const errorRecord = error as { message?: unknown; error_message?: unknown; msg?: unknown; code?: unknown }
+      const message = String(errorRecord.message ?? errorRecord.error_message ?? errorRecord.msg ?? "").trim()
+      if (message) {
+        const code = String(errorRecord.code ?? "").trim()
+        return code ? `${code} · ${message}` : message
+      }
     }
-    if ("message" in body) {
-      const message = String((body as { message?: unknown }).message ?? "").trim()
-      if (message) return message
+    const record = body as {
+      message?: unknown
+      error_message?: unknown
+      msg?: unknown
+      error_code?: unknown
+      code?: unknown
+    }
+    const message = String(record.message ?? record.error_message ?? record.msg ?? "").trim()
+    if (message) {
+      const code = String(record.error_code ?? record.code ?? "").trim()
+      if (code) return `${code} · ${message}`
+      return message
     }
   }
   return `API Error ${status}`

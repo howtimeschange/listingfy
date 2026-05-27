@@ -96,8 +96,8 @@ interface BatchPublishDialogProps {
 
 function errorMessage(error: unknown, fallback: string) {
   if (error instanceof ApiError) {
-    const body = error.body as { message?: string } | null
-    return body?.message ?? fallback
+    const body = error.body as { message?: string; error_message?: string } | null
+    return body?.message ?? body?.error_message ?? error.message ?? fallback
   }
   return error instanceof Error ? error.message : fallback
 }

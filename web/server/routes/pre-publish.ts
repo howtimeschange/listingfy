@@ -5949,7 +5949,7 @@ prePublish.post("/drafts/:id/publish", async (c) => {
     : code || String(result.status)
   const failureMessage = code === "0" && businessValidationErrors.length > 0
     ? businessValidationErrors.join("；")
-    : message
+    : message || `SHEIN 发布失败（HTTP ${result.status}）`
   markPublishTaskFailed(db, {
     taskId,
     responsePayload: result.payload,
@@ -6003,6 +6003,7 @@ prePublish.post("/drafts/:id/publish", async (c) => {
     task_id: taskId,
     version_id: version.id,
     status: "PUBLISH_FAILED",
+    message: failureMessage,
     error_code: failureCode,
     error_message: failureMessage,
     response: result.payload,
