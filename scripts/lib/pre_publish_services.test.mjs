@@ -61,6 +61,22 @@ test("field-fill helpers normalize cotton blend material to platform fabric", ()
   assert.equal(fieldFills.normalizeMaterialValue("聚酯纤维"), "聚酯纤维");
 });
 
+test("field-fill helpers avoid unspecified tariff values for T-shirt contexts", () => {
+  assert.equal(typeof fieldFills.tariffValueCandidatesForContext, "function");
+  assert.deepEqual(
+    fieldFills.tariffValueCandidatesForContext("女童（小）T恤 T-Shirt"),
+    ["常规T恤", "非常规T恤", "未列明关税种类"],
+  );
+});
+
+test("pre-publish route applies tariff candidates before SHEIN payload submission", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  assert.match(source, /tariffValueCandidatesForContext\(context\)/);
+  assert.match(source, /tariffValueCandidatesForContext\(text\)/);
+  assert.match(source, /function tariffFieldValuesForListing/);
+  assert.match(source, /field\.label\.includes\("关税"\)[\s\S]+tariffFieldValuesForListing\(field,\s*listing\)/);
+});
+
 test("image service builds SHEIN picture requirements and validates common image constraints", () => {
   const requirements = images.buildPictureRequirements([
     { field_key: "skc_image_square_show", is_true: 1 },

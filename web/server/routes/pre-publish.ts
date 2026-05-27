@@ -15,7 +15,7 @@ import {
   updatePublishTaskRequestPayload,
 } from "../services/publish/publish-job-service"
 import { canTransitionDraftStatus } from "../services/pre-publish/drafts"
-import { coerceFieldValues, normalizeMaterialValue } from "../services/pre-publish/field-fills"
+import { coerceFieldValues, normalizeMaterialValue, tariffValueCandidatesForContext } from "../services/pre-publish/field-fills"
 import {
   boolConfigValue,
   buildPictureRequirements,
@@ -1147,13 +1147,7 @@ function inferAttributeValue({
     return findEnumValue(attr.values, ["针织平纹", "梭织平纹", "其他工艺"])
   }
   if (name.includes("关税")) {
-    if (context.includes("连衣裙")) return findEnumValue(attr.values, ["连衣裙", "未列明关税种类"])
-    if (context.includes("衬衫")) return findEnumValue(attr.values, ["休闲衬衫", "衬衫", "未列明关税种类"])
-    if (context.includes("卫衣")) return findEnumValue(attr.values, ["卫衣", "未列明关税种类"])
-    if (context.includes("开襟") || context.includes("毛衫")) {
-      return findEnumValue(attr.values, ["开襟衫", "毛衣", "未列明关税种类"])
-    }
-    return findEnumValue(attr.values, ["未列明关税种类"])
+    return findEnumValue(attr.values, tariffValueCandidatesForContext(context))
   }
   if (name.includes("加绒")) {
     return findEnumValue(attr.values, [context.includes("加绒") ? "是" : "否"])
@@ -2821,9 +2815,7 @@ function heuristicAiValue(field: FillField, row: ReadinessRow) {
   if (field.label.includes("年龄")) return pick(["幼童", "儿童", "婴幼儿"])
   if (field.label.includes("所在地")) return pick(["ALL/全球/所有", "All"])
   if (field.label.includes("关税")) {
-    if (text.includes("连衣裙")) return pick(["连衣裙", "未列明关税种类"])
-    if (text.includes("衬衫")) return pick(["休闲衬衫", "衬衫", "未列明关税种类"])
-    return pick(["开襟衫", "毛衣", "未列明关税种类"])
+    return pick(tariffValueCandidatesForContext(text))
   }
   return optionValues[0] || ""
 }
@@ -3181,6 +3173,26 @@ function buildDependentAttributeItems(db: ReturnType<typeof getDb>, listing: Lis
   }]
 }
 
+function tariffFieldValuesForListing(field: FillField, listing: ListingRow) {
+  const currentValues = coerceFieldValues(field, field.value)
+  const context = [
+    listing.platform_category_name,
+    listing.platform_category_path,
+    listing.title,
+    listing.spu_name,
+    listing.middle_class_name,
+    listing.subclass_name,
+  ].map(normalizeText).join(" ")
+  const candidates = tariffValueCandidatesForContext(context)
+  if (candidates.length === 1 && candidates[0] === "未列明关税种类") return currentValues
+  const currentSpecificValues = currentValues.filter((value) =>
+    value !== "未列明关税种类" && candidates.includes(value),
+  )
+  if (currentSpecificValues.length > 0) return currentSpecificValues
+  const inferred = findEnumValue((field.options ?? []) as AttributeValue[], candidates)
+  return inferred ? [inferred.attribute_value] : currentValues
+}
+
 function buildProductAttributeList(db: ReturnType<typeof getDb>, listing: ListingRow) {
   const fields = requiredFillFields(db, listing)
   const compositionSource = fields.find((field) => field.key === "composition_text")?.value
@@ -3192,8 +3204,8 @@ function buildProductAttributeList(db: ReturnType<typeof getDb>, listing: Listin
       output.push(...buildCompositionAttributeItems(field, compositionSource))
       continue
     }
-    const values = field.label.includes("关税") && normalizeText(listing.platform_category_name).includes("卫衣")
-      ? ["卫衣"]
+    const values = field.label.includes("关税")
+      ? tariffFieldValuesForListing(field, listing)
       : coerceFieldValues(field, field.value)
     for (const value of values) {
       const option = optionForFieldValue(field, value)
