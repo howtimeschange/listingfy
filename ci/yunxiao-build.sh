@@ -25,6 +25,7 @@ tar \
   --exclude='./data/*.sqlite-*' \
   --exclude='./data/*.db' \
   --exclude='./data/*.db-*' \
+  --exclude='./data/listing-assets' \
   --exclude='./data/shein-metadata' \
   --exclude='./data/deepdraw-content' \
   --exclude='./.env' \

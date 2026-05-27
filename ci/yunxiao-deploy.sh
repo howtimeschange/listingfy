@@ -21,10 +21,12 @@ mkdir -p "$APP_DIR"
 
 rsync -a --delete "$SRC_DIR"/ "$APP_DIR"/ \
   --exclude='.env.local' \
+  --exclude='data/listing-assets' \
   --exclude='node_modules' \
   --exclude='web/node_modules'
 
 cd "$APP_DIR"
+mkdir -p "$APP_DIR/data/listing-assets"
 
 echo "===== Write production env ====="
 {

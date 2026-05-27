@@ -3355,11 +3355,21 @@ async function prepareListingImagesForPublish(db: ReturnType<typeof getDb>, list
   }
 }
 
-function selectedImageInfo(skc: SourceRow, assets: SourceRow[], allowSourceImages = false) {
+function selectedImageInfo(
+  skc: SourceRow,
+  assets: SourceRow[],
+  options: { allowSourceImages?: boolean; allowLocalImages?: boolean } = {},
+) {
   const skcCode = normalizeText(skc.skc_code)
+  const allowSourceImages = Boolean(options.allowSourceImages)
+  const allowLocalImages = Boolean(options.allowLocalImages)
   const selectedAssets = assets
     .filter((asset) => normalizeText(asset.skc_code) === skcCode)
-    .filter((asset) => normalizeText(asset.platform_url) || (allowSourceImages && normalizeText(asset.source_url)))
+    .filter((asset) =>
+      normalizeText(asset.platform_url)
+      || (allowSourceImages && normalizeText(asset.source_url))
+      || (allowLocalImages && normalizeText(asset.local_path)),
+    )
     .sort((a, b) => Number(a.image_sort ?? 0) - Number(b.image_sort ?? 0))
 
   const imageInfoList = selectedAssets.map((asset, index) => ({
@@ -3704,6 +3714,7 @@ function buildSizeChartAttributeList({
 function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, options?: {
   skcCodes?: string[]
   allowSourceImages?: boolean
+  allowLocalImages?: boolean
   requirePreparedImages?: boolean
   allowDefaultSkuWeight?: boolean
 }) {
@@ -3851,7 +3862,10 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
         ? { skc_title: normalizeText(skc.skc_title) || normalizeText(listing.title) || normalizeText(listing.spu_code) }
         : {}),
       sale_attribute: saleAttribute,
-      image_info: selectedImageInfo(skc, assets, Boolean(options?.allowSourceImages)),
+      image_info: selectedImageInfo(skc, assets, {
+        allowSourceImages: Boolean(options?.allowSourceImages),
+        allowLocalImages: Boolean(options?.allowLocalImages),
+      }),
       sku_list: skuList,
       shelf_way: "1",
       ...(fieldShown(publishFields, "shelf_require") ? { shelf_require: "0" } : {}),
@@ -5613,6 +5627,7 @@ prePublish.get("/drafts/:id/publish-payload", async (c) => {
   const preview = buildPublishPayload(db, listingId, {
     skcCodes,
     allowSourceImages: true,
+    allowLocalImages: true,
     requirePreparedImages: false,
     allowDefaultSkuWeight: boolConfigValue(Number(c.req.query("allow_default_sku_weight") ?? 0)) === 1,
   })
@@ -5656,7 +5671,7 @@ prePublish.post("/drafts/batch-publish-check", async (c) => {
         },
       }
     }
-    const preview = buildPublishPayload(db, listingId)
+    const preview = buildPublishPayload(db, listingId, { allowLocalImages: true, requirePreparedImages: false })
     const missingWeightSkuCodes = new Set(
       preview.errors
         .map((error) => normalizeText(error).match(/^(.+?) 缺 SKU 毛重$/)?.[1])
@@ -5790,7 +5805,13 @@ prePublish.post("/drafts/:id/publish", async (c) => {
     versionType: "PUBLISH",
     changeSummary: "提交 SHEIN 发布",
   })
-  const preview = buildPublishPayload(db, listingId, { skcCodes, allowSourceImages: true, requirePreparedImages: false, allowDefaultSkuWeight })
+  const preview = buildPublishPayload(db, listingId, {
+    skcCodes,
+    allowSourceImages: true,
+    allowLocalImages: true,
+    requirePreparedImages: false,
+    allowDefaultSkuWeight,
+  })
   if (preview.errors.length > 0) {
     db.prepare(`
       update listing_publish_version

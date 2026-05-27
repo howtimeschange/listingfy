@@ -237,6 +237,24 @@ test("pre-publish AI and batch fixes keep critical fields rule-owned", async () 
   assert.match(draftList, /batch-import-folders/);
 });
 
+test("deployment preserves runtime listing image uploads outside release sync", async () => {
+  const buildScript = await readFile(path.join(PROJECT_ROOT, "ci/yunxiao-build.sh"), "utf8");
+  const deployScript = await readFile(path.join(PROJECT_ROOT, "ci/yunxiao-deploy.sh"), "utf8");
+
+  assert.match(buildScript, /--exclude='\.\/data\/listing-assets'/);
+  assert.match(deployScript, /--exclude='data\/listing-assets'/);
+  assert.match(deployScript, /mkdir -p "\$APP_DIR\/data\/listing-assets"/);
+});
+
+test("publish precheck treats local uploaded images as pending SHEIN image assets", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+
+  assert.match(source, /allowLocalImages\?:\s*boolean/);
+  assert.match(source, /allowLocalImages\s*&&\s*normalizeText\(asset\.local_path\)/);
+  assert.match(source, /buildPublishPayload\(db,\s*listingId,\s*\{\s*allowLocalImages:\s*true,\s*requirePreparedImages:\s*false\s*\}\)/);
+  assert.match(source, /allowSourceImages:\s*true,\s*allowLocalImages:\s*true,\s*requirePreparedImages:\s*false/);
+});
+
 test("draft category AI recomputes from source data instead of replaying the draft category", async () => {
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
   const bucketSource = await readFile(path.join(PROJECT_ROOT, "web/server/routes/shein-products.ts"), "utf8");
