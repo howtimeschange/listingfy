@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useParams } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
@@ -442,6 +442,15 @@ type ImageLibraryPickerState = {
   requirement: ImageRequirement
   skcCode?: string | null
 } | null
+
+type WorkbenchTab = "listing" | "records"
+
+type WorkbenchElevatorItem = {
+  id: string
+  label: string
+  meta: string
+  tab: WorkbenchTab
+}
 
 const IMAGE_SOURCE_KIND_OPTIONS = [
   { value: "PICTURE", label: "商品图" },
@@ -1751,6 +1760,47 @@ function CategoryTreeDialog({
   )
 }
 
+function WorkbenchElevator({
+  items,
+  activeId,
+  onSelect,
+}: {
+  items: WorkbenchElevatorItem[]
+  activeId: string
+  onSelect: (item: WorkbenchElevatorItem) => void
+}) {
+  return (
+    <nav
+      aria-label="上新填写工作台配置项"
+      className="-mx-4 sticky top-0 z-30 border-b bg-background px-4 py-3 shadow-[0_8px_18px_rgba(15,23,42,0.04)] md:-mx-6 md:px-6"
+    >
+      <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
+        <span className="shrink-0 text-xs font-medium text-muted-foreground">配置项</span>
+        {items.map((item) => {
+          const active = activeId === item.id
+          return (
+            <button
+              key={item.id}
+              type="button"
+              aria-current={active ? "location" : undefined}
+              onClick={() => onSelect(item)}
+              className={cn(
+                "flex shrink-0 items-center gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors",
+                active
+                  ? "border-[#b9f4d8] bg-[#eafbf2] text-[#0b8f5a] shadow-[0_1px_2px_rgba(0,0,0,0.04)]"
+                  : "border-transparent bg-muted/50 text-muted-foreground hover:border-border hover:bg-card hover:text-foreground",
+              )}
+            >
+              <span className="font-medium">{item.label}</span>
+              <span className="text-xs opacity-80">{item.meta}</span>
+            </button>
+          )
+        })}
+      </div>
+    </nav>
+  )
+}
+
 export default function PrePublishDraftDetailPage() {
   const { listingId } = useParams()
   const queryClient = useQueryClient()
@@ -1769,6 +1819,10 @@ export default function PrePublishDraftDetailPage() {
   const [imageImportDialogOpen, setImageImportDialogOpen] = useState(false)
   const [imageLibraryPicker, setImageLibraryPicker] = useState<ImageLibraryPickerState>(null)
   const [uploadingImageState, setUploadingImageState] = useState<ImageUploadingState | null>(null)
+  const [activeWorkbenchTab, setActiveWorkbenchTab] = useState<WorkbenchTab>("listing")
+  const [activeElevatorSectionId, setActiveElevatorSectionId] = useState("draft-summary")
+  const pageContainerRef = useRef<HTMLDivElement | null>(null)
+  const scrollFrameRef = useRef<number | null>(null)
   const uploadingImageKey = uploadingImageState?.key ?? null
 
   const fields = useMemo(
@@ -1844,6 +1898,46 @@ export default function PrePublishDraftDetailPage() {
     data?.listing.platform_category_name?.includes("套装")
     || data?.listing.platform_category_path?.includes("套装"),
   )
+  const focusedFieldCount = focusedFieldGroups.reduce((sum, group) => sum + group.fields.length, 0)
+  const fieldIssueCount = Array.from(fieldValidationIssues.values()).reduce((sum, issues) => sum + issues.length, 0)
+  const workbenchElevatorItems: WorkbenchElevatorItem[] = [
+    {
+      id: "draft-summary",
+      label: "概览",
+      meta: data ? `${data.listing.completeness}% 完整` : "草稿状态",
+      tab: "listing",
+    },
+    {
+      id: "draft-required-fields",
+      label: "必填字段",
+      meta: fieldIssueCount > 0 ? `${fieldIssueCount} 待处理` : `${focusedFieldCount} 项`,
+      tab: "listing",
+    },
+    {
+      id: "draft-spu-assets",
+      label: "SPU 图片",
+      meta: spuImageRequirements.length > 0 ? `${spuImageRequirements.length} 规则` : "按类目",
+      tab: "listing",
+    },
+    {
+      id: "draft-skc-sku",
+      label: "款色尺码",
+      meta: `${skcGroups.length} 款色`,
+      tab: "listing",
+    },
+    {
+      id: "draft-size-chart",
+      label: "尺码表",
+      meta: (data?.mapped_size_charts ?? []).length > 0 ? `${data?.mapped_size_charts.length ?? 0} 张` : `${sizeChartAttributes.length} 字段`,
+      tab: "listing",
+    },
+    {
+      id: "draft-publish-records",
+      label: "发布记录",
+      meta: `${data?.versions.length ?? 0} 版本`,
+      tab: "records",
+    },
+  ]
 
   // Seed local edit state from the loaded draft detail before the user edits it.
   /* eslint-disable react-hooks/set-state-in-effect */
@@ -1875,6 +1969,12 @@ export default function PrePublishDraftDetailPage() {
     ])))
   }, [data, fields])
   /* eslint-enable react-hooks/set-state-in-effect */
+
+  useEffect(() => () => {
+    if (scrollFrameRef.current != null) {
+      window.cancelAnimationFrame(scrollFrameRef.current)
+    }
+  }, [])
 
   function buildSaveDraftPayload() {
     return {
@@ -2310,6 +2410,58 @@ export default function PrePublishDraftDetailPage() {
     setSelectedSkcIds(nextSkcs)
   }
 
+  function handleWorkbenchTabChange(value: string) {
+    const nextTab = value as WorkbenchTab
+    setActiveWorkbenchTab(nextTab)
+    setActiveElevatorSectionId(nextTab === "records" ? "draft-publish-records" : "draft-required-fields")
+  }
+
+  function updateActiveElevatorSectionFromScroll() {
+    const container = pageContainerRef.current
+    if (!container) return
+    const visibleItems = workbenchElevatorItems.filter((item) => item.tab === activeWorkbenchTab)
+    if (visibleItems.length === 0) return
+
+    const containerRect = container.getBoundingClientRect()
+    const elevator = container.querySelector("nav[aria-label='上新填写工作台配置项']")
+    const elevatorHeight = elevator?.getBoundingClientRect().height ?? 0
+    const activationLine = containerRect.top + elevatorHeight + 48
+    let nextActiveId = visibleItems[0].id
+
+    for (const item of visibleItems) {
+      const section = document.getElementById(item.id)
+      if (!section) continue
+      if (section.getBoundingClientRect().top <= activationLine) {
+        nextActiveId = item.id
+      }
+    }
+
+    const nearBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 4
+    if (nearBottom) {
+      nextActiveId = visibleItems[visibleItems.length - 1].id
+    }
+
+    setActiveElevatorSectionId((current) => current === nextActiveId ? current : nextActiveId)
+  }
+
+  function handleWorkbenchScroll() {
+    if (scrollFrameRef.current != null) return
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null
+      updateActiveElevatorSectionFromScroll()
+    })
+  }
+
+  function scrollToWorkbenchSection(item: WorkbenchElevatorItem) {
+    setActiveWorkbenchTab(item.tab)
+    setActiveElevatorSectionId(item.id)
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document.getElementById(item.id)?.scrollIntoView({ behavior: "smooth", block: "start" })
+      })
+    })
+  }
+
   if (isLoading) {
     return <PageContainer><div className="py-16 text-center text-sm text-muted-foreground">加载草稿详情...</div></PageContainer>
   }
@@ -2323,7 +2475,17 @@ export default function PrePublishDraftDetailPage() {
   const skuDimension = dimensionGroups.find((group) => group.dimension === "SKU")
 
   return (
-    <PageContainer className="space-y-5 px-4 py-4 md:px-6">
+    <PageContainer
+      ref={pageContainerRef}
+      onScroll={handleWorkbenchScroll}
+      className="min-h-0 space-y-5 px-4 pb-4 pt-0 md:px-6 md:pb-6 md:pt-0"
+    >
+      <WorkbenchElevator
+        items={workbenchElevatorItems}
+        activeId={activeElevatorSectionId}
+        onSelect={scrollToWorkbenchSection}
+      />
+
       <PageHeader
         compact
         title="上新填写工作台"
@@ -2444,7 +2606,7 @@ export default function PrePublishDraftDetailPage() {
         </DialogContent>
       </Dialog>
 
-      <section className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+      <section id="draft-summary" className="grid scroll-mt-24 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
         <div className="rounded-lg border bg-card p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div className="min-w-0">
@@ -2525,14 +2687,14 @@ export default function PrePublishDraftDetailPage() {
         </div>
       ) : null}
 
-      <Tabs defaultValue="listing" className="space-y-5">
+      <Tabs value={activeWorkbenchTab} onValueChange={handleWorkbenchTabChange} className="space-y-5">
         <TabsList className="w-fit">
           <TabsTrigger value="listing">上新填写</TabsTrigger>
           <TabsTrigger value="records">更多发布记录</TabsTrigger>
         </TabsList>
 
         <TabsContent value="listing" className="space-y-5">
-          <Card className="rounded-lg">
+          <Card id="draft-required-fields" className="scroll-mt-24 rounded-lg">
             <CardHeader>
               <CardTitle>需要填写的字段</CardTitle>
               <p className="text-sm text-muted-foreground">
@@ -2551,29 +2713,31 @@ export default function PrePublishDraftDetailPage() {
                 generatingFieldKey={aiFieldMutation.isPending ? aiFieldMutation.variables?.key ?? null : null}
                 validationIssues={fieldValidationIssues}
               />
-              {spuImageRequirements.length ? (
-                <div className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <ImageIcon className="size-4 text-muted-foreground" />
-                  <h3 className="text-sm font-semibold">SPU 图片规则</h3>
-                </div>
-                <ImageRequirementManager
-                  requirements={spuImageRequirements}
-                  assets={data.assets.filter((asset) => !asset.skc_code)}
-                  onUpload={(params) => uploadImageMutation.mutate(params)}
-                  uploadingKey={uploadingImageKey}
-                  uploadingState={uploadingImageState}
-                  onOpenLibrary={(params) => setImageLibraryPicker(params)}
-                  onUpdateAsset={(assetId, values) => updateImageAssetMutation.mutate({ assetId, values })}
-                  onDeleteAsset={(assetId) => deleteImageAssetMutation.mutate(assetId)}
-                  pending={updateImageAssetMutation.isPending || deleteImageAssetMutation.isPending}
-                />
-                </div>
-              ) : null}
+              <div id="draft-spu-assets" className="scroll-mt-24 space-y-3">
+                {spuImageRequirements.length ? (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <ImageIcon className="size-4 text-muted-foreground" />
+                      <h3 className="text-sm font-semibold">SPU 图片规则</h3>
+                    </div>
+                    <ImageRequirementManager
+                      requirements={spuImageRequirements}
+                      assets={data.assets.filter((asset) => !asset.skc_code)}
+                      onUpload={(params) => uploadImageMutation.mutate(params)}
+                      uploadingKey={uploadingImageKey}
+                      uploadingState={uploadingImageState}
+                      onOpenLibrary={(params) => setImageLibraryPicker(params)}
+                      onUpdateAsset={(assetId, values) => updateImageAssetMutation.mutate({ assetId, values })}
+                      onDeleteAsset={(assetId) => deleteImageAssetMutation.mutate(assetId)}
+                      pending={updateImageAssetMutation.isPending || deleteImageAssetMutation.isPending}
+                    />
+                  </>
+                ) : null}
+              </div>
             </CardContent>
           </Card>
 
-          <Card className="rounded-lg">
+          <Card id="draft-skc-sku" className="scroll-mt-24 rounded-lg">
             <CardHeader>
               <CardTitle>{skcDimension?.title ?? "SKC 款色维度"}</CardTitle>
             </CardHeader>
@@ -2889,7 +3053,7 @@ export default function PrePublishDraftDetailPage() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card id="draft-size-chart" className="scroll-mt-24">
             <CardHeader className="flex flex-row items-start justify-between gap-4">
               <div>
                 <CardTitle>SHEIN 类目尺码表</CardTitle>
@@ -3045,7 +3209,7 @@ export default function PrePublishDraftDetailPage() {
         </TabsContent>
 
         <TabsContent value="records">
-          <Card className="rounded-lg">
+          <Card id="draft-publish-records" className="scroll-mt-24 rounded-lg">
             <CardHeader>
               <CardTitle>更多发布记录</CardTitle>
               <p className="text-sm text-muted-foreground">版本历史、发布回显和 SHEIN 平台标识集中查看。</p>
