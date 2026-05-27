@@ -260,6 +260,10 @@ test("pre publish has a single listing detail route with editable fields and ver
   assert.match(detailPage, /导入本地图片目录/);
   assert.match(detailPage, /导入图片/);
   assert.match(detailPage, /上传补齐/);
+  assert.match(detailPage, /files: File\[\]/);
+  assert.match(detailPage, /multiple/);
+  assert.match(detailPage, /Array\.from\(event\.target\.files \?\? \[\]\)/);
+  assert.match(detailPage, /for \(const \[index, file\] of files\.entries\(\)\)/);
   assert.match(detailPage, /images\/upload/);
   assert.match(detailPage, /MultiEnumPicker/);
   assert.match(detailPage, /版本历史/);

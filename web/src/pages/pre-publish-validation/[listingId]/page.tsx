@@ -400,9 +400,16 @@ type SkuBatchFillDraft = SkuCommercialDraft & {
 }
 
 type ImageUploadParams = {
-  file: File
+  files: File[]
   skcCode?: string | null
   requirement: ImageRequirement
+}
+
+type ImageUploadingState = {
+  key: string
+  current: number
+  total: number
+  fileName?: string | null
 }
 
 type ImageLibraryPickerState = {
@@ -1000,12 +1007,14 @@ function ImageRequirementTable({
   skcCode,
   onUpload,
   uploadingKey,
+  uploadingState,
 }: {
   requirements: ImageRequirement[]
   checklist?: ListingDetail["image_checklist"][number]
   skcCode?: string | null
   onUpload?: (params: ImageUploadParams) => void
   uploadingKey?: string | null
+  uploadingState?: ImageUploadingState | null
 }) {
   const visible = requirements.filter((requirement) => requirement.show !== 0)
   if (visible.length === 0) return <EmptyState icon={ImageIcon} message="当前类目未返回图片规则" />
@@ -1029,6 +1038,8 @@ function ImageRequirementTable({
             const status = requirementStatusLabel(requirement, checklist)
             const key = imageUploadKey(requirement.requirement_key, skcCode)
             const pending = uploadingKey === key
+            const uploadBlocked = Boolean(uploadingKey)
+            const progress = pending && uploadingState?.key === key ? uploadingState : null
             return (
               <TableRow key={requirement.requirement_key}>
                 <TableCell className="font-medium">
@@ -1050,23 +1061,24 @@ function ImageRequirementTable({
                 {canUpload ? (
                   <TableCell>
                     <Button asChild variant="outline" size="sm">
-                      <Label className={cn("cursor-pointer", pending && "pointer-events-none opacity-60")}>
+                      <Label className={cn("cursor-pointer", uploadBlocked && "pointer-events-none opacity-60")}>
                         {pending ? (
                           <Loader2 className="mr-1 size-3 animate-spin" />
                         ) : (
                           <Upload className="mr-1 size-3" />
                         )}
-                        上传补齐
+                        {progress && progress.total > 1 ? `上传中 ${progress.current}/${progress.total}` : pending ? "上传中" : "上传补齐"}
                         <Input
                           type="file"
                           accept="image/*"
+                          multiple
                           className="hidden"
-                          disabled={pending}
+                          disabled={uploadBlocked}
                           onChange={(event) => {
-                            const file = event.target.files?.[0]
+                            const files = Array.from(event.target.files ?? [])
                             event.currentTarget.value = ""
-                            if (!file) return
-                            onUpload?.({ file, skcCode, requirement })
+                            if (files.length === 0) return
+                            onUpload?.({ files, skcCode, requirement })
                           }}
                         />
                       </Label>
@@ -1208,6 +1220,7 @@ function ImageRequirementManager({
   skcCode,
   onUpload,
   uploadingKey,
+  uploadingState,
   onOpenLibrary,
   onUpdateAsset,
   onDeleteAsset,
@@ -1219,6 +1232,7 @@ function ImageRequirementManager({
   skcCode?: string | null
   onUpload?: (params: ImageUploadParams) => void
   uploadingKey?: string | null
+  uploadingState?: ImageUploadingState | null
   onOpenLibrary: (params: { requirement: ImageRequirement; skcCode?: string | null }) => void
   onUpdateAsset: (assetId: number, values: { asset_type: string; image_sort: number; confirmed: number; note: string }) => void
   onDeleteAsset: (assetId: number) => void
@@ -1233,6 +1247,8 @@ function ImageRequirementManager({
         const matchedAssets = assets.filter((asset) => assetMatchesImageRequirement(asset, requirement))
         const key = imageUploadKey(requirement.requirement_key, skcCode)
         const uploading = uploadingKey === key
+        const uploadBlocked = Boolean(uploadingKey)
+        const progress = uploading && uploadingState?.key === key ? uploadingState : null
         return (
           <div key={`${skcCode || "SPU"}-${requirement.requirement_key}`} className="rounded border p-3">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -1260,19 +1276,20 @@ function ImageRequirementManager({
                 </Button>
                 {onUpload ? (
                   <Button asChild variant="outline" size="sm">
-                    <Label className={cn("cursor-pointer", uploading && "pointer-events-none opacity-60")}>
+                    <Label className={cn("cursor-pointer", uploadBlocked && "pointer-events-none opacity-60")}>
                       {uploading ? <Loader2 className="mr-1 size-3 animate-spin" /> : <Upload className="mr-1 size-3" />}
-                      本地上传
+                      {progress && progress.total > 1 ? `上传中 ${progress.current}/${progress.total}` : uploading ? "上传中" : "本地上传"}
                       <Input
                         type="file"
                         accept="image/*"
+                        multiple
                         className="hidden"
-                        disabled={uploading}
+                        disabled={uploadBlocked}
                         onChange={(event) => {
-                          const file = event.target.files?.[0]
+                          const files = Array.from(event.target.files ?? [])
                           event.currentTarget.value = ""
-                          if (!file) return
-                          onUpload({ file, skcCode, requirement })
+                          if (files.length === 0) return
+                          onUpload({ files, skcCode, requirement })
                         }}
                       />
                     </Label>
@@ -1688,7 +1705,8 @@ export default function PrePublishDraftDetailPage() {
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false)
   const [imageImportDialogOpen, setImageImportDialogOpen] = useState(false)
   const [imageLibraryPicker, setImageLibraryPicker] = useState<ImageLibraryPickerState>(null)
-  const [uploadingImageKey, setUploadingImageKey] = useState<string | null>(null)
+  const [uploadingImageState, setUploadingImageState] = useState<ImageUploadingState | null>(null)
+  const uploadingImageKey = uploadingImageState?.key ?? null
 
   const fields = useMemo(
     () => data?.readiness.field_groups.flatMap((group) => group.fields) ?? [],
@@ -1989,33 +2007,52 @@ export default function PrePublishDraftDetailPage() {
   })
 
   const uploadImageMutation = useMutation({
-    mutationFn: async ({ file, skcCode, requirement }: ImageUploadParams) => {
-      const form = new FormData()
-      form.append("file", file)
-      form.append("requirement_key", requirement.requirement_key)
-      if (skcCode) form.append("skc_code", skcCode)
-      const response = await fetch(`/api/pre-publish/drafts/${listingId}/images/upload`, {
-        method: "POST",
-        body: form,
-      })
-      if (!response.ok) {
-        const body = await response.json().catch(() => null) as { message?: string } | null
-        throw new Error(body?.message || "图片上传失败")
+    mutationFn: async ({ files, skcCode, requirement }: ImageUploadParams) => {
+      if (files.length === 0) throw new Error("请选择要上传的图片")
+      const key = imageUploadKey(requirement.requirement_key, skcCode)
+      let lastResult: unknown = null
+      for (const [index, file] of files.entries()) {
+        setUploadingImageState({ key, current: index + 1, total: files.length, fileName: file.name })
+        const form = new FormData()
+        form.append("file", file)
+        form.append("requirement_key", requirement.requirement_key)
+        if (skcCode) form.append("skc_code", skcCode)
+        const response = await fetch(`/api/pre-publish/drafts/${listingId}/images/upload`, {
+          method: "POST",
+          body: form,
+        })
+        if (!response.ok) {
+          const body = await response.json().catch(() => null) as { message?: string } | null
+          const prefix = files.length > 1 ? `第 ${index + 1}/${files.length} 张 ${file.name}：` : ""
+          throw new Error(`${prefix}${body?.message || "图片上传失败"}`)
+        }
+        lastResult = await response.json()
       }
-      return response.json()
+      return { uploadedCount: files.length, lastResult }
     },
-    onMutate: ({ skcCode, requirement }) => {
-      setUploadingImageKey(imageUploadKey(requirement.requirement_key, skcCode))
+    onMutate: ({ files, skcCode, requirement }) => {
+      setUploadingImageState({
+        key: imageUploadKey(requirement.requirement_key, skcCode),
+        current: files.length > 0 ? 1 : 0,
+        total: files.length,
+        fileName: files[0]?.name ?? null,
+      })
     },
-    onSuccess: () => {
-      toast.success("图片已上传到草稿素材，发布前可继续确认")
-      queryClient.invalidateQueries({ queryKey: ["pre-publish", "draft", listingId] })
+    onSuccess: ({ uploadedCount }) => {
+      toast.success(
+        uploadedCount > 1
+          ? `已批量上传 ${uploadedCount} 张图片到草稿素材，发布前可继续确认`
+          : "图片已上传到草稿素材，发布前可继续确认",
+      )
     },
     onError: (error) => {
       const message = error instanceof Error ? error.message : "图片上传失败"
       toast.error(message)
     },
-    onSettled: () => setUploadingImageKey(null),
+    onSettled: () => {
+      setUploadingImageState(null)
+      queryClient.invalidateQueries({ queryKey: ["pre-publish", "draft", listingId] })
+    },
   })
 
   const addLibraryImageMutation = useMutation({
@@ -2347,6 +2384,7 @@ export default function PrePublishDraftDetailPage() {
                   assets={data.assets.filter((asset) => !asset.skc_code)}
                   onUpload={(params) => uploadImageMutation.mutate(params)}
                   uploadingKey={uploadingImageKey}
+                  uploadingState={uploadingImageState}
                   onOpenLibrary={(params) => setImageLibraryPicker(params)}
                   onUpdateAsset={(assetId, values) => updateImageAssetMutation.mutate({ assetId, values })}
                   onDeleteAsset={(assetId) => deleteImageAssetMutation.mutate(assetId)}
@@ -2490,6 +2528,7 @@ export default function PrePublishDraftDetailPage() {
                             skcCode={group.skc.skc_code}
                             onUpload={(params) => uploadImageMutation.mutate(params)}
                             uploadingKey={uploadingImageKey}
+                            uploadingState={uploadingImageState}
                             onOpenLibrary={(params) => setImageLibraryPicker(params)}
                             onUpdateAsset={(assetId, values) => updateImageAssetMutation.mutate({ assetId, values })}
                             onDeleteAsset={(assetId) => deleteImageAssetMutation.mutate(assetId)}
