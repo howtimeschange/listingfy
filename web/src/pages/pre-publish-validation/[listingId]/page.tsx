@@ -115,6 +115,10 @@ interface FillField {
   attribute_status?: number | null
   attribute_input_num?: number | null
   render_kind?: "text" | "textarea" | "single_enum" | "multi_enum" | "enum_with_text" | "readonly"
+  conditional_on?: {
+    field_key: string
+    value: string
+  } | null
 }
 
 interface FieldGroup {
@@ -536,7 +540,13 @@ function isEditableField(field: FillField) {
   return !["category", "skc_code", "skc_image", "color", "size_conversion", "package_weight", "size_chart"].includes(field.key)
 }
 
+function isConditionalFieldVisible(field: FillField, manualValues: Record<string, string>) {
+  if (!field.conditional_on) return true
+  return (manualValues[field.conditional_on.field_key] ?? "") === field.conditional_on.value
+}
+
 function isAiGeneratableField(field: FillField) {
+  if (field.conditional_on) return false
   return field.key === "title_en" || field.key.startsWith("attr:")
 }
 
@@ -966,11 +976,13 @@ function FieldGroupsTable({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {group.fields.map((field) => {
+                {group.fields.filter((field) => isConditionalFieldVisible(field, manualValues)).map((field) => {
                   const generating = generatingFieldKey === field.key
                   const isCategoryField = field.key === "category"
                   const fieldIssues = validationIssues?.get(field.key) ?? []
-                  const hasError = fieldIssues.some((issue) => issue.severity === "ERROR") || field.status === "MISSING"
+                  const fieldValue = manualValues[field.key] ?? toInputValue(field.value)
+                  const effectiveStatus = field.conditional_on && !fieldValue ? "MISSING" : field.status
+                  const hasError = fieldIssues.some((issue) => issue.severity === "ERROR") || effectiveStatus === "MISSING"
                   return (
                     <TableRow
                       key={field.key}
@@ -991,7 +1003,7 @@ function FieldGroupsTable({
                           <div className="min-w-0 flex-1">
                             <FieldValueEditor
                               field={field}
-                              value={manualValues[field.key] ?? toInputValue(field.value)}
+                              value={fieldValue}
                               onChange={(value) => onChange(field.key, value)}
                             />
                             {field.note ? <p className={cn("mt-1 text-xs text-muted-foreground", hasError && "text-destructive/80")}>{field.note}</p> : null}
@@ -1052,10 +1064,10 @@ function FieldGroupsTable({
                       </TableCell>
                       <TableCell className="align-top">
                         <div className="space-y-1">
-                          <Badge variant="outline" className={statusClass[field.status]}>
-                            {fieldBadge(field)}
+                          <Badge variant="outline" className={statusClass[effectiveStatus]}>
+                            {effectiveStatus === "MISSING" ? "缺失" : fieldBadge(field)}
                           </Badge>
-                          {field.source && field.status !== "MISSING" ? (
+                          {field.source && effectiveStatus !== "MISSING" ? (
                             <p className="truncate text-[11px] text-muted-foreground">{field.source}</p>
                           ) : null}
                         </div>

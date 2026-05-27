@@ -56,6 +56,10 @@ import { createPublishVersion } from "../services/pre-publish/versions"
 
 const prePublish = new Hono()
 const MANUAL_SIZE_CHART_FIELD_KEY = "size_chart_manual"
+const TARIFF_ATTRIBUTE_ID = 1000407
+const DEPRECATED_TARIFF_MATERIAL_ATTRIBUTE_ID = 1000714
+const UNSPECIFIED_TARIFF_VALUE = "未列明关税种类"
+const DEPRECATED_TARIFF_MATERIAL_LABEL = "废弃关税种类或废弃材质"
 
 type SourceRow = Record<string, unknown>
 
@@ -97,6 +101,10 @@ type FillField = {
   attribute_status?: number | null
   attribute_input_num?: number | null
   render_kind?: "text" | "textarea" | "single_enum" | "multi_enum" | "enum_with_text" | "readonly"
+  conditional_on?: {
+    field_key: string
+    value: string
+  } | null
 }
 
 type FieldGroup = {
@@ -993,6 +1001,61 @@ function getRequiredAttributes(
   })) as RequiredAttribute[]
 }
 
+function getAttributeById(
+  db: ReturnType<typeof getDb>,
+  categoryId: number | null,
+  productTypeId: number | null,
+  attributeId: number,
+) {
+  if (!productTypeId) return null
+  const row = db.prepare(`
+    select
+      ? as category_id,
+      product_type_id,
+      attribute_id,
+      attribute_name,
+      attribute_name_en,
+      attribute_type,
+      attribute_label,
+      attribute_mode,
+      attribute_status,
+      attribute_input_num,
+      values_count,
+      values_json as sample_values_json
+    from channel_attribute
+    where platform = 'SHEIN'
+      and product_type_id = ?
+      and attribute_id = ?
+    limit 1
+  `).get(categoryId, productTypeId, attributeId) as SourceRow | undefined
+  if (!row) return null
+  const values = db.prepare(`
+    select attribute_value_id, attribute_value, attribute_value_en
+    from channel_attribute_value
+    where platform = 'SHEIN'
+      and product_type_id = ?
+      and attribute_id = ?
+      and coalesce(is_black, 0) = 0
+    order by is_show desc, attribute_value
+    limit 320
+  `).all(productTypeId, attributeId) as AttributeValue[]
+  return {
+    category_id: Number(row.category_id ?? 0),
+    product_type_id: Number(row.product_type_id),
+    attribute_id: Number(row.attribute_id),
+    attribute_name: normalizeText(row.attribute_name),
+    attribute_name_en: row.attribute_name_en ? String(row.attribute_name_en) : null,
+    attribute_type: asNumber(row.attribute_type),
+    attribute_label: asNumber(row.attribute_label),
+    attribute_mode: asNumber(row.attribute_mode),
+    attribute_status: asNumber(row.attribute_status),
+    attribute_input_num: asNumber(row.attribute_input_num),
+    values_count: Number(row.values_count ?? 0),
+    sample_values_json: normalizeText(row.sample_values_json),
+    values,
+  } as RequiredAttribute
+}
+
 function findEnumOption(values: AttributeValue[], needles: string[]) {
   const normalized = needles.map((item) => normalizeText(item)).filter(Boolean)
   for (const needle of normalized) {
@@ -1033,7 +1096,7 @@ function attributeFillMeta(attr: RequiredAttribute) {
     attribute_status: attr.attribute_status,
     attribute_input_num: attr.attribute_input_num,
     render_kind: renderKindForAttribute(attr),
-    options: attr.values.slice(0, 160),
+    options: attr.values.slice(0, 320),
   }
 }
 
@@ -1147,7 +1210,7 @@ function inferAttributeValue({
     return findEnumValue(attr.values, ["针织平纹", "梭织平纹", "其他工艺"])
   }
   if (name.includes("关税")) {
-    return findEnumValue(attr.values, tariffValueCandidatesForContext(context))
+    return findEnumValue(attr.values, tariffValueCandidatesForContext(context, attr.values))
   }
   if (name.includes("加绒")) {
     return findEnumValue(attr.values, [context.includes("加绒") ? "是" : "否"])
@@ -1198,6 +1261,48 @@ function inferAttributeValue({
 
 function fieldStatus(value: unknown, fallback: FillField["status"] = "READY") {
   return normalizeText(value) ? fallback : "MISSING"
+}
+
+function shouldIncludeDependentCustomsField(value: unknown) {
+  return parseJsonList(value).concat([normalizeText(value)])
+    .some((item) => normalizeText(item) === UNSPECIFIED_TARIFF_VALUE)
+}
+
+function buildDeprecatedTariffMaterialField({
+  db,
+  category,
+  fills,
+  spuCode,
+  tariffField,
+}: {
+  db: ReturnType<typeof getDb>
+  category: CategoryOverride
+  fills: Map<string, SourceRow>
+  spuCode: string
+  tariffField: FillField | undefined
+}) {
+  const attr = getAttributeById(db, category.category_id, category.product_type_id, DEPRECATED_TARIFF_MATERIAL_ATTRIBUTE_ID)
+  if (!attr || !tariffField) return null
+  const key = `attr:${DEPRECATED_TARIFF_MATERIAL_ATTRIBUTE_ID}`
+  const stored = getStoredFill(fills, spuCode, key)
+  const active = shouldIncludeDependentCustomsField(tariffField.value)
+  const storedValue = stored?.field_value == null ? "" : String(stored.field_value)
+  return {
+    key,
+    label: DEPRECATED_TARIFF_MATERIAL_LABEL,
+    value: storedValue || null,
+    source: stored ? String(stored.source ?? "MANUAL") : "SHEIN关务规则",
+    status: active ? fieldStatus(storedValue) : "READY",
+    confidence: stored?.confidence == null ? null : Number(stored.confidence),
+    note: active
+      ? `关税种类为「${UNSPECIFIED_TARIFF_VALUE}」时，SHEIN 关务规则要求填写。元数据字段：${attr.attribute_name}。`
+      : `仅当关税种类选择「${UNSPECIFIED_TARIFF_VALUE}」时显示。元数据字段：${attr.attribute_name}。`,
+    conditional_on: {
+      field_key: tariffField.key,
+      value: UNSPECIFIED_TARIFF_VALUE,
+    },
+    ...attributeFillMeta(attr),
+  } as FillField
 }
 
 function buildRow({
@@ -1438,6 +1543,16 @@ function buildRow({
       ...attributeFillMeta(attr),
     }
   })
+  const deprecatedTariffMaterialField = buildDeprecatedTariffMaterialField({
+    db,
+    category,
+    fills,
+    spuCode,
+    tariffField: attributeFields.find((field) => field.attribute_id === TARIFF_ATTRIBUTE_ID),
+  })
+  if (deprecatedTariffMaterialField && !attributeFields.some((field) => field.attribute_id === DEPRECATED_TARIFF_MATERIAL_ATTRIBUTE_ID)) {
+    attributeFields.push(deprecatedTariffMaterialField)
+  }
 
   const contentFields: FillField[] = [
     {
@@ -1469,6 +1584,7 @@ function buildRow({
       const stored = getStoredFill(fills, spuCode, field.key)
       if (!stored) continue
       const storedValue = stored.field_value == null ? "" : String(stored.field_value)
+      if (field.conditional_on && !normalizeText(storedValue)) continue
       const storedValues = field.render_kind === "multi_enum" ? parseJsonList(storedValue) : [storedValue]
       if (
         field.key.startsWith("attr:")
@@ -2815,7 +2931,7 @@ function heuristicAiValue(field: FillField, row: ReadinessRow) {
   if (field.label.includes("年龄")) return pick(["幼童", "儿童", "婴幼儿"])
   if (field.label.includes("所在地")) return pick(["ALL/全球/所有", "All"])
   if (field.label.includes("关税")) {
-    return pick(tariffValueCandidatesForContext(text))
+    return pick(tariffValueCandidatesForContext(text, field.options ?? []))
   }
   return optionValues[0] || ""
 }
@@ -3141,7 +3257,7 @@ function buildCompositionAttributeItems(field: FillField, compositionSource: unk
 
 function buildDependentAttributeItems(db: ReturnType<typeof getDb>, listing: ListingRow, currentItems: Array<Record<string, unknown>>) {
   const hasTariffSweatshirt = currentItems.some((item) =>
-    Number(item.attribute_id) === 1000407 && Number(item.attribute_value_id) === 1002272,
+    Number(item.attribute_id) === TARIFF_ATTRIBUTE_ID && Number(item.attribute_value_id) === 1002272,
   )
   const hasSweatshirtMaterial = currentItems.some((item) => Number(item.attribute_id) === 160)
   const hasPlacketType = currentItems.some((item) => Number(item.attribute_id) === 150)
@@ -3183,10 +3299,10 @@ function tariffFieldValuesForListing(field: FillField, listing: ListingRow) {
     listing.middle_class_name,
     listing.subclass_name,
   ].map(normalizeText).join(" ")
-  const candidates = tariffValueCandidatesForContext(context)
-  if (candidates.length === 1 && candidates[0] === "未列明关税种类") return currentValues
+  const candidates = tariffValueCandidatesForContext(context, field.options ?? [])
+  if (candidates.length === 1 && candidates[0] === UNSPECIFIED_TARIFF_VALUE) return currentValues
   const currentSpecificValues = currentValues.filter((value) =>
-    value !== "未列明关税种类" && candidates.includes(value),
+    value !== UNSPECIFIED_TARIFF_VALUE && candidates.includes(value),
   )
   if (currentSpecificValues.length > 0) return currentSpecificValues
   const inferred = findEnumValue((field.options ?? []) as AttributeValue[], candidates)
@@ -3196,15 +3312,19 @@ function tariffFieldValuesForListing(field: FillField, listing: ListingRow) {
 function buildProductAttributeList(db: ReturnType<typeof getDb>, listing: ListingRow) {
   const fields = requiredFillFields(db, listing)
   const compositionSource = fields.find((field) => field.key === "composition_text")?.value
+  const tariffField = fields.find((field) => field.attribute_id === TARIFF_ATTRIBUTE_ID)
+  const publishTariffValues = tariffField ? tariffFieldValuesForListing(tariffField, listing) : []
+  const includeDeprecatedTariffMaterial = publishTariffValues.includes(UNSPECIFIED_TARIFF_VALUE)
   const output: Array<Record<string, unknown>> = []
   for (const field of fields) {
     if (!field.key.startsWith("attr:")) continue
     if (field.attribute_type !== 3 && field.attribute_type !== 4) continue
+    if (field.attribute_id === DEPRECATED_TARIFF_MATERIAL_ATTRIBUTE_ID && !includeDeprecatedTariffMaterial) continue
     if (field.label.includes("成分")) {
       output.push(...buildCompositionAttributeItems(field, compositionSource))
       continue
     }
-    const values = field.label.includes("关税")
+    const values = field.attribute_id === TARIFF_ATTRIBUTE_ID
       ? tariffFieldValuesForListing(field, listing)
       : coerceFieldValues(field, field.value)
     for (const value of values) {

@@ -67,14 +67,33 @@ test("field-fill helpers avoid unspecified tariff values for T-shirt contexts", 
     fieldFills.tariffValueCandidatesForContext("女童（小）T恤 T-Shirt"),
     ["常规T恤", "非常规T恤", "未列明关税种类"],
   );
+  assert.deepEqual(
+    fieldFills.tariffValueCandidatesForContext("儿童 > 儿童鞋子 > 儿童靴", ["休闲鞋", "凉鞋", "单鞋", "靴子", "未列明关税种类"]),
+    ["靴子", "未列明关税种类"],
+  );
+  assert.deepEqual(
+    fieldFills.tariffValueCandidatesForContext("儿童 > 儿童箱包 > 儿童背包", ["单肩包", "双肩包", "托特包", "未列明关税种类"]),
+    ["双肩包", "单肩包", "托特包", "未列明关税种类"],
+  );
 });
 
 test("pre-publish route applies tariff candidates before SHEIN payload submission", async () => {
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
-  assert.match(source, /tariffValueCandidatesForContext\(context\)/);
-  assert.match(source, /tariffValueCandidatesForContext\(text\)/);
+  assert.match(source, /tariffValueCandidatesForContext\(context,\s*attr\.values\)/);
+  assert.match(source, /tariffValueCandidatesForContext\(text,\s*field\.options/);
   assert.match(source, /function tariffFieldValuesForListing/);
   assert.match(source, /field\.label\.includes\("关税"\)[\s\S]+tariffFieldValuesForListing\(field,\s*listing\)/);
+});
+
+test("pre-publish route exposes the deprecated tariff/material customs field when tariff is unspecified", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const detailPage = await readFile(path.join(PROJECT_ROOT, "web/src/pages/pre-publish-validation/[listingId]/page.tsx"), "utf8");
+  assert.match(source, /DEPRECATED_TARIFF_MATERIAL_ATTRIBUTE_ID\s*=\s*1000714/);
+  assert.match(source, /废弃关税种类或废弃材质/);
+  assert.match(source, /conditional_on/);
+  assert.match(source, /shouldIncludeDependentCustomsField/);
+  assert.match(detailPage, /isConditionalFieldVisible/);
+  assert.match(detailPage, /manualValues\[field\.conditional_on\.field_key\]/);
 });
 
 test("image service builds SHEIN picture requirements and validates common image constraints", () => {
