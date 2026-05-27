@@ -6,7 +6,9 @@ import {
   Bot,
   Camera,
   ChevronRight,
+  Download,
   FileClock,
+  FileSpreadsheet,
   FolderTree,
   FolderUp,
   FilterX,
@@ -27,9 +29,11 @@ import {
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
+import { exportSpreadsheet, readSpreadsheetFile, type SpreadsheetRow } from "@/lib/spreadsheet"
 import { cn } from "@/lib/utils"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { EmptyState } from "@/components/empty-state"
+import { ImportDialog } from "@/components/import-dialog"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
 import { Badge } from "@/components/ui/badge"
@@ -184,6 +188,22 @@ interface MappedSizeChart {
   rows: SizeTableRow[]
   status: string
   note: string
+}
+
+interface SizeChartAttribute {
+  attribute_id: number
+  attribute_name: string
+  attribute_name_en: string | null
+  attribute_input_num: number | null
+}
+
+interface ManualSizeChartRow {
+  sku_id: number
+  sku_code: string
+  size_name: string | null
+  shein_size_value: string | null
+  relate_sale_attribute_value_id: number | null
+  values: Record<string, string | number | null>
 }
 
 interface SaleAttribute {
@@ -341,6 +361,12 @@ interface ListingDetail {
   size_tables: SizeTable[]
   size_table_rows: SizeTableRow[]
   mapped_size_charts: MappedSizeChart[]
+  size_chart_attributes: SizeChartAttribute[]
+  manual_size_chart: {
+    source: string | null
+    updated_at: string | null
+    rows: ManualSizeChartRow[]
+  }
   validation_issues: Array<{
     id: number
     severity: string
@@ -896,6 +922,9 @@ function FieldGroupsTable({
   groups,
   manualValues,
   onChange,
+  onEditCategory,
+  onGenerateCategoryAi,
+  categoryAiGenerating,
   onGenerateAi,
   generatingFieldKey,
   validationIssues,
@@ -903,6 +932,9 @@ function FieldGroupsTable({
   groups: FieldGroup[]
   manualValues: Record<string, string>
   onChange: (key: string, value: string) => void
+  onEditCategory?: () => void
+  onGenerateCategoryAi?: () => void
+  categoryAiGenerating?: boolean
   onGenerateAi?: (field: FillField) => void
   generatingFieldKey?: string | null
   validationIssues?: Map<string, ValidationIssue[]>
@@ -927,6 +959,7 @@ function FieldGroupsTable({
               <TableBody>
                 {group.fields.map((field) => {
                   const generating = generatingFieldKey === field.key
+                  const isCategoryField = field.key === "category"
                   const fieldIssues = validationIssues?.get(field.key) ?? []
                   const hasError = fieldIssues.some((issue) => issue.severity === "ERROR") || field.status === "MISSING"
                   return (
@@ -975,6 +1008,35 @@ function FieldGroupsTable({
                             >
                               {generating ? <Loader2 className="mr-1 size-3.5 animate-spin" /> : <Sparkles className="mr-1 size-3.5" />}
                               AI 生成
+                            </Button>
+                          ) : null}
+                          {onGenerateCategoryAi && isCategoryField ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="shrink-0"
+                              disabled={categoryAiGenerating}
+                              onClick={onGenerateCategoryAi}
+                            >
+                              {categoryAiGenerating ? (
+                                <Loader2 className="mr-1 size-3.5 animate-spin" />
+                              ) : (
+                                <Bot className="mr-1 size-3.5" />
+                              )}
+                              AI 转换类目
+                            </Button>
+                          ) : null}
+                          {onEditCategory && isCategoryField ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="shrink-0"
+                              onClick={onEditCategory}
+                            >
+                              <FolderTree className="mr-1 size-3.5" />
+                              修改类目
                             </Button>
                           ) : null}
                         </div>
@@ -1701,6 +1763,7 @@ export default function PrePublishDraftDetailPage() {
   const [skuWeightValues, setSkuWeightValues] = useState<Record<number, string>>({})
   const [skuCommercialValues, setSkuCommercialValues] = useState<Record<number, SkuCommercialDraft>>({})
   const [skcColorValues, setSkcColorValues] = useState<Record<number, string>>({})
+  const [manualSizeChartValues, setManualSizeChartValues] = useState<Record<number, Record<string, string>>>({})
   const [folderPath, setFolderPath] = useState("/Users/xingyicheng/Downloads/20112210410530435")
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false)
   const [imageImportDialogOpen, setImageImportDialogOpen] = useState(false)
@@ -1751,6 +1814,23 @@ export default function PrePublishDraftDetailPage() {
     }
     return map
   }, [data, selectedSkuIds, sizeAttribute?.values, skuSizeValues])
+  const sizeChartAttributes = data?.size_chart_attributes ?? []
+  const manualSizeChartRows = useMemo(() => {
+    if (!data) return []
+    return data.skus
+      .filter((sku) => selectedSkuIds.has(sku.id))
+      .map((sku) => {
+        const sizePayload = parsePayload(sku.size_attribute_payload_json)
+        const selected = selectedOption(sizeAttribute?.values, skuSizeValues[sku.id] ?? "")
+        const publishSize = selected?.attribute_value ?? skuSizeValues[sku.id] ?? sku.shein_size_value ?? sku.size_name ?? ""
+        return {
+          sku,
+          localSize: sku.size_name ?? publishSize,
+          publishSize,
+          relateSaleAttributeValueId: selected?.attribute_value_id ?? (Number(sizePayload.attribute_value_id ?? 0) || null),
+        }
+      })
+  }, [data, selectedSkuIds, sizeAttribute?.values, skuSizeValues])
   const dimensionGroups = data?.dimension_field_groups ?? data?.readiness.dimension_field_groups ?? []
   const skcImageRequirements = data?.image_requirements.filter((requirement) => requirement.level === "SKC" && requirement.show !== 0) ?? []
   const spuImageRequirements = data?.image_requirements.filter((requirement) => requirement.level === "SPU" && requirement.show !== 0) ?? []
@@ -1789,6 +1869,10 @@ export default function PrePublishDraftDetailPage() {
       const payload = parsePayload(skc.color_attribute_payload_json)
       return [skc.id, payload.attribute_value_id ? String(payload.attribute_value_id) : String(payload.attribute_value ?? "")]
     })))
+    setManualSizeChartValues(Object.fromEntries((data.manual_size_chart?.rows ?? []).map((row) => [
+      row.sku_id,
+      Object.fromEntries(Object.entries(row.values ?? {}).map(([key, value]) => [key, toInputValue(value)])),
+    ])))
   }, [data, fields])
   /* eslint-enable react-hooks/set-state-in-effect */
 
@@ -1831,6 +1915,16 @@ export default function PrePublishDraftDetailPage() {
         attribute_value_id: selectedOption(colorAttribute?.values, skcColorValues[skc.id] ?? "")?.attribute_value_id ?? null,
         attribute_value: selectedOption(colorAttribute?.values, skcColorValues[skc.id] ?? "")?.attribute_value ?? skcColorValues[skc.id] ?? "",
       })) ?? [],
+      manual_size_chart_rows: sizeChartAttributes.length
+        ? manualSizeChartRows.map(({ sku, localSize, publishSize, relateSaleAttributeValueId }) => ({
+          sku_id: sku.id,
+          sku_code: sku.sku_code,
+          size_name: localSize,
+          shein_size_value: publishSize,
+          relate_sale_attribute_value_id: relateSaleAttributeValueId,
+          values: manualSizeChartValues[sku.id] ?? {},
+        }))
+        : [],
       image_confirmed_skc_ids: Array.from(confirmedSkcIds),
     }
   }
@@ -1885,6 +1979,85 @@ export default function PrePublishDraftDetailPage() {
       return next
     })
     toast.success(`已批量填充 ${skuIds.length} 个 SKU，保存草稿后生效`)
+  }
+
+  function updateManualSizeChartValue(skuId: number, attributeId: number, value: string) {
+    setManualSizeChartValues((prev) => ({
+      ...prev,
+      [skuId]: {
+        ...(prev[skuId] ?? {}),
+        [String(attributeId)]: value,
+      },
+    }))
+  }
+
+  function manualSizeChartTemplateRows(): SpreadsheetRow[] {
+    return manualSizeChartRows.map(({ sku, localSize, publishSize, relateSaleAttributeValueId }) => {
+      const values = manualSizeChartValues[sku.id] ?? {}
+      return {
+        SKU编码: sku.sku_code,
+        商品档案尺码: localSize,
+        SHEIN发布尺码: publishSize,
+        SHEIN尺码值ID: relateSaleAttributeValueId ?? "",
+        ...Object.fromEntries(sizeChartAttributes.map((attribute) => [
+          attribute.attribute_name,
+          values[String(attribute.attribute_id)] ?? "",
+        ])),
+      }
+    })
+  }
+
+  function downloadManualSizeChartTemplate() {
+    const rows = manualSizeChartTemplateRows()
+    if (rows.length === 0) {
+      toast.error("请先勾选要发布的 SKU")
+      return
+    }
+    exportSpreadsheet("SHEIN类目尺码表导入模板.xlsx", rows)
+  }
+
+  function spreadsheetText(row: SpreadsheetRow, keys: Array<string | null | undefined>) {
+    for (const key of keys) {
+      if (!key) continue
+      const value = row[key]
+      const text = String(value ?? "").trim()
+      if (text) return text
+    }
+    return ""
+  }
+
+  async function importManualSizeChartTemplate(file: File) {
+    const rows = await readSpreadsheetFile(file)
+    let filled = 0
+    setManualSizeChartValues((prev) => {
+      const next = { ...prev }
+      for (const row of rows) {
+        const skuCode = spreadsheetText(row, ["SKU编码", "sku_code", "SKU"])
+        const publishSize = spreadsheetText(row, ["SHEIN发布尺码", "发布尺码", "尺码"])
+        const target = manualSizeChartRows.find(({ sku, publishSize: currentPublishSize, localSize }) =>
+          sku.sku_code === skuCode || currentPublishSize === publishSize || localSize === publishSize,
+        )
+        if (!target) continue
+        const values = { ...(next[target.sku.id] ?? {}) }
+        let rowFilled = false
+        for (const attribute of sizeChartAttributes) {
+          const value = spreadsheetText(row, [
+            attribute.attribute_name,
+            attribute.attribute_name_en,
+            String(attribute.attribute_id),
+          ])
+          if (!value) continue
+          values[String(attribute.attribute_id)] = value
+          rowFilled = true
+        }
+        if (rowFilled) {
+          next[target.sku.id] = values
+          filled += 1
+        }
+      }
+      return next
+    })
+    toast.success(`导入填充 ${filled} 行尺码表，保存草稿后生效`)
   }
 
   const saveDraftMutation = useMutation({
@@ -2284,10 +2457,6 @@ export default function PrePublishDraftDetailPage() {
                 {data.listing.platform_category_path || data.readiness.category.path || "类目路径待同步"}
               </p>
             </div>
-            <Button variant="outline" size="sm" onClick={() => setCategoryDialogOpen(true)}>
-              <FolderTree className="mr-2 size-4" />
-              类目树选择
-            </Button>
           </div>
         </div>
         <div className="rounded-lg border bg-card p-4">
@@ -2369,6 +2538,9 @@ export default function PrePublishDraftDetailPage() {
                 groups={focusedFieldGroups}
                 manualValues={manualValues}
                 onChange={(key, value) => setManualValues((prev) => ({ ...prev, [key]: value }))}
+                onEditCategory={() => setCategoryDialogOpen(true)}
+                onGenerateCategoryAi={() => aiEnrichMutation.mutate("category")}
+                categoryAiGenerating={aiEnrichMutation.isPending && aiEnrichMutation.variables === "category"}
                 onGenerateAi={(field) => aiFieldMutation.mutate(field)}
                 generatingFieldKey={aiFieldMutation.isPending ? aiFieldMutation.variables?.key ?? null : null}
                 validationIssues={fieldValidationIssues}
@@ -2712,15 +2884,96 @@ export default function PrePublishDraftDetailPage() {
           </Card>
 
           <Card>
-            <CardHeader>
-              <CardTitle>SHEIN 类目尺码表</CardTitle>
-              <p className="text-sm text-muted-foreground">{skuDimension?.description}</p>
+            <CardHeader className="flex flex-row items-start justify-between gap-4">
+              <div>
+                <CardTitle>SHEIN 类目尺码表</CardTitle>
+                <p className="text-sm text-muted-foreground">{skuDimension?.description}</p>
+              </div>
+              {(data.mapped_size_charts ?? []).length === 0 && sizeChartAttributes.length > 0 ? (
+                <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                  <Button variant="outline" size="sm" onClick={downloadManualSizeChartTemplate}>
+                    <Download className="mr-2 size-4" />
+                    下载模板
+                  </Button>
+                  <ImportDialog
+                    title="导入尺码表"
+                    description="按 SKU 编码或发布尺码匹配当前表格行。"
+                    onImport={importManualSizeChartTemplate}
+                    trigger={(
+                      <Button variant="outline" size="sm">
+                        <FileSpreadsheet className="mr-2 size-4" />
+                        导入填充
+                      </Button>
+                    )}
+                  />
+                </div>
+              ) : null}
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="space-y-4">
                 <h3 className="text-sm font-semibold">尺码表</h3>
                 {(data.mapped_size_charts ?? []).length === 0 ? (
-                  <EmptyState message="深绘暂未返回可映射到 SHEIN 类目模板的结构化尺码表" />
+                  sizeChartAttributes.length === 0 ? (
+                    <EmptyState message="当前 SHEIN 类目暂无尺码表模板字段" />
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="rounded border border-dashed p-4 text-sm text-muted-foreground">
+                        深绘暂未返回可映射到 SHEIN 类目模板的结构化尺码表，当前使用类目模板维护。
+                      </div>
+                      <div className="overflow-auto rounded border">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="min-w-36">SHEIN 发布尺码</TableHead>
+                              <TableHead className="min-w-44">SKU</TableHead>
+                              {sizeChartAttributes.map((attribute) => (
+                                <TableHead key={attribute.attribute_id} className="min-w-32">
+                                  {attribute.attribute_name}
+                                </TableHead>
+                              ))}
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {manualSizeChartRows.length === 0 ? (
+                              <TableRow>
+                                <TableCell colSpan={sizeChartAttributes.length + 2} className="h-24 text-center text-sm text-muted-foreground">
+                                  暂无已勾选发布 SKU
+                                </TableCell>
+                              </TableRow>
+                            ) : (
+                              manualSizeChartRows.map(({ sku, localSize, publishSize }) => (
+                                <TableRow key={sku.id}>
+                                  <TableCell>
+                                    <p className="font-medium">{publishSize || "-"}</p>
+                                    {localSize && localSize !== publishSize ? (
+                                      <p className="text-xs text-muted-foreground">商品档案尺码：{localSize}</p>
+                                    ) : null}
+                                  </TableCell>
+                                  <TableCell>
+                                    <p className="font-mono text-xs">{sku.sku_code}</p>
+                                    <p className="text-xs text-muted-foreground">{sku.skc_code}</p>
+                                  </TableCell>
+                                  {sizeChartAttributes.map((attribute) => (
+                                    <TableCell key={attribute.attribute_id}>
+                                      <Input
+                                        type="number"
+                                        min="0"
+                                        step="0.1"
+                                        value={manualSizeChartValues[sku.id]?.[String(attribute.attribute_id)] ?? ""}
+                                        onChange={(event) => updateManualSizeChartValue(sku.id, attribute.attribute_id, event.target.value)}
+                                        placeholder={attribute.attribute_name}
+                                        className="h-9 min-w-28"
+                                      />
+                                    </TableCell>
+                                  ))}
+                                </TableRow>
+                              ))
+                            )}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </div>
+                  )
                 ) : (
                   data.mapped_size_charts.map((chart) => {
                     const rows = chart.rows

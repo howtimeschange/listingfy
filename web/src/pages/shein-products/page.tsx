@@ -8,6 +8,7 @@ import {
   ChevronRight,
   ImageIcon,
   Loader2,
+  PackagePlus,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -147,6 +148,11 @@ interface CreateDraftResult {
 
 interface AiFillResult {
   saved_count: number
+}
+
+interface ImportBucketResult {
+  imported_count: number
+  missing: string[]
 }
 
 type ImagePreviewState = {
@@ -358,6 +364,7 @@ function fieldCompleteness(item: SheinBucketItem) {
 export default function SheinProductsPage() {
   const [search, setSearch] = useState("")
   const [batchSearchText, setBatchSearchText] = useState("")
+  const [batchImportText, setBatchImportText] = useState("")
   const [brandCodes, setBrandCodes] = useState<string[]>([])
   const [categoryIds, setCategoryIds] = useState<string[]>([])
   const [bucketStatusFilter, setBucketStatusFilter] = useState<string[]>([])
@@ -389,6 +396,7 @@ export default function SheinProductsPage() {
   const selectedSkcCount = Object.values(selectedSkcCodesBySpu).reduce((sum, codes) => sum + codes.length, 0)
   const allVisibleSelected = items.length > 0 && items.every((item) => selectedSet.has(item.spu_code))
   const batchCount = parseBatchSearch(batchSearchText).length
+  const batchImportCount = parseBatchSearch(batchImportText).length
 
   const refreshMutation = useMutation({
     mutationFn: (spuCode: string) => api.post(`/shein-products/${encodeURIComponent(spuCode)}/refresh`, {}),
@@ -409,6 +417,24 @@ export default function SheinProductsPage() {
       await queryClient.invalidateQueries({ queryKey: ["shein-products"] })
     },
     onError: () => toast.error("AI 补齐失败，请稍后重试"),
+  })
+
+  const importBucketMutation = useMutation({
+    mutationFn: () => {
+      const spuCodes = parseBatchSearch(batchImportText)
+      if (spuCodes.length === 0) throw new Error("请先粘贴商品档案款号")
+      return api.post<ImportBucketResult>("/shein-products/import", { spu_codes: spuCodes })
+    },
+    onSuccess: async (result) => {
+      toast.success(`已从商品档案同步到 SHEIN 分桶：${formatNumber(result.imported_count)} 款`)
+      if (result.missing.length) toast.warning(`商品档案未找到款号：${result.missing.join("、")}`)
+      setBatchImportText("")
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["shein-products"] }),
+        queryClient.invalidateQueries({ queryKey: ["shein-products", "filters"] }),
+      ])
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "同步商品档案到分桶失败"),
   })
 
   const createDraftMutation = useMutation({
@@ -559,6 +585,39 @@ export default function SheinProductsPage() {
                     placeholder={"201122104105\n208226102001"}
                   />
                   <p className="text-xs text-muted-foreground">当前输入 {formatNumber(batchCount)} 个搜索词。</p>
+                </DialogContent>
+              </Dialog>
+              <Dialog>
+                <DialogTrigger asChild>
+                  <Button type="button" variant="outline">
+                    <PackagePlus className="size-4" />
+                    从商品档案同步款号
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>从商品档案同步款号</DialogTitle>
+                    <DialogDescription>
+                      粘贴商品档案款号，系统会按款号刷新并加入 SHEIN 商品分桶；已存在的分桶商品会同步最新档案数据。
+                    </DialogDescription>
+                  </DialogHeader>
+                  <Textarea
+                    value={batchImportText}
+                    onChange={(event) => setBatchImportText(event.target.value)}
+                    rows={8}
+                    placeholder={"201122104105\n208226111038"}
+                  />
+                  <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
+                    <span>当前输入 {formatNumber(batchImportCount)} 个款号</span>
+                    <Button
+                      type="button"
+                      onClick={() => importBucketMutation.mutate()}
+                      disabled={importBucketMutation.isPending || batchImportCount === 0}
+                    >
+                      {importBucketMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <PackagePlus className="size-4" />}
+                      确认同步
+                    </Button>
+                  </div>
                 </DialogContent>
               </Dialog>
               <FilterMenu

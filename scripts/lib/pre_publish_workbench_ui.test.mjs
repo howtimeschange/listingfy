@@ -100,6 +100,11 @@ test("pre publish route builds readiness rows from SHEIN product bucket data", a
   assert.match(route, /listing_field_fill/);
   assert.match(route, /sku_commercial_values/);
   assert.match(route, /updateListingSkuCommercials/);
+  assert.match(route, /priceConfirmedForSkuCommercial/);
+  assert.doesNotMatch(route, /when \? is not null and \? > 0/);
+  assert.match(route, /manual_size_chart_rows/);
+  assert.match(route, /getManualSizeChart/);
+  assert.match(route, /persistManualSizeChart/);
   assert.match(route, /\/drafts\/:id\/images\/upload/);
   assert.match(route, /selectedListingSkcWhere/);
   assert.match(route, /selectedListingSkuWhere/);
@@ -109,6 +114,23 @@ test("pre publish route builds readiness rows from SHEIN product bucket data", a
   assert.match(route, /withoutUnselectedSkcColors/);
   assert.match(route, /displayReadinessForSelectedSkcs/);
   assert.match(route, /readiness:\s*selectedReadiness/);
+});
+
+test("draft detail supports manual SHEIN category size chart editing", async () => {
+  const [route, detailPage] = await Promise.all([
+    readFile(ROUTE_FILE, "utf8"),
+    readFile(DETAIL_PAGE_FILE, "utf8"),
+  ]);
+
+  assert.match(route, /size_chart_attributes/);
+  assert.match(route, /manual_size_chart/);
+  assert.match(route, /buildManualSizeChartAttributeList/);
+  assert.match(detailPage, /manualSizeChartValues/);
+  assert.match(detailPage, /downloadManualSizeChartTemplate/);
+  assert.match(detailPage, /importManualSizeChartTemplate/);
+  assert.match(detailPage, /readSpreadsheetFile/);
+  assert.match(detailPage, /下载模板/);
+  assert.match(detailPage, /导入填充/);
 });
 
 test("publish task center shows submitted platform tasks and task detail payloads", async () => {
@@ -231,6 +253,11 @@ test("pre publish has a single listing detail route with editable fields and ver
   assert.match(detailPage, /SPU 图片规则/);
   assert.match(detailPage, /主图、方形图和色块图/);
   assert.match(detailPage, /类目树选择/);
+  assert.match(detailPage, /onEditCategory/);
+  assert.match(detailPage, /onGenerateCategoryAi/);
+  assert.match(detailPage, /categoryAiGenerating/);
+  assert.match(detailPage, /field\.key === "category"/);
+  assert.match(detailPage, /修改类目/);
   assert.match(detailPage, /转为 OpenAPI 单品发布/);
   assert.match(detailPage, /convert-openapi-single-item/);
   assert.match(detailPage, /OpenAPI 套装类目限制/);

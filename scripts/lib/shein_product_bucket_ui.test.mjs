@@ -54,6 +54,10 @@ test("SHEIN product bucket has its own table, API, page, and navigation", async 
   assert.match(page, /勾选发布商品/);
   assert.match(page, /字段完整度/);
   assert.match(page, /AI 补齐人工判断字段/);
+  assert.match(page, /从商品档案同步款号/);
+  assert.match(page, /importBucketMutation/);
+  assert.match(page, /\/shein-products\/import/);
+  assert.match(page, /batchImportText/);
   assert.match(page, /批量搜索款号/);
   assert.match(page, /categoryStatusFilter/);
   assert.match(page, /readinessStatusFilter/);

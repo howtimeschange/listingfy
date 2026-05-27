@@ -55,6 +55,7 @@ import {
 import { createPublishVersion } from "../services/pre-publish/versions"
 
 const prePublish = new Hono()
+const MANUAL_SIZE_CHART_FIELD_KEY = "size_chart_manual"
 
 type SourceRow = Record<string, unknown>
 
@@ -152,6 +153,15 @@ type ListingRow = SourceRow & {
   platform: string
   platform_category_id: number | null
   product_type_id: number | null
+}
+
+type ManualSizeChartInputRow = {
+  sku_id?: unknown
+  sku_code?: unknown
+  size_name?: unknown
+  shein_size_value?: unknown
+  relate_sale_attribute_value_id?: unknown
+  values?: unknown
 }
 
 type CategoryOverride = {
@@ -2586,6 +2596,8 @@ function getListingDetail(db: ReturnType<typeof getDb>, listingId: number) {
   const { size_tables, size_table_rows } = getSizeTables(db, listing)
   const assets = getListingAssets(db, listingId, { onlySelected: true })
   const mapped_size_charts = getMappedSizeCharts({ db, listing, sizeTables: size_tables, sizeTableRows: size_table_rows })
+  const size_chart_attributes = getSizeChartAttributes(db, listing.product_type_id)
+  const manual_size_chart = getManualSizeChart(db, listing)
   const image_requirements = getImageRequirements(db, listing)
   const sale_attributes = getRequiredAttributes(db, asNumber(listing.platform_category_id), asNumber(listing.product_type_id))
     .filter((attr) => attr.attribute_type === 1)
@@ -2604,6 +2616,8 @@ function getListingDetail(db: ReturnType<typeof getDb>, listingId: number) {
     size_tables,
     size_table_rows,
     mapped_size_charts,
+    size_chart_attributes,
+    manual_size_chart,
     validation_issues: validationIssues,
     versions,
     publish_tasks: publishTasks,
@@ -3368,6 +3382,153 @@ function getSizeChartAttributes(db: ReturnType<typeof getDb>, productTypeId: unk
   `).all(id) as SourceRow[]
 }
 
+function getManualSizeChart(db: ReturnType<typeof getDb>, listing: ListingRow) {
+  const fill = db.prepare(`
+    select *
+    from listing_field_fill
+    where spu_code = ?
+      and field_key = ?
+      and status = 'ACTIVE'
+    order by updated_at desc
+    limit 1
+  `).get(listing.spu_code, MANUAL_SIZE_CHART_FIELD_KEY) as SourceRow | undefined
+  if (!fill) return { source: null, updated_at: null, rows: [] }
+  const payload = parseJsonObject(fill.payload_json)
+  const rows = parseJsonArray(payload.rows).length > 0
+    ? parseJsonArray(payload.rows)
+    : parseJsonArray(fill.field_value)
+  return {
+    source: normalizeText(fill.source) || "MANUAL_SIZE_CHART",
+    updated_at: fill.updated_at ?? null,
+    rows,
+  }
+}
+
+function listingSkusForManualSizeChart(db: ReturnType<typeof getDb>, listingId: number) {
+  return db.prepare(`
+    select
+      sku.*,
+      skc.skc_code,
+      skc.color_name,
+      skc.image_url as skc_image_url
+    from listing_sku sku
+    join listing_skc skc on skc.id = sku.listing_skc_id
+    where skc.listing_id = ?
+    order by skc.skc_code, sku.size_name, sku.sku_code
+  `).all(listingId) as SourceRow[]
+}
+
+function normalizeManualSizeChartRows({
+  db,
+  listing,
+  rows,
+}: {
+  db: ReturnType<typeof getDb>
+  listing: ListingRow
+  rows: ManualSizeChartInputRow[]
+}) {
+  const skus = listingSkusForManualSizeChart(db, listing.id)
+  const byId = new Map(skus.map((sku) => [Number(sku.id), sku]))
+  const byCode = new Map(skus.map((sku) => [normalizeText(sku.sku_code), sku]))
+  const attrs = getSizeChartAttributes(db, listing.product_type_id)
+  const output: Array<Record<string, unknown>> = []
+  const seen = new Set<number>()
+
+  for (const row of rows) {
+    const sku = byId.get(Number(row.sku_id)) ?? byCode.get(normalizeText(row.sku_code))
+    if (!sku) continue
+    const skuId = Number(sku.id)
+    if (!Number.isFinite(skuId) || seen.has(skuId)) continue
+    const values = parseJsonObject(row.values)
+    const normalizedValues: Record<string, string> = {}
+    for (const attr of attrs) {
+      const attrId = normalizeText(attr.attribute_id)
+      const attrName = normalizeText(attr.attribute_name)
+      const attrNameEn = normalizeText(attr.attribute_name_en)
+      const value = normalizeText(
+        values[attrId]
+        ?? values[attrName]
+        ?? (attrNameEn ? values[attrNameEn] : undefined),
+      )
+      if (value) normalizedValues[attrId] = value
+    }
+    if (Object.keys(normalizedValues).length === 0) continue
+    const sizePayload = parseJsonObject(sku.size_attribute_payload_json)
+    output.push({
+      sku_id: skuId,
+      sku_code: normalizeText(sku.sku_code),
+      size_name: normalizeText(sku.size_name) || null,
+      shein_size_value: normalizeText(row.shein_size_value) || normalizeText(sku.shein_size_value) || normalizeText(sku.size_name) || null,
+      relate_sale_attribute_value_id: asPositiveNumber(row.relate_sale_attribute_value_id)
+        ?? asPositiveNumber(sizePayload.attribute_value_id)
+        ?? null,
+      values: normalizedValues,
+    })
+    seen.add(skuId)
+  }
+  return output
+}
+
+function persistManualSizeChart({
+  db,
+  listing,
+  rows,
+}: {
+  db: ReturnType<typeof getDb>
+  listing: ListingRow
+  rows: ManualSizeChartInputRow[]
+}) {
+  const normalizedRows = normalizeManualSizeChartRows({ db, listing, rows })
+  const scopeKey = buildScopeKey({ spuCode: listing.spu_code, fieldKey: MANUAL_SIZE_CHART_FIELD_KEY })
+  if (normalizedRows.length === 0) {
+    db.prepare(`
+      update listing_field_fill
+      set status = 'INACTIVE',
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      where scope_key = ?
+    `).run(scopeKey)
+    return normalizedRows
+  }
+
+  db.prepare(`
+    insert into listing_field_fill (
+      scope_key,
+      spu_code,
+      skc_code,
+      sku_code,
+      field_key,
+      field_label,
+      field_value,
+      source,
+      confidence,
+      status,
+      payload_json,
+      updated_at
+    )
+    values (?, ?, null, null, ?, ?, ?, 'MANUAL_SIZE_CHART', 1, 'ACTIVE', ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    on conflict(scope_key) do update set
+      field_label = excluded.field_label,
+      field_value = excluded.field_value,
+      source = excluded.source,
+      confidence = excluded.confidence,
+      status = 'ACTIVE',
+      payload_json = excluded.payload_json,
+      updated_at = excluded.updated_at
+  `).run(
+    scopeKey,
+    listing.spu_code,
+    MANUAL_SIZE_CHART_FIELD_KEY,
+    "SHEIN 类目尺码表",
+    JSON.stringify(normalizedRows),
+    JSON.stringify({
+      rows: normalizedRows,
+      product_type_id: listing.product_type_id,
+      saved_from: "draft_manual_size_chart",
+    }),
+  )
+  return normalizedRows
+}
+
 function sizeRowForSku(sizeRows: SourceRow[], sku: SourceRow) {
   const keys = sizeKeys(sku.size_name).concat(sizeKeys(sku.shein_size_value))
   return sizeRows.find((row) => {
@@ -3399,6 +3560,49 @@ function sizeChartValueForAttribute(attributeName: unknown, values: Record<strin
   return null
 }
 
+function buildManualSizeChartAttributeList({
+  db,
+  listing,
+  skus,
+  sizeAttrId,
+  sizeChartAttrs,
+}: {
+  db: ReturnType<typeof getDb>
+  listing: ListingRow
+  skus: SourceRow[]
+  sizeAttrId: number | null
+  sizeChartAttrs: SourceRow[]
+}) {
+  if (!sizeAttrId || sizeChartAttrs.length === 0) return []
+  const manualRows = getManualSizeChart(db, listing).rows as SourceRow[]
+  if (manualRows.length === 0) return []
+  const bySkuId = new Map(manualRows.map((row) => [Number(row.sku_id), row]))
+  const bySkuCode = new Map(manualRows.map((row) => [normalizeText(row.sku_code), row]))
+  const output: Array<Record<string, unknown>> = []
+
+  for (const sku of skus) {
+    const row = bySkuId.get(Number(sku.id)) ?? bySkuCode.get(normalizeText(sku.sku_code))
+    if (!row) continue
+    const values = parseJsonObject(row.values)
+    const sizePayload = parseJsonObject(sku.size_attribute_payload_json)
+    const sizeValueId = asPositiveNumber(row.relate_sale_attribute_value_id) ?? asPositiveNumber(sizePayload.attribute_value_id)
+    if (!sizeValueId) continue
+    for (const attr of sizeChartAttrs) {
+      const attrId = normalizeText(attr.attribute_id)
+      const value = asPositiveNumber(values[attrId] ?? values[normalizeText(attr.attribute_name)])
+      if (!value) continue
+      output.push({
+        attribute_id: Number(attr.attribute_id),
+        attribute_value_id: "",
+        attribute_extra_value: String(value),
+        relate_sale_attribute_id: sizeAttrId,
+        relate_sale_attribute_value_id: sizeValueId,
+      })
+    }
+  }
+  return output
+}
+
 function buildSizeChartAttributeList({
   db,
   listing,
@@ -3413,6 +3617,14 @@ function buildSizeChartAttributeList({
   if (!sizeAttrId) return []
   const sizeChartAttrs = getSizeChartAttributes(db, listing.product_type_id)
   if (sizeChartAttrs.length === 0) return []
+  const manualSizeChartAttrs = buildManualSizeChartAttributeList({
+    db,
+    listing: listing as ListingRow,
+    skus,
+    sizeAttrId,
+    sizeChartAttrs,
+  })
+  if (manualSizeChartAttrs.length > 0) return manualSizeChartAttrs
   const { size_tables, size_table_rows } = getSizeTables(db, listing as ListingRow)
   const mappedCharts = getMappedSizeCharts({
     db,
@@ -3803,6 +4015,10 @@ function updateListingSkuWeights({
   for (const item of valid) stmt.run(Math.round(Number(item.weight)), item.id, listingId)
 }
 
+function priceConfirmedForSkuCommercial(item: { costPrice: number | null }) {
+  return item.costPrice != null && item.costPrice > 0 ? 1 : 0
+}
+
 function updateListingSkuCommercials({
   db,
   listingId,
@@ -3838,11 +4054,11 @@ function updateListingSkuCommercials({
       package_width_cm = coalesce(?, package_width_cm),
       package_height_cm = coalesce(?, package_height_cm),
       price_confirmed = case
-        when ? is not null and ? > 0 then 1
+        when ? = 1 then 1
         else price_confirmed
       end,
       price_confirmed_at = case
-        when ? is not null and ? > 0 and price_confirmed_at is null then strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        when ? = 1 and price_confirmed_at is null then strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         else price_confirmed_at
       end,
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -3852,16 +4068,15 @@ function updateListingSkuCommercials({
       )
   `)
   for (const item of valid) {
+    const priceConfirmed = priceConfirmedForSkuCommercial(item)
     stmt.run(
       item.costPrice,
       item.currency,
       item.length,
       item.width,
       item.height,
-      item.costPrice,
-      item.costPrice,
-      item.costPrice,
-      item.costPrice,
+      priceConfirmed,
+      priceConfirmed,
       item.id,
       listingId,
     )
@@ -4533,6 +4748,7 @@ prePublish.post("/drafts/:id/save", async (c) => {
       attribute_value?: unknown
       custom_attribute_value?: unknown
     }>
+    manual_size_chart_rows?: ManualSizeChartInputRow[]
     image_confirmed_skc_ids?: number[]
   }
   const fields = Array.isArray(body.fields) ? body.fields : []
@@ -4540,6 +4756,8 @@ prePublish.post("/drafts/:id/save", async (c) => {
   const skuWeightValues = Array.isArray(body.sku_weight_values) ? body.sku_weight_values : []
   const skuCommercialValues = Array.isArray(body.sku_commercial_values) ? body.sku_commercial_values : []
   const skcColorValues = Array.isArray(body.skc_color_values) ? body.skc_color_values : []
+  const hasManualSizeChartRows = Array.isArray(body.manual_size_chart_rows)
+  const manualSizeChartRows = hasManualSizeChartRows ? body.manual_size_chart_rows ?? [] : []
   const hasSkcSelection = Array.isArray(body.selected_skc_ids)
   const hasSkuSelection = Array.isArray(body.selected_sku_ids)
   const hasImageConfirmation = Array.isArray(body.image_confirmed_skc_ids)
@@ -4623,6 +4841,7 @@ prePublish.post("/drafts/:id/save", async (c) => {
     updateListingSkuWeights({ db, listingId, skuWeightValues })
     updateListingSkuCommercials({ db, listingId, skuCommercialValues })
     updateListingSkcColors({ db, listingId, skcColorValues })
+    if (hasManualSizeChartRows) persistManualSizeChart({ db, listing, rows: manualSizeChartRows })
 
     if (hasImageConfirmation) {
       db.prepare(`
@@ -4637,7 +4856,7 @@ prePublish.post("/drafts/:id/save", async (c) => {
   })
   transaction()
 
-  const refreshed = refreshListingAfterFill(db, listingId, `保存草稿：字段 ${fields.length} 个，颜色 ${skcColorValues.length} 个，尺码 ${skuSizeValues.length} 个，毛重 ${skuWeightValues.length} 个，价格包装 ${skuCommercialValues.length} 个`)
+  const refreshed = refreshListingAfterFill(db, listingId, `保存草稿：字段 ${fields.length} 个，颜色 ${skcColorValues.length} 个，尺码 ${skuSizeValues.length} 个，毛重 ${skuWeightValues.length} 个，价格包装 ${skuCommercialValues.length} 个${hasManualSizeChartRows ? `，尺码表 ${manualSizeChartRows.length} 行` : ""}`)
   if (!refreshed) {
     throw new HTTPException(500, { message: "草稿保存后刷新失败" })
   }
