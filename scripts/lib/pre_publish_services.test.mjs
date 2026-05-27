@@ -77,6 +77,75 @@ test("field-fill helpers avoid unspecified tariff values for T-shirt contexts", 
   );
 });
 
+test("field-fill helpers infer related tariff values for child and baby category synonyms", () => {
+  assert.deepEqual(
+    fieldFills.tariffValueCandidatesForContext("儿童 > 女童（大）服装 > 女童（大）下装 > 女童（大）卫裤", [
+      "无腰带环短裤",
+      "无腰带环长裤",
+      "有腰带环长裤",
+      "未列明关税种类",
+    ]),
+    ["无腰带环长裤", "有腰带环长裤", "无腰带环短裤", "未列明关税种类"],
+  );
+  assert.deepEqual(
+    fieldFills.tariffValueCandidatesForContext("儿童 > 儿童鞋子 > 儿童洞洞鞋", [
+      "休闲鞋",
+      "凉鞋",
+      "家居鞋",
+      "拖鞋",
+      "未列明关税种类",
+    ]),
+    ["休闲鞋", "凉鞋", "家居鞋", "拖鞋", "未列明关税种类"],
+  );
+  assert.deepEqual(
+    fieldFills.tariffValueCandidatesForContext("儿童 > 儿童校园用品 > 儿童手工与美术工具 > 儿童绘画用品", [
+      "DIY绘画套装",
+      "学生绘图套装",
+      "画笔",
+      "画纸",
+      "绘画颜料套装",
+      "未列明关税种类",
+    ]),
+    ["DIY绘画套装", "绘画颜料套装", "学生绘图套装", "画笔", "画纸", "未列明关税种类"],
+  );
+  assert.deepEqual(
+    fieldFills.tariffValueCandidatesForContext("儿童 > 儿童配饰 > 儿童眼镜和眼镜配件 > 儿童平光镜", [
+      "变色眼镜",
+      "普通眼镜",
+      "眼镜架",
+      "装饰眼镜(日常用)",
+      "未列明关税种类",
+    ]),
+    ["普通眼镜", "眼镜架", "变色眼镜", "装饰眼镜(日常用)", "未列明关税种类"],
+  );
+  assert.deepEqual(
+    fieldFills.tariffValueCandidatesForContext("婴儿 > 婴儿用品 > 婴儿出行装备 > 妈咪包", [
+      "单肩包",
+      "双肩包",
+      "妈妈包",
+      "手提包",
+      "托特包",
+      "收纳包",
+      "收纳袋",
+      "斜挎包",
+      "未列明关税种类",
+    ]),
+    ["妈妈包", "双肩包", "单肩包", "斜挎包", "手提包", "托特包", "收纳包", "收纳袋", "未列明关税种类"],
+  );
+  assert.deepEqual(
+    fieldFills.tariffValueCandidatesForContext("婴儿 > 婴儿用品 > 婴儿出行装备 > 婴儿背巾", ["婴儿背带", "未列明关税种类"]),
+    ["婴儿背带", "未列明关税种类"],
+  );
+  assert.deepEqual(
+    fieldFills.tariffValueCandidatesForContext("婴儿 > 婴儿玩具 > 婴儿手抓球", ["玩具球", "未列明关税种类"]),
+    ["玩具球", "未列明关税种类"],
+  );
+  assert.deepEqual(
+    fieldFills.tariffValueCandidatesForContext("婴儿 > 孕产用品 > 孕产监护设备", ["胎心仪", "未列明关税种类"]),
+    ["胎心仪", "未列明关税种类"],
+  );
+});
+
 test("pre-publish route applies tariff candidates before SHEIN payload submission", async () => {
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
   assert.match(source, /tariffValueCandidatesForContext\(context,\s*attr\.values\)/);
