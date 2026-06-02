@@ -50,6 +50,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Progress } from "@/components/ui/progress"
 import {
   Select,
   SelectContent,
@@ -69,6 +70,13 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api-client"
 import { formatNumber } from "@/lib/format"
+import {
+  buildCostImportRequests,
+  parseCostImportRows,
+  submitCostImportRows,
+  type CostImportProgress,
+  type CostImportRow,
+} from "@/lib/shein-cost-import"
 import {
   platformProductWorkbookSheets,
 } from "@/lib/shein-platform-product-export"
@@ -362,16 +370,6 @@ interface SyncFilters {
   syncDetails: boolean
 }
 
-interface CostImportRow {
-  spuName: string
-  skcName: string
-  skuCode: string
-  cost: string
-  currency: string
-  changeReasonCode: string
-  rowNumber: number
-}
-
 interface SpuSyncItemResult {
   spuName: string
   ok: boolean
@@ -563,26 +561,6 @@ function platformTimeInputValue(value: string) {
   if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(normalized)) return `${normalized}:00`
   if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return `${normalized} 00:00:00`
   return normalized
-}
-
-function spreadsheetValue(row: SpreadsheetRow, ...keys: string[]) {
-  for (const key of keys) {
-    const value = row[key]
-    if (value != null && String(value).trim()) return String(value).trim()
-  }
-  return ""
-}
-
-function parseCostImportRows(rows: SpreadsheetRow[]): CostImportRow[] {
-  return rows.map((row, index) => ({
-    spuName: spreadsheetValue(row, "SPU", "spu", "spuName", "款号"),
-    skcName: spreadsheetValue(row, "SKC", "skc", "skcName"),
-    skuCode: spreadsheetValue(row, "SKU", "sku", "skuCode"),
-    cost: spreadsheetValue(row, "供货价", "成本价", "cost", "costPrice"),
-    currency: spreadsheetValue(row, "币种", "currency") || "CNY",
-    changeReasonCode: spreadsheetValue(row, "涨价原因", "changeReasonCode", "原因代码"),
-    rowNumber: index + 2,
-  })).filter((row) => row.spuName || row.skcName || row.skuCode || row.cost)
 }
 
 function siteStatusLabel(status: number | null) {
@@ -781,6 +759,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const [costImportDialogOpen, setCostImportDialogOpen] = useState(false)
   const [costImportRows, setCostImportRows] = useState<CostImportRow[]>([])
   const [costImportFileName, setCostImportFileName] = useState("")
+  const [costImportProgress, setCostImportProgress] = useState<CostImportProgress | null>(null)
   const [costForm, setCostForm] = useState<CostForm>(DEFAULT_COST_FORM)
   const [regressionDialogOpen, setRegressionDialogOpen] = useState(false)
   const [regressionForm, setRegressionForm] = useState<RegressionForm>(DEFAULT_REGRESSION_FORM)
@@ -844,6 +823,9 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const costReasonSource = costReasonsQuery.data?.source ?? "DOCUMENT_FALLBACK"
   const selectedCostItems = costForm.items.filter((item) => item.selected)
   const costIncreased = selectedCostItems.some((item) => Number(costForm.cost) > Number(item.originalCost || 0))
+  const costImportProgressValue = costImportProgress?.totalGroups
+    ? (costImportProgress.completedGroups / costImportProgress.totalGroups) * 100
+    : 0
   const spuNamesToSync = useMemo(() => splitSpuNames(spuNameSyncText), [spuNameSyncText])
   const detailSectionTabs = useMemo(
     () => [
@@ -1170,60 +1152,35 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
 
   const costImportMutation = useMutation({
     mutationFn: async () => {
-      const validRows = costImportRows.filter((row) => row.spuName && row.skcName && row.skuCode && row.cost)
-      if (!validRows.length) throw new Error("请先上传包含 SPU、SKC、SKU、供货价的表格")
-      const invalidRow = validRows.find((row) => {
-        const cost = Number(row.cost)
-        return !Number.isFinite(cost) || cost <= 0 || cost >= 100000
+      const batch = buildCostImportRequests(costImportRows)
+      setCostImportProgress({
+        completedGroups: 0,
+        totalGroups: batch.requests.length,
+        rowCount: batch.rowCount,
+        currentSpuName: "",
+        ok: true,
+        message: "",
       })
-      if (invalidRow) throw new Error(`第 ${invalidRow.rowNumber} 行供货价需大于 0 且小于 100000`)
-
-      const groups = validRows.reduce<Record<string, CostImportRow[]>>((current, row) => {
-        const key = [row.spuName, row.currency || "CNY", row.changeReasonCode || ""].join("\u0001")
-        current[key] = [...(current[key] ?? []), row]
-        return current
-      }, {})
-      const results: Array<{ spuName: string; ok: boolean; message: string }> = []
-      for (const [key, rows] of Object.entries(groups)) {
-        const [spuName, currency, changeReasonCode] = key.split("\u0001")
-        const skcGroups = rows.reduce<Record<string, CostImportRow[]>>((current, row) => {
-          current[row.skcName] = [...(current[row.skcName] ?? []), row]
-          return current
-        }, {})
-        try {
-          const data = await api.post<{ result: PlatformRequestResult }>(productUpdateCostUrl(spuName), {
-            change_reason_code: changeReasonCode || undefined,
-            spu_name: spuName,
-            skc_info_list: Object.entries(skcGroups).map(([skcName, items]) => ({
-              skc_name: skcName,
-              sku_info_list: items.map((item) => ({
-                sku_code: item.skuCode,
-                cost: Number(item.cost).toFixed(2),
-                currency: item.currency || currency || "CNY",
-              })),
-            })),
-          })
-          results.push({
-            spuName,
-            ok: responseOk(data.result),
-            message: responseMessage(data.result) || responseCode(data.result) || "",
-          })
-        } catch (error) {
-          results.push({ spuName, ok: false, message: error instanceof Error ? error.message : "导入更新失败" })
-        }
-      }
-      return { results, rowCount: validRows.length }
+      return submitCostImportRows(
+        costImportRows,
+        (spuName, payload) => api.post<{ result: PlatformRequestResult }>(productUpdateCostUrl(spuName), payload),
+        {
+          concurrency: 4,
+          onProgress: (progress) => setCostImportProgress(progress),
+        },
+      )
     },
-    onSuccess: ({ results, rowCount }) => {
+    onSuccess: ({ results, rowCount, groupCount }) => {
       const failed = results.filter((result) => !result.ok)
       if (failed.length) {
-        toast.error(`表格导入供货价部分失败：${failed[0]?.spuName} ${failed[0]?.message}`)
+        toast.error(`表格导入供货价部分失败：${formatNumber(failed.length)} / ${formatNumber(groupCount)} 组，首个失败 SPU ${failed[0]?.spuName} ${failed[0]?.message}`)
         return
       }
-      toast.success(`表格导入供货价已提交：${formatNumber(rowCount)} 行 / ${formatNumber(results.length)} 组`)
+      toast.success(`表格导入供货价已提交：${formatNumber(rowCount)} 行 / ${formatNumber(groupCount)} 组`)
       setCostImportDialogOpen(false)
       setCostImportRows([])
       setCostImportFileName("")
+      setCostImportProgress(null)
       void queryClient.invalidateQueries({ queryKey: ["shein-platform-products"] })
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "表格导入供货价失败"),
@@ -1365,11 +1322,20 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
       const parsedRows = parseCostImportRows(rows)
       setCostImportRows(parsedRows)
       setCostImportFileName(file.name)
+      setCostImportProgress(null)
       if (!parsedRows.length) {
         toast.error("表格中没有可识别的供货价行")
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "表格解析失败")
+    }
+  }
+
+  function handleCostImportDialogOpenChange(open: boolean) {
+    if (costImportMutation.isPending) return
+    setCostImportDialogOpen(open)
+    if (!open) {
+      setCostImportProgress(null)
     }
   }
 
@@ -2623,7 +2589,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
         </DialogContent>
       </Dialog>
 
-      <Dialog open={costImportDialogOpen} onOpenChange={setCostImportDialogOpen}>
+      <Dialog open={costImportDialogOpen} onOpenChange={handleCostImportDialogOpenChange}>
         <DialogContent className="max-h-[90dvh] overflow-hidden sm:max-w-5xl lg:max-w-6xl">
           <DialogHeader>
             <DialogTitle>表格导入更新供货价</DialogTitle>
@@ -2660,6 +2626,24 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
               </Badge>
               <span>已解析 {formatNumber(costImportRows.length)} 行</span>
             </div>
+            {costImportProgress ? (
+              <div className="rounded-md border p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <div className="font-medium">
+                    正在提交 {formatNumber(costImportProgress.completedGroups)} / {formatNumber(costImportProgress.totalGroups)} 组 SPU
+                  </div>
+                  <div className="text-muted-foreground">
+                    {formatNumber(costImportProgress.rowCount)} 行，4 路并发
+                  </div>
+                </div>
+                <Progress value={costImportProgressValue} className="mt-3 h-2" />
+                <div className="mt-2 text-xs text-muted-foreground">
+                  {costImportProgress.currentSpuName
+                    ? `最近完成：${costImportProgress.currentSpuName}${costImportProgress.message ? ` · ${costImportProgress.message}` : ""}`
+                    : "已开始批量提交，窗口会持续显示进度。"}
+                </div>
+              </div>
+            ) : null}
             <div className="min-w-0 rounded-md border">
               <div className="max-h-80 overflow-auto">
                 <Table className="w-full table-fixed">
@@ -2700,12 +2684,14 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCostImportDialogOpen(false)}>
+            <Button variant="outline" onClick={() => handleCostImportDialogOpenChange(false)} disabled={costImportMutation.isPending}>
               取消
             </Button>
             <Button onClick={() => costImportMutation.mutate()} disabled={costImportMutation.isPending || !costImportRows.length}>
               {costImportMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <DollarSign className="size-4" />}
-              提交更新
+              {costImportMutation.isPending && costImportProgress
+                ? `处理中 ${formatNumber(costImportProgress.completedGroups)}/${formatNumber(costImportProgress.totalGroups)}`
+                : "提交更新"}
             </Button>
           </DialogFooter>
         </DialogContent>
