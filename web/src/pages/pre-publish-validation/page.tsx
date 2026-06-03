@@ -23,11 +23,16 @@ import { EmptyState } from "@/components/empty-state"
 import { BatchPublishDialog } from "@/components/pre-publish/batch-publish-dialog"
 import { ServerPagination } from "@/components/server-pagination"
 import type { ServerPaginationState } from "@/components/server-pagination"
-import { PageContainer } from "@/components/layout/page-container"
-import { PageHeader } from "@/components/layout/page-header"
+import {
+  CompactListCard,
+  CompactListCardContent,
+  CompactListCardHeader,
+  CompactListHeader,
+  CompactListPage,
+} from "@/components/layout/compact-list-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { CardTitle } from "@/components/ui/card"
 import {
   Dialog,
   DialogContent,
@@ -338,93 +343,98 @@ export default function PrePublishValidationPage() {
   }
 
   return (
-    <PageContainer className="space-y-6">
-      <PageHeader
+    <CompactListPage>
+      <CompactListHeader
         title="SHEIN 发布草稿箱"
+        summary={`草稿 ${formatNumber(draftData?.pagination.total ?? 0)} / 平均完整度 ${avgCompleteness}% / 已勾选 ${formatNumber(selectedDraftIds.size)} 个`}
         description="同一个 SHEIN 商品可以派生多个独立草稿；每个草稿有自己的状态、版本记录、发布任务和字段填充进度。"
-      >
-        <Button
-          type="button"
-          variant="outline"
-          onClick={createDraftFromSelectedProducts}
-          disabled={createDraftMutation.isPending || selectedSpuCodes.length === 0}
-        >
-          {createDraftMutation.isPending ? (
-            <Loader2 className="mr-2 size-4 animate-spin" />
-          ) : (
-            <Plus className="mr-2 size-4" />
-          )}
-          派生新草稿
-        </Button>
-        <Dialog open={createDraftDialogOpen} onOpenChange={setCreateDraftDialogOpen}>
-          <DialogTrigger asChild>
-            <Button type="button" variant="outline">
-              <Plus className="mr-2 size-4" />
-              新建草稿
+        actions={(
+          <>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={createDraftFromSelectedProducts}
+              disabled={createDraftMutation.isPending || selectedSpuCodes.length === 0}
+            >
+              {createDraftMutation.isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Plus className="size-4" />
+              )}
+              派生新草稿
             </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>新建 SHEIN 发布草稿</DialogTitle>
-              <DialogDescription>输入 SHEIN 商品分桶中的款号；同一个款号可以重复派生多个独立草稿。</DialogDescription>
-            </DialogHeader>
-            <Textarea
-              value={createDraftText}
-              onChange={(event) => setCreateDraftText(event.target.value)}
-              rows={7}
-              placeholder={"201122104105\n208226102001"}
+            <Dialog open={createDraftDialogOpen} onOpenChange={setCreateDraftDialogOpen}>
+              <DialogTrigger asChild>
+                <Button type="button" size="sm" variant="outline">
+                  <Plus className="size-4" />
+                  新建草稿
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>新建 SHEIN 发布草稿</DialogTitle>
+                  <DialogDescription>输入 SHEIN 商品分桶中的款号；同一个款号可以重复派生多个独立草稿。</DialogDescription>
+                </DialogHeader>
+                <Textarea
+                  value={createDraftText}
+                  onChange={(event) => setCreateDraftText(event.target.value)}
+                  rows={7}
+                  placeholder={"201122104105\n208226102001"}
+                />
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    onClick={createDraftFromText}
+                    disabled={createDraftMutation.isPending}
+                  >
+                    {createDraftMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+                    创建草稿
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+            <BatchPublishDialog
+              listingIds={Array.from(selectedDraftIds)}
+              triggerLabel="批量提交发布"
+              disabled={selectedDraftIds.size === 0}
             />
-            <DialogFooter>
-              <Button
-                type="button"
-                onClick={createDraftFromText}
-                disabled={createDraftMutation.isPending}
-              >
-                {createDraftMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
-                创建草稿
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-        <BatchPublishDialog
-          listingIds={Array.from(selectedDraftIds)}
-          triggerLabel="批量提交发布"
-          disabled={selectedDraftIds.size === 0}
-        />
-        <Dialog open={batchImageDialogOpen} onOpenChange={setBatchImageDialogOpen}>
-          <DialogTrigger asChild>
-            <Button type="button" variant="outline" disabled={selectedDraftIds.size === 0}>
-              <ImageIcon className="mr-2 size-4" />
-              批量导入图片目录
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>批量导入图片目录</DialogTitle>
-              <DialogDescription>对已勾选草稿批量执行本地目录导入；系统按目录名和文件名匹配 SKC。</DialogDescription>
-            </DialogHeader>
-            <Textarea
-              value={batchImageFolderPath}
-              onChange={(event) => setBatchImageFolderPath(event.target.value)}
-              rows={3}
-              placeholder="/Users/xingyicheng/Downloads/20112210410530435"
-            />
-            <DialogFooter>
-              <Button
-                type="button"
-                onClick={() => batchImportFoldersMutation.mutate()}
-                disabled={batchImportFoldersMutation.isPending || !batchImageFolderPath.trim()}
-              >
-                {batchImportFoldersMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
-                批量导入图片目录
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </PageHeader>
+            <Dialog open={batchImageDialogOpen} onOpenChange={setBatchImageDialogOpen}>
+              <DialogTrigger asChild>
+                <Button type="button" size="sm" variant="outline" disabled={selectedDraftIds.size === 0}>
+                  <ImageIcon className="size-4" />
+                  批量导入图片目录
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>批量导入图片目录</DialogTitle>
+                  <DialogDescription>对已勾选草稿批量执行本地目录导入；系统按目录名和文件名匹配 SKC。</DialogDescription>
+                </DialogHeader>
+                <Textarea
+                  value={batchImageFolderPath}
+                  onChange={(event) => setBatchImageFolderPath(event.target.value)}
+                  rows={3}
+                  placeholder="/Users/xingyicheng/Downloads/20112210410530435"
+                />
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    onClick={() => batchImportFoldersMutation.mutate()}
+                    disabled={batchImportFoldersMutation.isPending || !batchImageFolderPath.trim()}
+                  >
+                    {batchImportFoldersMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+                    批量导入图片目录
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </>
+        )}
+      />
 
-      <Card>
-        <CardHeader className="gap-4">
+      <CompactListCard>
+        <CompactListCardHeader className="gap-3">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
             <div>
               <CardTitle>草稿版本</CardTitle>
@@ -493,14 +503,14 @@ export default function PrePublishValidationPage() {
               </div>
             </div>
           </div>
-        </CardHeader>
-        <CardContent>
+        </CompactListCardHeader>
+        <CompactListCardContent>
           {isLoading ? (
             <div className="py-10 text-center text-sm text-muted-foreground">草稿加载中...</div>
           ) : drafts.length === 0 ? (
             <EmptyState icon={FileClock} message="暂无发布草稿，请先到 SHEIN 商品分桶勾选商品并创建草稿" />
           ) : (
-            <Table>
+            <Table containerClassName="h-full overflow-auto">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-12">
@@ -649,13 +659,15 @@ export default function PrePublishValidationPage() {
             </Table>
           )}
           <ServerPagination
+            compact
+            className="shrink-0 bg-card px-0"
             pagination={draftData?.pagination}
             onLimitChange={(limit) => setDraftPagination({ limit, offset: 0 })}
             onOffsetChange={(offset) => setDraftPagination((current) => ({ ...current, offset }))}
           />
-        </CardContent>
-      </Card>
+        </CompactListCardContent>
+      </CompactListCard>
 
-    </PageContainer>
+    </CompactListPage>
   )
 }

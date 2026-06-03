@@ -30,6 +30,7 @@ interface ServerPaginationProps {
   pageSizeOptions?: number[]
   beforeContent?: ReactNode
   className?: string
+  compact?: boolean
   isLoading?: boolean
 }
 
@@ -40,6 +41,7 @@ export function ServerPagination({
   pageSizeOptions = [10, 20, 50, 100, 200],
   beforeContent,
   className,
+  compact = false,
   isLoading = false,
 }: ServerPaginationProps) {
   if (!pagination) return null
@@ -58,10 +60,13 @@ export function ServerPagination({
   }
 
   return (
-    <div className={cn("mt-4 border-t pt-4", className)}>
+    <div className={cn(compact ? "mt-0 border-t py-1.5" : "mt-4 border-t pt-4", className)}>
       {beforeContent}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="text-sm text-muted-foreground tabular-nums">
+      <div className={cn(
+        "flex",
+        compact ? "flex-row flex-wrap items-center justify-between gap-1.5" : "flex-col gap-3 sm:flex-row sm:items-center sm:justify-between",
+      )}>
+        <div className={cn("text-sm text-muted-foreground tabular-nums", compact && "text-xs")}>
           共 {formatNumber(total)} 条，当前第 {currentPage || 1} / {pageCount} 页
           {isLoading ? (
             <span className="ml-2 inline-flex items-center gap-1 text-xs">
@@ -70,9 +75,9 @@ export function ServerPagination({
             </span>
           ) : null}
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">每页数量</span>
+        <div className={cn("flex flex-wrap items-center", compact ? "gap-1.5" : "gap-3")}>
+          <div className={cn("flex items-center", compact ? "gap-1.5" : "gap-2")}>
+            <span className={cn("text-sm text-muted-foreground", compact && "hidden text-xs lg:inline")}>每页</span>
             <Select value={String(limit)} onValueChange={setLimit}>
               <SelectTrigger className="h-8 w-[88px]">
                 <SelectValue />

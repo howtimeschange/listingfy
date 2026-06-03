@@ -12,11 +12,17 @@ import { formatCurrency, formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { EmptyState } from "@/components/empty-state"
 import { ServerPagination } from "@/components/server-pagination"
-import { PageContainer } from "@/components/layout/page-container"
-import { PageHeader } from "@/components/layout/page-header"
+import {
+  CompactListCard,
+  CompactListCardContent,
+  CompactListCardHeader,
+  CompactListHeader,
+  CompactListPage,
+  CompactListTableFrame,
+} from "@/components/layout/compact-list-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
@@ -143,14 +149,15 @@ export default function MdmProductsPage() {
   const { data: summary } = useMdmProductSummary()
 
   return (
-    <PageContainer className="flex flex-col gap-6">
-      <PageHeader
+    <CompactListPage>
+      <CompactListHeader
         title="MDM 商品主数据"
+        summary={`SPU ${formatNumber(summary?.spu_count)} / SKC ${formatNumber(summary?.skc_count)} / SKU ${formatNumber(summary?.sku_count)}`}
         description="以 MDM 主数据为准，按 SPU、SKC、SKU 三层维度查看商品资料、分类、状态和价格包装字段。"
       />
 
-      <Card>
-        <CardHeader className="flex flex-col gap-3 pb-3 lg:flex-row lg:items-center lg:justify-between">
+      <CompactListCard>
+        <CompactListCardHeader className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <CardTitle>SPU 主数据列表</CardTitle>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -166,9 +173,9 @@ export default function MdmProductsPage() {
               className="pl-9"
             />
           </div>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-3 md:hidden">
+        </CompactListCardHeader>
+        <CompactListCardContent>
+          <div className="min-h-0 flex-1 space-y-3 overflow-auto md:hidden">
             {isLoading ? (
               Array.from({ length: 3 }).map((_, index) => (
                 <div key={index} className="rounded-2xl border p-4">
@@ -228,8 +235,8 @@ export default function MdmProductsPage() {
             )}
           </div>
 
-          <div className="hidden overflow-hidden rounded-2xl border md:block">
-            <Table>
+          <CompactListTableFrame className="hidden md:block">
+            <Table containerClassName="h-full overflow-auto">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[88px]">图片</TableHead>
@@ -328,19 +335,21 @@ export default function MdmProductsPage() {
                 )}
               </TableBody>
             </Table>
-          </div>
+          </CompactListTableFrame>
 
-          <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+          <div className="flex shrink-0 items-center justify-between pt-2 text-xs text-muted-foreground">
             <span>当前展示 {formatNumber(data?.items.length ?? 0)} 条</span>
             <span>共 {formatNumber(data?.pagination.total)} 条 SPU</span>
           </div>
           <ServerPagination
+            compact
+            className="shrink-0 bg-card px-0"
             pagination={data?.pagination}
             onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
             onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
           />
-        </CardContent>
-      </Card>
-    </PageContainer>
+        </CompactListCardContent>
+      </CompactListCard>
+    </CompactListPage>
   )
 }

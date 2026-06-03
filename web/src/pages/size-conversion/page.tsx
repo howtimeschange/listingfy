@@ -8,12 +8,18 @@ import { exportSpreadsheet, parseBatchSearch, readSpreadsheetFile } from "@/lib/
 import type { SpreadsheetRow } from "@/lib/spreadsheet"
 import { ServerPagination } from "@/components/server-pagination"
 import type { ServerPaginationState } from "@/components/server-pagination"
-import { PageContainer } from "@/components/layout/page-container"
-import { PageHeader } from "@/components/layout/page-header"
+import {
+  CompactListCard,
+  CompactListCardContent,
+  CompactListCardHeader,
+  CompactListHeader,
+  CompactListPage,
+  CompactListTableFrame,
+} from "@/components/layout/compact-list-layout"
 import { EmptyState } from "@/components/empty-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { CardTitle } from "@/components/ui/card"
 import {
   Dialog,
   DialogContent,
@@ -155,39 +161,43 @@ export default function SizeConversionPage() {
   }
 
   return (
-    <PageContainer className="space-y-6">
-      <PageHeader
+    <CompactListPage>
+      <CompactListHeader
         title="SHEIN 尺码转换"
+        summary={`规则 ${formatNumber(items.length)} / 批量搜索 ${batchCount ? `${batchCount} 个` : "未启用"}`}
         description="维护 MDM 尺码到 SHEIN 尺码的映射；这是 SHEIN 适配规则，后续其他平台会使用各自的尺码规则。"
-      >
-        <Button variant="outline" onClick={exportRows}>
-          <Download className="mr-2 size-4" />
-          导出
-        </Button>
-        <Button asChild variant="outline">
-          <Label className="cursor-pointer">
-            {importMutation.isPending ? (
-              <Loader2 className="mr-2 size-4 animate-spin" />
-            ) : (
-              <Upload className="mr-2 size-4" />
-            )}
-            导入表格
-            <Input
-              type="file"
-              accept=".xlsx,.xls,.csv"
-              className="hidden"
-              onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
-            />
-          </Label>
-        </Button>
-        <Button onClick={openCreate}>
-          <Plus className="mr-2 size-4" />
-          新增
-        </Button>
-      </PageHeader>
+        actions={(
+          <>
+            <Button size="sm" variant="outline" onClick={exportRows}>
+              <Download className="size-4" />
+              导出
+            </Button>
+            <Button asChild size="sm" variant="outline">
+              <Label className="cursor-pointer">
+                {importMutation.isPending ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Upload className="size-4" />
+                )}
+                导入表格
+                <Input
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  className="hidden"
+                  onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
+                />
+              </Label>
+            </Button>
+            <Button size="sm" onClick={openCreate}>
+              <Plus className="size-4" />
+              新增
+            </Button>
+          </>
+        )}
+      />
 
-      <Card>
-        <CardHeader className="gap-4">
+      <CompactListCard>
+        <CompactListCardHeader className="gap-3">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <CardTitle>SHEIN 尺码规则列表</CardTitle>
@@ -224,14 +234,15 @@ export default function SizeConversionPage() {
               </Dialog>
             </div>
           </div>
-        </CardHeader>
-        <CardContent>
+        </CompactListCardHeader>
+        <CompactListCardContent>
           {isLoading ? (
             <div className="py-12 text-center text-sm text-muted-foreground">加载中...</div>
           ) : items.length === 0 ? (
             <EmptyState message="暂无 SHEIN 尺码转换规则" />
           ) : (
-            <Table>
+            <CompactListTableFrame>
+              <Table containerClassName="h-full overflow-auto">
               <TableHeader>
                 <TableRow>
                   <TableHead>本地尺码编码</TableHead>
@@ -271,15 +282,18 @@ export default function SizeConversionPage() {
                   </TableRow>
                 ))}
               </TableBody>
-            </Table>
+              </Table>
+            </CompactListTableFrame>
           )}
           <ServerPagination
+            compact
+            className="shrink-0 bg-card px-0"
             pagination={data?.pagination}
             onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
             onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
           />
-        </CardContent>
-      </Card>
+        </CompactListCardContent>
+      </CompactListCard>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
@@ -326,6 +340,6 @@ export default function SizeConversionPage() {
           </div>
         </DialogContent>
       </Dialog>
-    </PageContainer>
+    </CompactListPage>
   )
 }

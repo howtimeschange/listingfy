@@ -9,8 +9,14 @@ import type { SpreadsheetRow } from "@/lib/spreadsheet"
 import { EmptyState } from "@/components/empty-state"
 import { ServerPagination } from "@/components/server-pagination"
 import type { ServerPaginationState } from "@/components/server-pagination"
-import { PageContainer } from "@/components/layout/page-container"
-import { PageHeader } from "@/components/layout/page-header"
+import {
+  CompactListCard,
+  CompactListCardContent,
+  CompactListCardHeader,
+  CompactListHeader,
+  CompactListPage,
+  CompactListTableFrame,
+} from "@/components/layout/compact-list-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -187,55 +193,59 @@ export default function BrandRulesPage() {
   }
 
   return (
-    <PageContainer className="space-y-6">
-      <PageHeader
+    <CompactListPage relaxed>
+      <CompactListHeader
         title="SHEIN 品牌管理"
+        summary={`品牌记录 ${totalCount} / 当前页 ${items.length}`}
         description="维护发布 payload 使用的 SHEIN brand_code 与品牌名称映射；发布时按 MDM/深绘品牌名匹配，匹配后写入 brand_code。"
-      >
-        <Button variant="outline" onClick={exportRows}>
-          <Download className="mr-2 size-4" />
-          导出
-        </Button>
-        <Button asChild variant="outline">
-          <Label className="cursor-pointer">
-            {importMutation.isPending ? (
-              <Loader2 className="mr-2 size-4 animate-spin" />
-            ) : (
-              <Upload className="mr-2 size-4" />
-            )}
-            导入品牌映射
-            <Input
-              type="file"
-              accept=".xlsx,.xls,.csv"
-              className="hidden"
-              onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
-            />
-          </Label>
-        </Button>
-        <Button onClick={openCreate}>
-          <Plus className="mr-2 size-4" />
-          新增品牌
-        </Button>
-      </PageHeader>
+        actions={(
+          <>
+            <Button size="sm" variant="outline" onClick={exportRows}>
+              <Download className="size-4" />
+              导出
+            </Button>
+            <Button asChild size="sm" variant="outline">
+              <Label className="cursor-pointer">
+                {importMutation.isPending ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Upload className="size-4" />
+                )}
+                导入品牌映射
+                <Input
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  className="hidden"
+                  onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
+                />
+              </Label>
+            </Button>
+            <Button size="sm" onClick={openCreate}>
+              <Plus className="size-4" />
+              新增品牌
+            </Button>
+          </>
+        )}
+      />
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid shrink-0 gap-2 md:grid-cols-2">
         {defaultBrands.map((item) => (
-          <Card key={item.brand_code}>
-            <CardHeader>
+          <Card key={item.brand_code} className="gap-0 rounded-lg py-0">
+            <CardHeader className="px-3 py-2">
               <div className="flex items-center justify-between gap-3">
                 <CardTitle className="text-base">{item.brand_name}</CardTitle>
                 <Badge variant="outline" className="font-mono">{item.brand_code}</Badge>
               </div>
             </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">
+            <CardContent className="px-3 pb-2 text-xs text-muted-foreground">
               默认品牌映射会随数据库迁移自动创建，可在下方列表编辑或停用。
             </CardContent>
           </Card>
         ))}
       </div>
 
-      <Card>
-        <CardHeader className="gap-4">
+      <CompactListCard className="min-h-[360px]">
+        <CompactListCardHeader className="gap-3">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <CardTitle>品牌映射列表</CardTitle>
@@ -272,14 +282,15 @@ export default function BrandRulesPage() {
               </Dialog>
             </div>
           </div>
-        </CardHeader>
-        <CardContent>
+        </CompactListCardHeader>
+        <CompactListCardContent>
           {isLoading ? (
             <div className="py-12 text-center text-sm text-muted-foreground">加载中...</div>
           ) : items.length === 0 ? (
             <EmptyState icon={BadgeCheck} message="暂无品牌映射" />
           ) : (
-            <Table>
+            <CompactListTableFrame>
+              <Table containerClassName="h-full overflow-auto">
               <TableHeader>
                 <TableRow>
                   <TableHead>品牌code</TableHead>
@@ -324,15 +335,18 @@ export default function BrandRulesPage() {
                   </TableRow>
                 ))}
               </TableBody>
-            </Table>
+              </Table>
+            </CompactListTableFrame>
           )}
           <ServerPagination
+            compact
+            className="shrink-0 bg-card px-0"
             pagination={data?.pagination}
             onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
             onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
           />
-        </CardContent>
-      </Card>
+        </CompactListCardContent>
+      </CompactListCard>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
@@ -404,6 +418,6 @@ export default function BrandRulesPage() {
           </div>
         </DialogContent>
       </Dialog>
-    </PageContainer>
+    </CompactListPage>
   )
 }

@@ -20,11 +20,19 @@ import { parseBatchSearch } from "@/lib/spreadsheet"
 import { FilterTrigger } from "@/components/filter-trigger"
 import { ServerPagination } from "@/components/server-pagination"
 import type { ServerPaginationState } from "@/components/server-pagination"
-import { PageContainer } from "@/components/layout/page-container"
-import { PageHeader } from "@/components/layout/page-header"
+import {
+  CompactListCard,
+  CompactListCardContent,
+  CompactListCardHeader,
+  CompactListFilterPopover,
+  CompactListHeader,
+  CompactListInlineFilters,
+  CompactListPage,
+  CompactListTableFrame,
+} from "@/components/layout/compact-list-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
@@ -522,39 +530,44 @@ export default function SheinProductsPage() {
   ].join(" / ")
 
   return (
-    <PageContainer className="space-y-6">
-      <PageHeader
+    <CompactListPage>
+      <CompactListHeader
         title="SHEIN 商品分桶"
+        summary={rowSummary}
         description="从商品档案挑选进入 SHEIN 平台业务字段清洗池，在这里完成勾选发布商品、字段完整度检查、类目尺码价格毛重图片清洗和草稿创建。"
-      >
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => aiFillMutation.mutate()}
-          disabled={aiFillMutation.isPending || items.length === 0}
-        >
-          {aiFillMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Bot className="size-4" />}
-          AI 补齐人工判断字段
-        </Button>
-        <Button
-          type="button"
-          onClick={() => createDraftMutation.mutate()}
-          disabled={createDraftMutation.isPending || selectedSpus.length === 0}
-        >
-          {createDraftMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
-          创建所选款色草稿
-        </Button>
-      </PageHeader>
+        actions={(
+          <>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => aiFillMutation.mutate()}
+              disabled={aiFillMutation.isPending || items.length === 0}
+            >
+              {aiFillMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Bot className="size-4" />}
+              AI 补齐人工判断字段
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => createDraftMutation.mutate()}
+              disabled={createDraftMutation.isPending || selectedSpus.length === 0}
+            >
+              {createDraftMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
+              创建所选款色草稿
+            </Button>
+          </>
+        )}
+      />
 
-      <Card>
-        <CardHeader className="gap-4">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
-            <div className="space-y-1">
-              <CardTitle>勾选发布商品</CardTitle>
-              <p className="text-sm text-muted-foreground">{rowSummary}</p>
+      <CompactListCard>
+        <CompactListCardHeader>
+          <div className="flex flex-col gap-2 min-[980px]:flex-row min-[980px]:items-center min-[980px]:justify-between">
+            <div className="min-w-0">
+              <CardTitle className="text-base">勾选发布商品</CardTitle>
             </div>
-            <div className="flex w-full flex-col gap-2 md:flex-row md:flex-wrap xl:w-auto xl:justify-end">
-              <div className="relative md:w-72">
+            <div className="flex w-full min-w-0 flex-col gap-2 min-[980px]:w-auto min-[980px]:flex-row min-[980px]:items-center min-[980px]:justify-end">
+              <div className="relative min-w-[220px] flex-1 min-[980px]:w-72 min-[980px]:flex-none">
                 <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={search}
@@ -563,12 +576,12 @@ export default function SheinProductsPage() {
                     setPagination((current) => ({ ...current, offset: 0 }))
                   }}
                   placeholder="搜索款号、标题、类目"
-                  className="pl-9"
+                  className="h-8 pl-9 text-sm"
                 />
               </div>
               <Dialog>
                 <DialogTrigger asChild>
-                  <Button variant="outline">批量搜索款号</Button>
+                  <Button size="sm" variant="outline">批量搜索款号</Button>
                 </DialogTrigger>
                 <DialogContent>
                   <DialogHeader>
@@ -589,7 +602,7 @@ export default function SheinProductsPage() {
               </Dialog>
               <Dialog>
                 <DialogTrigger asChild>
-                  <Button type="button" variant="outline">
+                  <Button type="button" size="sm" variant="outline">
                     <PackagePlus className="size-4" />
                     从商品档案同步款号
                   </Button>
@@ -620,61 +633,114 @@ export default function SheinProductsPage() {
                   </div>
                 </DialogContent>
               </Dialog>
-              <FilterMenu
-                label="品牌"
-                selected={brandCodes}
-                options={filters?.brands ?? []}
-                optionKey={(item) => String(item.brand_code ?? item.brand_name ?? "")}
-                optionLabel={(item) => `${item.brand_code ?? item.brand_name ?? "未识别"} ${item.brand_name ?? ""} (${formatNumber(item.count)})`}
-                onToggle={(value) => {
-                  setBrandCodes((current) => toggleValue(current, value))
-                  setPagination((current) => ({ ...current, offset: 0 }))
-                }}
-              />
-              <FilterMenu
-                label="SHEIN 类目"
-                selected={categoryIds}
-                options={filters?.categories ?? []}
-                optionKey={(item) => String(item.category_id)}
-                optionLabel={(item) => `${item.category_name ?? item.category_id} (${formatNumber(item.count)})`}
-                onToggle={(value) => {
-                  setCategoryIds((current) => toggleValue(current, value))
-                  setPagination((current) => ({ ...current, offset: 0 }))
-                }}
-              />
-              <StatusFilterMenu
-                label="分桶状态"
-                selected={bucketStatusFilter}
-                options={filters?.bucket_statuses ?? []}
-                onToggle={(value) => {
-                  setBucketStatusFilter((current) => toggleValue(current, value))
-                  setPagination((current) => ({ ...current, offset: 0 }))
-                }}
-              />
-              <StatusFilterMenu
-                label="类目状态"
-                selected={categoryStatusFilter}
-                options={filters?.category_statuses ?? []}
-                onToggle={(value) => {
-                  setCategoryStatusFilter((current) => toggleValue(current, value))
-                  setPagination((current) => ({ ...current, offset: 0 }))
-                }}
-              />
-              <StatusFilterMenu
-                label="填充状态"
-                selected={readinessStatusFilter}
-                options={filters?.readiness_statuses ?? []}
-                onToggle={(value) => {
-                  setReadinessStatusFilter((current) => toggleValue(current, value))
-                  setPagination((current) => ({ ...current, offset: 0 }))
-                }}
-              />
+              <CompactListInlineFilters className="justify-end">
+                <FilterMenu
+                  label="品牌"
+                  selected={brandCodes}
+                  options={filters?.brands ?? []}
+                  optionKey={(item) => String(item.brand_code ?? item.brand_name ?? "")}
+                  optionLabel={(item) => `${item.brand_code ?? item.brand_name ?? "未识别"} ${item.brand_name ?? ""} (${formatNumber(item.count)})`}
+                  onToggle={(value) => {
+                    setBrandCodes((current) => toggleValue(current, value))
+                    setPagination((current) => ({ ...current, offset: 0 }))
+                  }}
+                />
+                <FilterMenu
+                  label="SHEIN 类目"
+                  selected={categoryIds}
+                  options={filters?.categories ?? []}
+                  optionKey={(item) => String(item.category_id)}
+                  optionLabel={(item) => `${item.category_name ?? item.category_id} (${formatNumber(item.count)})`}
+                  onToggle={(value) => {
+                    setCategoryIds((current) => toggleValue(current, value))
+                    setPagination((current) => ({ ...current, offset: 0 }))
+                  }}
+                />
+                <StatusFilterMenu
+                  label="分桶状态"
+                  selected={bucketStatusFilter}
+                  options={filters?.bucket_statuses ?? []}
+                  onToggle={(value) => {
+                    setBucketStatusFilter((current) => toggleValue(current, value))
+                    setPagination((current) => ({ ...current, offset: 0 }))
+                  }}
+                />
+                <StatusFilterMenu
+                  label="类目状态"
+                  selected={categoryStatusFilter}
+                  options={filters?.category_statuses ?? []}
+                  onToggle={(value) => {
+                    setCategoryStatusFilter((current) => toggleValue(current, value))
+                    setPagination((current) => ({ ...current, offset: 0 }))
+                  }}
+                />
+                <StatusFilterMenu
+                  label="填充状态"
+                  selected={readinessStatusFilter}
+                  options={filters?.readiness_statuses ?? []}
+                  onToggle={(value) => {
+                    setReadinessStatusFilter((current) => toggleValue(current, value))
+                    setPagination((current) => ({ ...current, offset: 0 }))
+                  }}
+                />
+              </CompactListInlineFilters>
+              <CompactListFilterPopover>
+                <FilterMenu
+                  label="品牌"
+                  selected={brandCodes}
+                  options={filters?.brands ?? []}
+                  optionKey={(item) => String(item.brand_code ?? item.brand_name ?? "")}
+                  optionLabel={(item) => `${item.brand_code ?? item.brand_name ?? "未识别"} ${item.brand_name ?? ""} (${formatNumber(item.count)})`}
+                  onToggle={(value) => {
+                    setBrandCodes((current) => toggleValue(current, value))
+                    setPagination((current) => ({ ...current, offset: 0 }))
+                  }}
+                />
+                <FilterMenu
+                  label="SHEIN 类目"
+                  selected={categoryIds}
+                  options={filters?.categories ?? []}
+                  optionKey={(item) => String(item.category_id)}
+                  optionLabel={(item) => `${item.category_name ?? item.category_id} (${formatNumber(item.count)})`}
+                  onToggle={(value) => {
+                    setCategoryIds((current) => toggleValue(current, value))
+                    setPagination((current) => ({ ...current, offset: 0 }))
+                  }}
+                />
+                <StatusFilterMenu
+                  label="分桶状态"
+                  selected={bucketStatusFilter}
+                  options={filters?.bucket_statuses ?? []}
+                  onToggle={(value) => {
+                    setBucketStatusFilter((current) => toggleValue(current, value))
+                    setPagination((current) => ({ ...current, offset: 0 }))
+                  }}
+                />
+                <StatusFilterMenu
+                  label="类目状态"
+                  selected={categoryStatusFilter}
+                  options={filters?.category_statuses ?? []}
+                  onToggle={(value) => {
+                    setCategoryStatusFilter((current) => toggleValue(current, value))
+                    setPagination((current) => ({ ...current, offset: 0 }))
+                  }}
+                />
+                <StatusFilterMenu
+                  label="填充状态"
+                  selected={readinessStatusFilter}
+                  options={filters?.readiness_statuses ?? []}
+                  onToggle={(value) => {
+                    setReadinessStatusFilter((current) => toggleValue(current, value))
+                    setPagination((current) => ({ ...current, offset: 0 }))
+                  }}
+                />
+              </CompactListFilterPopover>
             </div>
           </div>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-hidden rounded-lg border">
-            <Table>
+        </CompactListCardHeader>
+        <CompactListCardContent>
+          <CompactListTableFrame>
+            <Table containerClassName="h-full overflow-auto">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-12">
@@ -883,14 +949,16 @@ export default function SheinProductsPage() {
                 )}
               </TableBody>
             </Table>
-          </div>
+          </CompactListTableFrame>
           <ServerPagination
+            compact
+            className="shrink-0 bg-card px-0"
             pagination={data?.pagination}
             onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
             onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
           />
-        </CardContent>
-      </Card>
+        </CompactListCardContent>
+      </CompactListCard>
       <Dialog open={Boolean(previewImage)} onOpenChange={(open) => !open && setPreviewImage(null)}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
@@ -909,6 +977,6 @@ export default function SheinProductsPage() {
           ) : null}
         </DialogContent>
       </Dialog>
-    </PageContainer>
+    </CompactListPage>
   )
 }

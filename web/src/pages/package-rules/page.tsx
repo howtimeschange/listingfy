@@ -9,8 +9,14 @@ import type { SpreadsheetRow } from "@/lib/spreadsheet"
 import { EmptyState } from "@/components/empty-state"
 import { ServerPagination } from "@/components/server-pagination"
 import type { ServerPaginationState } from "@/components/server-pagination"
-import { PageContainer } from "@/components/layout/page-container"
-import { PageHeader } from "@/components/layout/page-header"
+import {
+  CompactListCard,
+  CompactListCardContent,
+  CompactListCardHeader,
+  CompactListHeader,
+  CompactListPage,
+  CompactListTableFrame,
+} from "@/components/layout/compact-list-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -288,51 +294,55 @@ export default function PackageRulesPage() {
   }
 
   return (
-    <PageContainer className="space-y-6">
-      <PageHeader
+    <CompactListPage relaxed>
+      <CompactListHeader
         title="SHEIN 包装规则"
+        summary={`规则 ${formatNumber(packageRules.length)} / SKU 毛重 ${formatNumber(totalCount)} / 当前页 ${formatNumber(items.length)}`}
         description="SHEIN 包装尺寸按规则自动带出；库存毛重表只按 SKU 维度存取，导入时以源表「sku」「款号」「sku重量」逐条写入，不再按款号取平均值。"
-      >
-        <Button variant="outline" onClick={exportRows}>
-          <Download className="mr-2 size-4" />
-          导出
-        </Button>
-        <Button asChild variant="outline">
-          <Label className="cursor-pointer">
-            {importMutation.isPending ? (
-              <Loader2 className="mr-2 size-4 animate-spin" />
-            ) : (
-              <Upload className="mr-2 size-4" />
-            )}
-            导入库存毛重表
-            <Input
-              type="file"
-              accept=".xlsx,.xls,.csv"
-              className="hidden"
-              onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
-            />
-          </Label>
-        </Button>
-        <Button variant="outline" onClick={openCreate}>
-          <Plus className="mr-2 size-4" />
-          新增毛重
-        </Button>
-        <Button onClick={openCreateRule}>
-          <Plus className="mr-2 size-4" />
-          新增包装规则
-        </Button>
-      </PageHeader>
+        actions={(
+          <>
+            <Button size="sm" variant="outline" onClick={exportRows}>
+              <Download className="size-4" />
+              导出
+            </Button>
+            <Button asChild size="sm" variant="outline">
+              <Label className="cursor-pointer">
+                {importMutation.isPending ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Upload className="size-4" />
+                )}
+                导入库存毛重表
+                <Input
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  className="hidden"
+                  onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
+                />
+              </Label>
+            </Button>
+            <Button size="sm" variant="outline" onClick={openCreate}>
+              <Plus className="size-4" />
+              新增毛重
+            </Button>
+            <Button size="sm" onClick={openCreateRule}>
+              <Plus className="size-4" />
+              新增包装规则
+            </Button>
+          </>
+        )}
+      />
 
-      <div className="grid gap-4 lg:grid-cols-4">
+      <div className="grid shrink-0 gap-2 lg:grid-cols-4">
         {packageRules.map((rule) => (
-          <Card key={rule.id}>
-            <CardHeader>
+          <Card key={rule.id} className="gap-0 rounded-lg py-0">
+            <CardHeader className="px-3 py-2">
               <div className="flex items-center justify-between gap-2">
                 <CardTitle className="text-base">{rule.rule_name}</CardTitle>
                 <Badge variant="outline">{formatRuleSize(rule)}</Badge>
               </div>
             </CardHeader>
-            <CardContent className="space-y-2 text-sm">
+            <CardContent className="space-y-1 px-3 pb-2 text-xs">
               <div>
                 <p className="text-xs text-muted-foreground">匹配规则</p>
                 <p>{rule.match_keywords.length ? rule.match_keywords.join(" / ") : "默认兜底"}</p>
@@ -364,8 +374,8 @@ export default function PackageRulesPage() {
         ))}
       </div>
 
-      <Card>
-        <CardHeader className="gap-4">
+      <CompactListCard className="min-h-[360px]">
+        <CompactListCardHeader className="gap-3">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <CardTitle>产品毛重报表</CardTitle>
@@ -402,14 +412,15 @@ export default function PackageRulesPage() {
               </Dialog>
             </div>
           </div>
-        </CardHeader>
-        <CardContent>
+        </CompactListCardHeader>
+        <CompactListCardContent>
           {isLoading ? (
             <div className="py-12 text-center text-sm text-muted-foreground">加载中...</div>
           ) : items.length === 0 ? (
             <EmptyState icon={Box} message="暂无毛重数据" />
           ) : (
-            <Table>
+            <CompactListTableFrame>
+              <Table containerClassName="h-full overflow-auto">
               <TableHeader>
                 <TableRow>
                   <TableHead>款号</TableHead>
@@ -450,15 +461,18 @@ export default function PackageRulesPage() {
                   </TableRow>
                 ))}
               </TableBody>
-            </Table>
+              </Table>
+            </CompactListTableFrame>
           )}
           <ServerPagination
+            compact
+            className="shrink-0 bg-card px-0"
             pagination={data?.pagination}
             onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
             onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
           />
-        </CardContent>
-      </Card>
+        </CompactListCardContent>
+      </CompactListCard>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
@@ -605,6 +619,6 @@ export default function PackageRulesPage() {
           </div>
         </DialogContent>
       </Dialog>
-    </PageContainer>
+    </CompactListPage>
   )
 }

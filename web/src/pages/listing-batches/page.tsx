@@ -6,12 +6,21 @@ import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { parseBatchPublishSummary } from "@/lib/publish-summary"
-import { PageContainer } from "@/components/layout/page-container"
-import { PageHeader } from "@/components/layout/page-header"
+import {
+  CompactListCard,
+  CompactListCardContent,
+  CompactListCardHeader,
+  CompactListControls,
+  CompactListHeader,
+  CompactListPage,
+  CompactListSummary,
+  CompactListTableFrame,
+  CompactListToolbar,
+} from "@/components/layout/compact-list-layout"
 import { ServerPagination, type ServerPaginationState } from "@/components/server-pagination"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { CardTitle } from "@/components/ui/card"
 import {
   Dialog,
   DialogContent,
@@ -110,69 +119,75 @@ export default function ListingBatchesPage() {
   })
 
   return (
-    <PageContainer className="space-y-6">
-      <PageHeader
+    <CompactListPage>
+      <CompactListHeader
         title="上新批次"
+        summary={summary}
         description="按批次组织 SHEIN 发布草稿，跟踪草稿、校验、发布、审核状态。"
-      >
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogTrigger asChild>
-            <Button>
-              <PackagePlus className="mr-2 size-4" />
-              创建批次
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-2xl">
-            <DialogHeader>
-              <DialogTitle>创建 SHEIN 上新批次</DialogTitle>
-              <DialogDescription>输入款号批量搜索已有 SHEIN 发布草稿，并统一归入一个批次。</DialogDescription>
-            </DialogHeader>
-            <div className="grid gap-4">
-              <Label className="grid gap-2">
-                批次名称
-                <Input value={batchName} onChange={(event) => setBatchName(event.target.value)} />
-              </Label>
-              <Label className="grid gap-2">
-                款号批量搜索
-                <Textarea
-                  value={batchSearch}
-                  onChange={(event) => setBatchSearch(event.target.value)}
-                  placeholder="每行一个款号，例如 201122104105"
-                  className="min-h-40"
-                />
-              </Label>
-              <Button onClick={() => createMutation.mutate()} disabled={createMutation.isPending}>
+        actions={(
+          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+            <DialogTrigger asChild>
+              <Button size="sm">
+                <PackagePlus className="size-4" />
                 创建批次
               </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-      </PageHeader>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>创建 SHEIN 上新批次</DialogTitle>
+                <DialogDescription>输入款号批量搜索已有 SHEIN 发布草稿，并统一归入一个批次。</DialogDescription>
+              </DialogHeader>
+              <div className="grid gap-4">
+                <Label className="grid gap-2">
+                  批次名称
+                  <Input value={batchName} onChange={(event) => setBatchName(event.target.value)} />
+                </Label>
+                <Label className="grid gap-2">
+                  款号批量搜索
+                  <Textarea
+                    value={batchSearch}
+                    onChange={(event) => setBatchSearch(event.target.value)}
+                    placeholder="每行一个款号，例如 201122104105"
+                    className="min-h-40"
+                  />
+                </Label>
+                <Button onClick={() => createMutation.mutate()} disabled={createMutation.isPending}>
+                  创建批次
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        )}
+      />
 
-      <Card>
-        <CardHeader className="gap-4">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+      <CompactListCard>
+        <CompactListCardHeader>
+          <CompactListToolbar>
             <div>
-              <CardTitle>批次列表</CardTitle>
-              <p className="mt-1 text-sm text-muted-foreground">{summary}</p>
+              <CardTitle className="text-base">批次列表</CardTitle>
+              <CompactListSummary>
+                <span>{summary}</span>
+              </CompactListSummary>
             </div>
-            <div className="relative lg:w-80">
-              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={q}
-                onChange={(event) => {
-                  setQ(event.target.value)
-                  setPagination((current) => ({ ...current, offset: 0 }))
-                }}
-                placeholder="搜索批次号、批次名称"
-                className="pl-9"
-              />
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-hidden rounded-lg border">
-            <Table>
+            <CompactListControls className="min-[980px]:flex-none">
+              <div className="relative min-w-[220px] flex-1 sm:max-w-[320px]">
+                <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={q}
+                  onChange={(event) => {
+                    setQ(event.target.value)
+                    setPagination((current) => ({ ...current, offset: 0 }))
+                  }}
+                  placeholder="搜索批次号、批次名称"
+                  className="h-8 pl-9 text-sm"
+                />
+              </div>
+            </CompactListControls>
+          </CompactListToolbar>
+        </CompactListCardHeader>
+        <CompactListCardContent>
+          <CompactListTableFrame>
+            <Table containerClassName="h-full overflow-auto">
               <TableHeader>
                 <TableRow>
                   <TableHead>批次</TableHead>
@@ -252,14 +267,16 @@ export default function ListingBatchesPage() {
                 )}
               </TableBody>
             </Table>
-          </div>
+          </CompactListTableFrame>
           <ServerPagination
+            compact
+            className="shrink-0 bg-card px-0"
             pagination={data?.pagination}
             onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
             onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
           />
-        </CardContent>
-      </Card>
-    </PageContainer>
+        </CompactListCardContent>
+      </CompactListCard>
+    </CompactListPage>
   )
 }

@@ -9,8 +9,14 @@ import type { SpreadsheetRow } from "@/lib/spreadsheet"
 import { EmptyState } from "@/components/empty-state"
 import { ServerPagination } from "@/components/server-pagination"
 import type { ServerPaginationState } from "@/components/server-pagination"
-import { PageContainer } from "@/components/layout/page-container"
-import { PageHeader } from "@/components/layout/page-header"
+import {
+  CompactListCard,
+  CompactListCardContent,
+  CompactListCardHeader,
+  CompactListHeader,
+  CompactListPage,
+  CompactListTableFrame,
+} from "@/components/layout/compact-list-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -271,14 +277,15 @@ export default function PriceRulesPage() {
   }
 
   return (
-    <PageContainer className="space-y-6">
-      <PageHeader
+    <CompactListPage relaxed>
+      <CompactListHeader
         title="SHEIN 价格规则"
+        summary={`规则 ${formatNumber(data?.pagination.total)} / 启用 ${formatNumber(summary?.active_count)} / 低倍率 ${formatNumber(summary?.low_rate_count)}`}
         description="按 SHEIN 现有口径维护默认配置、款号级供货折扣和价格试算；未配置款号默认使用 0.40。"
       />
 
-      <Tabs defaultValue="default-config" className="space-y-4">
-        <TabsList className="w-full justify-start overflow-x-auto rounded-xl sm:w-fit">
+      <Tabs defaultValue="default-config" className="flex min-h-0 flex-1 flex-col gap-3">
+        <TabsList className="shrink-0 w-full justify-start overflow-x-auto rounded-xl sm:w-fit">
           <TabsTrigger value="default-config" className="flex-none px-4">默认配置</TabsTrigger>
           <TabsTrigger value="discount-rules" className="flex-none px-4">SHEIN 供货折扣规则</TabsTrigger>
           <TabsTrigger value="price-preview" className="flex-none px-4">价格试算</TabsTrigger>
@@ -334,9 +341,9 @@ export default function PriceRulesPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="discount-rules" className="space-y-4">
-          <Card>
-            <CardHeader className="gap-4">
+        <TabsContent value="discount-rules" className="min-h-0 flex-1">
+          <CompactListCard>
+            <CompactListCardHeader className="gap-3">
               <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                 <div>
                   <CardTitle>SHEIN 供货折扣规则</CardTitle>
@@ -404,15 +411,15 @@ export default function PriceRulesPage() {
                   </Dialog>
                 </div>
               </div>
-            </CardHeader>
-            <CardContent>
+            </CompactListCardHeader>
+            <CompactListCardContent>
               {isLoading ? (
                 <div className="py-12 text-center text-sm text-muted-foreground">加载中...</div>
               ) : items.length === 0 ? (
                 <EmptyState icon={Search} message="暂无价格规则" />
               ) : (
-                <div className="overflow-x-auto">
-                  <Table>
+                <CompactListTableFrame>
+                  <Table containerClassName="h-full overflow-auto">
                     <TableHeader>
                       <TableRow>
                         <TableHead>款号</TableHead>
@@ -445,15 +452,17 @@ export default function PriceRulesPage() {
                       ))}
                     </TableBody>
                   </Table>
-                </div>
+                </CompactListTableFrame>
               )}
               <ServerPagination
+                compact
+                className="shrink-0 bg-card px-0"
                 pagination={data?.pagination}
                 onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
                 onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
               />
-            </CardContent>
-          </Card>
+            </CompactListCardContent>
+          </CompactListCard>
         </TabsContent>
 
         <TabsContent value="price-preview" className="space-y-4">
@@ -570,6 +579,6 @@ export default function PriceRulesPage() {
         </DialogContent>
       </Dialog>
 
-    </PageContainer>
+    </CompactListPage>
   )
 }

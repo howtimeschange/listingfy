@@ -8,8 +8,14 @@ import { formatDateTime, formatNumber } from "@/lib/format"
 import { FilterTrigger } from "@/components/filter-trigger"
 import { ServerPagination } from "@/components/server-pagination"
 import type { ServerPaginationState } from "@/components/server-pagination"
-import { PageContainer } from "@/components/layout/page-container"
-import { PageHeader } from "@/components/layout/page-header"
+import {
+  CompactListCard,
+  CompactListCardContent,
+  CompactListCardHeader,
+  CompactListHeader,
+  CompactListPage,
+  CompactListTableFrame,
+} from "@/components/layout/compact-list-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -262,26 +268,31 @@ export default function PublishTasksPage() {
   }
 
   return (
-    <PageContainer className="space-y-6">
-      <PageHeader
+    <CompactListPage relaxed>
+      <CompactListHeader
         title="发布与审核任务"
+        summary={statusSummary}
         description="提交平台后的审核主工作台，集中同步 SHEIN 审核状态、失败原因、Trace ID、平台版本和重提版本。"
-      >
-        <Button
-          variant="outline"
-          onClick={() => batchSyncMutation.mutate()}
-          disabled={batchSyncMutation.isPending}
-        >
-          {batchSyncMutation.isPending ? <RefreshCw className="size-4 animate-spin" /> : <CheckSquare className="size-4" />}
-          批量同步审核
-        </Button>
-        <Button variant="outline" onClick={() => refetch()} disabled={isFetching}>
-          <RefreshCw className={isFetching ? "size-4 animate-spin" : "size-4"} />
-          刷新
-        </Button>
-      </PageHeader>
+        actions={(
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => batchSyncMutation.mutate()}
+              disabled={batchSyncMutation.isPending}
+            >
+              {batchSyncMutation.isPending ? <RefreshCw className="size-4 animate-spin" /> : <CheckSquare className="size-4" />}
+              批量同步审核
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => refetch()} disabled={isFetching}>
+              <RefreshCw className={isFetching ? "size-4 animate-spin" : "size-4"} />
+              刷新
+            </Button>
+          </>
+        )}
+      />
 
-      <div className="grid gap-3 md:grid-cols-5">
+      <div className="grid shrink-0 gap-2 md:grid-cols-5">
         {[
           ["已提交", data?.summary.by_status.PUBLISH_SUBMITTED ?? 0],
           ["审核中", data?.summary.by_status.UNDER_REVIEW ?? 0],
@@ -289,17 +300,17 @@ export default function PublishTasksPage() {
           ["部分通过", data?.summary.by_status.PARTIALLY_APPROVED ?? 0],
           ["审核通过", data?.summary.by_status.APPROVED ?? 0],
         ].map(([label, count]) => (
-          <Card key={label}>
-            <CardContent className="p-4">
+          <Card key={label} className="gap-0 rounded-lg py-0">
+            <CardContent className="flex items-center justify-between gap-2 px-3 py-2">
               <div className="text-xs text-muted-foreground">{label}</div>
-              <div className="mt-1 text-xl font-semibold">{formatNumber(Number(count))}</div>
+              <div className="text-sm font-semibold tabular-nums">{formatNumber(Number(count))}</div>
             </CardContent>
           </Card>
         ))}
       </div>
 
-      <Card>
-        <CardHeader className="gap-4">
+      <CompactListCard className="min-h-[360px]">
+        <CompactListCardHeader className="gap-3">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
             <div className="space-y-1">
               <CardTitle>任务列表</CardTitle>
@@ -350,10 +361,10 @@ export default function PublishTasksPage() {
               </div>
             </div>
           </div>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-hidden rounded-lg border">
-            <Table className="min-w-[1420px]">
+        </CompactListCardHeader>
+        <CompactListCardContent>
+          <CompactListTableFrame>
+            <Table className="min-w-[1420px]" containerClassName="h-full overflow-auto">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-10">
@@ -493,14 +504,16 @@ export default function PublishTasksPage() {
                 )}
               </TableBody>
             </Table>
-          </div>
+          </CompactListTableFrame>
           <ServerPagination
+            compact
+            className="shrink-0 bg-card px-0"
             pagination={data?.pagination}
             onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
             onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
           />
-        </CardContent>
-      </Card>
+        </CompactListCardContent>
+      </CompactListCard>
 
       <Card>
         <CardHeader>
@@ -544,6 +557,6 @@ export default function PublishTasksPage() {
           </div>
         </CardContent>
       </Card>
-    </PageContainer>
+    </CompactListPage>
   )
 }

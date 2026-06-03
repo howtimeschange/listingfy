@@ -11,10 +11,15 @@ import { formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { EmptyState } from "@/components/empty-state"
 import { ServerPagination } from "@/components/server-pagination"
-import { PageContainer } from "@/components/layout/page-container"
-import { PageHeader } from "@/components/layout/page-header"
+import {
+  CompactListCard,
+  CompactListCardContent,
+  CompactListCardHeader,
+  CompactListHeader,
+  CompactListPage,
+} from "@/components/layout/compact-list-layout"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -157,14 +162,15 @@ export default function ImageLibraryPage() {
   const { data: summary } = useImageAssetSummary()
 
   return (
-    <PageContainer className="flex flex-col gap-6">
-      <PageHeader
+    <CompactListPage>
+      <CompactListHeader
         title="图片素材库"
+        summary={`素材 ${formatNumber(summary?.asset_count)} / 商品图 ${formatNumber(summary?.picture_count)} / 商详图 ${formatNumber(summary?.detail_count)}`}
         description="以深绘同步的图片为准，全量展示商品图、商详截图与模块图片，并按 SPU、SKC、素材类型钻取。"
       />
 
-      <Card>
-        <CardHeader className="flex flex-col gap-3 pb-3 lg:flex-row lg:items-center lg:justify-between">
+      <CompactListCard>
+        <CompactListCardHeader className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <CardTitle>素材列表</CardTitle>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -195,10 +201,10 @@ export default function ImageLibraryPage() {
               />
             </div>
           </div>
-        </CardHeader>
-        <CardContent>
+        </CompactListCardHeader>
+        <CompactListCardContent>
           {isLoading ? (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-6">
+            <div className="grid min-h-0 flex-1 gap-3 overflow-auto sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-6">
               {Array.from({ length: 12 }).map((_, index) => (
                 <div key={index} className="rounded-2xl border p-3">
                   <Skeleton className="aspect-square rounded-xl" />
@@ -208,7 +214,7 @@ export default function ImageLibraryPage() {
               ))}
             </div>
           ) : data?.items.length ? (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-6">
+            <div className="grid min-h-0 flex-1 gap-3 overflow-auto sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-6">
               {data.items.map((asset) => (
                 <ImageCard key={asset.id} asset={asset} />
               ))}
@@ -217,19 +223,21 @@ export default function ImageLibraryPage() {
             <EmptyState message="暂无图片素材" icon={ImageIcon} />
           )}
 
-          <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+          <div className="flex shrink-0 items-center justify-between pt-2 text-xs text-muted-foreground">
             <span>当前展示 {formatNumber(data?.items.length ?? 0)} 张</span>
             <span>
               共 {formatNumber(data?.pagination.total)} 张；最近同步 {formatDateTime(summary?.latest_synced_at)}
             </span>
           </div>
           <ServerPagination
+            compact
+            className="shrink-0 bg-card px-0"
             pagination={data?.pagination}
             onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
             onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
           />
-        </CardContent>
-      </Card>
-    </PageContainer>
+        </CompactListCardContent>
+      </CompactListCard>
+    </CompactListPage>
   )
 }

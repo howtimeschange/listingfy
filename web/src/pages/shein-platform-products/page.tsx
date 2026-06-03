@@ -50,6 +50,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Progress } from "@/components/ui/progress"
 import {
   Select,
@@ -1456,73 +1457,121 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const operationSourceLabel = selectedSpuName ? `当前 SPU：${selectedSpuName}` : "最近平台商品操作"
 
   return (
-    <PageContainer className={view === "list" ? "flex min-h-0 flex-col gap-6 overflow-hidden pb-0" : "space-y-6"}>
-      <PageHeader
-        title={view === "sites" ? "站点币种" : view === "detail" ? "SPU 商品详情" : "平台商品列表"}
-        description={
-          view === "sites"
-            ? "查询和同步 SHEIN 店铺站点、币种、启用状态，为供货价、拼款和站点运营提供基础口径。"
-            : view === "detail"
-              ? "从平台商品列表进入单个 SPU，查看 SKC/SKU 明细并处理编辑、拼款、供货价和状态同步。"
-              : "同步 SHEIN 平台已上架商品并持久化到本地，作为商品链接全生命周期管理的入口。"
-        }
-      >
-        {view === "detail" ? (
-          <Button variant="outline" onClick={() => navigate("/shein-platform-products")}>
-            <ArrowLeft className="size-4" />
-            返回列表
+    <PageContainer className={view === "list" ? "flex min-h-0 flex-col gap-3 overflow-hidden px-4 py-3 md:px-6 md:py-4" : "space-y-6"}>
+      {view === "list" ? (
+        <section className="shrink-0 rounded-2xl border bg-card px-4 py-3 shadow-[0_1px_3px_rgba(0,0,0,0.04)] md:px-5">
+          <div className="flex flex-col gap-3 min-[980px]:flex-row min-[980px]:items-center min-[980px]:justify-between">
+            <div className="min-w-0">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <h1 className="truncate text-xl font-semibold leading-7 text-foreground">平台商品列表</h1>
+                <Badge variant="secondary" className="font-normal">
+                  {productSummary}
+                </Badge>
+              </div>
+              <p className="platform-product-header-description mt-1 hidden text-xs leading-5 text-muted-foreground min-[1180px]:block">
+                同步 SHEIN 平台已上架商品并持久化到本地，作为商品链接全生命周期管理入口。
+              </p>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                onClick={() => setSyncDialogOpen(true)}
+                disabled={syncProductsMutation.isPending || syncSpuProductsMutation.isPending}
+              >
+                {syncProductsMutation.isPending || syncSpuProductsMutation.isPending ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <PackageSearch className="size-4" />
+                )}
+                同步商品
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="hidden min-[1120px]:inline-flex"
+                onClick={() => batchSyncStatusMutation.mutate()}
+                disabled={batchSyncStatusMutation.isPending}
+              >
+                {batchSyncStatusMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />}
+                批量同步状态
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="outline" size="sm" aria-label="更多列表操作">
+                    <MoreHorizontal className="size-4" />
+                    更多
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-52">
+                  <DropdownMenuLabel>列表操作</DropdownMenuLabel>
+                  <DropdownMenuItem
+                    className="min-[1120px]:hidden"
+                    onSelect={() => batchSyncStatusMutation.mutate()}
+                    disabled={batchSyncStatusMutation.isPending}
+                  >
+                    <ClipboardCheck className="size-4" />
+                    批量同步状态
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setCostImportDialogOpen(true)}>
+                    <Upload className="size-4" />
+                    表格导入更新供货价
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() => void exportPlatformProducts()}
+                    disabled={exportingPlatformProducts || pagination.total <= 0}
+                  >
+                    {exportingPlatformProducts ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+                    导出列表
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => setOperationsDialogOpen(true)}>
+                    <History className="size-4" />
+                    查看最近操作
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </div>
+        </section>
+      ) : (
+        <PageHeader
+          title={view === "sites" ? "站点币种" : "SPU 商品详情"}
+          description={
+            view === "sites"
+              ? "查询和同步 SHEIN 店铺站点、币种、启用状态，为供货价、拼款和站点运营提供基础口径。"
+              : "从平台商品列表进入单个 SPU，查看 SKC/SKU 明细并处理编辑、拼款、供货价和状态同步。"
+          }
+        >
+          {view === "detail" ? (
+            <Button variant="outline" onClick={() => navigate("/shein-platform-products")}>
+              <ArrowLeft className="size-4" />
+              返回列表
+            </Button>
+          ) : null}
+          {view === "sites" ? (
+            <Button variant="outline" onClick={() => syncSitesMutation.mutate()} disabled={syncSitesMutation.isPending}>
+              {syncSitesMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Globe2 className="size-4" />}
+              同步站点币种
+            </Button>
+          ) : null}
+          <Button variant="outline" onClick={() => setOperationsDialogOpen(true)}>
+            <History className="size-4" />
+            查看最近操作
           </Button>
-        ) : null}
-        {view === "sites" ? (
-          <Button variant="outline" onClick={() => syncSitesMutation.mutate()} disabled={syncSitesMutation.isPending}>
-            {syncSitesMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Globe2 className="size-4" />}
-            同步站点币种
-          </Button>
-        ) : null}
-        {view === "list" ? (
-          <>
-            <Button onClick={() => setSyncDialogOpen(true)} disabled={syncProductsMutation.isPending || syncSpuProductsMutation.isPending}>
-              {syncProductsMutation.isPending || syncSpuProductsMutation.isPending ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <PackageSearch className="size-4" />
-              )}
-              同步商品
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => batchSyncStatusMutation.mutate()}
-              disabled={batchSyncStatusMutation.isPending}
-            >
-              {batchSyncStatusMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />}
-              批量同步状态
-            </Button>
-            <Button variant="outline" onClick={() => setCostImportDialogOpen(true)}>
-              <Upload className="size-4" />
-              表格导入更新供货价
-            </Button>
-            <Button variant="outline" onClick={() => void exportPlatformProducts()} disabled={exportingPlatformProducts || pagination.total <= 0}>
-              {exportingPlatformProducts ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
-              导出列表
-            </Button>
-          </>
-        ) : null}
-        <Button variant="outline" onClick={() => setOperationsDialogOpen(true)}>
-          <History className="size-4" />
-          查看最近操作
-        </Button>
-      </PageHeader>
+        </PageHeader>
+      )}
 
       {view === "list" ? (
         <Card className="min-h-0 flex-1 gap-0 overflow-hidden py-0">
-          <CardHeader className="shrink-0 gap-4 py-6">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-              <div className="space-y-1">
-                <CardTitle>平台商品列表</CardTitle>
-                <p className="text-sm text-muted-foreground">{productSummary}</p>
+          <CardHeader className="shrink-0 border-b px-4 py-3 md:px-5">
+            <div className="flex flex-col gap-2 min-[980px]:flex-row min-[980px]:items-center min-[980px]:justify-between">
+              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">本地 SPU {formatNumber(pagination.total)}</span>
+                <span>当前页 {formatNumber(productRows.length)}</span>
+                {selectedSpuName ? <span>当前 {selectedSpuName}</span> : null}
               </div>
-              <div className="flex flex-col gap-2 md:flex-row md:flex-wrap lg:justify-end">
-                <div className="relative md:w-72">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 min-[980px]:justify-end">
+                <div className="relative min-w-[220px] flex-1 sm:max-w-[320px]">
                   <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     value={searchInput}
@@ -1531,92 +1580,173 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                       if (event.key === "Enter") submitSearch()
                     }}
                     placeholder="搜索 SPU、SKC、供方货号"
-                    className="pl-9"
+                    className="h-8 pl-9 text-sm"
                   />
                 </div>
-                <Button type="button" variant="outline" onClick={submitSearch}>
+                <Button type="button" variant="outline" size="sm" onClick={submitSearch}>
                   <Search className="size-4" />
                   搜索
                 </Button>
-                <Select
-                  value={queryParams.brandFilter || ALL_FILTER_VALUE}
-                  onValueChange={(value) =>
-                    setQueryParams((current) => ({
-                      ...current,
-                      brandFilter: value === ALL_FILTER_VALUE ? "" : value,
-                      pagination: { ...current.pagination, offset: 0 },
-                    }))
-                  }
-                >
-                  <SelectTrigger className="md:w-48">
-                    <SelectValue placeholder="品牌名称" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={ALL_FILTER_VALUE}>全部品牌</SelectItem>
-                    {brandOptions.map((brand) => (
-                      <SelectItem key={brand.value} value={brand.value}>
-                        {brand.label} ({formatNumber(brand.count)})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Select
-                  value={queryParams.categoryFilter || ALL_FILTER_VALUE}
-                  onValueChange={(value) =>
-                    setQueryParams((current) => ({
-                      ...current,
-                      categoryFilter: value === ALL_FILTER_VALUE ? "" : value,
-                      pagination: { ...current.pagination, offset: 0 },
-                    }))
-                  }
-                >
-                  <SelectTrigger className="md:w-56">
-                    <SelectValue placeholder="类目名称" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={ALL_FILTER_VALUE}>全部类目</SelectItem>
-                    {categoryOptions.map((category) => (
-                      <SelectItem key={category.value} value={category.value}>
-                        {category.label} ({formatNumber(category.count)})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Select
-                  value={queryParams.siteFilter || ALL_FILTER_VALUE}
-                  onValueChange={(value) =>
-                    setQueryParams((current) => ({
-                      ...current,
-                      siteFilter: value === ALL_FILTER_VALUE ? "" : value,
-                      pagination: { ...current.pagination, offset: 0 },
-                    }))
-                  }
-                >
-                  <SelectTrigger className="md:w-48">
-                    <SelectValue placeholder="销售站点" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={ALL_FILTER_VALUE}>全部销售站点</SelectItem>
-                    {siteOptions.map((site) => (
-                      <SelectItem key={site.value} value={site.value}>
-                        {site.label} ({formatNumber(site.count)})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="platform-product-inline-filters flex flex-wrap items-center gap-2">
+                  <Select
+                    value={queryParams.brandFilter || ALL_FILTER_VALUE}
+                    onValueChange={(value) =>
+                      setQueryParams((current) => ({
+                        ...current,
+                        brandFilter: value === ALL_FILTER_VALUE ? "" : value,
+                        pagination: { ...current.pagination, offset: 0 },
+                      }))
+                    }
+                  >
+                    <SelectTrigger size="sm" className="w-40">
+                      <SelectValue placeholder="品牌名称" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ALL_FILTER_VALUE}>全部品牌</SelectItem>
+                      {brandOptions.map((brand) => (
+                        <SelectItem key={brand.value} value={brand.value}>
+                          {brand.label} ({formatNumber(brand.count)})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={queryParams.categoryFilter || ALL_FILTER_VALUE}
+                    onValueChange={(value) =>
+                      setQueryParams((current) => ({
+                        ...current,
+                        categoryFilter: value === ALL_FILTER_VALUE ? "" : value,
+                        pagination: { ...current.pagination, offset: 0 },
+                      }))
+                    }
+                  >
+                    <SelectTrigger size="sm" className="w-44">
+                      <SelectValue placeholder="类目名称" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ALL_FILTER_VALUE}>全部类目</SelectItem>
+                      {categoryOptions.map((category) => (
+                        <SelectItem key={category.value} value={category.value}>
+                          {category.label} ({formatNumber(category.count)})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={queryParams.siteFilter || ALL_FILTER_VALUE}
+                    onValueChange={(value) =>
+                      setQueryParams((current) => ({
+                        ...current,
+                        siteFilter: value === ALL_FILTER_VALUE ? "" : value,
+                        pagination: { ...current.pagination, offset: 0 },
+                      }))
+                    }
+                  >
+                    <SelectTrigger size="sm" className="w-40">
+                      <SelectValue placeholder="销售站点" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ALL_FILTER_VALUE}>全部销售站点</SelectItem>
+                      {siteOptions.map((site) => (
+                        <SelectItem key={site.value} value={site.value}>
+                          {site.label} ({formatNumber(site.count)})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button type="button" variant="outline" size="sm" className="platform-product-filter-popover">
+                      <Settings2 className="size-4" />
+                      筛选
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="end" className="w-[min(92vw,22rem)] p-3">
+                    <div className="grid gap-2">
+                      <Select
+                        value={queryParams.brandFilter || ALL_FILTER_VALUE}
+                        onValueChange={(value) =>
+                          setQueryParams((current) => ({
+                            ...current,
+                            brandFilter: value === ALL_FILTER_VALUE ? "" : value,
+                            pagination: { ...current.pagination, offset: 0 },
+                          }))
+                        }
+                      >
+                        <SelectTrigger size="sm" className="w-full">
+                          <SelectValue placeholder="品牌名称" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={ALL_FILTER_VALUE}>全部品牌</SelectItem>
+                          {brandOptions.map((brand) => (
+                            <SelectItem key={brand.value} value={brand.value}>
+                              {brand.label} ({formatNumber(brand.count)})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Select
+                        value={queryParams.categoryFilter || ALL_FILTER_VALUE}
+                        onValueChange={(value) =>
+                          setQueryParams((current) => ({
+                            ...current,
+                            categoryFilter: value === ALL_FILTER_VALUE ? "" : value,
+                            pagination: { ...current.pagination, offset: 0 },
+                          }))
+                        }
+                      >
+                        <SelectTrigger size="sm" className="w-full">
+                          <SelectValue placeholder="类目名称" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={ALL_FILTER_VALUE}>全部类目</SelectItem>
+                          {categoryOptions.map((category) => (
+                            <SelectItem key={category.value} value={category.value}>
+                              {category.label} ({formatNumber(category.count)})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Select
+                        value={queryParams.siteFilter || ALL_FILTER_VALUE}
+                        onValueChange={(value) =>
+                          setQueryParams((current) => ({
+                            ...current,
+                            siteFilter: value === ALL_FILTER_VALUE ? "" : value,
+                            pagination: { ...current.pagination, offset: 0 },
+                          }))
+                        }
+                      >
+                        <SelectTrigger size="sm" className="w-full">
+                          <SelectValue placeholder="销售站点" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={ALL_FILTER_VALUE}>全部销售站点</SelectItem>
+                          {siteOptions.map((site) => (
+                            <SelectItem key={site.value} value={site.value}>
+                              {site.label} ({formatNumber(site.count)})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </PopoverContent>
+                </Popover>
                 <Button
                   type="button"
                   variant="outline"
+                  size="sm"
                   onClick={() => void productsQuery.refetch()}
                   disabled={productsQuery.isFetching}
                 >
                   <RefreshCw className={productsQuery.isFetching ? "size-4 animate-spin" : "size-4"} />
-                  刷新本地列表
+                  刷新
                 </Button>
               </div>
             </div>
           </CardHeader>
-          <CardContent className="flex min-h-0 flex-1 flex-col px-6 pb-28">
+          <CardContent className="flex min-h-0 flex-1 flex-col px-4 pb-0 pt-3 md:px-5">
             <div className="min-h-0 flex-1 overflow-hidden rounded-md border">
               <Table
                 className="min-w-[1600px] table-fixed"
@@ -1816,15 +1946,16 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
               </Table>
             </div>
             <ServerPagination
-              className="fixed bottom-0 left-0 right-0 z-40 mt-0 border-t bg-card/95 px-6 pb-4 pt-2 shadow-[0_-12px_28px_rgba(15,23,42,0.12)] backdrop-blur md:left-[var(--sidebar-width-icon)] lg:left-[var(--sidebar-width)]"
+              compact
+              className="shrink-0 bg-card px-0"
               beforeContent={
                 <div
                   ref={productTableBottomScrollRef}
-                  className="mb-3 overflow-x-auto overflow-y-hidden border-b pb-2"
+                  className="mb-1 overflow-x-auto overflow-y-hidden border-b pb-0.5"
                   onScroll={() => syncProductTableScroll("bottom")}
                   aria-label="平台商品列表横向滚动"
                 >
-                  <div className="h-1 w-[1822px]" />
+                  <div className="h-0.5 w-[1822px]" />
                 </div>
               }
               pagination={pagination}
