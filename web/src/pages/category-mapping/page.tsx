@@ -17,8 +17,13 @@ import { useDebounce } from "@/hooks/use-debounce"
 import { EmptyState } from "@/components/empty-state"
 import { ServerPagination } from "@/components/server-pagination"
 import type { ServerPaginationState } from "@/components/server-pagination"
-import { PageContainer } from "@/components/layout/page-container"
-import { PageHeader } from "@/components/layout/page-header"
+import {
+  CompactListCard,
+  CompactListCardContent,
+  CompactListCardHeader,
+  CompactListHeader,
+  CompactListPage,
+} from "@/components/layout/compact-list-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -472,18 +477,20 @@ export default function CategoryMappingPage() {
   }
 
   return (
-    <PageContainer className="flex flex-col gap-6">
-      <PageHeader
+    <CompactListPage relaxed>
+      <CompactListHeader
         title="SHEIN 类目映射规则"
+        summary={`规则 ${formatNumber(rules.length)} / 未映射 ${formatNumber(groups.length)} / 需复核 ${formatNumber(ambiguousCount)}`}
         description="管理 MDM 类目到 SHEIN 叶子类目的映射。AI 先给候选，运营确认后沉淀为正式规则。"
-      >
-        <Button onClick={handleRunAi} disabled={aiMutation.isPending}>
-          <Sparkles className="size-4" />
-          {aiMutation.isPending ? "AI 匹配中" : "AI 匹配未映射商品"}
-        </Button>
-      </PageHeader>
+        actions={(
+          <Button size="sm" onClick={handleRunAi} disabled={aiMutation.isPending}>
+            <Sparkles className="size-4" />
+            {aiMutation.isPending ? "AI 匹配中" : "AI 匹配未映射商品"}
+          </Button>
+        )}
+      />
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
+      <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
         <Card>
           <CardHeader className="flex flex-col gap-3 pb-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
@@ -600,8 +607,8 @@ export default function CategoryMappingPage() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader className="pb-3">
+        <CompactListCard>
+          <CompactListCardHeader className="pb-3">
             <CardTitle>已生效规则</CardTitle>
             <div className="relative mt-3">
               <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -612,16 +619,16 @@ export default function CategoryMappingPage() {
                 className="pl-9"
               />
             </div>
-          </CardHeader>
-          <CardContent>
+          </CompactListCardHeader>
+          <CompactListCardContent>
             {rulesQuery.isLoading ? (
-              <div className="space-y-3">
+              <div className="min-h-0 flex-1 space-y-3 overflow-auto">
                 <Skeleton className="h-20 rounded-2xl" />
                 <Skeleton className="h-20 rounded-2xl" />
                 <Skeleton className="h-20 rounded-2xl" />
               </div>
             ) : rules.length ? (
-              <div className="space-y-3">
+              <div className="min-h-0 flex-1 space-y-3 overflow-auto">
                 {rules.map((rule) => (
                   <div key={rule.id} className="rounded-2xl border bg-card p-4">
                     <div className="flex items-start justify-between gap-3">
@@ -649,12 +656,14 @@ export default function CategoryMappingPage() {
               <EmptyState message="暂无类目映射规则" icon={GitBranch} />
             )}
             <ServerPagination
+              compact
+              className="shrink-0 bg-card px-0"
               pagination={rulesQuery.data?.pagination}
               onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
               onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
             />
-          </CardContent>
-        </Card>
+          </CompactListCardContent>
+        </CompactListCard>
       </div>
 
       <Sheet open={!!selectedSuggestion} onOpenChange={(open) => !open && setSelectedSuggestion(null)}>
@@ -760,6 +769,6 @@ export default function CategoryMappingPage() {
           ) : null}
         </SheetContent>
       </Sheet>
-    </PageContainer>
+    </CompactListPage>
   )
 }

@@ -12,11 +12,17 @@ import { formatCurrency, formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { EmptyState } from "@/components/empty-state"
 import { ServerPagination } from "@/components/server-pagination"
-import { PageContainer } from "@/components/layout/page-container"
-import { PageHeader } from "@/components/layout/page-header"
+import {
+  CompactListCard,
+  CompactListCardContent,
+  CompactListCardHeader,
+  CompactListHeader,
+  CompactListPage,
+  CompactListTableFrame,
+} from "@/components/layout/compact-list-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
@@ -139,14 +145,15 @@ export default function DeepDrawContentPage() {
   const { data: summary } = useDeepdrawContentSummary()
 
   return (
-    <PageContainer className="flex flex-col gap-6">
-      <PageHeader
+    <CompactListPage>
+      <CompactListHeader
         title="深绘内容包"
+        summary={`内容包 ${formatNumber(summary?.package_count)} / SKC ${formatNumber(summary?.skc_count)} / SKU ${formatNumber(summary?.sku_count)}`}
         description="以深绘同步数据为准，全量展示内容包、款色 SKU、关键字段、尺码表、商详页面和图片素材。"
       />
 
-      <Card>
-        <CardHeader className="flex flex-col gap-3 pb-3 lg:flex-row lg:items-center lg:justify-between">
+      <CompactListCard>
+        <CompactListCardHeader className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <CardTitle>内容包列表</CardTitle>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -162,9 +169,9 @@ export default function DeepDrawContentPage() {
               className="pl-9"
             />
           </div>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-3 md:hidden">
+        </CompactListCardHeader>
+        <CompactListCardContent>
+          <div className="min-h-0 flex-1 space-y-3 overflow-auto md:hidden">
             {isLoading ? (
               Array.from({ length: 3 }).map((_, index) => (
                 <div key={index} className="rounded-2xl border p-4">
@@ -224,8 +231,8 @@ export default function DeepDrawContentPage() {
             )}
           </div>
 
-          <div className="hidden overflow-hidden rounded-2xl border md:block">
-            <Table>
+          <CompactListTableFrame className="hidden md:block">
+            <Table containerClassName="h-full overflow-auto">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[88px]">图片</TableHead>
@@ -318,19 +325,21 @@ export default function DeepDrawContentPage() {
                 )}
               </TableBody>
             </Table>
-          </div>
+          </CompactListTableFrame>
 
-          <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+          <div className="flex shrink-0 items-center justify-between pt-2 text-xs text-muted-foreground">
             <span>当前展示 {formatNumber(data?.items.length ?? 0)} 条</span>
             <span>共 {formatNumber(data?.pagination.total)} 个内容包</span>
           </div>
           <ServerPagination
+            compact
+            className="shrink-0 bg-card px-0"
             pagination={data?.pagination}
             onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
             onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
           />
-        </CardContent>
-      </Card>
-    </PageContainer>
+        </CompactListCardContent>
+      </CompactListCard>
+    </CompactListPage>
   )
 }

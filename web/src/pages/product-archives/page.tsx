@@ -16,11 +16,19 @@ import { parseBatchSearch } from "@/lib/spreadsheet"
 import { useDebounce } from "@/hooks/use-debounce"
 import { FilterTrigger } from "@/components/filter-trigger"
 import { ServerPagination } from "@/components/server-pagination"
-import { PageContainer } from "@/components/layout/page-container"
-import { PageHeader } from "@/components/layout/page-header"
+import {
+  CompactListCard,
+  CompactListCardContent,
+  CompactListCardHeader,
+  CompactListFilterPopover,
+  CompactListHeader,
+  CompactListInlineFilters,
+  CompactListPage,
+  CompactListTableFrame,
+} from "@/components/layout/compact-list-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
@@ -341,23 +349,23 @@ export default function ProductArchivesPage() {
   ].join(" / ")
 
   return (
-    <PageContainer className="flex flex-col gap-6">
-      <PageHeader
+    <CompactListPage>
+      <CompactListHeader
         title="商品档案"
+        summary={rowSummary}
         description="源数据留档页，只保留 MDM、深绘内容包和图片素材状态；平台业务字段进入 SHEIN 商品分桶处理。"
       />
 
-      <Card className="min-h-0">
-        <CardHeader className="gap-4 pb-3">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
-            <div className="space-y-1">
-              <CardTitle>源数据列表</CardTitle>
-              <p className="text-sm text-muted-foreground">{rowSummary}</p>
+      <CompactListCard>
+        <CompactListCardHeader>
+          <div className="flex flex-col gap-2 min-[980px]:flex-row min-[980px]:items-center min-[980px]:justify-between">
+            <div className="min-w-0">
+              <CardTitle className="text-base">源数据列表</CardTitle>
             </div>
-            <div className="flex w-full flex-col gap-2 md:flex-row xl:w-auto">
+            <div className="flex w-full min-w-0 flex-col gap-2 min-[980px]:w-auto min-[980px]:flex-row min-[980px]:items-center min-[980px]:justify-end">
               <Dialog>
                 <DialogTrigger asChild>
-                  <Button type="button" variant="outline">
+                  <Button type="button" size="sm" variant="outline">
                     <RefreshCw className="size-4" />
                     批量同步
                   </Button>
@@ -464,7 +472,7 @@ export default function ProductArchivesPage() {
 
               <Dialog>
                 <DialogTrigger asChild>
-                  <Button type="button" variant="outline">
+                  <Button type="button" size="sm" variant="outline">
                     <Check className="size-4" />
                     加入 SHEIN 商品分桶
                   </Button>
@@ -498,66 +506,135 @@ export default function ProductArchivesPage() {
                 </DialogContent>
               </Dialog>
 
-              <Select
-                value={brandFilter}
-                onValueChange={(value) => {
-                  setBrandFilter(value)
-                  setPagination((current) => ({ ...current, offset: 0 }))
-                  const brand = config?.brands.find((item) => item.brandCode === value)
-                  if (brand?.deepdrawTenantName) setDeepdrawTenantName(brand.deepdrawTenantName)
-                }}
-              >
-                <SelectTrigger className="md:w-[180px]">
-                  <SelectValue placeholder="全部品牌" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">全部品牌</SelectItem>
-                  {config?.brands.map((brand) => (
-                    <SelectItem key={brand.brandCode} value={brand.brandCode}>
-                      {brand.brandCode} {brand.brandName}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <CompactListInlineFilters className="justify-end">
+                <Select
+                  value={brandFilter}
+                  onValueChange={(value) => {
+                    setBrandFilter(value)
+                    setPagination((current) => ({ ...current, offset: 0 }))
+                    const brand = config?.brands.find((item) => item.brandCode === value)
+                    if (brand?.deepdrawTenantName) setDeepdrawTenantName(brand.deepdrawTenantName)
+                  }}
+                >
+                  <SelectTrigger size="sm" className="w-[180px]">
+                    <SelectValue placeholder="全部品牌" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部品牌</SelectItem>
+                    {config?.brands.map((brand) => (
+                      <SelectItem key={brand.brandCode} value={brand.brandCode}>
+                        {brand.brandCode} {brand.brandName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
 
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <FilterTrigger active={mdmStatusFilter.length + deepdrawStatusFilter.length > 0}>
-                    {selectedStatusesLabel([...mdmStatusFilter, ...deepdrawStatusFilter])}
-                  </FilterTrigger>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56">
-                  <DropdownMenuLabel>MDM 状态</DropdownMenuLabel>
-                  <DropdownMenuCheckboxItem
-                    checked={mdmStatusFilter.includes("SYNCED")}
-                    onCheckedChange={() => toggleStatus(mdmStatusFilter, setMdmStatusFilter, "SYNCED")}
-                  >
-                    MDM 已同步
-                  </DropdownMenuCheckboxItem>
-                  <DropdownMenuCheckboxItem
-                    checked={mdmStatusFilter.includes("MISSING")}
-                    onCheckedChange={() => toggleStatus(mdmStatusFilter, setMdmStatusFilter, "MISSING")}
-                  >
-                    MDM 未同步
-                  </DropdownMenuCheckboxItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuLabel>深绘状态</DropdownMenuLabel>
-                  <DropdownMenuCheckboxItem
-                    checked={deepdrawStatusFilter.includes("SYNCED")}
-                    onCheckedChange={() => toggleStatus(deepdrawStatusFilter, setDeepdrawStatusFilter, "SYNCED")}
-                  >
-                    深绘已同步
-                  </DropdownMenuCheckboxItem>
-                  <DropdownMenuCheckboxItem
-                    checked={deepdrawStatusFilter.includes("MISSING")}
-                    onCheckedChange={() => toggleStatus(deepdrawStatusFilter, setDeepdrawStatusFilter, "MISSING")}
-                  >
-                    深绘未同步
-                  </DropdownMenuCheckboxItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <FilterTrigger
+                      size="sm"
+                      active={mdmStatusFilter.length + deepdrawStatusFilter.length > 0}
+                    >
+                      {selectedStatusesLabel([...mdmStatusFilter, ...deepdrawStatusFilter])}
+                    </FilterTrigger>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-56">
+                    <DropdownMenuLabel>MDM 状态</DropdownMenuLabel>
+                    <DropdownMenuCheckboxItem
+                      checked={mdmStatusFilter.includes("SYNCED")}
+                      onCheckedChange={() => toggleStatus(mdmStatusFilter, setMdmStatusFilter, "SYNCED")}
+                    >
+                      MDM 已同步
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuCheckboxItem
+                      checked={mdmStatusFilter.includes("MISSING")}
+                      onCheckedChange={() => toggleStatus(mdmStatusFilter, setMdmStatusFilter, "MISSING")}
+                    >
+                      MDM 未同步
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel>深绘状态</DropdownMenuLabel>
+                    <DropdownMenuCheckboxItem
+                      checked={deepdrawStatusFilter.includes("SYNCED")}
+                      onCheckedChange={() => toggleStatus(deepdrawStatusFilter, setDeepdrawStatusFilter, "SYNCED")}
+                    >
+                      深绘已同步
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuCheckboxItem
+                      checked={deepdrawStatusFilter.includes("MISSING")}
+                      onCheckedChange={() => toggleStatus(deepdrawStatusFilter, setDeepdrawStatusFilter, "MISSING")}
+                    >
+                      深绘未同步
+                    </DropdownMenuCheckboxItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </CompactListInlineFilters>
 
-              <div className="relative md:w-[320px]">
+              <CompactListFilterPopover>
+                <Select
+                  value={brandFilter}
+                  onValueChange={(value) => {
+                    setBrandFilter(value)
+                    setPagination((current) => ({ ...current, offset: 0 }))
+                    const brand = config?.brands.find((item) => item.brandCode === value)
+                    if (brand?.deepdrawTenantName) setDeepdrawTenantName(brand.deepdrawTenantName)
+                  }}
+                >
+                  <SelectTrigger size="sm" className="w-full">
+                    <SelectValue placeholder="全部品牌" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部品牌</SelectItem>
+                    {config?.brands.map((brand) => (
+                      <SelectItem key={brand.brandCode} value={brand.brandCode}>
+                        {brand.brandCode} {brand.brandName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <FilterTrigger
+                      size="sm"
+                      active={mdmStatusFilter.length + deepdrawStatusFilter.length > 0}
+                    >
+                      {selectedStatusesLabel([...mdmStatusFilter, ...deepdrawStatusFilter])}
+                    </FilterTrigger>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-56">
+                    <DropdownMenuLabel>MDM 状态</DropdownMenuLabel>
+                    <DropdownMenuCheckboxItem
+                      checked={mdmStatusFilter.includes("SYNCED")}
+                      onCheckedChange={() => toggleStatus(mdmStatusFilter, setMdmStatusFilter, "SYNCED")}
+                    >
+                      MDM 已同步
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuCheckboxItem
+                      checked={mdmStatusFilter.includes("MISSING")}
+                      onCheckedChange={() => toggleStatus(mdmStatusFilter, setMdmStatusFilter, "MISSING")}
+                    >
+                      MDM 未同步
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel>深绘状态</DropdownMenuLabel>
+                    <DropdownMenuCheckboxItem
+                      checked={deepdrawStatusFilter.includes("SYNCED")}
+                      onCheckedChange={() => toggleStatus(deepdrawStatusFilter, setDeepdrawStatusFilter, "SYNCED")}
+                    >
+                      深绘已同步
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuCheckboxItem
+                      checked={deepdrawStatusFilter.includes("MISSING")}
+                      onCheckedChange={() => toggleStatus(deepdrawStatusFilter, setDeepdrawStatusFilter, "MISSING")}
+                    >
+                      深绘未同步
+                    </DropdownMenuCheckboxItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </CompactListFilterPopover>
+
+              <div className="relative min-w-[220px] flex-1 min-[980px]:w-[320px] min-[980px]:flex-none">
                 <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={searchText}
@@ -566,15 +643,15 @@ export default function ProductArchivesPage() {
                     setPagination((current) => ({ ...current, offset: 0 }))
                   }}
                   placeholder="搜索款号、源标题、品牌、源类目"
-                  className="pl-9"
+                  className="h-8 pl-9 text-sm"
                 />
               </div>
             </div>
           </div>
-        </CardHeader>
-        <CardContent>
-          <div className="hidden overflow-hidden rounded-lg border md:block">
-            <Table>
+        </CompactListCardHeader>
+        <CompactListCardContent>
+          <CompactListTableFrame className="hidden md:block">
+            <Table containerClassName="h-full overflow-auto">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-12">
@@ -680,9 +757,9 @@ export default function ProductArchivesPage() {
                 )}
               </TableBody>
             </Table>
-          </div>
+          </CompactListTableFrame>
 
-          <div className="space-y-3 md:hidden">
+          <div className="min-h-0 flex-1 space-y-3 overflow-auto md:hidden">
             {items.map((item) => (
               <div key={item.spu_code} className="rounded-lg border bg-card p-4">
                 <div className="flex gap-3">
@@ -729,12 +806,14 @@ export default function ProductArchivesPage() {
           </div>
 
           <ServerPagination
+            compact
+            className="shrink-0 bg-card px-0"
             pagination={data?.pagination}
             onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
             onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
           />
-        </CardContent>
-      </Card>
-    </PageContainer>
+        </CompactListCardContent>
+      </CompactListCard>
+    </CompactListPage>
   )
 }

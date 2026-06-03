@@ -3,8 +3,14 @@ import { Link } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { RefreshCw, Search, ShieldCheck } from "lucide-react"
 import { toast } from "sonner"
-import { PageContainer } from "@/components/layout/page-container"
-import { PageHeader } from "@/components/layout/page-header"
+import {
+  CompactListCard,
+  CompactListCardContent,
+  CompactListCardHeader,
+  CompactListHeader,
+  CompactListPage,
+  CompactListTableFrame,
+} from "@/components/layout/compact-list-layout"
 import { ServerPagination } from "@/components/server-pagination"
 import type { ServerPaginationState } from "@/components/server-pagination"
 import { Badge } from "@/components/ui/badge"
@@ -100,23 +106,25 @@ export default function SheinPlatformIdentitiesPage() {
   const currentPagination = numberListQuery.data?.pagination ?? pagination
 
   return (
-    <PageContainer className="space-y-6">
-      <PageHeader
+    <CompactListPage relaxed>
+      <CompactListHeader
         title="平台标识对账"
+        summary={`编号关系 ${formatNumber(currentPagination.total ?? rows.length)} / 当前页 ${formatNumber(rows.length)}`}
         description="接入 number-list 和 check-supplierSku-repeated，补齐 SHEIN SKC/SKU/设计款号关系，并在拼款前做商家 SKU 唯一性校验。"
-      >
-        <Button variant="outline" onClick={() => numberListQuery.refetch()} disabled={numberListQuery.isFetching}>
-          <RefreshCw className={numberListQuery.isFetching ? "size-4 animate-spin" : "size-4"} />
-          刷新
-        </Button>
-      </PageHeader>
+        actions={(
+          <Button size="sm" variant="outline" onClick={() => numberListQuery.refetch()} disabled={numberListQuery.isFetching}>
+            <RefreshCw className={numberListQuery.isFetching ? "size-4 animate-spin" : "size-4"} />
+            刷新
+          </Button>
+        )}
+      />
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
-        <Card>
-          <CardHeader>
+      <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
+        <CompactListCard>
+          <CompactListCardHeader>
             <CardTitle>编号关系同步</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
+          </CompactListCardHeader>
+          <CompactListCardContent className="gap-3 pb-0">
             <div className="grid gap-3 md:grid-cols-[120px_120px_1fr_auto]">
               <div className="grid gap-2">
                 <Label>页码</Label>
@@ -141,8 +149,8 @@ export default function SheinPlatformIdentitiesPage() {
               </div>
             </div>
 
-            <div className="overflow-hidden rounded-md border">
-              <Table>
+            <CompactListTableFrame>
+              <Table containerClassName="h-full overflow-auto">
                 <TableHeader>
                   <TableRow>
                     <TableHead>SKC</TableHead>
@@ -172,14 +180,16 @@ export default function SheinPlatformIdentitiesPage() {
                   )}
                 </TableBody>
               </Table>
-            </div>
+            </CompactListTableFrame>
             <ServerPagination
+              compact
+              className="shrink-0 bg-card px-0"
               pagination={currentPagination}
               onLimitChange={(limit) => setPagination((current) => ({ ...current, limit, offset: 0 }))}
               onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
             />
-          </CardContent>
-        </Card>
+          </CompactListCardContent>
+        </CompactListCard>
 
         <Card>
           <CardHeader>
@@ -216,6 +226,6 @@ export default function SheinPlatformIdentitiesPage() {
           </CardContent>
         </Card>
       </div>
-    </PageContainer>
+    </CompactListPage>
   )
 }
