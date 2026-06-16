@@ -77,7 +77,7 @@ Listingify 是面向跨境电商的多平台刊登中台。产品方向是商品
 
 ## 当前进度
 
-更新日期：2026-05-12
+更新日期：2026-06-16
 
 项目已从 Phase 1 数据底座推进到 SHEIN 发品闭环的可操作阶段。当前主线目标是：从 MDM/深绘同步商品档案，挑选进入 SHEIN 商品分桶，完成平台字段清洗、图片选择、尺码/价格/包装维护，生成发布草稿和版本，提交 SHEIN OpenAPI，并在发布任务中追踪状态。
 
@@ -91,6 +91,9 @@ Listingify 是面向跨境电商的多平台刊登中台。产品方向是商品
 - 已完成 SHEIN OpenAPI 基础联调和真实发布链路，`201122104105 / 中黄30435` 已真实推送成功；系统已具备发布 payload 预览、提交、任务记录、失败原因回写、重试和审核状态同步入口。
 - 已完成 SHEIN 元数据同步、导入和查询链路，发布草稿页可按所选类目展示字段、属性枚举、图片规则和尺码模板。
 - 已完成 MDM 商品主数据、深绘内容包、图片素材库和 SHEIN 商品分桶的数据流，商品档案保留源头数据，平台业务字段隔离到 SHEIN 分桶与发布草稿。
+- 已完成深绘商品档案建档链路第一版：支持按租户缓存深绘类目树和 `dp.trade.fields` 字段模板，从 MDM 款号生成建档草稿，按深绘类目模板生成字段，执行必填/枚举/SKU/价格校验，支持重复档案检查、提交预览、正式创建和回读校验。
+- 已完成深绘建档来源表导入：支持导入上市计划表和标准文案表，兼容错位表头、跨页签解析、上市时间/发布类目/文案字段填充，并可对未建档款号自动排队同步 MDM 后生成草稿。
+- 已完成深绘建档异步任务中心：MDM 批量同步、批量生成建档草稿、来源表导入后的自动同步任务可在页面右上角持续查看进度、完成数、失败数和任务结果。
 - 已完成 SHEIN 商品分桶，支持批量搜索、筛选、AI 类目/字段推荐、创建多版本发布草稿、查看发布历史和最新发布状态。
 - 已完成 SHEIN 发布草稿箱，支持草稿列表、批量发布前校验、阻断项快速调整、草稿复制、暂停/恢复/删除、版本快照和状态机。
 - 已完成单款发布草稿详情，按 `SPU -> SKC -> SKU` 维度维护平台类目、标题、商品属性、销售属性、发布尺码、尺码表、价格、SKU 毛重、包装长宽高和图片。
@@ -109,6 +112,7 @@ Listingify 是面向跨境电商的多平台刊登中台。产品方向是商品
 - 已完成 SHEIN 销售站点运营视图：从 `spu-info` 的 `shelfStatusInfoList` 和各 SKC 原始 payload 展开销售站点明细，列表显示“上架 X 站”，支持按销售站点筛选、弹窗查看国家站点/状态/链接/上架时间，并在导出中拆出 `销售站点明细` Sheet。
 - 已完成平台商品列表导出增强：按当前筛选条件分页导出全部本地平台商品，主 Sheet 保留统计口径，销售站点关系独立为明细 Sheet，避免把多站点数据挤在一个单元格。
 - 已完成 SHEIN P1 运营支撑第一版：平台标识对账、商家 SKU 查重、条码尺码、条码打印、成本价涨价原因、审核状态聚合和真实数据回归日志已落库并接入运营中心页面。
+- 已完成 SHEIN 预发布批次稳定性修复：批量发布弹窗、预检状态、登录失败锁定边界、同步任务 seed 导入和草稿字段处理已补测试，降低批次发布时的误判和中断。
 - 已新增产品介绍首页，根路径可先展示 Listingify 能力概览，并提供登录与工作台入口。
 
 ## 已实现能力
@@ -158,12 +162,18 @@ channel_required_attribute: 8733
 
 - 前端：React 19、TypeScript、Vite、React Router、TanStack Query、TanStack Table、shadcn/radix 风格组件。
 - 后端：Hono + PostgreSQL，运行时通过 `pg` 连接池和兼容 facade 访问数据库。
-- 已配置页面路由：首页、工作台、上新批次、SHEIN 商品分桶、SHEIN 发布草稿箱、发布任务、SHEIN 类目映射、SHEIN 尺码转换、SHEIN 包装规则、SHEIN 价格规则、SHEIN 元数据、商品档案、MDM 商品主数据、深绘内容包、图片素材库、平台对接、用户管理、同步任务、操作日志。旧 `SHEIN 低倍率清单` 路由保留跳转到 `SHEIN 价格规则`。
-- 已实现接口：`/api/auth/*`、`/api/users/*`、`/api/platform-integrations/*`、`/api/system/*`、`/api/metadata/*`、`/api/category-mapping/*`、`/api/shein-products/*`、`/api/pre-publish/*`、`/api/publish-tasks/*`、`/api/listing-batches/*`、`/api/business-rules/*`、`/api/product-archives/*`、`/api/mdm-products/*`、`/api/deepdraw-content/*`、`/api/image-library/*`。
+- 已配置页面路由：首页、工作台、上新批次、SHEIN 商品分桶、SHEIN 发布草稿箱、发布任务、SHEIN 类目映射、SHEIN 尺码转换、SHEIN 包装规则、SHEIN 价格规则、SHEIN 元数据、商品档案、深绘建档草稿、深绘元数据、MDM 商品主数据、深绘内容包、图片素材库、平台对接、用户管理、同步任务、操作日志。旧 `SHEIN 低倍率清单` 路由保留跳转到 `SHEIN 价格规则`。
+- 已实现接口：`/api/auth/*`、`/api/users/*`、`/api/platform-integrations/*`、`/api/system/*`、`/api/metadata/*`、`/api/category-mapping/*`、`/api/shein-products/*`、`/api/pre-publish/*`、`/api/publish-tasks/*`、`/api/listing-batches/*`、`/api/business-rules/*`、`/api/product-archives/*`、`/api/product-archive-drafts/*`、`/api/mdm-products/*`、`/api/deepdraw-content/*`、`/api/deepdraw-metadata/*`、`/api/image-library/*`。
 - 当前页面以 SHEIN 作为首个完整平台工作流，平台账号、元数据、发布任务、操作日志和后续适配器仍按多平台模型保留。
 
 ### 本次更新重点
 
+- 深绘建档：新增 `product_archive_draft`、草稿字段、SKU、校验问题、提交日志、来源表批次等 PostgreSQL 表，并提供建档草稿列表、详情、类目应用、字段编辑、AI 推荐补齐、重复检查、提交预览、创建和回读流程。
+- 深绘元数据：新增深绘类目和字段模板缓存，支持按租户刷新类目树、按类目刷新字段模板，并将 `fieldRetryCount` 和低并发同步作为稳定策略。
+- 来源表导入：新增上市计划表、标准文案表解析和导入服务，导入后可跳过已有草稿，并自动同步缺失 MDM 款号生成建档草稿。
+- 异步任务：新增前端异步任务上下文和任务中心，承接深绘建档批量任务，关闭弹窗后仍可查看进度。
+- 接口文档：归档深绘开放平台 API Markdown 文档，并在 `docs/reference/interface-docs/README.md` 中建立索引。
+- 批次稳定性：修复 SHEIN 预发布批次发布与预检流程中的状态处理，补充发布服务、UI、鉴权和 seed 导入测试。
 - 数据库：新增 `docker-compose.postgres.yml`、PostgreSQL-only runtime config、迁移转换器、同步兼容 facade 和 SQLite-to-PostgreSQL 数据补迁脚本。
 - 安全：移除默认密码路径，新增显式管理员创建脚本、登录失败限制、CORS 白名单、平台密钥加密和凭据脱敏。
 - 架构：将 `pre-publish.ts` 中可独立测试的草稿、字段、图片、payload、SHEIN API、版本和 shared helper 拆到服务层。
@@ -282,6 +292,8 @@ npm run lint
 - `docs/mdm-product-master-data-model.md`：基于 MDM SPU/SKU 接口的 `SPU -> SKC -> SKU` 商品主数据建模。
 - `docs/deepdraw-content-image-sync.md`：深绘内容包和图片同步方式、返回结构、图片入库建议。
 - `docs/deepdraw-content-data-model.md`：深绘内容包结构化落库模型，覆盖 raw payload、SPU-SKC-SKU、图片、详情页、尺码表和关键 fields。
+- `docs/deepdraw-product-archive-creation-feature-design.md`：深绘商品档案建档在 Listingify 内的产品、数据、接口、校验和实施设计。
+- `docs/reference/interface-docs/README.md`：外部平台接口文档索引，已包含 SHEIN、TEMU、MDM 和深绘开放平台 API 的离线资料入口。
 - `docs/reference/integration-handoffs/`：MDM、深绘等外部系统对接交接资料的脱敏版本；原始交接文件只保存在本地忽略目录。
 - `docs/shein-openapi-live-probe-2026-04-24.md`：SHEIN OpenAPI 联调记录。
 - `docs/shein-metadata-sync-task.md`：元数据同步任务说明。
@@ -290,12 +302,12 @@ npm run lint
 
 ## 下一步
 
-1. 用真实 SHEIN 账号回归平台商品全链路：同步列表、按款号同步、SPU 详情、站点币种、销售站点、可编辑检查、状态同步、供货价更新、编辑、拼款和撤回。
-2. 强化最近操作和失败排查：补请求/响应详情查看、失败分类、重试策略和面向运营的错误提示。
-3. 强化发布任务自动化：在现有手动轮询基础上，增加定时轮询、状态变更通知和审核驳回后的修复工作流。
-4. 完善图片转换治理：在已有上传/转换基础上，补充平台图片标识复用、转换结果对比、失败重试和素材质量报表。
-5. 强化批量发布阻断修复：支持更多字段类型、跨 SKC/SKU 批量应用、字段变更差异预览和修复历史记录。
-6. 在 SHEIN 流程稳定后再启动 TEMU Adapter：复用现有 `PlatformAdapter` 边界，实现 TEMU 元数据验证、草稿字段映射和发布任务骨架。
+1. 用真实深绘账号继续回归建档链路：来源表导入、MDM 自动同步、字段模板刷新、重复检查、正式创建、回读校验和失败日志。
+2. 强化深绘建档字段治理：沉淀字段映射规则、枚举推荐命中率、跨类目复用策略、人工修正历史和批量应用能力。
+3. 用真实 SHEIN 账号回归平台商品全链路：同步列表、按款号同步、SPU 详情、站点币种、销售站点、可编辑检查、状态同步、供货价更新、编辑、拼款和撤回。
+4. 强化最近操作和失败排查：补请求/响应详情查看、失败分类、重试策略和面向运营的错误提示。
+5. 强化发布任务自动化：在现有手动轮询基础上，增加定时轮询、状态变更通知和审核驳回后的修复工作流。
+6. 在 SHEIN 和深绘流程稳定后再启动 TEMU Adapter：复用现有 `PlatformAdapter` 边界，实现 TEMU 元数据验证、草稿字段映射和发布任务骨架。
 
 ## 注意事项
 
@@ -306,3 +318,4 @@ npm run lint
 - PostgreSQL 本地数据由 `docker-compose.postgres.yml` 中的 Docker volume 管理；`data/shein-metadata/` 等同步产物不提交 Git。历史 `data/app.sqlite` 仅用于显式 legacy 转换/测试，不作为运行时数据库。
 - 平台类目、发布规范和属性模板会变化，需要定期同步，并在发布前刷新关键类目规范。
 - 当前 SHEIN 适配中，`fill_in_standard_list.show=false` 的字段不要提交，`attribute_status=3` 的属性必须补齐。
+- 深绘建档提交前应先执行重复档案检查和 dry-run 预览；正式创建成功后以回读结果确认档案状态，避免只依赖提交接口返回。
