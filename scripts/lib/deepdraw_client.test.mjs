@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildDeepdrawGetRequest,
+  buildDeepdrawPostRequest,
+  createDeepdrawProduct,
   parseTenantCredentialsFromText,
   resolveDeepdrawConfig,
 } from "./deepdraw_client.mjs";
@@ -75,6 +77,98 @@ test("buildDeepdrawGetRequest matches the SDK canonical GET request shape", () =
     "x-ca-key,x-ca-nonce,x-ca-signature-method,x-ca-timestamp",
   );
   assert.match(request.headers["x-ca-signature"], /^[A-Za-z0-9+/]+=*$/);
+});
+
+test("buildDeepdrawPostRequest matches the SDK metadata POST request shape", () => {
+  const request = buildDeepdrawPostRequest({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    type: "dp.trade.fields",
+    query: {
+      tradeId: "9009",
+    },
+    now: new Date("2026-04-29T00:00:00.000Z"),
+    nonce: "nonce-1",
+  });
+
+  assert.equal(
+    request.url,
+    "http://open.deepdraw.cn/rest?dopKey=dop-key&merchantId=1162&tradeId=9009&type=dp.trade.fields",
+  );
+  assert.equal(
+    request.stringToSign,
+    [
+      "POST",
+      "application/json; charset=utf-8",
+      "",
+      "application/x-www-form-urlencoded; charset=utf-8",
+      "Wed, 29 Apr 2026 00:00:00 GMT",
+      "x-ca-key:app-key",
+      "x-ca-nonce:nonce-1",
+      "x-ca-signature-method:HmacSHA256",
+      "x-ca-timestamp:1777420800000",
+      "/rest?dopKey=dop-key&merchantId=1162&tradeId=9009&type=dp.trade.fields",
+    ].join("\n"),
+  );
+  assert.match(request.headers["x-ca-signature"], /^[A-Za-z0-9+/]+=*$/);
+});
+
+test("buildDeepdrawGetRequest does not let payload fields override signed credential parameters", () => {
+  const request = buildDeepdrawGetRequest({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "credential-dop-key",
+      merchantId: "1162",
+    },
+    type: "dp.product.resource",
+    query: {
+      merchantId: "",
+      dopKey: "payload-dop-key",
+      type: "dp.product.create",
+      productCode: "208226102001",
+    },
+    now: new Date("2026-04-29T00:00:00.000Z"),
+    nonce: "nonce-1",
+  });
+
+  assert.equal(
+    request.url,
+    "http://open.deepdraw.cn/rest/v2?dopKey=credential-dop-key&merchantId=1162&productCode=208226102001&type=dp.product.resource",
+  );
+  assert.match(request.stringToSign, /dopKey=credential-dop-key&merchantId=1162/);
+  assert.doesNotMatch(request.stringToSign, /payload-dop-key|dp\.product\.create/);
+});
+
+test("createDeepdrawProduct refuses direct REST creation without an explicit adapter", async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("fetch should not be called for unverified product create");
+  };
+
+  try {
+    await assert.rejects(
+      () => createDeepdrawProduct({
+        config: {
+          baseUrl: "http://open.deepdraw.cn",
+          appKey: "app-key",
+          appSecret: "app-secret",
+          dopKey: "dop-key",
+          merchantId: "1162",
+        },
+        payload: { code: "208226102001", merchantId: "" },
+      }),
+      /DeepDraw product create adapter is not configured/,
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
 });
 
 test("resolveDeepdrawConfig can select credentials from env JSON by tenant name", () => {

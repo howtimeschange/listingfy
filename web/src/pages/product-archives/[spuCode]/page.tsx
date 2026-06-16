@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Link, useParams } from "react-router"
+import { Link, useNavigate, useParams } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   ArrowLeft,
@@ -8,6 +8,7 @@ import {
   FileImage,
   ImageIcon,
   Loader2,
+  PackagePlus,
   PackageSearch,
   RefreshCw,
 } from "lucide-react"
@@ -207,6 +208,12 @@ interface BrandMapping {
 
 interface ProductArchiveConfig {
   brands: BrandMapping[]
+}
+
+interface DraftCreationResponse {
+  draft: {
+    id: number
+  }
 }
 
 function useProductArchive(spuCode: string | undefined) {
@@ -519,6 +526,7 @@ function HeroImage({
 
 export default function ProductArchiveDetailPage() {
   const { spuCode } = useParams()
+  const navigate = useNavigate()
   const [syncJobId, setSyncJobId] = useState<string | null>(null)
   const queryClient = useQueryClient()
   const { data, isLoading } = useProductArchive(spuCode)
@@ -554,6 +562,17 @@ export default function ProductArchiveDetailPage() {
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "同步失败")
+    },
+  })
+
+  const createDraftMutation = useMutation({
+    mutationFn: () => api.post<DraftCreationResponse>(`/product-archive-drafts/from-spu/${spuCode}`, {}),
+    onSuccess: (result) => {
+      toast.success("已生成建档草稿")
+      navigate(`/product-archive-drafts/${result.draft.id}`)
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "生成建档草稿失败")
     },
   })
 
@@ -707,6 +726,19 @@ export default function ProductArchiveDetailPage() {
           </Button>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => createDraftMutation.mutate()}
+            disabled={createDraftMutation.isPending || data.source_status.mdm !== "SYNCED"}
+          >
+            {createDraftMutation.isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <PackagePlus className="size-4" />
+            )}
+            生成建档草稿
+          </Button>
           <Button
             type="button"
             variant="outline"

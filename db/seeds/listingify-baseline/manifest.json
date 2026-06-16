@@ -1,6 +1,6 @@
 {
   "kind": "metadata",
-  "exported_at": "2026-05-14T05:20:41.594Z",
+  "exported_at": "2026-06-16T12:56:26.718Z",
   "format": "jsonl.gz",
   "tables": [
     {
@@ -52,6 +52,21 @@
       "table": "channel_required_attribute",
       "rows": 8789,
       "file": "db/seeds/listingify-baseline/channel_required_attribute.jsonl.gz"
+    },
+    {
+      "table": "deepdraw_trade_cache",
+      "rows": 1856,
+      "file": "db/seeds/listingify-baseline/deepdraw_trade_cache.jsonl.gz"
+    },
+    {
+      "table": "deepdraw_trade_field_cache",
+      "rows": 291702,
+      "file": "db/seeds/listingify-baseline/deepdraw_trade_field_cache.jsonl.gz"
+    },
+    {
+      "table": "deepdraw_trade_field_sync_marker",
+      "rows": 1695,
+      "file": "db/seeds/listingify-baseline/deepdraw_trade_field_sync_marker.jsonl.gz"
     }
   ]
 }

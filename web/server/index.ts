@@ -6,8 +6,10 @@ import { errorHandler, logger } from "./middleware/error-handler"
 import metadata from "./routes/metadata"
 import categoryMapping from "./routes/category-mapping"
 import productArchives from "./routes/product-archives"
+import productArchiveDrafts from "./routes/product-archive-drafts"
 import mdmProducts from "./routes/mdm-products"
 import deepdrawContent from "./routes/deepdraw-content"
+import deepdrawMetadata from "./routes/deepdraw-metadata"
 import imageLibrary from "./routes/image-library"
 import businessRules from "./routes/business-rules"
 import sheinProducts from "./routes/shein-products"
@@ -79,8 +81,10 @@ app.route("/api/system", system)
 app.route("/api/metadata", metadata)
 app.route("/api/category-mapping", categoryMapping)
 app.route("/api/product-archives", productArchives)
+app.route("/api/product-archive-drafts", productArchiveDrafts)
 app.route("/api/mdm-products", mdmProducts)
 app.route("/api/deepdraw-content", deepdrawContent)
+app.route("/api/deepdraw-metadata", deepdrawMetadata)
 app.route("/api/image-library", imageLibrary)
 app.route("/api/business-rules", businessRules)
 app.route("/api/shein-products", sheinProducts)

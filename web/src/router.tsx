@@ -28,10 +28,13 @@ import BrandRulesPage from "@/pages/brand-rules/page"
 import SheinMetadataPage from "@/pages/shein-metadata/page"
 import ProductArchivesPage from "@/pages/product-archives/page"
 import ProductArchiveDetailPage from "@/pages/product-archives/[spuCode]/page"
+import ProductArchiveDraftsPage from "@/pages/product-archive-drafts/page"
+import ProductArchiveDraftDetailPage from "@/pages/product-archive-drafts/[draftId]/page"
 import MdmProductsPage from "@/pages/mdm-products/page"
 import MdmProductDetailPage from "@/pages/mdm-products/[spuCode]/page"
 import DeepDrawContentPage from "@/pages/deepdraw-content/page"
 import DeepdrawContentDetailPage from "@/pages/deepdraw-content/[spuCode]/page"
+import DeepdrawMetadataPage from "@/pages/deepdraw-metadata/page"
 import ImageLibraryPage from "@/pages/image-library/page"
 import ImageLibraryDetailPage from "@/pages/image-library/[assetId]/page"
 import PlatformIntegrationsPage from "@/pages/platform-integrations/page"
@@ -76,10 +79,13 @@ export const router = createBrowserRouter([
       { path: "shein-metadata", element: <SheinMetadataPage /> },
       { path: "product-archives", element: <ProductArchivesPage /> },
       { path: "product-archives/:spuCode", element: <ProductArchiveDetailPage /> },
+      { path: "product-archive-drafts", element: <ProductArchiveDraftsPage /> },
+      { path: "product-archive-drafts/:draftId", element: <ProductArchiveDraftDetailPage /> },
       { path: "mdm-products", element: <MdmProductsPage /> },
       { path: "mdm-products/:spuCode", element: <MdmProductDetailPage /> },
       { path: "deepdraw-content", element: <DeepDrawContentPage /> },
       { path: "deepdraw-content/:spuCode", element: <DeepdrawContentDetailPage /> },
+      { path: "deepdraw-metadata", element: <DeepdrawMetadataPage /> },
       { path: "image-library", element: <ImageLibraryPage /> },
       { path: "image-library/:assetId", element: <ImageLibraryDetailPage /> },
       { path: "shein-accounts", element: <Navigate to="/platform-integrations" replace /> },

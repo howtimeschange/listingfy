@@ -26,6 +26,7 @@ export function parseSpuCodes(input) {
 
 export function createProductArchiveSyncQueue({
   syncOne,
+  allowedSources = ["mdm", "deepdraw", "mdm_deepdraw"],
   wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now = () => Date.now(),
 } = {}) {
@@ -105,8 +106,9 @@ export function createProductArchiveSyncQueue({
 
   function enqueue({ source, rawCodes, intervalMs, options = {} } = {}) {
     const normalizedSource = String(source ?? "").toLowerCase();
-    if (!["mdm", "deepdraw", "mdm_deepdraw"].includes(normalizedSource)) {
-      throw new Error("source must be mdm, deepdraw, or mdm_deepdraw");
+    const normalizedAllowedSources = allowedSources.map((item) => String(item).toLowerCase());
+    if (!normalizedAllowedSources.includes(normalizedSource)) {
+      throw new Error(`source must be ${normalizedAllowedSources.join(", or ")}`);
     }
 
     const codes = parseSpuCodes(rawCodes);
@@ -120,6 +122,7 @@ export function createProductArchiveSyncQueue({
       status: "queued",
       interval_ms: clampInterval(intervalMs),
       options: {
+        ...options,
         deepdrawTenantName: options.deepdrawTenantName ?? null,
       },
       codes,

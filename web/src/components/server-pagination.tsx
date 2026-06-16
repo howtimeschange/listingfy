@@ -77,7 +77,7 @@ export function ServerPagination({
         </div>
         <div className={cn("flex flex-wrap items-center", compact ? "gap-1.5" : "gap-3")}>
           <div className={cn("flex items-center", compact ? "gap-1.5" : "gap-2")}>
-            <span className={cn("text-sm text-muted-foreground", compact && "hidden text-xs lg:inline")}>每页</span>
+            <span className={cn("text-sm text-muted-foreground", compact && "hidden text-xs lg:inline")}>每页数量</span>
             <Select value={String(limit)} onValueChange={setLimit}>
               <SelectTrigger className="h-8 w-[88px]">
                 <SelectValue />

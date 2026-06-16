@@ -63,7 +63,9 @@ export function applyMigrations(db, migrationsDir = path.resolve("db", "migratio
   for (const file of migrations) {
     if (applied.has(file)) continue;
 
-    const sql = sqliteCompatibleMigration(fs.readFileSync(path.join(migrationsDir, file), "utf8"), db);
+    const rawSql = fs.readFileSync(path.join(migrationsDir, file), "utf8");
+    if (/postgres-only/i.test(rawSql)) continue;
+    const sql = sqliteCompatibleMigration(rawSql, db);
     db.exec("begin immediate");
     try {
       db.exec(sql);

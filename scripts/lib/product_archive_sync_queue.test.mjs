@@ -150,3 +150,27 @@ test("queue accepts combined mdm and deepdraw sync jobs", async () => {
     deepdraw: { ok: true },
   });
 });
+
+test("queue accepts custom draft creation jobs when allowed by the caller", async () => {
+  const events = [];
+  const queue = createProductArchiveSyncQueue({
+    allowedSources: ["draft"],
+    wait: async () => {},
+    syncOne: async ({ source, spuCode, options }) => {
+      events.push([source, spuCode, options.deepdrawTenantName, options.createdBy]);
+      return { draftId: 101 };
+    },
+  });
+
+  const job = queue.enqueue({
+    source: "draft",
+    rawCodes: ["208226102001"],
+    options: { deepdrawTenantName: "电商巴拉巴拉", createdBy: 7 },
+  });
+  await queue.waitForIdle();
+
+  const finished = queue.getJob(job.id);
+  assert.equal(finished.status, "completed");
+  assert.deepEqual(events, [["draft", "208226102001", "电商巴拉巴拉", 7]]);
+  assert.deepEqual(finished.items[0].result, { draftId: 101 });
+});

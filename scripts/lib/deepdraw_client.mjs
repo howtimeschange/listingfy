@@ -6,6 +6,11 @@ import path from "node:path";
 export const DEFAULT_DEEPDRAW_BASE_URL = "http://open.deepdraw.cn";
 export const DEFAULT_DEEPDRAW_TENANT_NAME = "电商巴拉巴拉";
 export const PRODUCT_RESOURCE_TYPE = "dp.product.resource";
+export const PRODUCT_BASIC_SEARCH_TYPE = "dp.product.basic.search";
+export const PRODUCT_CREATE_TYPE = "dp.product.create";
+export const MERCHANT_TRADES_TYPE = "dp.merchant.trades";
+export const TRADE_FIELDS_TYPE = "dp.trade.fields";
+export const REST_PATH = "/rest";
 export const REST_V2_PATH = "/rest/v2";
 
 export function readEnv(name, fallback = undefined) {
@@ -128,6 +133,15 @@ function sortedEntries(object) {
   return Object.entries(object).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
+function sanitizeDeepdrawQuery(query = {}) {
+  const sanitized = {};
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (["dopKey", "merchantId", "type"].includes(key)) continue;
+    sanitized[key] = value;
+  }
+  return sanitized;
+}
+
 function encodeDeepdrawQuery(params) {
   return sortedEntries(params)
     .map(([key, value]) => `${key}=${encodeURIComponent(String(value)).replace(/%20/g, "+")}`)
@@ -156,7 +170,7 @@ export function buildDeepdrawGetRequest({
   const params = {
     dopKey: config.dopKey,
     merchantId: String(config.merchantId),
-    ...query,
+    ...sanitizeDeepdrawQuery(query),
     type,
   };
   url.search = encodeDeepdrawQuery(params);
@@ -179,6 +193,64 @@ export function buildDeepdrawGetRequest({
     "application/x-www-form-urlencoded; charset=utf-8",
     date,
   ].join("\n") + "\n" + canonicalHeaders + canonicalResource(REST_V2_PATH, params);
+  const signature = crypto
+    .createHmac("sha256", config.appSecret)
+    .update(stringToSign, "utf8")
+    .digest("base64");
+
+  return {
+    url: url.toString(),
+    stringToSign,
+    headers: {
+      accept: "application/json; charset=utf-8",
+      "content-type": "application/x-www-form-urlencoded; charset=utf-8",
+      date,
+      host,
+      "user-agent": "ALIYUN-ANDROID-DEMO",
+      ...headersForSign,
+      "x-ca-signature-headers": Object.keys(headersForSign).sort().join(","),
+      "x-ca-signature": signature,
+      CA_VERSION: "1",
+    },
+  };
+}
+
+export function buildDeepdrawPostRequest({
+  config,
+  type,
+  query = {},
+  now = new Date(),
+  nonce = crypto.randomUUID(),
+}) {
+  const baseUrl = normalizeBaseUrl(config.baseUrl);
+  const url = new URL(REST_PATH, baseUrl);
+  const host = url.host;
+  const params = {
+    dopKey: config.dopKey,
+    merchantId: String(config.merchantId),
+    ...sanitizeDeepdrawQuery(query),
+    type,
+  };
+  url.search = encodeDeepdrawQuery(params);
+
+  const date = now.toUTCString();
+  const timestamp = String(now.getTime());
+  const headersForSign = {
+    "x-ca-key": config.appKey,
+    "x-ca-nonce": nonce,
+    "x-ca-signature-method": "HmacSHA256",
+    "x-ca-timestamp": timestamp,
+  };
+  const canonicalHeaders = sortedEntries(headersForSign)
+    .map(([key, value]) => `${key}:${value}\n`)
+    .join("");
+  const stringToSign = [
+    "POST",
+    "application/json; charset=utf-8",
+    "",
+    "application/x-www-form-urlencoded; charset=utf-8",
+    date,
+  ].join("\n") + "\n" + canonicalHeaders + canonicalResource(REST_PATH, params);
   const signature = crypto
     .createHmac("sha256", config.appSecret)
     .update(stringToSign, "utf8")
@@ -224,11 +296,68 @@ export async function requestDeepdraw({ config, type, query, timeoutMs = 30000 }
   };
 }
 
+export async function requestDeepdrawPost({ config, type, query, timeoutMs = 30000 }) {
+  const request = buildDeepdrawPostRequest({ config, type, query });
+  const response = await fetch(request.url, {
+    method: "POST",
+    headers: request.headers,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const text = await response.text();
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    payload = text;
+  }
+  return {
+    status: response.status,
+    ok: response.ok,
+    requestId: response.headers.get("x-ca-request-id"),
+    payload,
+    text,
+  };
+}
+
 export async function getDeepdrawProduct({ config, productCode, timeoutMs = 30000 }) {
   return requestDeepdraw({
     config,
     type: PRODUCT_RESOURCE_TYPE,
     query: { productCode },
+    timeoutMs,
+  });
+}
+
+export async function searchDeepdrawProductBasic({ config, productCode, timeoutMs = 30000 }) {
+  return requestDeepdraw({
+    config,
+    type: PRODUCT_BASIC_SEARCH_TYPE,
+    query: { productCode },
+    timeoutMs,
+  });
+}
+
+export async function createDeepdrawProduct({ config, payload = {}, timeoutMs = 30000, adapter } = {}) {
+  if (typeof adapter !== "function") {
+    throw new Error("DeepDraw product create adapter is not configured; dp.product.create requires the SDK Product entity/body shape.");
+  }
+  return adapter({ config, payload, timeoutMs });
+}
+
+export async function getDeepdrawTrades({ config, timeoutMs = 30000 }) {
+  return requestDeepdrawPost({
+    config,
+    type: MERCHANT_TRADES_TYPE,
+    query: {},
+    timeoutMs,
+  });
+}
+
+export async function getDeepdrawTradeFields({ config, tradeId, timeoutMs = 30000 }) {
+  return requestDeepdrawPost({
+    config,
+    type: TRADE_FIELDS_TYPE,
+    query: { tradeId },
     timeoutMs,
   });
 }

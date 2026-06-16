@@ -26,6 +26,10 @@ test("seed snapshot scripts bundle metadata and business data in the project see
   assert.match(exportScript, /BUSINESS_TABLES/);
   assert.match(exportScript, /createGzip/);
   assert.match(config, /channel_attribute_value/);
+  assert.match(config, /deepdraw_trade_cache/);
+  assert.match(config, /deepdraw_trade_field_cache/);
+  assert.match(config, /deepdraw_trade_field_sync_marker/);
+  assert.match(config, /tenant_name = '电商巴拉巴拉'/);
   assert.match(config, /product_weight_import/);
 
   assert.match(importScript, /--metadata-source/);

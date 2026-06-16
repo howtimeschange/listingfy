@@ -19,6 +19,7 @@ import {
   ImagePlus,
   PackagePlus,
   PackageSearch,
+  PenLine,
   PlugZap,
   RefreshCw,
   ScrollText,
@@ -96,8 +97,10 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: "SHEIN 元数据", to: "/shein-metadata", icon: Database, permission: "DATA_READ" },
       { label: "商品档案", to: "/product-archives", icon: Archive, permission: "DATA_READ" },
+      { label: "深绘建档草稿", to: "/product-archive-drafts", icon: PenLine, permission: "PRODUCT_ARCHIVE_DRAFT_READ" },
       { label: "MDM 商品主数据", to: "/mdm-products", icon: Boxes, permission: "DATA_READ" },
       { label: "深绘内容包", to: "/deepdraw-content", icon: FileText, permission: "DATA_READ" },
+      { label: "深绘类目字段", to: "/deepdraw-metadata", icon: Database, permission: "PRODUCT_ARCHIVE_DRAFT_READ" },
       { label: "图片素材库", to: "/image-library", icon: ImagePlus, permission: "DATA_READ" },
     ],
   },
