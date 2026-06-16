@@ -217,6 +217,7 @@ interface SaleAttribute {
   attribute_type: number | null
   attribute_label: number | null
   attribute_mode: number | null
+  is_size_attribute?: number | null
   values: AttributeOption[]
 }
 
@@ -548,6 +549,16 @@ function isConditionalFieldVisible(field: FillField, manualValues: Record<string
 function isAiGeneratableField(field: FillField) {
   if (field.conditional_on) return false
   return field.key === "title_en" || field.key.startsWith("attr:")
+}
+
+function isSizeSaleAttribute(attribute: SaleAttribute) {
+  const text = `${attribute.attribute_name} ${attribute.attribute_name_en ?? ""}`.toLowerCase()
+  return Number(attribute.attribute_type ?? 0) === 1
+    && Number(attribute.attribute_label ?? 0) === 0
+    && (
+      Number(attribute.is_size_attribute ?? 0) === 1
+      || /尺寸|尺码|size/i.test(text)
+    )
 }
 
 function isPublishFocusedField(field: FillField) {
@@ -1846,7 +1857,7 @@ export default function PrePublishDraftDetailPage() {
     [data],
   )
   const sizeAttribute = useMemo(
-    () => data?.sale_attributes.find((attribute) => attribute.attribute_name.includes("尺寸")),
+    () => data?.sale_attributes.find(isSizeSaleAttribute),
     [data],
   )
   const skcGroups = useMemo(() => {

@@ -341,6 +341,51 @@ test("pre-publish AI and batch fixes keep critical fields rule-owned", async () 
   assert.match(draftList, /batch-import-folders/);
 });
 
+test("pre-publish route resolves SHEIN size sale attribute by metadata and direct category enum before generic conversion", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const detailPage = await readFile(path.join(PROJECT_ROOT, "web/src/pages/pre-publish-validation/[listingId]/page.tsx"), "utf8");
+
+  assert.match(source, /function isSizeSaleAttribute/);
+  assert.match(source, /is_size_attribute/);
+  assert.match(source, /function findSizeSaleAttribute/);
+  assert.match(source, /function resolveSkuSizeSelection/);
+  assert.match(source, /directOption\s*\?\?\s*convertedOption/);
+  assert.match(source, /findSizeSaleAttribute\(attrs\)/);
+  assert.doesNotMatch(source, /attr\.attribute_name === "尺寸"/);
+  assert.match(detailPage, /function isSizeSaleAttribute/);
+  assert.match(detailPage, /is_size_attribute/);
+  assert.match(detailPage, /data\?\.sale_attributes\.find\(isSizeSaleAttribute\)/);
+  assert.doesNotMatch(detailPage, /attribute\.attribute_name\.includes\("尺寸"\)/);
+});
+
+test("pre-publish category enrichment covers kids pants fallback categories", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+
+  assert.match(source, /function kidsPantsFallbackCategory/);
+  assert.match(source, /女童（大）长裤/);
+  assert.match(source, /product_type_id:\s*9601/);
+  assert.match(source, /Straight Pants|straight pants/i);
+  assert.match(source, /女童（小）长裤/);
+  assert.match(source, /男童（大）裤子/);
+  assert.match(source, /男童（小）裤子/);
+});
+
+test("batch publish dialog saves quick fixes through one batched endpoint and includes size fixes", async () => {
+  const route = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const dialog = await readFile(path.join(PROJECT_ROOT, "web/src/components/pre-publish/batch-publish-dialog.tsx"), "utf8");
+
+  assert.match(route, /\/drafts\/batch-quick-fix/);
+  assert.match(route, /buildBatchPublishCheckResponse/);
+  assert.match(route, /sku_sizes/);
+  assert.match(route, /changedListingIds/);
+  assert.match(route, /for \(const listingId of changedListingIds\)/);
+  assert.match(dialog, /\/pre-publish\/drafts\/batch-quick-fix/);
+  assert.match(dialog, /skuSizeEdits/);
+  assert.match(dialog, /SHEIN 发布尺码/);
+  assert.match(dialog, /mapWithConcurrency/);
+  assert.doesNotMatch(dialog, /for \(const item of items\) \{\s*const fields = item\.fields/);
+});
+
 test("deployment preserves runtime listing image uploads outside release sync", async () => {
   const buildScript = await readFile(path.join(PROJECT_ROOT, "ci/yunxiao-build.sh"), "utf8");
   const deployScript = await readFile(path.join(PROJECT_ROOT, "ci/yunxiao-deploy.sh"), "utf8");

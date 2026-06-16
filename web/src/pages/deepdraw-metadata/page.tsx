@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Database, Loader2, RefreshCw, Search } from "lucide-react"
+import { Database, Loader2, ListTree, RefreshCw, Search } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
@@ -18,6 +18,13 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { CardTitle } from "@/components/ui/card"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -84,6 +91,56 @@ const tenantOptions = [
   "森马股份",
 ]
 
+function optionRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function optionText(value: unknown) {
+  if (value == null) return ""
+  if (typeof value === "string") return value.trim()
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  return ""
+}
+
+function optionDisplayName(option: unknown) {
+  if (typeof option !== "object" || option === null || Array.isArray(option)) return optionText(option) || "-"
+  const record = optionRecord(option)
+  return optionText(
+    record.name
+    ?? record.value
+    ?? record.label
+    ?? record.optionName
+    ?? record.option_name
+    ?? record.attribute_value
+    ?? record.text
+    ?? record.title,
+  ) || "-"
+}
+
+function optionDisplayCode(option: unknown) {
+  if (typeof option !== "object" || option === null || Array.isArray(option)) return ""
+  const record = optionRecord(option)
+  return optionText(
+    record.id
+    ?? record.code
+    ?? record.valueId
+    ?? record.value_id
+    ?? record.optionId
+    ?? record.option_id
+    ?? record.attribute_value_id
+    ?? record.key,
+  )
+}
+
+function optionRawText(option: unknown) {
+  if (typeof option === "string") return option
+  try {
+    return JSON.stringify(option)
+  } catch {
+    return String(option)
+  }
+}
+
 function useTrades(query: string, tenantName: string) {
   return useQuery<{ items: TradeRow[] }>({
     queryKey: ["deepdraw-metadata", "trades", query, tenantName],
@@ -106,6 +163,7 @@ export default function DeepdrawMetadataPage() {
   const [searchText, setSearchText] = useState("")
   const [tenantName, setTenantName] = useState("电商巴拉巴拉")
   const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null)
+  const [selectedOptionField, setSelectedOptionField] = useState<FieldRow | null>(null)
   const [syncJobId, setSyncJobId] = useState<string | null>(null)
   const query = useDebounce(searchText, 300)
   const trades = useTrades(query, tenantName)
@@ -155,6 +213,7 @@ export default function DeepdrawMetadataPage() {
 
   const syncing = syncAllMetadata.isPending || Boolean(syncJob && ["queued", "running"].includes(syncJob.status))
   const summary = syncJob?.summary
+  const selectedOptions = Array.isArray(selectedOptionField?.options_json) ? selectedOptionField.options_json : []
 
   return (
     <CompactListPage>
@@ -218,9 +277,9 @@ export default function DeepdrawMetadataPage() {
             </CompactListToolbar>
           </CompactListCardHeader>
           <CompactListCardContent>
-            <CompactListTableFrame>
+            <CompactListTableFrame className="overflow-auto">
               <Table>
-                <TableHeader>
+                <TableHeader className="sticky top-0 z-10 bg-card">
                   <TableRow>
                     <TableHead>类目 ID</TableHead>
                     <TableHead>类目名称</TableHead>
@@ -274,9 +333,9 @@ export default function DeepdrawMetadataPage() {
             </CompactListToolbar>
           </CompactListCardHeader>
           <CompactListCardContent>
-            <CompactListTableFrame>
+            <CompactListTableFrame className="overflow-auto">
               <Table>
-                <TableHeader>
+                <TableHeader className="sticky top-0 z-10 bg-card">
                   <TableRow>
                     <TableHead>字段</TableHead>
                     <TableHead>类型</TableHead>
@@ -286,29 +345,82 @@ export default function DeepdrawMetadataPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {(fields.data?.items ?? []).map((field) => (
-                    <TableRow key={field.id}>
-                      <TableCell>
-                        <div>{field.field_name}</div>
-                        <div className="font-mono text-[11px] text-muted-foreground">{field.field_id}</div>
-                      </TableCell>
-                      <TableCell>{field.field_type || "-"}</TableCell>
-                      <TableCell>
-                        <div className="flex flex-wrap gap-1">
-                          {field.required ? <Badge className="border-[#f1cccc] bg-[#fff1f1] text-[#d45656]">必填</Badge> : null}
-                          {field.sale_prop ? <Badge className="border-[#d7e5fb] bg-[#eef5ff] text-[#3772cf]">销售属性</Badge> : null}
-                        </div>
-                      </TableCell>
-                      <TableCell>{formatNumber(Array.isArray(field.options_json) ? field.options_json.length : 0)}</TableCell>
-                      <TableCell>{formatDateTime(field.synced_at)}</TableCell>
-                    </TableRow>
-                  ))}
+                  {(fields.data?.items ?? []).map((field) => {
+                    const optionCount = Array.isArray(field.options_json) ? field.options_json.length : 0
+                    return (
+                      <TableRow key={field.id}>
+                        <TableCell>
+                          <div>{field.field_name}</div>
+                          <div className="font-mono text-[11px] text-muted-foreground">{field.field_id}</div>
+                        </TableCell>
+                        <TableCell>{field.field_type || "-"}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-wrap gap-1">
+                            {field.required ? <Badge className="border-[#f1cccc] bg-[#fff1f1] text-[#d45656]">必填</Badge> : null}
+                            {field.sale_prop ? <Badge className="border-[#d7e5fb] bg-[#eef5ff] text-[#3772cf]">销售属性</Badge> : null}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          {optionCount > 0 ? (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2"
+                              onClick={() => setSelectedOptionField(field)}
+                            >
+                              <ListTree className="size-4" />
+                              查看选项 {formatNumber(optionCount)}
+                            </Button>
+                          ) : (
+                            "0"
+                          )}
+                        </TableCell>
+                        <TableCell>{formatDateTime(field.synced_at)}</TableCell>
+                      </TableRow>
+                    )
+                  })}
                 </TableBody>
               </Table>
             </CompactListTableFrame>
           </CompactListCardContent>
         </CompactListCard>
       </div>
+
+      <Dialog open={Boolean(selectedOptionField)} onOpenChange={(open) => !open && setSelectedOptionField(null)}>
+        <DialogContent className="grid max-h-[86dvh] grid-rows-[auto_minmax(0,1fr)] overflow-hidden sm:!max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>选项明细</DialogTitle>
+            <DialogDescription>
+              {selectedOptionField ? `${selectedOptionField.field_name} (${selectedOptionField.field_id})` : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 overflow-auto rounded-md border">
+            <Table>
+              <TableHeader className="sticky top-0 z-10 bg-card">
+                <TableRow>
+                  <TableHead className="w-16">序号</TableHead>
+                  <TableHead>选项名称</TableHead>
+                  <TableHead>选项编码</TableHead>
+                  <TableHead>原始值</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {selectedOptions.map((option, index) => (
+                  <TableRow key={`${selectedOptionField?.field_id ?? "option"}-${index}`}>
+                    <TableCell className="font-mono text-xs">{index + 1}</TableCell>
+                    <TableCell>{optionDisplayName(option)}</TableCell>
+                    <TableCell className="font-mono text-xs">{optionDisplayCode(option) || "-"}</TableCell>
+                    <TableCell className="max-w-[360px] truncate font-mono text-[11px] text-muted-foreground">
+                      {optionRawText(option)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </DialogContent>
+      </Dialog>
     </CompactListPage>
   )
 }

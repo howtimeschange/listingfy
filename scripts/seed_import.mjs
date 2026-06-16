@@ -122,7 +122,15 @@ async function loadTableSnapshot(client, table, sourceDir) {
     if (batch.length === 0) return;
     const values = [];
     for (const row of batch) {
-      for (const column of table.columns) values.push(row[column] ?? null);
+      const jsonColumns = new Set(table.jsonColumns ?? []);
+      for (const column of table.columns) {
+        const value = row[column] ?? null;
+        values.push(
+          jsonColumns.has(column) && value !== null && typeof value !== "string"
+            ? JSON.stringify(value)
+            : value,
+        );
+      }
     }
     await client.query(insertSql(table, batch.length), values);
     count += batch.length;

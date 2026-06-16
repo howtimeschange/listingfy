@@ -161,6 +161,12 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(metadataPage, /api\.get<.*>\(`\/deepdraw-metadata\/sync-jobs\/\$\{syncJobId\}`\)/s);
   assert.match(metadataPage, /zeroFieldCount/);
   assert.match(metadataPage, /0 字段/);
+  assert.match(metadataPage, /overflow-auto/);
+  assert.match(metadataPage, /selectedOptionField/);
+  assert.match(metadataPage, /选项明细/);
+  assert.match(metadataPage, /grid-rows-\[auto_minmax\(0,1fr\)\]/);
+  assert.match(metadataPage, /optionDisplayName/);
+  assert.match(metadataPage, /查看选项/);
   assert.match(metadataPage, /刷新类目/);
   assert.match(metadataPage, /批量拉取类目字段/);
   assert.match(metadataPage, /电商巴拉巴拉/);

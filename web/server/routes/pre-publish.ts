@@ -80,6 +80,7 @@ type RequiredAttribute = {
   attribute_mode: number | null
   attribute_status: number | null
   attribute_input_num: number | null
+  is_size_attribute?: number | null
   values_count: number
   sample_values_json: string
   values: AttributeValue[]
@@ -601,6 +602,75 @@ function activeWeights(db: ReturnType<typeof getDb>) {
   return map
 }
 
+function kidsPantsFallbackCategory(row: SourceRow): CategoryOverride | null {
+  const text = [
+    row.middle_class_name,
+    row.subclass_name,
+    row.gender_name,
+    row.age_group_name,
+    row.deepdraw_category_name,
+    row.deepdraw_title,
+    row.spu_name,
+  ].map(normalizeText).join(" ")
+  if (!/(裤|下装|straight pants|pants|trousers)/i.test(text)) return null
+
+  const gender = normalizeText(row.gender_name)
+  const isMale = gender.includes("男") || /\bboys?\b/i.test(text)
+  const isFemale = gender.includes("女") || /\bgirls?\b/i.test(text)
+  if (!isMale && !isFemale) return null
+
+  const isSmallKid = text.includes("幼童")
+    || text.includes("宝宝")
+    || text.includes("小童")
+    || text.includes("（小）")
+  const isShorts = /短裤|shorts/i.test(text)
+  const category = isMale
+    ? isShorts
+      ? {
+        category_id: isSmallKid ? 2103 : 1995,
+        product_type_id: isSmallKid ? 1516 : 1494,
+        category_name: isSmallKid ? "男童（小）短裤" : "男童（大）短裤",
+        parent: isSmallKid ? "男童（小）下装" : "男童（大）下装",
+      }
+      : {
+        category_id: isSmallKid ? 2101 : 1993,
+        product_type_id: isSmallKid ? 9603 : 9600,
+        category_name: isSmallKid ? "男童（小）裤子" : "男童（大）裤子",
+        parent: isSmallKid ? "男童（小）下装" : "男童（大）下装",
+      }
+    : isShorts
+      ? {
+        category_id: isSmallKid ? 2120 : 2008,
+        product_type_id: isSmallKid ? 1518 : 1503,
+        category_name: isSmallKid ? "女童（小）短裤" : "女童（大）短裤",
+        parent: isSmallKid ? "女童（小）下装" : "女童（大）下装",
+      }
+      : isSmallKid
+        ? {
+          category_id: 2119,
+          product_type_id: 9602,
+          category_name: "女童（小）长裤",
+          parent: "女童（小）下装",
+        }
+        : {
+          category_id: 2007,
+          product_type_id: 9601,
+          category_name: "女童（大）长裤",
+          parent: "女童（大）下装",
+        }
+
+  const genderLabel = isMale ? "男童" : "女童"
+  const ageLabel = isSmallKid ? "小" : "大"
+  return {
+    category_id: category.category_id,
+    product_type_id: category.product_type_id,
+    category_name: category.category_name,
+    path: `儿童 > ${genderLabel}（${ageLabel}）服装 > ${category.parent} > ${category.category_name}`,
+    source: "RULE_FALLBACK",
+    status: "READY",
+  }
+}
+
 function fallbackCategory(row: SourceRow) {
   const text = [
     row.middle_class_name,
@@ -614,6 +684,8 @@ function fallbackCategory(row: SourceRow) {
   const isMale = gender.includes("男")
   const isFemale = gender.includes("女")
   const isSmallKid = text.includes("幼童") || text.includes("宝宝") || text.includes("小童")
+  const pantsFallback = kidsPantsFallbackCategory(row)
+  if (pantsFallback) return pantsFallback
   if (text.includes("套装")) {
     const sweatshirt = text.includes("卫衣") || text.includes("连帽") || text.includes("针织")
     if (isMale) {
@@ -926,42 +998,48 @@ function getRequiredAttributes(
   if (!categoryId || !productTypeId) return []
   const rows = db.prepare(`
     select
-      platform,
-      category_id,
-      product_type_id,
-      attribute_id,
-      attribute_name,
-      attribute_name_en,
-      attribute_type,
-      attribute_label,
-      attribute_mode,
-      attribute_status,
-      attribute_input_num,
-      values_count,
-      sample_values_json
-    from channel_required_attribute
-    where platform = 'SHEIN'
-      and category_id = ?
-      and product_type_id = ?
+      req.platform,
+      req.category_id,
+      req.product_type_id,
+      req.attribute_id,
+      req.attribute_name,
+      req.attribute_name_en,
+      req.attribute_type,
+      req.attribute_label,
+      req.attribute_mode,
+      req.attribute_status,
+      req.attribute_input_num,
+      coalesce(attr.is_size_attribute, 0) as is_size_attribute,
+      req.values_count,
+      req.sample_values_json
+    from channel_required_attribute req
+    left join channel_attribute attr
+      on attr.platform = req.platform
+      and attr.product_type_id = req.product_type_id
+      and attr.attribute_id = req.attribute_id
+    where req.platform = 'SHEIN'
+      and req.category_id = ?
+      and req.product_type_id = ?
     union all
     select
-      platform,
+      attr.platform,
       ? as category_id,
-      product_type_id,
-      attribute_id,
-      attribute_name,
-      attribute_name_en,
-      attribute_type,
-      attribute_label,
-      attribute_mode,
-      attribute_status,
-      attribute_input_num,
-      values_count,
-      values_json as sample_values_json
+      attr.product_type_id,
+      attr.attribute_id,
+      attr.attribute_name,
+      attr.attribute_name_en,
+      attr.attribute_type,
+      attr.attribute_label,
+      attr.attribute_mode,
+      attr.attribute_status,
+      attr.attribute_input_num,
+      attr.is_size_attribute,
+      attr.values_count,
+      attr.values_json as sample_values_json
     from channel_attribute attr
-    where platform = 'SHEIN'
-      and product_type_id = ?
-      and attribute_type = 1
+    where attr.platform = 'SHEIN'
+      and attr.product_type_id = ?
+      and attr.attribute_type = 1
       and not exists (
         select 1
         from channel_required_attribute req
@@ -995,6 +1073,7 @@ function getRequiredAttributes(
     attribute_mode: asNumber(row.attribute_mode),
     attribute_status: asNumber(row.attribute_status),
     attribute_input_num: asNumber(row.attribute_input_num),
+    is_size_attribute: asNumber(row.is_size_attribute),
     values_count: Number(row.values_count ?? 0),
     sample_values_json: normalizeText(row.sample_values_json),
     values: valueStmt.all(productTypeId, Number(row.attribute_id)) as AttributeValue[],
@@ -1020,6 +1099,7 @@ function getAttributeById(
       attribute_mode,
       attribute_status,
       attribute_input_num,
+      is_size_attribute,
       values_count,
       values_json as sample_values_json
     from channel_attribute
@@ -1050,6 +1130,7 @@ function getAttributeById(
     attribute_mode: asNumber(row.attribute_mode),
     attribute_status: asNumber(row.attribute_status),
     attribute_input_num: asNumber(row.attribute_input_num),
+    is_size_attribute: asNumber(row.is_size_attribute),
     values_count: Number(row.values_count ?? 0),
     sample_values_json: normalizeText(row.sample_values_json),
     values,
@@ -1080,6 +1161,61 @@ function findEnumValue(values: AttributeValue[], needles: string[]) {
   return findEnumOption(values, needles)?.attribute_value ?? ""
 }
 
+function isSizeSaleAttribute(attr: Pick<RequiredAttribute, "attribute_type" | "attribute_label" | "attribute_name" | "attribute_name_en" | "is_size_attribute">) {
+  const text = `${normalizeText(attr.attribute_name)} ${normalizeText(attr.attribute_name_en)}`.toLowerCase()
+  return Number(attr.attribute_type ?? 0) === 1
+    && Number(attr.attribute_label ?? 0) === 0
+    && (
+      Number(attr.is_size_attribute ?? 0) === 1
+      || /尺寸|尺码|size/i.test(text)
+    )
+}
+
+function findSizeSaleAttribute(attrs: RequiredAttribute[]) {
+  return attrs.find(isSizeSaleAttribute)
+}
+
+function sizeConversionForSku(
+  sizeConversions: ReturnType<typeof activeSizeConversions>,
+  sku: SourceRow,
+) {
+  const sizeCodeKeys = sizeKeys(sku.size_code)
+  const sizeNameKeys = sizeKeys(sku.size_name)
+  return sizeCodeKeys.map((key) => sizeConversions.byCode.get(key) ?? sizeConversions.byName.get(key)).find(Boolean)
+    ?? sizeNameKeys.map((key) => sizeConversions.byName.get(key) ?? sizeConversions.byCode.get(key)).find(Boolean)
+    ?? null
+}
+
+function resolveSkuSizeSelection(
+  sizeAttr: RequiredAttribute | undefined,
+  sku: SourceRow,
+  sizeRule?: SourceRow | null,
+) {
+  const directCandidates = uniqueStrings([
+    normalizeText(sku.size_name),
+    normalizeText(sku.size_code),
+    ...sizeKeys(sku.size_name),
+    ...sizeKeys(sku.size_code),
+  ])
+  const convertedCandidates = uniqueStrings([
+    normalizeText(sizeRule?.shein_size_value),
+    ...sizeKeys(sizeRule?.shein_size_value),
+  ])
+  const directOption = sizeAttr ? findEnumOption(sizeAttr.values, directCandidates) : null
+  const convertedOption = sizeAttr ? findEnumOption(sizeAttr.values, convertedCandidates) : null
+  const option = directOption ?? convertedOption
+  const sheinSize = normalizeText(option?.attribute_value)
+    || normalizeText(sizeRule?.shein_size_value)
+    || normalizeText(sku.size_name)
+    || normalizeText(sku.size_code)
+  return {
+    sheinSize,
+    option,
+    directOption,
+    convertedOption,
+  }
+}
+
 function renderKindForAttribute(attr: RequiredAttribute): FillField["render_kind"] {
   if (attr.attribute_mode === 1) return "multi_enum"
   if (attr.attribute_mode === 2 || attr.attribute_mode === 3) return "single_enum"
@@ -1095,6 +1231,7 @@ function attributeFillMeta(attr: RequiredAttribute) {
     attribute_mode: attr.attribute_mode,
     attribute_status: attr.attribute_status,
     attribute_input_num: attr.attribute_input_num,
+    is_size_attribute: attr.is_size_attribute,
     render_kind: renderKindForAttribute(attr),
     options: attr.values.slice(0, 320),
   }
@@ -1333,6 +1470,7 @@ function buildRow({
   const storedCategory = ignoreStoredCategory ? null : readStoredCategoryOverride(fills, spuCode)
   const category = categoryOverride ?? storedCategory ?? resolveCategory(row)
   const attrs = getRequiredAttributes(db, category.category_id, category.product_type_id)
+  const sizeAttr = findSizeSaleAttribute(attrs)
   const priceConfig = getSheinPriceConfig(db)
   const discountRule = discounts.get(spuCode)
   const discount = Number(discountRule?.discount ?? priceConfig.defaultDiscount)
@@ -1347,10 +1485,8 @@ function buildRow({
   const compositionText = firstField(fields, ["材质成分", "25面料成分", "详情页面料", "材质"])
   const weightCoverage = skus.filter((sku) => weights.has(`sku:${normalizeText(sku.sku_code)}`)).length
   const sizeCoverage = skus.filter((sku) => {
-    const codeKeys = sizeKeys(sku.size_code)
-    const nameKeys = sizeKeys(sku.size_name)
-    return codeKeys.some((key) => sizeConversions.byCode.has(key) || sizeConversions.byName.has(key))
-      || nameKeys.some((key) => sizeConversions.byCode.has(key) || sizeConversions.byName.has(key))
+    const sizeRule = sizeConversionForSku(sizeConversions, sku)
+    return Boolean(resolveSkuSizeSelection(sizeAttr, sku, sizeRule).option)
   }).length
   const imageCoverage = skcs.filter((skc) =>
     normalizeText(skc.tmall_color_image_url) || normalizeText(skc.tmall_color_url) || normalizeText(skc.pic_url),
@@ -1500,7 +1636,7 @@ function buildRow({
       }
     }
 
-    if (attr.attribute_name === "尺寸" && sizeCoverage === skus.length && skus.length > 0) {
+    if (isSizeSaleAttribute(attr) && sizeCoverage === skus.length && skus.length > 0) {
       return {
         key,
         label: attr.attribute_name,
@@ -1536,8 +1672,8 @@ function buildRow({
       label: attr.attribute_name,
       value: null,
       source: "AI/人工",
-      status: attr.attribute_name === "尺寸" ? "MISSING" : "NEEDS_AI",
-      note: attr.attribute_name === "尺寸"
+      status: isSizeSaleAttribute(attr) ? "MISSING" : "NEEDS_AI",
+      note: isSizeSaleAttribute(attr)
         ? "由 SKU 尺码转换明细补齐"
         : "需要结合商品档案和枚举值判断",
       ...attributeFillMeta(attr),
@@ -1867,7 +2003,7 @@ function upsertListingChildren(db: ReturnType<typeof getDb>, listingId: number, 
   const pkg = resolvePackageRule(db, sourceRow)
   const attrs = getRequiredAttributes(db, readiness.category.category_id, readiness.category.product_type_id)
   const colorAttr = attrs.find((attr) => attr.attribute_type === 1 && attr.attribute_label === 1)
-  const sizeAttr = attrs.find((attr) => attr.attribute_type === 1 && attr.attribute_name === "尺寸")
+  const sizeAttr = findSizeSaleAttribute(attrs)
 
   const skcInsert = db.prepare(`
     insert into listing_skc (
@@ -1971,12 +2107,10 @@ function upsertListingChildren(db: ReturnType<typeof getDb>, listingId: number, 
     for (const sku of skus.filter((item) => normalizeText(item.skc_code) === skcCode)) {
       const skuCode = normalizeText(sku.sku_code)
       if (!skuCode) continue
-      const sizeCodeKeys = sizeKeys(sku.size_code)
-      const sizeNameKeys = sizeKeys(sku.size_name)
-      const sizeRule = sizeCodeKeys.map((key) => sizeConversions.byCode.get(key) ?? sizeConversions.byName.get(key)).find(Boolean)
-        ?? sizeNameKeys.map((key) => sizeConversions.byName.get(key) ?? sizeConversions.byCode.get(key)).find(Boolean)
-      const sheinSize = normalizeText(sizeRule?.shein_size_value)
-      const sizeOption = sizeAttr ? findEnumOption(sizeAttr.values, [sheinSize, sku.size_name, sku.size_code]) : null
+      const sizeRule = sizeConversionForSku(sizeConversions, sku)
+      const sizeSelection = resolveSkuSizeSelection(sizeAttr, sku, sizeRule)
+      const sheinSize = sizeSelection.sheinSize
+      const sizeOption = sizeSelection.option
       const priceTag = Number(sku.price_tag ?? sourceRow.price_tag ?? 0)
       const costPrice = priceTag > 0 ? Number((priceTag * discount).toFixed(2)) : null
       const weightRow = weights.get(`sku:${skuCode}`)
@@ -2468,7 +2602,7 @@ function getMappedSizeCharts({
   sizeTableRows: SourceRow[]
 }) {
   const attrs = getRequiredAttributes(db, asNumber(listing.platform_category_id), asNumber(listing.product_type_id))
-  const sizeAttr = attrs.find((attr) => attr.attribute_name.includes("尺寸"))
+  const sizeAttr = findSizeSaleAttribute(attrs)
   const categoryName = normalizeText(listing.platform_category_name)
   const wantsSet = categoryName.includes("套装")
   const isChannelSpecificTable = (table: SourceRow) =>
@@ -3865,7 +3999,7 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
   )
   const attrs = detail.sale_attributes as RequiredAttribute[]
   const colorAttr = attrs.find((attr) => attr.attribute_type === 1 && attr.attribute_label === 1)
-  const sizeAttr = attrs.find((attr) => attr.attribute_type === 1 && attr.attribute_label === 0)
+  const sizeAttr = findSizeSaleAttribute(attrs)
   const assets = detail.assets as SourceRow[]
   const selectedAssetBySkc = new Map<string, SourceRow[]>()
   for (const asset of assets) {
@@ -4320,6 +4454,299 @@ function updateListingSkcColors({
   }
 }
 
+function persistDraftFields({
+  db,
+  listing,
+  listingId,
+  fields,
+  savedFrom,
+}: {
+  db: ReturnType<typeof getDb>
+  listing: ListingRow
+  listingId: number
+  fields: Array<{
+    field_key?: unknown
+    field_label?: unknown
+    field_value?: unknown
+    skc_code?: string | null
+    sku_code?: string | null
+    source?: unknown
+    confidence?: number | null
+  }>
+  savedFrom: string
+}) {
+  for (const field of fields) {
+    const fieldKey = normalizeText(field.field_key)
+    if (!fieldKey) continue
+    const scopeKey = buildScopeKey({
+      spuCode: listing.spu_code,
+      skcCode: field.skc_code,
+      skuCode: field.sku_code,
+      fieldKey,
+    })
+    db.prepare(`
+      insert into listing_field_fill (
+        scope_key,
+        spu_code,
+        skc_code,
+        sku_code,
+        field_key,
+        field_label,
+        field_value,
+        source,
+        confidence,
+        status,
+        payload_json,
+        updated_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      on conflict(scope_key) do update set
+        field_label = excluded.field_label,
+        field_value = excluded.field_value,
+        source = excluded.source,
+        confidence = excluded.confidence,
+        status = 'ACTIVE',
+        payload_json = excluded.payload_json,
+        updated_at = excluded.updated_at
+    `).run(
+      scopeKey,
+      listing.spu_code,
+      field.skc_code ?? null,
+      field.sku_code ?? null,
+      fieldKey,
+      normalizeText(field.field_label),
+      normalizeFillFieldValue(fieldKey, field.field_label, field.field_value),
+      normalizeText(field.source ?? "MANUAL") || "MANUAL",
+      field.confidence ?? null,
+      JSON.stringify({ listing_id: listingId, saved_from: savedFrom }),
+    )
+  }
+}
+
+function applyDraftCategorySelection({
+  db,
+  listing,
+  listingId,
+  categoryId,
+  productTypeId,
+  source,
+}: {
+  db: ReturnType<typeof getDb>
+  listing: ListingRow
+  listingId: number
+  categoryId: number | null
+  productTypeId: number | null
+  source: string
+}) {
+  if (!categoryId && !productTypeId) return false
+  if (!categoryId || !productTypeId) {
+    throw new HTTPException(400, { message: "批量类目需要同时填写 Category ID 和 Product Type" })
+  }
+  const category = db.prepare(`
+    select *
+    from channel_category
+    where platform = 'SHEIN'
+      and category_id = ?
+      and product_type_id = ?
+    limit 1
+  `).get(categoryId, productTypeId) as SourceRow | undefined
+  if (!category) {
+    throw new HTTPException(404, { message: `SHEIN 类目不存在：${categoryId}/${productTypeId}` })
+  }
+  db.prepare(`
+    update listing
+    set platform_category_id = ?,
+      product_type_id = ?,
+      platform_category_name = ?,
+      platform_category_path = ?,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+  `).run(categoryId, productTypeId, category.category_name, category.path, listingId)
+  persistFill({
+    db,
+    spuCode: listing.spu_code,
+    fieldKey: "category",
+    fieldLabel: "SHEIN 类目",
+    fieldValue: normalizeText(category.category_name),
+    source,
+    confidence: 1,
+    payload: {
+      category_id: categoryId,
+      product_type_id: productTypeId,
+      category_name: category.category_name,
+      path: category.path,
+      source,
+    },
+  })
+  return true
+}
+
+function updateListingImageConfirmations({
+  db,
+  listingId,
+  imageConfirmedSkcIds,
+}: {
+  db: ReturnType<typeof getDb>
+  listingId: number
+  imageConfirmedSkcIds?: unknown[]
+}) {
+  if (!Array.isArray(imageConfirmedSkcIds)) return
+  const confirmedSkcIds = new Set(imageConfirmedSkcIds.map(Number).filter(Number.isFinite))
+  db.prepare(`
+    update listing_skc
+    set image_confirmed = case when id in (
+      ${confirmedSkcIds.size ? Array.from(confirmedSkcIds).map(() => "?").join(",") : "null"}
+    ) then 1 else 0 end,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where listing_id = ?
+  `).run(...Array.from(confirmedSkcIds), listingId)
+}
+
+function buildBatchPublishCheckResponse(db: ReturnType<typeof getDb>, listingIds: number[]) {
+  const items = listingIds.map((listingId) => {
+    const detail = getListingDetail(db, listingId)
+    if (!detail) {
+      return {
+        listing_id: listingId,
+        ok: false,
+        errors: ["草稿不存在"],
+        fields: [],
+        quick_fixes: {
+          fields: [],
+          sku_sizes: [],
+          sku_weights: [],
+          sku_commercials: [],
+          image_confirmations: [],
+        },
+      }
+    }
+    const preview = buildPublishPayload(db, listingId, { allowLocalImages: true, requirePreparedImages: false })
+    const missingSizeSkuCodes = new Set(
+      preview.errors
+        .map((error) => normalizeText(error).match(/^(.+?) 缺 SHEIN 尺码枚举$/)?.[1])
+        .filter(Boolean) as string[],
+    )
+    const missingWeightSkuCodes = new Set(
+      preview.errors
+        .map((error) => normalizeText(error).match(/^(.+?) 缺 SKU 毛重$/)?.[1])
+        .filter(Boolean) as string[],
+    )
+    const imageMissingSkcCodes = new Set(
+      preview.errors
+        .map((error) => normalizeText(error).match(/^(.+?) 图片未确认$/)?.[1])
+        .filter(Boolean) as string[],
+    )
+    const groups = (detail.readiness?.field_groups ?? []) as FieldGroup[]
+    const fields = groups.flatMap((group) =>
+      group.fields
+        .filter((field) => field.status !== "READY")
+        .map((field) => ({
+          field_key: field.key,
+          field_label: field.label,
+          field_value: field.value ?? "",
+          status: field.status,
+          source: field.source,
+          note: field.note ?? null,
+          group: group.group,
+        })),
+    )
+    const sizeAttribute = findSizeSaleAttribute(detail.sale_attributes as RequiredAttribute[])
+    const skuSizes = (detail.skus as SourceRow[])
+      .filter((sku) => {
+        const sizePayload = parseJsonObject(sku.size_attribute_payload_json)
+        return missingSizeSkuCodes.has(normalizeText(sku.sku_code))
+          || (
+            missingSizeSkuCodes.size > 0
+            && Number(sku.selected_for_publish ?? 1) === 1
+            && !asPositiveNumber(sizePayload.attribute_value_id)
+          )
+      })
+      .map((sku) => {
+        const sizePayload = parseJsonObject(sku.size_attribute_payload_json)
+        return {
+          sku_id: sku.id,
+          sku_code: sku.sku_code,
+          skc_code: sku.skc_code,
+          size_name: sku.size_name,
+          shein_size_value: sku.shein_size_value,
+          attribute_value_id: asPositiveNumber(sizePayload.attribute_value_id),
+          attribute_value: normalizeText(sizePayload.attribute_value) || normalizeText(sku.shein_size_value),
+          selected_for_publish: Number(sku.selected_for_publish ?? 1) === 1,
+          options: sizeAttribute?.values ?? [],
+        }
+      })
+    const skuWeights = (detail.skus as SourceRow[])
+      .filter((sku) =>
+        missingWeightSkuCodes.has(normalizeText(sku.sku_code))
+        || (
+          missingWeightSkuCodes.size > 0
+          && Number(sku.selected_for_publish ?? 1) === 1
+          && !asPositiveNumber(sku.package_weight_g)
+        ),
+      )
+      .map((sku) => ({
+        sku_id: sku.id,
+        sku_code: sku.sku_code,
+        skc_code: sku.skc_code,
+        size_name: sku.size_name,
+        package_weight_g: sku.package_weight_g,
+        selected_for_publish: Number(sku.selected_for_publish ?? 1) === 1,
+      }))
+    const imageConfirmations = (detail.skcs as SourceRow[])
+      .filter((skc) =>
+        imageMissingSkcCodes.has(normalizeText(skc.skc_code))
+        || Number(skc.image_confirmed ?? 0) === 1
+        || (
+          imageMissingSkcCodes.size > 0
+          && Number(skc.selected_for_publish ?? 1) === 1
+        ),
+      )
+      .map((skc) => ({
+        skc_id: skc.id,
+        skc_code: skc.skc_code,
+        color_name: skc.color_name,
+        image_url: skc.image_url,
+        selected_for_publish: Number(skc.selected_for_publish ?? 1) === 1,
+        confirmed: Number(skc.image_confirmed ?? 0) === 1,
+        required: imageMissingSkcCodes.has(normalizeText(skc.skc_code)),
+      }))
+    return {
+      listing_id: listingId,
+      spu_code: detail.listing.spu_code,
+      title: detail.listing.title,
+      category_name: detail.listing.platform_category_name,
+      ok: preview.errors.length === 0,
+      errors: preview.errors,
+      fields,
+      quick_fixes: {
+        fields,
+        sku_sizes: skuSizes,
+        sku_weights: skuWeights,
+        sku_commercials: (detail.skus as SourceRow[])
+          .filter((sku) => Number(sku.selected_for_publish ?? 1) === 1)
+          .map((sku) => ({
+            sku_id: sku.id,
+            sku_code: sku.sku_code,
+            skc_code: sku.skc_code,
+            size_name: sku.size_name,
+            cost_price: sku.cost_price,
+            currency: sku.currency,
+            package_length_cm: sku.package_length_cm,
+            package_width_cm: sku.package_width_cm,
+            package_height_cm: sku.package_height_cm,
+          })),
+        image_confirmations: imageConfirmations,
+      },
+    }
+  })
+
+  return {
+    ok: items.every((item) => item.ok),
+    items,
+    blocker_count: items.reduce((sum, item) => sum + item.errors.length, 0),
+  }
+}
+
 prePublish.get("/platforms", (c) => {
   const db = getDb()
   const sheinAccount = getDefaultChannelAccount(db, "SHEIN")
@@ -4668,42 +5095,13 @@ prePublish.patch("/drafts/:id/category", async (c) => {
   if (!categoryId || !productTypeId) {
     throw new HTTPException(400, { message: "请选择 SHEIN 叶子类目" })
   }
-  const category = db.prepare(`
-    select *
-    from channel_category
-    where platform = 'SHEIN'
-      and category_id = ?
-      and product_type_id = ?
-    limit 1
-  `).get(categoryId, productTypeId) as SourceRow | undefined
-  if (!category) {
-    throw new HTTPException(404, { message: "SHEIN 类目不存在" })
-  }
-
-  db.prepare(`
-    update listing
-    set platform_category_id = ?,
-      product_type_id = ?,
-      platform_category_name = ?,
-      platform_category_path = ?,
-      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-    where id = ?
-  `).run(categoryId, productTypeId, category.category_name, category.path, listingId)
-  persistFill({
+  applyDraftCategorySelection({
     db,
-    spuCode: listing.spu_code,
-    fieldKey: "category",
-    fieldLabel: "SHEIN 类目",
-    fieldValue: normalizeText(category.category_name),
+    listing,
+    listingId,
+    categoryId,
+    productTypeId,
     source: "MANUAL_CATEGORY_TREE",
-    confidence: 1,
-    payload: {
-      category_id: categoryId,
-      product_type_id: productTypeId,
-      category_name: category.category_name,
-      path: category.path,
-      source: "MANUAL_CATEGORY_TREE",
-    },
   })
   const refreshed = refreshListingAfterFill(db, listingId, "人工调整 SHEIN 类目")
   if (!refreshed) {
@@ -4841,52 +5239,7 @@ prePublish.patch("/drafts/:id/fields", async (c) => {
     throw new HTTPException(400, { message: "没有要保存的字段" })
   }
   const transaction = db.transaction(() => {
-    for (const field of fields) {
-      const fieldKey = normalizeText(field.field_key)
-      if (!fieldKey) continue
-      const scopeKey = buildScopeKey({
-        spuCode: listing.spu_code,
-        skcCode: field.skc_code,
-        skuCode: field.sku_code,
-        fieldKey,
-      })
-      db.prepare(`
-        insert into listing_field_fill (
-          scope_key,
-          spu_code,
-          skc_code,
-          sku_code,
-          field_key,
-          field_label,
-          field_value,
-          source,
-          confidence,
-          status,
-          payload_json,
-          updated_at
-        )
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-        on conflict(scope_key) do update set
-          field_label = excluded.field_label,
-          field_value = excluded.field_value,
-          source = excluded.source,
-          confidence = excluded.confidence,
-          status = 'ACTIVE',
-          payload_json = excluded.payload_json,
-          updated_at = excluded.updated_at
-      `).run(
-        scopeKey,
-        listing.spu_code,
-        field.skc_code ?? null,
-        field.sku_code ?? null,
-        fieldKey,
-        normalizeText(field.field_label),
-        normalizeFillFieldValue(fieldKey, field.field_label, field.field_value),
-        normalizeText(field.source ?? "MANUAL") || "MANUAL",
-        field.confidence ?? null,
-        JSON.stringify({ listing_id: listingId, saved_from: "draft_detail" }),
-      )
-    }
+    persistDraftFields({ db, listing, listingId, fields, savedFrom: "draft_detail" })
   })
   transaction()
   const refreshed = refreshListingAfterFill(db, listingId, `人工编辑 ${fields.length} 个字段`)
@@ -4954,55 +5307,9 @@ prePublish.post("/drafts/:id/save", async (c) => {
   const hasImageConfirmation = Array.isArray(body.image_confirmed_skc_ids)
   const selectedSkcIds = new Set((body.selected_skc_ids ?? []).map(Number).filter(Number.isFinite))
   const selectedSkuIds = new Set((body.selected_sku_ids ?? []).map(Number).filter(Number.isFinite))
-  const confirmedSkcIds = new Set((body.image_confirmed_skc_ids ?? []).map(Number).filter(Number.isFinite))
 
   const transaction = db.transaction(() => {
-    for (const field of fields) {
-      const fieldKey = normalizeText(field.field_key)
-      if (!fieldKey) continue
-      const scopeKey = buildScopeKey({
-        spuCode: listing.spu_code,
-        skcCode: field.skc_code,
-        skuCode: field.sku_code,
-        fieldKey,
-      })
-      db.prepare(`
-        insert into listing_field_fill (
-          scope_key,
-          spu_code,
-          skc_code,
-          sku_code,
-          field_key,
-          field_label,
-          field_value,
-          source,
-          confidence,
-          status,
-          payload_json,
-          updated_at
-        )
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-        on conflict(scope_key) do update set
-          field_label = excluded.field_label,
-          field_value = excluded.field_value,
-          source = excluded.source,
-          confidence = excluded.confidence,
-          status = 'ACTIVE',
-          payload_json = excluded.payload_json,
-          updated_at = excluded.updated_at
-      `).run(
-        scopeKey,
-        listing.spu_code,
-        field.skc_code ?? null,
-        field.sku_code ?? null,
-        fieldKey,
-        normalizeText(field.field_label),
-        normalizeFillFieldValue(fieldKey, field.field_label, field.field_value),
-        normalizeText(field.source ?? "MANUAL") || "MANUAL",
-        field.confidence ?? null,
-        JSON.stringify({ listing_id: listingId, saved_from: "draft_whole_save" }),
-      )
-    }
+    persistDraftFields({ db, listing, listingId, fields, savedFrom: "draft_whole_save" })
 
     if (hasSkcSelection) {
       db.prepare(`
@@ -5034,16 +5341,7 @@ prePublish.post("/drafts/:id/save", async (c) => {
     updateListingSkcColors({ db, listingId, skcColorValues })
     if (hasManualSizeChartRows) persistManualSizeChart({ db, listing, rows: manualSizeChartRows })
 
-    if (hasImageConfirmation) {
-      db.prepare(`
-        update listing_skc
-        set image_confirmed = case when id in (
-          ${confirmedSkcIds.size ? Array.from(confirmedSkcIds).map(() => "?").join(",") : "null"}
-        ) then 1 else 0 end,
-          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        where listing_id = ?
-      `).run(...Array.from(confirmedSkcIds), listingId)
-    }
+    if (hasImageConfirmation) updateListingImageConfirmations({ db, listingId, imageConfirmedSkcIds: body.image_confirmed_skc_ids })
   })
   transaction()
 
@@ -5787,116 +6085,122 @@ prePublish.post("/drafts/batch-publish-check", async (c) => {
     throw new HTTPException(400, { message: "请先勾选要发布的草稿" })
   }
 
-  const items = listingIds.map((listingId) => {
-    const detail = getListingDetail(db, listingId)
-    if (!detail) {
-      return {
-        listing_id: listingId,
-        ok: false,
-        errors: ["草稿不存在"],
-        fields: [],
-        quick_fixes: {
-          fields: [],
-          sku_weights: [],
-          sku_commercials: [],
-          image_confirmations: [],
-        },
-      }
-    }
-    const preview = buildPublishPayload(db, listingId, { allowLocalImages: true, requirePreparedImages: false })
-    const missingWeightSkuCodes = new Set(
-      preview.errors
-        .map((error) => normalizeText(error).match(/^(.+?) 缺 SKU 毛重$/)?.[1])
-        .filter(Boolean) as string[],
-    )
-    const imageMissingSkcCodes = new Set(
-      preview.errors
-        .map((error) => normalizeText(error).match(/^(.+?) 图片未确认$/)?.[1])
-        .filter(Boolean) as string[],
-    )
-    const groups = (detail.readiness?.field_groups ?? []) as FieldGroup[]
-    const fields = groups.flatMap((group) =>
-      group.fields
-        .filter((field) => field.status !== "READY")
-        .map((field) => ({
-          field_key: field.key,
-          field_label: field.label,
-          field_value: field.value ?? "",
-          status: field.status,
-          source: field.source,
-          note: field.note ?? null,
-          group: group.group,
-        })),
-    )
-    const skuWeights = (detail.skus as SourceRow[])
-      .filter((sku) =>
-        missingWeightSkuCodes.has(normalizeText(sku.sku_code))
-        || (
-          missingWeightSkuCodes.size > 0
-          && Number(sku.selected_for_publish ?? 1) === 1
-          && !asPositiveNumber(sku.package_weight_g)
-        ),
-      )
-      .map((sku) => ({
-        sku_id: sku.id,
-        sku_code: sku.sku_code,
-        skc_code: sku.skc_code,
-        size_name: sku.size_name,
-        package_weight_g: sku.package_weight_g,
-        selected_for_publish: Number(sku.selected_for_publish ?? 1) === 1,
-      }))
-    const imageConfirmations = (detail.skcs as SourceRow[])
-      .filter((skc) =>
-        imageMissingSkcCodes.has(normalizeText(skc.skc_code))
-        || Number(skc.image_confirmed ?? 0) === 1
-        || (
-          imageMissingSkcCodes.size > 0
-          && Number(skc.selected_for_publish ?? 1) === 1
-        ),
-      )
-      .map((skc) => ({
-        skc_id: skc.id,
-        skc_code: skc.skc_code,
-        color_name: skc.color_name,
-        image_url: skc.image_url,
-        selected_for_publish: Number(skc.selected_for_publish ?? 1) === 1,
-        confirmed: Number(skc.image_confirmed ?? 0) === 1,
-        required: imageMissingSkcCodes.has(normalizeText(skc.skc_code)),
-      }))
-    return {
-      listing_id: listingId,
-      spu_code: detail.listing.spu_code,
-      title: detail.listing.title,
-      category_name: detail.listing.platform_category_name,
-      ok: preview.errors.length === 0,
-      errors: preview.errors,
-      fields,
-      quick_fixes: {
-        fields,
-        sku_weights: skuWeights,
-        sku_commercials: (detail.skus as SourceRow[])
-          .filter((sku) => Number(sku.selected_for_publish ?? 1) === 1)
-          .map((sku) => ({
-            sku_id: sku.id,
-            sku_code: sku.sku_code,
-            skc_code: sku.skc_code,
-            size_name: sku.size_name,
-            cost_price: sku.cost_price,
-            currency: sku.currency,
-            package_length_cm: sku.package_length_cm,
-            package_width_cm: sku.package_width_cm,
-            package_height_cm: sku.package_height_cm,
-          })),
-        image_confirmations: imageConfirmations,
-      },
-    }
-  })
+  return c.json(buildBatchPublishCheckResponse(db, listingIds))
+})
 
-  return c.json({
-    ok: items.every((item) => item.ok),
-    items,
-    blocker_count: items.reduce((sum, item) => sum + item.errors.length, 0),
+prePublish.post("/drafts/batch-quick-fix", async (c) => {
+  const db = getDb()
+  const body = await c.req.json().catch(() => ({})) as {
+    listing_fixes?: Array<{
+      listing_id?: unknown
+      fields?: Array<{
+        field_key?: unknown
+        field_label?: unknown
+        field_value?: unknown
+        skc_code?: string | null
+        sku_code?: string | null
+        source?: unknown
+        confidence?: number | null
+      }>
+      sku_size_values?: Array<{
+        sku_id?: unknown
+        shein_size_value?: unknown
+        attribute_value_id?: unknown
+        attribute_value?: unknown
+      }>
+      sku_weight_values?: Array<{
+        sku_id?: unknown
+        package_weight_g?: unknown
+      }>
+      sku_commercial_values?: Array<{
+        sku_id?: unknown
+        cost_price?: unknown
+        currency?: unknown
+        package_length_cm?: unknown
+        package_width_cm?: unknown
+        package_height_cm?: unknown
+      }>
+      image_confirmed_skc_ids?: unknown[]
+      category?: {
+        category_id?: unknown
+        product_type_id?: unknown
+      }
+    }>
+  }
+  const listingFixes = Array.isArray(body.listing_fixes) ? body.listing_fixes : []
+  const listingIds = Array.from(new Set(
+    listingFixes
+      .map((item) => Number(item.listing_id))
+      .filter((id) => Number.isFinite(id) && id > 0),
+  ))
+  if (listingIds.length === 0) {
+    throw new HTTPException(400, { message: "没有要保存的批量调整" })
+  }
+
+  const changedListingIds = new Set<number>()
+  const transaction = db.transaction(() => {
+    for (const fix of listingFixes) {
+      const listingId = Number(fix.listing_id)
+      if (!Number.isFinite(listingId) || listingId <= 0) continue
+      const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
+      if (!listing) continue
+      const fields = Array.isArray(fix.fields) ? fix.fields : []
+      const skuSizeValues = Array.isArray(fix.sku_size_values) ? fix.sku_size_values : []
+      const skuWeightValues = Array.isArray(fix.sku_weight_values) ? fix.sku_weight_values : []
+      const skuCommercialValues = Array.isArray(fix.sku_commercial_values) ? fix.sku_commercial_values : []
+      const hasCategoryChange = Boolean(fix.category?.category_id || fix.category?.product_type_id)
+      const hasImageConfirmationChange = Array.isArray(fix.image_confirmed_skc_ids)
+      const hasChanges = fields.length > 0
+        || skuSizeValues.length > 0
+        || skuWeightValues.length > 0
+        || skuCommercialValues.length > 0
+        || hasCategoryChange
+        || hasImageConfirmationChange
+      persistDraftFields({
+        db,
+        listing,
+        listingId,
+        fields,
+        savedFrom: "draft_batch_quick_fix",
+      })
+      applyDraftCategorySelection({
+        db,
+        listing,
+        listingId,
+        categoryId: asPositiveNumber(fix.category?.category_id),
+        productTypeId: asPositiveNumber(fix.category?.product_type_id),
+        source: "MANUAL_BATCH_FIX",
+      })
+      updateListingSkuSizes({
+        db,
+        listingId,
+        skuSizeValues,
+      })
+      updateListingSkuWeights({
+        db,
+        listingId,
+        skuWeightValues,
+      })
+      updateListingSkuCommercials({
+        db,
+        listingId,
+        skuCommercialValues,
+      })
+      updateListingImageConfirmations({
+        db,
+        listingId,
+        imageConfirmedSkcIds: fix.image_confirmed_skc_ids,
+      })
+      if (hasChanges) changedListingIds.add(listingId)
+    }
   })
+  transaction()
+
+  for (const listingId of changedListingIds) {
+    refreshListingAfterFill(db, listingId, "批量快速调整发布阻断项")
+  }
+
+  return c.json(buildBatchPublishCheckResponse(db, listingIds))
 })
 
 prePublish.post("/drafts/:id/publish", async (c) => {

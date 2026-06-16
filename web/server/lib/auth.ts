@@ -43,6 +43,30 @@ function expiresAt() {
   return new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString()
 }
 
+export function secureCookieFromRequest({
+  requestUrl,
+  forwardedProto,
+}: {
+  requestUrl?: string
+  forwardedProto?: string | null
+}) {
+  const override = process.env.LISTINGIFY_COOKIE_SECURE?.trim().toLowerCase()
+  if (["1", "true", "yes", "on"].includes(override ?? "")) return true
+  if (["0", "false", "no", "off"].includes(override ?? "")) return false
+
+  const proto = String(forwardedProto ?? "")
+    .split(",")[0]
+    .trim()
+    .toLowerCase()
+  if (proto) return proto === "https"
+
+  try {
+    return new URL(requestUrl ?? "").protocol === "https:"
+  } catch {
+    return false
+  }
+}
+
 function readPositiveInteger(value: string | undefined, fallback: number, max: number) {
   const number = Number(value ?? fallback)
   if (!Number.isFinite(number)) return fallback
@@ -212,7 +236,10 @@ export function createSession(c: Context, db: SyncPostgresDatabase, userId: numb
     path: "/",
     httpOnly: true,
     sameSite: "Lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: secureCookieFromRequest({
+      requestUrl: c.req.url,
+      forwardedProto: c.req.header("x-forwarded-proto"),
+    }),
     maxAge: SESSION_TTL_DAYS * 24 * 60 * 60,
   })
   return sessionId

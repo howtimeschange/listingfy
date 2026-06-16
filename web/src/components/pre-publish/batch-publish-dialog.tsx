@@ -25,6 +25,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 interface BlockingField {
   field_key: string
@@ -34,6 +41,12 @@ interface BlockingField {
   source: string
   note: string | null
   group: string
+}
+
+interface AttributeOption {
+  attribute_value_id: number
+  attribute_value: string
+  attribute_value_en: string | null
 }
 
 interface BatchPublishCheckItem {
@@ -46,6 +59,17 @@ interface BatchPublishCheckItem {
   fields: BlockingField[]
   quick_fixes?: {
     fields?: BlockingField[]
+    sku_sizes?: Array<{
+      sku_id: number
+      sku_code: string
+      skc_code: string | null
+      size_name: string | null
+      shein_size_value: string | null
+      attribute_value_id: number | null
+      attribute_value: string | null
+      selected_for_publish?: boolean
+      options: AttributeOption[]
+    }>
     sku_weights: Array<{
       sku_id: number
       sku_code: string
@@ -110,7 +134,9 @@ function hasQuickAdjustments(item: BatchPublishCheckItem) {
   const quickFixes = item.quick_fixes
   return Boolean(
     item.fields.length
+    || quickFixes?.sku_sizes?.length
     || quickFixes?.sku_weights.length
+    || quickFixes?.sku_commercials?.length
     || quickFixes?.image_confirmations.length,
   )
 }
@@ -121,6 +147,37 @@ function uniqueListingIds(listingIds: number[]) {
       .map(Number)
       .filter((id) => Number.isFinite(id) && id > 0),
   ))
+}
+
+function optionValue(option: AttributeOption) {
+  return String(option.attribute_value_id)
+}
+
+function optionLabel(option: AttributeOption) {
+  return option.attribute_value_en ? `${option.attribute_value} / ${option.attribute_value_en}` : option.attribute_value
+}
+
+function selectedOption(options: AttributeOption[] | undefined, value: string) {
+  if (!options?.length) return null
+  return options.find((option) => String(option.attribute_value_id) === value || option.attribute_value === value) ?? null
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+) {
+  const results = new Array<R>(items.length)
+  let nextIndex = 0
+  const workers = Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex
+      nextIndex += 1
+      results[index] = await worker(items[index], index)
+    }
+  })
+  await Promise.all(workers)
+  return results
 }
 
 export function BatchPublishDialog({
@@ -138,6 +195,7 @@ export function BatchPublishDialog({
   const [checkedListingIds, setCheckedListingIds] = useState<number[]>([])
   const [batchCheck, setBatchCheck] = useState<BatchPublishCheckResponse | null>(null)
   const [fieldEdits, setFieldEdits] = useState<Record<string, string>>({})
+  const [skuSizeEdits, setSkuSizeEdits] = useState<Record<string, string>>({})
   const [skuWeightEdits, setSkuWeightEdits] = useState<Record<string, string>>({})
   const [commonFieldEdits, setCommonFieldEdits] = useState({
     titleEn: "",
@@ -155,11 +213,17 @@ export function BatchPublishDialog({
   function applyBatchCheck(result: BatchPublishCheckResponse) {
     setBatchCheck(result)
     const nextEdits: Record<string, string> = {}
+    const nextSizes: Record<string, string> = {}
     const nextWeights: Record<string, string> = {}
     const nextConfirmations: Record<string, boolean> = {}
     for (const item of result.items) {
       for (const field of item.fields) {
         nextEdits[batchEditKey(item.listing_id, field.field_key)] = String(field.field_value ?? "")
+      }
+      for (const sku of item.quick_fixes?.sku_sizes ?? []) {
+        nextSizes[batchEditKey(item.listing_id, sku.sku_id)] = sku.attribute_value_id
+          ? String(sku.attribute_value_id)
+          : String(sku.shein_size_value ?? sku.attribute_value ?? sku.size_name ?? "")
       }
       for (const sku of item.quick_fixes?.sku_weights ?? []) {
         nextWeights[batchEditKey(item.listing_id, sku.sku_id)] = String(sku.package_weight_g ?? 500)
@@ -169,6 +233,7 @@ export function BatchPublishDialog({
       }
     }
     setFieldEdits(nextEdits)
+    setSkuSizeEdits(nextSizes)
     setSkuWeightEdits(nextWeights)
     setCommonFieldEdits({ titleEn: "", categoryId: "", productTypeId: "" })
     setCommonPackageEdits({ weightG: "", lengthCm: "", widthCm: "", heightCm: "" })
@@ -199,69 +264,77 @@ export function BatchPublishDialog({
 
   const saveBlockingFieldsMutation = useMutation({
     mutationFn: async (items: BatchPublishCheckItem[]) => {
-      for (const item of items) {
-        const fields = item.fields
-          .map((field) => ({
-            field_key: field.field_key,
-            field_label: field.field_label,
-            field_value: fieldEdits[batchEditKey(item.listing_id, field.field_key)] ?? String(field.field_value ?? ""),
-            source: "MANUAL_BATCH_FIX",
-          }))
-          .filter((field) => field.field_value.trim())
-        if (fields.length > 0) {
-          await api.patch(`/pre-publish/drafts/${item.listing_id}/fields`, { fields })
-        }
+      return api.post<BatchPublishCheckResponse>("/pre-publish/drafts/batch-quick-fix", {
+        listing_fixes: items.map((item) => {
+          const fields = item.fields
+            .map((field) => ({
+              field_key: field.field_key,
+              field_label: field.field_label,
+              field_value: fieldEdits[batchEditKey(item.listing_id, field.field_key)] ?? String(field.field_value ?? ""),
+              source: "MANUAL_BATCH_FIX",
+            }))
+            .filter((field) => field.field_value.trim())
 
-        const skuWeightValues = (item.quick_fixes?.sku_weights ?? [])
-          .map((sku) => ({
-            sku_id: sku.sku_id,
-            package_weight_g: commonPackageEdits.weightG || skuWeightEdits[batchEditKey(item.listing_id, sku.sku_id)] || "",
-          }))
-          .filter((sku) => sku.package_weight_g.trim())
-        const skuCommercialValues = (item.quick_fixes?.sku_commercials ?? [])
-          .map((sku) => ({
-            sku_id: sku.sku_id,
-            cost_price: "",
-            currency: sku.currency || "CNY",
-            package_length_cm: commonPackageEdits.lengthCm,
-            package_width_cm: commonPackageEdits.widthCm,
-            package_height_cm: commonPackageEdits.heightCm,
-          }))
-          .filter((sku) => sku.package_length_cm.trim() || sku.package_width_cm.trim() || sku.package_height_cm.trim())
-        const imageFixes = item.quick_fixes?.image_confirmations ?? []
-        const imageConfirmedSkcIds = imageFixes
-          .filter((skc) => imageConfirmEdits[batchEditKey(item.listing_id, skc.skc_id)])
-          .map((skc) => skc.skc_id)
-        const savePayload: {
-          sku_weight_values?: typeof skuWeightValues
-          sku_commercial_values?: typeof skuCommercialValues
-          image_confirmed_skc_ids?: number[]
-        } = {}
-        if (skuWeightValues.length > 0) savePayload.sku_weight_values = skuWeightValues
-        if (skuCommercialValues.length > 0) savePayload.sku_commercial_values = skuCommercialValues
-        if (imageFixes.length > 0) savePayload.image_confirmed_skc_ids = imageConfirmedSkcIds
-        if (Object.keys(savePayload).length > 0) {
-          await api.post(`/pre-publish/drafts/${item.listing_id}/save`, savePayload)
-        }
-        if (commonFieldEdits.titleEn.trim()) {
-          await api.patch(`/pre-publish/drafts/${item.listing_id}/fields`, {
-            fields: [{
+          if (commonFieldEdits.titleEn.trim()) {
+            fields.push({
               field_key: "title_en",
               field_label: "英文标题",
               field_value: commonFieldEdits.titleEn.trim(),
               source: "MANUAL_BATCH_FIX",
-            }],
-          })
-        }
-        if (commonFieldEdits.categoryId.trim() && commonFieldEdits.productTypeId.trim()) {
-          await api.patch(`/pre-publish/drafts/${item.listing_id}/category`, {
-            category_id: Number(commonFieldEdits.categoryId),
-            product_type_id: Number(commonFieldEdits.productTypeId),
-          })
-        }
-      }
-      return api.post<BatchPublishCheckResponse>("/pre-publish/drafts/batch-publish-check", {
-        listing_ids: checkedListingIds,
+            })
+          }
+
+          const skuSizeValues = (item.quick_fixes?.sku_sizes ?? [])
+            .map((sku) => {
+              const selectedValue = skuSizeEdits[batchEditKey(item.listing_id, sku.sku_id)] ?? ""
+              const selected = selectedOption(sku.options, selectedValue)
+              return {
+                sku_id: sku.sku_id,
+                shein_size_value: selected?.attribute_value ?? selectedValue,
+                attribute_value_id: selected?.attribute_value_id ?? null,
+                attribute_value: selected?.attribute_value ?? selectedValue,
+              }
+            })
+            .filter((sku) => String(sku.shein_size_value).trim())
+
+          const skuWeightValues = (item.quick_fixes?.sku_weights ?? [])
+            .map((sku) => ({
+              sku_id: sku.sku_id,
+              package_weight_g: commonPackageEdits.weightG || skuWeightEdits[batchEditKey(item.listing_id, sku.sku_id)] || "",
+            }))
+            .filter((sku) => sku.package_weight_g.trim())
+          const skuCommercialValues = (item.quick_fixes?.sku_commercials ?? [])
+            .map((sku) => ({
+              sku_id: sku.sku_id,
+              cost_price: "",
+              currency: sku.currency || "CNY",
+              package_length_cm: commonPackageEdits.lengthCm,
+              package_width_cm: commonPackageEdits.widthCm,
+              package_height_cm: commonPackageEdits.heightCm,
+            }))
+            .filter((sku) => sku.package_length_cm.trim() || sku.package_width_cm.trim() || sku.package_height_cm.trim())
+          const imageFixes = item.quick_fixes?.image_confirmations ?? []
+          const imageConfirmedSkcIds = imageFixes
+            .filter((skc) => imageConfirmEdits[batchEditKey(item.listing_id, skc.skc_id)])
+            .map((skc) => skc.skc_id)
+
+          return {
+            listing_id: item.listing_id,
+            fields,
+            sku_size_values: skuSizeValues,
+            sku_weight_values: skuWeightValues,
+            sku_commercial_values: skuCommercialValues,
+            ...(imageFixes.length > 0 ? { image_confirmed_skc_ids: imageConfirmedSkcIds } : {}),
+            ...(commonFieldEdits.categoryId.trim() && commonFieldEdits.productTypeId.trim()
+              ? {
+                category: {
+                  category_id: Number(commonFieldEdits.categoryId),
+                  product_type_id: Number(commonFieldEdits.productTypeId),
+                },
+              }
+              : {}),
+          }
+        }),
       })
     },
     onSuccess: async (result) => {
@@ -275,19 +348,18 @@ export function BatchPublishDialog({
   const batchPublishMutation = useMutation({
     mutationFn: async (items: BatchPublishCheckItem[]) => {
       const publishable = items.filter((item) => item.ok)
-      const results = []
-      for (const item of publishable) {
+      const results = await mapWithConcurrency(publishable, 2, async (item) => {
         try {
           const result = await api.post<{
             ok: boolean
             task_id?: number
             status?: string
           }>(`/pre-publish/drafts/${item.listing_id}/publish`, { confirm: true })
-          results.push({ ...item, ok: true, result })
+          return { ...item, ok: true, result }
         } catch (error) {
-          results.push({ ...item, ok: false, errors: [errorMessage(error, "发布失败")] })
+          return { ...item, ok: false, errors: [errorMessage(error, "发布失败")] }
         }
-      }
+      })
       return results
     },
     onSuccess: async (results) => {
@@ -480,6 +552,62 @@ export function BatchPublishDialog({
                               })}
                               {item.fields.length > 4 ? (
                                 <p className="text-xs text-muted-foreground">还有 {formatNumber(item.fields.length - 4)} 个字段，请打开详情页完整调整。</p>
+                              ) : null}
+                            </div>
+                          ) : null}
+
+                          {item.quick_fixes?.sku_sizes?.length ? (
+                            <div className="space-y-2">
+                              <p className="text-xs font-medium text-muted-foreground">SHEIN 发布尺码</p>
+                              <div className="space-y-2">
+                                {item.quick_fixes.sku_sizes.slice(0, 6).map((sku) => {
+                                  const key = batchEditKey(item.listing_id, sku.sku_id)
+                                  const selected = selectedOption(sku.options, skuSizeEdits[key] ?? "")
+                                  return (
+                                    <div key={key} className="grid grid-cols-[minmax(0,1fr)_160px] items-center gap-2">
+                                      <div className="min-w-0">
+                                        <p className="truncate font-mono text-xs">{sku.sku_code}</p>
+                                        <p className="truncate text-xs text-muted-foreground">
+                                          {sku.skc_code || "-"} / {sku.size_name || "-"}
+                                        </p>
+                                      </div>
+                                      {sku.options.length ? (
+                                        <Select
+                                          value={selected ? optionValue(selected) : skuSizeEdits[key] ?? ""}
+                                          onValueChange={(value) => setSkuSizeEdits((current) => ({
+                                            ...current,
+                                            [key]: value,
+                                          }))}
+                                        >
+                                          <SelectTrigger>
+                                            <SelectValue placeholder="选择尺码" />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                            {sku.options.map((option) => (
+                                              <SelectItem key={option.attribute_value_id} value={optionValue(option)}>
+                                                {optionLabel(option)}
+                                              </SelectItem>
+                                            ))}
+                                          </SelectContent>
+                                        </Select>
+                                      ) : (
+                                        <Input
+                                          value={skuSizeEdits[key] ?? ""}
+                                          onChange={(event) => setSkuSizeEdits((current) => ({
+                                            ...current,
+                                            [key]: event.target.value,
+                                          }))}
+                                          placeholder="发布尺码"
+                                        />
+                                      )}
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                              {item.quick_fixes.sku_sizes.length > 6 ? (
+                                <p className="text-xs text-muted-foreground">
+                                  还有 {formatNumber(item.quick_fixes.sku_sizes.length - 6)} 个 SKU 尺码，请打开详情页完整处理。
+                                </p>
                               ) : null}
                             </div>
                           ) : null}

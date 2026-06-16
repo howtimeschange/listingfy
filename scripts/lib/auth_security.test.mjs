@@ -6,6 +6,7 @@ const {
   ensureAdminUser,
   isLoginLocked,
   recordFailedLogin,
+  secureCookieFromRequest,
   verifyPassword,
 } = await import("../../web/server/lib/auth.ts");
 
@@ -252,4 +253,26 @@ test("login failures lock an account and successful login cleanup clears the loc
   } finally {
     await cleanup();
   }
+});
+
+test("session cookie secure flag follows the actual request protocol instead of local production mode", async () => {
+  await withEnv({
+    NODE_ENV: "production",
+    LISTINGIFY_COOKIE_SECURE: undefined,
+  }, () => {
+    assert.equal(secureCookieFromRequest({ requestUrl: "http://localhost:3001/api/auth/login" }), false);
+    assert.equal(secureCookieFromRequest({ requestUrl: "https://listingify.example.com/api/auth/login" }), true);
+    assert.equal(secureCookieFromRequest({
+      requestUrl: "http://listingify.internal/api/auth/login",
+      forwardedProto: "https",
+    }), true);
+  });
+
+  await withEnv({ LISTINGIFY_COOKIE_SECURE: "1" }, () => {
+    assert.equal(secureCookieFromRequest({ requestUrl: "http://localhost:3001/api/auth/login" }), true);
+  });
+
+  await withEnv({ LISTINGIFY_COOKIE_SECURE: "0" }, () => {
+    assert.equal(secureCookieFromRequest({ requestUrl: "https://listingify.example.com/api/auth/login" }), false);
+  });
 });
