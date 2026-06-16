@@ -21,6 +21,21 @@ export async function readSpreadsheetFile(file: File): Promise<SpreadsheetRow[]>
   })
 }
 
+export async function readSpreadsheetWorkbook(file: File): Promise<SpreadsheetSheet[]> {
+  const buffer = await file.arrayBuffer()
+  const workbook = XLSX.read(buffer, { type: "array" })
+  return workbook.SheetNames.map((sheetName) => {
+    const sheet = workbook.Sheets[sheetName]
+    return {
+      name: sheetName,
+      rows: XLSX.utils.sheet_to_json<SpreadsheetRow>(sheet, {
+        defval: "",
+        raw: false,
+      }),
+    }
+  }).filter((sheet) => sheet.rows.length > 0)
+}
+
 function downloadWorkbook(filename: string, workbook: XLSX.WorkBook) {
   const buffer = XLSX.write(workbook, { bookType: "xlsx", type: "array", compression: true }) as ArrayBuffer
   const blob = new Blob([buffer], {

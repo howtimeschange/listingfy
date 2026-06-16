@@ -11,13 +11,12 @@ import {
   BRAND_MAPPINGS,
   DEEPDRAW_TENANT_OPTIONS,
 } from "../../../scripts/lib/brand_mapping.mjs"
-import { queryMdmProduct } from "../../../scripts/lib/mdm_client.mjs"
-import { importMdmProductRows } from "../../../scripts/lib/mdm_product_importer.mjs"
 import { createProductArchiveSyncQueue } from "../../../scripts/lib/product_archive_sync_queue.mjs"
 import {
   assertAllowedProductArchiveQuery,
   assertSafeProductArchiveCode,
 } from "../lib/product-archive-security"
+import { syncMdmProduct } from "../services/product-archive-sync"
 
 const productArchives = new Hono()
 
@@ -99,36 +98,6 @@ function contentSkuToArchiveSku(row: SourceRow) {
     supplier_product_code: row.seller_code,
     price_tag: row.price,
     status_name: null,
-  }
-}
-
-async function syncMdmProduct(db: ReturnType<typeof getDb>, spuCode: string) {
-  const startedAt = new Date().toISOString()
-  const result = await queryMdmProduct({ spuCode })
-  const finishedAt = new Date().toISOString()
-  const summary = importMdmProductRows(db, {
-    spuCode,
-    spuRows: result.spuRows,
-    skuRows: result.skuRows,
-    syncedAt: finishedAt,
-    manifest: {
-      batch_no: `web-mdm-${spuCode}-${Date.now()}`,
-      started_at: startedAt,
-      finished_at: finishedAt,
-      request: { spuCode },
-      counts: {
-        spu: result.spuRows.length,
-        sku: result.skuRows.length,
-      },
-      raw: result.raw,
-    },
-  })
-
-  return {
-    ok: true,
-    source: "MDM",
-    spu_code: spuCode,
-    ...summary,
   }
 }
 

@@ -9,7 +9,11 @@ const files = {
   server: path.join(PROJECT_ROOT, "web/server/index.ts"),
   router: path.join(PROJECT_ROOT, "web/src/router.tsx"),
   sidebar: path.join(PROJECT_ROOT, "web/src/components/layout/app-sidebar.tsx"),
+  appLayout: path.join(PROJECT_ROOT, "web/src/components/layout/app-layout.tsx"),
+  appHeader: path.join(PROJECT_ROOT, "web/src/components/layout/app-header.tsx"),
+  asyncTaskCenter: path.join(PROJECT_ROOT, "web/src/components/async-task-center.tsx"),
   draftRoute: path.join(PROJECT_ROOT, "web/server/routes/product-archive-drafts.ts"),
+  draftService: path.join(PROJECT_ROOT, "web/server/services/product-archive-drafts.ts"),
   metadataRoute: path.join(PROJECT_ROOT, "web/server/routes/deepdraw-metadata.ts"),
   metadataService: path.join(PROJECT_ROOT, "web/server/services/deepdraw-metadata.ts"),
   draftListPage: path.join(PROJECT_ROOT, "web/src/pages/product-archive-drafts/page.tsx"),
@@ -52,9 +56,10 @@ test("deepdraw product archive schema defines draft metadata rules validation an
 });
 
 test("backend registers product archive draft and deepdraw metadata APIs", async () => {
-  const [server, draftRoute, metadataRoute, metadataService] = await Promise.all([
+  const [server, draftRoute, draftService, metadataRoute, metadataService] = await Promise.all([
     readFile(files.server, "utf8"),
     readFile(files.draftRoute, "utf8"),
+    readFile(files.draftService, "utf8"),
     readFile(files.metadataRoute, "utf8"),
     readFile(files.metadataService, "utf8"),
   ]);
@@ -68,11 +73,14 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
     /productArchiveDrafts\.get\("\/"/,
     /productArchiveDrafts\.post\("\/from-spu\/:spuCode"/,
     /productArchiveDrafts\.post\("\/batch"/,
+    /productArchiveDrafts\.post\("\/mdm-batch"/,
     /productArchiveDrafts\.post\("\/source-imports"/,
     /productArchiveDrafts\.get\("\/:draftId"/,
+    /productArchiveDrafts\.patch\("\/:draftId\/trade"/,
     /productArchiveDrafts\.patch\("\/:draftId\/fields"/,
     /productArchiveDrafts\.post\("\/:draftId\/validate"/,
     /productArchiveDrafts\.post\("\/:draftId\/check-duplicate"/,
+    /productArchiveDrafts\.post\("\/:draftId\/ai-fill"/,
     /productArchiveDrafts\.post\("\/:draftId\/submit"/,
     /productArchiveDrafts\.post\("\/:draftId\/readback"/,
     /productArchiveDrafts\.get\("\/:draftId\/logs"/,
@@ -80,6 +88,17 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
   ]) {
     assert.match(draftRoute, routePattern);
   }
+  assert.match(draftRoute, /syncMdmProduct/);
+  assert.match(draftRoute, /mdm_draft/);
+  assert.match(draftRoute, /autoSyncMissingMdm/);
+  assert.match(draftRoute, /missingMdmSpuCodes/);
+  assert.match(draftRoute, /missingDraftSpuCodes/);
+  assert.match(draftRoute, /sourceBatchId:\s*Number\(result\.batch\.id\)/);
+  assert.match(draftRoute, /applyProductArchiveDraftTrade/);
+  assert.match(draftService, /export function applyProductArchiveDraftTrade/);
+  assert.match(draftService, /export async function fillProductArchiveDraftFieldsWithAi/);
+  assert.match(draftService, /rebuildProductArchiveDraftFields/);
+  assert.match(draftService, /deepdraw_trade_cache/);
 
   assert.match(metadataRoute, /deepdrawMetadata\.get\("\/trades"/);
   assert.match(metadataRoute, /deepdrawMetadata\.get\("\/trades\/:tradeId\/fields"/);
@@ -107,10 +126,65 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
   assert.match(metadataService, /runFieldWorker/);
 });
 
+test("product archive draft service compiles for the API server", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  assert.equal(typeof service.getProductArchiveDraftDetail, "function");
+  assert.equal(typeof service.fillProductArchiveDraftFieldsWithAi, "function");
+  assert.equal(typeof service.missingMdmSpuCodes, "function");
+  assert.equal(typeof service.missingDraftSpuCodes, "function");
+  assert.equal(typeof service.chooseDeepdrawTradeFromLaunchPlanRows, "function");
+  const queries = [];
+  const fakeDb = {
+    prepare(sql) {
+      queries.push(sql);
+      return {
+        all(batchId) {
+          assert.equal(batchId, 42);
+          return [{ spu_code: "SPU-MISSING" }, { spu_code: "" }];
+        },
+      };
+    },
+  };
+  assert.deepEqual(service.missingMdmSpuCodes(fakeDb, 42), ["SPU-MISSING"]);
+  assert.match(queries[0], /left join product_spu/);
+});
+
+test("launch plan category fields can auto-select a unique DeepDraw trade", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const match = service.chooseDeepdrawTradeFromLaunchPlanRows(
+    [
+      {
+        source_type: "launch_plan",
+        row_json: {
+          "官方发布类目": "童装/婴儿装/亲子装>>儿童袜子",
+          "发布类目 (唯品)": "儿童袜子",
+          "主款式 （唯品四级品类）": "短筒袜",
+          "发布类目 (抖音)": "服饰内衣>服饰配件>袜子>儿童袜子",
+        },
+      },
+    ],
+    [
+      { trade_id: "100", trade_name: "儿童裤子", trade_path: "童装/婴儿装/亲子装>>儿童裤子" },
+      { trade_id: "101", trade_name: "儿童袜子", trade_path: "童装/婴儿装/亲子装>>儿童袜子" },
+    ],
+  );
+
+  assert.deepEqual(match, {
+    tradeId: "101",
+    tradePath: "童装/婴儿装/亲子装>>儿童袜子",
+    confidence: "high",
+    matchedField: "官方发布类目",
+    matchedValue: "童装/婴儿装/亲子装>>儿童袜子",
+  });
+});
+
 test("frontend routes and navigation expose deepdraw archive draft workbench", async () => {
-  const [router, sidebar, draftListPage, draftDetailPage, metadataPage, productArchiveDetailPage] = await Promise.all([
+  const [router, sidebar, appLayout, appHeader, asyncTaskCenter, draftListPage, draftDetailPage, metadataPage, productArchiveDetailPage] = await Promise.all([
     readFile(files.router, "utf8"),
     readFile(files.sidebar, "utf8"),
+    readFile(files.appLayout, "utf8"),
+    readFile(files.appHeader, "utf8"),
+    readFile(files.asyncTaskCenter, "utf8"),
     readFile(files.draftListPage, "utf8"),
     readFile(files.draftDetailPage, "utf8"),
     readFile(files.metadataPage, "utf8"),
@@ -131,26 +205,68 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(sidebar, /\/deepdraw-metadata/);
   assert.match(sidebar, /深绘类目字段", to: "\/deepdraw-metadata", icon: Database, permission: "PRODUCT_ARCHIVE_DRAFT_READ"/);
 
+  assert.match(appLayout, /AsyncTaskProvider/);
+  assert.match(appHeader, /AsyncTaskTrigger/);
+  assert.match(asyncTaskCenter, /异步任务/);
+  assert.match(asyncTaskCenter, /SheetContent[^\\n]+side="right"/s);
+  assert.match(asyncTaskCenter, /localStorage/);
+  assert.match(asyncTaskCenter, /product-archive-drafts\/batch-jobs/);
+  assert.match(asyncTaskCenter, /失败明细/);
+  assert.match(asyncTaskCenter, /Progress/);
+
   assert.doesNotMatch(draftListPage, /ComingSoonPage/);
   assert.match(draftListPage, /CompactListPage/);
   assert.match(draftListPage, /api\.get<.*>\(`\/product-archive-drafts\?/s);
   assert.match(draftListPage, /ServerPagination/);
   assert.match(draftListPage, /limit=/);
   assert.match(draftListPage, /offset=/);
-  assert.match(draftListPage, /api\.post<.*>\("\/product-archive-drafts\/from-spu\//s);
-  assert.match(draftListPage, /api\.post<.*>\("\/product-archive-drafts\/batch"/s);
+  assert.match(draftListPage, /api\.post<.*>\("\/product-archive-drafts\/mdm-batch"/s);
+  assert.doesNotMatch(draftListPage, /api\.post<.*>\("\/product-archive-drafts\/batch"/s);
   assert.match(draftListPage, /api\.get<.*>\(`\/product-archive-drafts\/batch-jobs\/\$\{batchJobId\}`\)/s);
-  assert.match(draftListPage, /批量生成/);
+  assert.match(draftListPage, /同步 MDM 并生成草稿/);
+  assert.match(draftListPage, /batchCodes/);
+  assert.match(draftListPage, /Textarea/);
+  assert.match(draftListPage, /selectedDraftIds/);
+  assert.match(draftListPage, /toggleAllVisible/);
+  assert.match(draftListPage, /aria-label="选择全部草稿"/);
+  assert.match(draftListPage, /aria-label=\{`选择草稿 \$\{item\.spu_code\}`\}/);
+  assert.match(draftListPage, /进入/);
+  assert.match(draftListPage, /selectedDrafts\.length/);
   assert.match(draftListPage, /批量校验/);
   assert.match(draftListPage, /批量查重/);
-  assert.match(draftListPage, /批量提交/);
+  assert.match(draftListPage, /批量提交预览/);
+  assert.match(draftListPage, /ImportDialog/);
+  assert.doesNotMatch(draftListPage, /导入字段对应关系/);
+  assert.match(draftListPage, /先同步 MDM 款号，再导入上市计划表和标准文案表/);
+  assert.match(draftListPage, /autoSyncMissingMdm:\s*sourceType === "launch_plan"/);
+  assert.match(draftListPage, /useAsyncTasks/);
+  assert.match(draftListPage, /addTask/);
+  assert.match(draftListPage, /openTaskCenter/);
+  assert.match(draftListPage, /mdmSyncDialogOpen/);
+  assert.match(draftListPage, /MDM 同步进度/);
+  assert.match(draftListPage, /Progress/);
+  assert.match(draftListPage, /失败原因/);
+  assert.match(draftListPage, /最小化到任务中心/);
+  assert.match(draftListPage, /自动同步/);
+  assert.match(draftListPage, /导入上市计划表/);
+  assert.match(draftListPage, /导入标准文案表/);
 
   assert.match(draftDetailPage, /TabsTrigger/);
   for (const label of ["概览", "字段填充", "SKU/颜色尺码", "校验问题", "提交记录", "来源快照"]) {
     assert.match(draftDetailPage, new RegExp(label));
   }
   assert.match(draftDetailPage, /api\.patch<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/fields`/s);
+  assert.match(draftDetailPage, /api\.patch<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/trade`/s);
+  assert.match(draftDetailPage, /api\.get<.*>\(`\/deepdraw-metadata\/trades\?/s);
+  assert.match(draftDetailPage, /fieldOptions/);
+  assert.match(draftDetailPage, /SelectTrigger/);
+  assert.match(draftDetailPage, /SelectItem/);
+  assert.match(draftDetailPage, /选择深绘类目/);
+  assert.match(draftDetailPage, /应用类目并生成字段/);
+  assert.match(draftDetailPage, /待确认类目/);
   assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/validate`/s);
+  assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/ai-fill`/s);
+  assert.match(draftDetailPage, /AI 推荐补齐空字段/);
   assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/submit`/s);
 
   assert.match(metadataPage, /深绘类目字段/);

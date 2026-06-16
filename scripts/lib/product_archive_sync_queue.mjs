@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 const DEFAULT_INTERVAL_MS = 1500;
-const MAX_CODES_PER_JOB = 500;
+const MAX_CODES_PER_JOB = 2000;
 const PRODUCT_ARCHIVE_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 function clampInterval(value) {

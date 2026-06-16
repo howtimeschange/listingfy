@@ -1,6 +1,7 @@
 import { Outlet } from "react-router"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { useAuth } from "@/lib/auth-context"
+import { AsyncTaskProvider } from "@/components/async-task-center"
 import { AppSidebar } from "./app-sidebar"
 import { AppHeader } from "./app-header"
 
@@ -10,13 +11,15 @@ export function AppLayout() {
 
   return (
     <SidebarProvider className="h-svh max-h-svh overflow-hidden bg-transparent">
-      <AppSidebar />
-      <SidebarInset className="min-h-0 bg-transparent">
-        <AppHeader />
-        <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <Outlet />
-        </main>
-      </SidebarInset>
+      <AsyncTaskProvider>
+        <AppSidebar />
+        <SidebarInset className="min-h-0 bg-transparent">
+          <AppHeader />
+          <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <Outlet />
+          </main>
+        </SidebarInset>
+      </AsyncTaskProvider>
     </SidebarProvider>
   )
 }

@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from "react"
 import { Link } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { CheckCircle2, Loader2, PackagePlus, Search, ShieldCheck } from "lucide-react"
+import { CheckCircle2, Loader2, RefreshCw, Search, ShieldCheck } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { ServerPagination } from "@/components/server-pagination"
+import { ImportDialog } from "@/components/import-dialog"
+import { useAsyncTasks, type AsyncTaskJob } from "@/lib/async-task-context"
 import {
   CompactListCard,
   CompactListCardContent,
@@ -20,6 +22,17 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { CardTitle } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Progress } from "@/components/ui/progress"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -36,6 +49,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Textarea } from "@/components/ui/textarea"
+import { readSpreadsheetWorkbook, type SpreadsheetRow } from "@/lib/spreadsheet"
 
 interface ProductArchiveDraftRow {
   id: number
@@ -64,7 +79,24 @@ interface DraftBatchJob {
   total_count: number
   completed_count: number
   failed_count: number
+  items?: Array<{
+    spu_code: string
+    status: "queued" | "running" | "completed" | "failed"
+    error?: string | null
+  }>
 }
+
+interface SourceImportResponse {
+  inputRowCount: number
+  insertedRowCount: number
+  missingMdmSpuCodes?: string[]
+  skippedExistingDraftCount?: number
+  syncJob?: DraftBatchJob | null
+}
+
+type SourceImportType = "launch_plan" | "copywriting"
+
+type BatchDraftAction = "validate" | "check_duplicate" | "submit_preview"
 
 const statusLabels: Record<string, string> = {
   draft: "草稿",
@@ -97,10 +129,15 @@ function useDrafts(query: string, status: string, pagination: { limit: number; o
 
 export default function ProductArchiveDraftsPage() {
   const queryClient = useQueryClient()
+  const { addTask, getTaskByJobId, openTaskCenter } = useAsyncTasks()
   const [searchText, setSearchText] = useState("")
   const [status, setStatus] = useState("all")
   const [spuCode, setSpuCode] = useState("")
+  const [batchCodes, setBatchCodes] = useState("")
+  const [mdmBatchDialogOpen, setMdmBatchDialogOpen] = useState(false)
+  const [mdmSyncDialogOpen, setMdmSyncDialogOpen] = useState(false)
   const [batchJobId, setBatchJobId] = useState<string | null>(null)
+  const [selectedDraftIds, setSelectedDraftIds] = useState<Set<number>>(new Set())
   const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
   const debouncedQuery = useDebounce(searchText, 300)
   const drafts = useDrafts(debouncedQuery, status, pagination)
@@ -124,52 +161,181 @@ export default function ProductArchiveDraftsPage() {
     }
   }, [drafts.data])
 
-  const createDraft = useMutation({
-    mutationFn: (code: string) =>
-      api.post<{ draft: ProductArchiveDraftRow }>("/product-archive-drafts/from-spu/" + encodeURIComponent(code), {}),
-    onSuccess: () => {
-      toast.success("已生成建档草稿")
-      setSpuCode("")
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
-    },
-  })
+  const visibleItems = useMemo(() => drafts.data?.items ?? [], [drafts.data?.items])
+  const selectedDrafts = useMemo(
+    () => visibleItems.filter((item) => selectedDraftIds.has(item.id)),
+    [selectedDraftIds, visibleItems],
+  )
 
-  const createBatch = useMutation({
+  const allVisibleSelected = visibleItems.length > 0 && visibleItems.every((item) => selectedDraftIds.has(item.id))
+  const trackedTask = getTaskByJobId(batchJobId)
+  const trackedJob = (trackedTask?.job ?? batchJob) as DraftBatchJob | null | undefined
+  const trackedJobProgress = trackedJob?.total_count
+    ? Math.round(((trackedJob.completed_count + trackedJob.failed_count) / trackedJob.total_count) * 100)
+    : 0
+  const failedJobItems = trackedJob?.items?.filter((item) => item.status === "failed") ?? []
+
+  const syncMdmAndCreateBatch = useMutation({
     mutationFn: (codes: string) =>
-      api.post<DraftBatchJob>("/product-archive-drafts/batch", { codes }),
+      api.post<DraftBatchJob>("/product-archive-drafts/mdm-batch", { codes }),
     onSuccess: (result) => {
+      addTask({
+        job: result as AsyncTaskJob,
+        type: "product_archive_mdm_draft",
+        title: "同步 MDM 并生成深绘草稿",
+        description: `手动提交 ${formatNumber(result.total_count)} 个款号`,
+      })
       setBatchJobId(result.id)
-      toast.success("批量生成任务已加入队列")
+      setMdmSyncDialogOpen(true)
+      setMdmBatchDialogOpen(false)
+      setBatchCodes("")
+      toast.success("MDM 同步并生成草稿任务已加入队列")
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
     },
   })
 
-  const batchJobActive = batchJob ? batchJob.status !== "completed" : createBatch.isPending
+  const importSource = useMutation({
+    mutationFn: async ({ sourceType, file }: { sourceType: SourceImportType; file: File }) => {
+      const sheets = await readSpreadsheetWorkbook(file)
+      let insertedRowCount = 0
+      let inputRowCount = 0
+      let autoSyncedCount = 0
+      let skippedExistingDraftCount = 0
+      let syncJob: DraftBatchJob | null = null
+      for (const sheet of sheets) {
+        const result = await api.post<SourceImportResponse>("/product-archive-drafts/source-imports", {
+          sourceType,
+          fileName: file.name,
+          sheetName: sheet.name,
+          rows: sheet.rows as SpreadsheetRow[],
+          autoSyncMissingMdm: sourceType === "launch_plan",
+        })
+        inputRowCount += result.inputRowCount
+        insertedRowCount += result.insertedRowCount
+        autoSyncedCount += result.missingMdmSpuCodes?.length ?? 0
+        skippedExistingDraftCount += result.skippedExistingDraftCount ?? 0
+        syncJob = result.syncJob ?? syncJob
+      }
+      return { inputRowCount, insertedRowCount, sheetCount: sheets.length, autoSyncedCount, skippedExistingDraftCount, syncJob }
+    },
+    onSuccess: (result) => {
+      if (result.syncJob) {
+        addTask({
+          job: result.syncJob as AsyncTaskJob,
+          type: "product_archive_mdm_draft",
+          title: "上市计划表自动同步 MDM",
+          description: `待同步 ${formatNumber(result.autoSyncedCount)} 个款号，已跳过已有草稿 ${formatNumber(result.skippedExistingDraftCount)} 个`,
+        })
+        setBatchJobId(result.syncJob.id)
+        setMdmSyncDialogOpen(true)
+      }
+      const syncText = result.autoSyncedCount > 0
+        ? `，自动同步 ${formatNumber(result.autoSyncedCount)} 个未建档款号`
+        : ""
+      toast.success(`导入完成：${formatNumber(result.insertedRowCount)} / ${formatNumber(result.inputRowCount)} 行，${formatNumber(result.sheetCount)} 个页签${syncText}`)
+      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    },
+  })
+
+  const batchDraftAction = useMutation({
+    mutationFn: async ({ action, draftIds }: { action: BatchDraftAction; draftIds: number[] }) => {
+      for (const draftId of draftIds) {
+        if (action === "validate") {
+          await api.post<unknown>(`/product-archive-drafts/${draftId}/validate`)
+        } else if (action === "check_duplicate") {
+          await api.post<unknown>(`/product-archive-drafts/${draftId}/check-duplicate`)
+        } else {
+          await api.post<unknown>(`/product-archive-drafts/${draftId}/submit`, { dryRun: true })
+        }
+      }
+      return { action, count: draftIds.length }
+    },
+    onSuccess: (result) => {
+      const label = result.action === "validate" ? "校验" : result.action === "check_duplicate" ? "查重" : "提交预览"
+      toast.success(`已完成 ${formatNumber(result.count)} 个草稿的${label}`)
+      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    },
+  })
+
+  const batchJobActive = batchJob
+    ? batchJob.status !== "completed"
+    : syncMdmAndCreateBatch.isPending
 
   useEffect(() => {
-    if (batchJob?.status !== "completed") return
+    if (trackedJob?.status !== "completed") return
     void queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
-  }, [batchJob?.status, queryClient])
+  }, [trackedJob?.status, queryClient])
+
+  function toggleDraft(draftId: number, checked: boolean | "indeterminate") {
+    setSelectedDraftIds((current) => {
+      const next = new Set(current)
+      if (checked === true) next.add(draftId)
+      else next.delete(draftId)
+      return next
+    })
+  }
+
+  function toggleAllVisible(checked: boolean | "indeterminate") {
+    setSelectedDraftIds((current) => {
+      const next = new Set(current)
+      for (const item of visibleItems) {
+        if (checked === true) next.add(item.id)
+        else next.delete(item.id)
+      }
+      return next
+    })
+  }
+
+  function runBatchAction(action: BatchDraftAction) {
+    if (selectedDrafts.length === 0) {
+      toast.info("请先选择草稿")
+      return
+    }
+    batchDraftAction.mutate({ action, draftIds: selectedDrafts.map((item) => item.id) })
+  }
+
+  async function importSourceFile(sourceType: SourceImportType, file: File) {
+    await importSource.mutateAsync({ sourceType, file })
+  }
 
   return (
+    <>
     <CompactListPage>
       <CompactListHeader
         title="深绘建档草稿"
-        description="从 MDM、字段规则和深绘类目模板生成商品档案草稿，并完成校验、查重和提交前清洗。"
+        description="先同步 MDM 款号，再导入上市计划表和标准文案表，最后按深绘类目模板完成字段填充、校验和提交预览。"
         summary={`共 ${formatNumber(summary.total)} 个草稿`}
         actions={
           <>
-            <Button type="button" variant="outline" size="sm">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={selectedDrafts.length === 0 || batchDraftAction.isPending}
+              onClick={() => runBatchAction("validate")}
+            >
               <ShieldCheck className="size-4" />
-              批量校验
+              批量校验{selectedDrafts.length ? ` ${selectedDrafts.length}` : ""}
             </Button>
-            <Button type="button" variant="outline" size="sm">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={selectedDrafts.length === 0 || batchDraftAction.isPending}
+              onClick={() => runBatchAction("check_duplicate")}
+            >
               <Search className="size-4" />
-              批量查重
+              批量查重{selectedDrafts.length ? ` ${selectedDrafts.length}` : ""}
             </Button>
-            <Button type="button" variant="outline" size="sm">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={selectedDrafts.length === 0 || batchDraftAction.isPending}
+              onClick={() => runBatchAction("submit_preview")}
+            >
               <CheckCircle2 className="size-4" />
-              批量提交
+              批量提交预览{selectedDrafts.length ? ` ${selectedDrafts.length}` : ""}
             </Button>
           </>
         }
@@ -218,28 +384,79 @@ export default function ProductArchiveDraftsPage() {
               <Input
                 value={spuCode}
                 onChange={(event) => setSpuCode(event.target.value)}
-                placeholder="输入款号生成草稿"
+                placeholder="输入款号，可批量粘贴"
                 className="w-[180px]"
               />
-              <Button
-                type="button"
-                size="sm"
-                disabled={!spuCode.trim() || createDraft.isPending}
-                onClick={() => createDraft.mutate(spuCode.trim())}
-              >
-                {createDraft.isPending ? <Loader2 className="size-4 animate-spin" /> : <PackagePlus className="size-4" />}
-                生成草稿
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={!spuCode.trim() || batchJobActive}
-                onClick={() => createBatch.mutate(spuCode.trim())}
-              >
-                {batchJobActive ? <Loader2 className="size-4 animate-spin" /> : null}
-                批量生成
-              </Button>
+              <Dialog open={mdmBatchDialogOpen} onOpenChange={setMdmBatchDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={batchJobActive}
+                    onClick={() => setBatchCodes((current) => current || spuCode.trim())}
+                  >
+                    {syncMdmAndCreateBatch.isPending ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="size-4" />
+                    )}
+                    同步 MDM 并生成草稿
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="sm:max-w-xl">
+                  <DialogHeader>
+                    <DialogTitle>同步 MDM 并生成草稿</DialogTitle>
+                    <DialogDescription>
+                      按款号批量拉取 MDM 同款数据，落库后生成深绘建档草稿。
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="grid gap-2">
+                    <label htmlFor="mdm-batch-codes" className="text-sm font-medium">
+                      款号列表
+                    </label>
+                    <Textarea
+                      id="mdm-batch-codes"
+                      value={batchCodes}
+                      onChange={(event) => setBatchCodes(event.target.value)}
+                      placeholder={"SPU001\nSPU002\nSPU003"}
+                      className="min-h-40 font-mono text-sm"
+                    />
+                  </div>
+                  <DialogFooter>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setMdmBatchDialogOpen(false)}
+                    >
+                      取消
+                    </Button>
+                    <Button
+                      type="button"
+                      disabled={!batchCodes.trim() || syncMdmAndCreateBatch.isPending}
+                      onClick={() => syncMdmAndCreateBatch.mutate(batchCodes)}
+                    >
+                      {syncMdmAndCreateBatch.isPending ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <RefreshCw className="size-4" />
+                      )}
+                      开始同步
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+              <ImportDialog
+                title="导入上市计划表"
+                description="兼容上市计划表的错位表头和官方发布类目、上市时间等字段，用于批量填充草稿。"
+                trigger={<Button type="button" variant="outline" size="sm" disabled={importSource.isPending}>导入上市计划表</Button>}
+                onImport={(file) => importSourceFile("launch_plan", file)}
+              />
+              <ImportDialog
+                title="导入标准文案表"
+                description="兼容标准文案表多页签，提取搜索标题、内容平台标题、FAB、面料成分等文案字段。"
+                trigger={<Button type="button" variant="outline" size="sm" disabled={importSource.isPending}>导入标准文案表</Button>}
+                onImport={(file) => importSourceFile("copywriting", file)}
+              />
             </CompactListControls>
           </CompactListToolbar>
         </CompactListCardHeader>
@@ -248,6 +465,13 @@ export default function ProductArchiveDraftsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10">
+                    <Checkbox
+                      aria-label="选择全部草稿"
+                      checked={allVisibleSelected}
+                      onCheckedChange={toggleAllVisible}
+                    />
+                  </TableHead>
                   <TableHead>款号</TableHead>
                   <TableHead>标题</TableHead>
                   <TableHead>租户/商户</TableHead>
@@ -257,11 +481,19 @@ export default function ProductArchiveDraftsPage() {
                   <TableHead>SKU</TableHead>
                   <TableHead>productId</TableHead>
                   <TableHead>更新时间</TableHead>
+                  <TableHead>操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {(drafts.data?.items ?? []).map((item) => (
                   <TableRow key={item.id}>
+                    <TableCell>
+                      <Checkbox
+                        aria-label={`选择草稿 ${item.spu_code}`}
+                        checked={selectedDraftIds.has(item.id)}
+                        onCheckedChange={(checked) => toggleDraft(item.id, checked)}
+                      />
+                    </TableCell>
                     <TableCell>
                       <Link to={`/product-archive-drafts/${item.id}`} className="font-medium text-primary hover:underline">
                         {item.spu_code}
@@ -287,6 +519,13 @@ export default function ProductArchiveDraftsPage() {
                     <TableCell>{formatNumber(item.sku_count)}</TableCell>
                     <TableCell>{item.created_product_id || "-"}</TableCell>
                     <TableCell>{formatDateTime(item.updated_at)}</TableCell>
+                    <TableCell>
+                      <Button asChild variant="outline" size="sm">
+                        <Link to={`/product-archive-drafts/${item.id}`}>
+                          进入
+                        </Link>
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -301,5 +540,67 @@ export default function ProductArchiveDraftsPage() {
         </CompactListCardContent>
       </CompactListCard>
     </CompactListPage>
+    <Dialog open={mdmSyncDialogOpen} onOpenChange={setMdmSyncDialogOpen}>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>MDM 同步进度</DialogTitle>
+          <DialogDescription>
+            正在按未建档款号同步 MDM 并生成深绘建档草稿，关闭弹窗后可从左上角异步任务继续查看。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4">
+          <div className="rounded-lg border bg-muted/30 p-4">
+            <div className="mb-2 flex items-center justify-between text-sm">
+              <span>
+                已处理 {formatNumber((trackedJob?.completed_count ?? 0) + (trackedJob?.failed_count ?? 0))} / {formatNumber(trackedJob?.total_count ?? 0)}
+              </span>
+              <span>{trackedJobProgress}%</span>
+            </div>
+            <Progress value={trackedJobProgress} />
+            <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
+              <div className="rounded-md bg-background px-3 py-2">成功 {formatNumber(trackedJob?.completed_count ?? 0)}</div>
+              <div className="rounded-md bg-background px-3 py-2">失败 {formatNumber(trackedJob?.failed_count ?? 0)}</div>
+              <div className="rounded-md bg-background px-3 py-2">总数 {formatNumber(trackedJob?.total_count ?? 0)}</div>
+            </div>
+          </div>
+          {failedJobItems.length > 0 ? (
+            <div className="rounded-lg border border-[#f1cccc] bg-[#fff8f8] p-3">
+              <div className="mb-2 text-sm font-medium text-[#d45656]">失败原因</div>
+              <div className="max-h-52 overflow-auto rounded-md border bg-background">
+                {failedJobItems.map((item) => (
+                  <div key={item.spu_code} className="grid grid-cols-[160px_1fr] gap-3 border-b px-3 py-2 text-sm last:border-b-0">
+                    <span className="font-mono">{item.spu_code}</span>
+                    <span className="text-muted-foreground">{item.error || "未知失败原因"}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+              暂无失败款号。
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => setMdmSyncDialogOpen(false)}>
+            最小化到任务中心
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              setMdmSyncDialogOpen(false)
+              openTaskCenter()
+            }}
+          >
+            查看任务中心
+          </Button>
+          <Button type="button" onClick={() => setMdmSyncDialogOpen(false)}>
+            {trackedJob?.status === "completed" ? "关闭" : "后台处理"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   )
 }

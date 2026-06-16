@@ -35,6 +35,11 @@ test("parseSpuCodes drops script-like and path-like payloads", () => {
   );
 });
 
+test("parseSpuCodes keeps a full launch-plan sized batch", () => {
+  const codes = Array.from({ length: 614 }, (_, index) => `209326${String(index + 1).padStart(6, "0")}`);
+  assert.equal(parseSpuCodes(codes).length, 614);
+});
+
 test("queue processes product sync jobs serially with a delay between codes", async () => {
   const events = [];
   let now = 1000;

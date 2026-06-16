@@ -5,6 +5,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 import { Separator } from "@/components/ui/separator"
 import { Button } from "@/components/ui/button"
 import { useAuth } from "@/lib/auth-context"
+import { AsyncTaskTrigger } from "@/components/async-task-center"
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -50,6 +51,8 @@ export function AppHeader() {
   return (
     <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur-xl md:px-6">
       <SidebarTrigger className="-ml-1" />
+      <Separator orientation="vertical" className="h-4" />
+      <AsyncTaskTrigger />
       <Separator orientation="vertical" className="h-4" />
       <Breadcrumb className="min-w-0 flex-1">
         <BreadcrumbList>

@@ -9,6 +9,7 @@ import {
   resolveDeepdrawConfig,
   searchDeepdrawProductBasic,
 } from "../../../scripts/lib/deepdraw_client.mjs"
+import { resolveAiConfig } from "../../../scripts/lib/ai_category_matcher.mjs"
 
 type JsonRecord = Record<string, unknown>
 
@@ -42,6 +43,11 @@ interface PatchFieldInput {
   }>
 }
 
+interface ApplyTradeInput {
+  tradeId?: string | null
+  tradePath?: string | null
+}
+
 interface DeepdrawResult {
   status: number
   ok: boolean
@@ -55,6 +61,10 @@ interface SubmitOptions {
   create?: (payload: JsonRecord) => Promise<DeepdrawResult>
   readback?: () => Promise<DeepdrawResult>
   projectRoot?: string
+}
+
+interface AiFillOptions {
+  fetchImpl?: typeof fetch
 }
 
 interface SourceImportInput {
@@ -193,6 +203,157 @@ function sourceRowsForSpu(db: SyncPostgresDatabase, spuCode: string) {
   `).all(spuCode) as JsonRecord[]
 }
 
+export function missingMdmSpuCodes(db: SyncPostgresDatabase, sourceBatchId: number) {
+  if (!Number.isInteger(sourceBatchId) || sourceBatchId <= 0) return []
+  const rows = db.prepare(`
+    select distinct source.spu_code
+    from product_archive_source_row source
+    left join product_spu spu on spu.spu_code = source.spu_code
+    where source.source_batch_id = ?
+      and source.spu_code is not null
+      and source.spu_code <> ''
+      and spu.id is null
+    order by source.spu_code
+  `).all(sourceBatchId) as Array<{ spu_code: unknown }>
+  return rows.map((row) => stringValue(row.spu_code)).filter(Boolean)
+}
+
+export function missingDraftSpuCodes(db: SyncPostgresDatabase, sourceBatchId: number, input: {
+  tenantName?: string | null
+  merchantId?: string | null
+} = {}) {
+  if (!Number.isInteger(sourceBatchId) || sourceBatchId <= 0) return []
+  const tenantName = stringValue(input.tenantName)
+  const merchantId = stringValue(input.merchantId)
+  if (!tenantName || !merchantId) return []
+  const rows = db.prepare(`
+    select distinct source.spu_code
+    from product_archive_source_row source
+    left join product_archive_draft draft
+      on draft.spu_code = source.spu_code
+     and draft.tenant_name = ?
+     and draft.merchant_id = ?
+    where source.source_batch_id = ?
+      and source.spu_code is not null
+      and source.spu_code <> ''
+      and draft.id is null
+    order by source.spu_code
+  `).all(tenantName, merchantId, sourceBatchId) as Array<{ spu_code: unknown }>
+  return rows.map((row) => stringValue(row.spu_code)).filter(Boolean)
+}
+
+const LAUNCH_PLAN_CATEGORY_FIELDS = [
+  "官方发布类目",
+  "发布类目(官方)",
+  "发布类目 (官方)",
+  "发布类目（官方）",
+  "发布类目\n(官方)",
+  "发布类目 (唯品)",
+  "发布类目(唯品)",
+  "发布类目（唯品）",
+  "主款式 （唯品四级品类）",
+  "主款式（唯品四级品类）",
+  "主款式 (唯品四级品类)",
+  "发布类目 (抖音)",
+  "发布类目(抖音)",
+  "发布类目（抖音）",
+]
+
+function normalizeTradeText(value: unknown) {
+  return stringValue(value)
+    .replace(/[＞〉》]/g, ">")
+    .replace(/》/g, ">")
+    .replace(/\/+/g, ">")
+    .replace(/>+/g, ">")
+    .replace(/\s+/g, "")
+    .replace(/^>+|>+$/g, "")
+}
+
+function tradeLeaf(value: string) {
+  const normalized = normalizeTradeText(value)
+  const parts = normalized.split(">").filter(Boolean)
+  return parts[parts.length - 1] ?? normalized
+}
+
+function launchPlanCategoryValues(sourceRows: JsonRecord[]) {
+  const values: Array<{ field: string; value: string }> = []
+  const seen = new Set<string>()
+  for (const row of sourceRows) {
+    if (stringValue(row.source_type) !== "launch_plan") continue
+    const rowJson = recordValue(row.row_json)
+    for (const field of LAUNCH_PLAN_CATEGORY_FIELDS) {
+      const value = stringValue(rowJson[field])
+      const key = `${field}:${value}`
+      if (!value || seen.has(key)) continue
+      seen.add(key)
+      values.push({ field, value })
+    }
+  }
+  return values
+}
+
+function scoreTradeMatch(trade: JsonRecord, category: { field: string; value: string }) {
+  const candidatePath = stringValue(trade.trade_path) || stringValue(trade.trade_name)
+  const candidateName = stringValue(trade.trade_name)
+  const categoryText = normalizeTradeText(category.value)
+  const candidatePathText = normalizeTradeText(candidatePath)
+  const candidateNameText = normalizeTradeText(candidateName)
+  const categoryLeaf = tradeLeaf(category.value)
+  if (!categoryText || (!candidatePathText && !candidateNameText)) return 0
+  const fieldBoost = category.field.includes("官方") ? 40 : category.field.includes("唯品四级") ? 20 : 10
+  if (candidatePathText === categoryText) return 1000 + fieldBoost
+  if (candidateNameText === categoryText) return 850 + fieldBoost
+  if (candidateNameText && candidateNameText === categoryLeaf) return 760 + fieldBoost
+  if (candidatePathText.endsWith(`>${categoryLeaf}`) || candidatePathText === categoryLeaf) return 720 + fieldBoost
+  if (categoryLeaf && candidatePathText.includes(categoryLeaf)) return 520 + fieldBoost
+  return 0
+}
+
+export function chooseDeepdrawTradeFromLaunchPlanRows(sourceRows: JsonRecord[], trades: JsonRecord[]) {
+  const categories = launchPlanCategoryValues(sourceRows)
+  if (categories.length === 0 || trades.length === 0) return null
+  let best: {
+    trade: JsonRecord
+    category: { field: string; value: string }
+    score: number
+  } | null = null
+  let tied = false
+  for (const trade of trades) {
+    for (const category of categories) {
+      const score = scoreTradeMatch(trade, category)
+      if (score <= 0) continue
+      if (!best || score > best.score) {
+        best = { trade, category, score }
+        tied = false
+      } else if (score === best.score) {
+        tied = true
+      }
+    }
+  }
+  if (!best || tied) return null
+  return {
+    tradeId: stringValue(best.trade.trade_id),
+    tradePath: stringValue(best.trade.trade_path) || stringValue(best.trade.trade_name),
+    confidence: best.score >= 1000 ? "high" : "medium",
+    matchedField: best.category.field,
+    matchedValue: best.category.value,
+  }
+}
+
+function inferDeepdrawTradeFromLaunchPlan(db: SyncPostgresDatabase, input: {
+  tenantName: string
+  merchantId: string
+  sourceRows: JsonRecord[]
+}) {
+  const trades = db.prepare(`
+    select trade_id, trade_name, trade_path
+    from deepdraw_trade_cache
+    where tenant_name = ?
+      and merchant_id = ?
+  `).all(input.tenantName, input.merchantId) as JsonRecord[]
+  return chooseDeepdrawTradeFromLaunchPlanRows(input.sourceRows, trades)
+}
+
 function chooseTitle(spu: JsonRecord, sourceRows: JsonRecord[] = []) {
   return sourceFieldValue(sourceRows, "copywriting", "搜索标题")
     || sourceFieldValue(sourceRows, "copywriting", "商品标题")
@@ -232,6 +393,154 @@ function sanitizeDeepdrawLogPayload(value: unknown): unknown {
   return output
 }
 
+function extractJsonText(text: string) {
+  const trimmed = text.trim()
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fenced) return fenced[1].trim()
+  const firstBrace = trimmed.indexOf("{")
+  const lastBrace = trimmed.lastIndexOf("}")
+  if (firstBrace >= 0 && lastBrace > firstBrace) return trimmed.slice(firstBrace, lastBrace + 1)
+  return trimmed
+}
+
+function responseMessageContent(body: unknown) {
+  const message = (body as { choices?: Array<{ message?: Record<string, unknown> }> })?.choices?.[0]?.message
+  const values = [message?.content, message?.reasoning_content, message?.reasoning]
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      const text = value
+        .map((part) => typeof part === "string" ? part : stringValue((part as JsonRecord)?.text ?? (part as JsonRecord)?.content))
+        .join("\n")
+        .trim()
+      if (text) return text
+    } else if (typeof value === "string" && value.trim()) {
+      return value
+    }
+  }
+  return ""
+}
+
+function fieldOptionText(option: unknown, keys: string[]) {
+  if (!option || typeof option !== "object") return stringValue(option)
+  const record = option as JsonRecord
+  for (const key of keys) {
+    const value = stringValue(record[key])
+    if (value) return value
+  }
+  return stringValue(record.value) || stringValue(record.label) || stringValue(record.name)
+}
+
+function fieldOptionsFromTemplate(optionsJson: unknown) {
+  const rawOptions = arrayValue(optionsJson)
+  return rawOptions
+    .map((option) => {
+      const value = fieldOptionText(option, ["value", "code", "id", "optionValue", "option_value", "key", "name", "label"])
+      const label = fieldOptionText(option, ["label", "name", "text", "optionName", "option_name", "title", "value", "code"])
+      if (!value && !label) return null
+      return { value: value || label, label: label || value }
+    })
+    .filter((option): option is { value: string; label: string } => Boolean(option))
+}
+
+function heuristicDeepdrawOptionValue(fieldName: string, options: Array<{ value: string; label: string }>, contextText: string) {
+  const pick = (needles: string[]) => {
+    for (const needle of needles) {
+      const option = options.find((item) => item.value.includes(needle) || item.label.includes(needle))
+      if (option) return option.value
+    }
+    return ""
+  }
+  if (/是否|有无|支持|加绒|撞色|透明|防水|防晒/.test(fieldName)) return pick(["否", "不支持", "无"]) || options[0]?.value || ""
+  if (/风格|企划/.test(fieldName)) return pick(["休闲", "日常", "基础"]) || options[0]?.value || ""
+  if (/年龄|适用人群|人群/.test(fieldName)) return pick(["儿童", "中大童", "婴幼儿", "幼童"]) || options[0]?.value || ""
+  if (/季节/.test(fieldName)) {
+    if (/羽绒|棉服|毛衣|加绒/.test(contextText)) return pick(["冬", "秋冬"])
+    if (/短袖|凉感|夏/.test(contextText)) return pick(["夏", "春夏"])
+    return pick(["春秋", "四季"]) || options[0]?.value || ""
+  }
+  if (/单位/.test(fieldName)) return pick(["件", "条", "双", "套"]) || options[0]?.value || ""
+  return options[0]?.value || ""
+}
+
+function buildDeepdrawAiFillPrompt(input: {
+  draft: JsonRecord
+  fields: Array<{ id: number; fieldName: string; options: Array<{ value: string; label: string }> }>
+  skus: JsonRecord[]
+}) {
+  return JSON.stringify({
+    task: "为深绘商品建档草稿中需要人工判断的枚举字段选择最合适的字段值",
+    output_schema: {
+      fills: [
+        {
+          field_id: "必须等于输入 fields[].field_id",
+          field_name: "字段名",
+          field_value: "必须从该字段 options[].value 中选择一个原文值",
+          confidence: "0 到 1",
+          reason: "一句短理由",
+        },
+      ],
+    },
+    rules: [
+      "只返回 JSON，不要 Markdown。",
+      "不能编造选项，只能从对应字段 options[].value 中选择。",
+      "证据不足时选择保守通用值，并降低 confidence。",
+      "是否类字段没有明确证据时优先选择否/无。",
+    ],
+    product: {
+      spu_code: input.draft.spu_code,
+      title: input.draft.title,
+      trade_path: input.draft.trade_path,
+      retail_price: input.draft.retail_price,
+      source_snapshot: input.draft.source_snapshot_json,
+      skus: input.skus.map((sku) => ({
+        sku_code: sku.sku_code,
+        skc_code: sku.skc_code,
+        color_name: sku.color_name,
+        size_name: sku.size_name,
+      })),
+    },
+    fields: input.fields.map((field) => ({
+      field_id: field.id,
+      field_name: field.fieldName,
+      options: field.options.slice(0, 120),
+    })),
+  }, null, 2)
+}
+
+async function callDeepdrawAiFill(prompt: string, options: AiFillOptions = {}) {
+  const config = resolveAiConfig()
+  if (!config.apiKey) return []
+  const fetchImpl = options.fetchImpl ?? fetch
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), config.timeoutMs)
+  try {
+    const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: config.model,
+        temperature: 0.1,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: "你是深绘商品建档字段专家，负责在给定枚举值里做保守选择。" },
+          { role: "user", content: prompt },
+        ],
+      }),
+      signal: controller.signal,
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) throw new Error(`DeepDraw AI fill failed: HTTP ${response.status}`)
+    const text = responseMessageContent(payload)
+    const json = JSON.parse(extractJsonText(text))
+    return Array.isArray(json.fills) ? json.fills as JsonRecord[] : []
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 function draftById(db: SyncPostgresDatabase, draftId: number) {
   const draft = db.prepare("select * from product_archive_draft where id = ?").get(draftId) as JsonRecord | undefined
   if (!draft) throw new Error(`建档草稿不存在：${draftId}`)
@@ -256,16 +565,129 @@ function fieldOptionsLookup(db: SyncPostgresDatabase, draft: JsonRecord) {
   return lookup
 }
 
+function tradeFieldsForDraft(db: SyncPostgresDatabase, draft: JsonRecord, tradeId = stringValue(draft.trade_id)) {
+  if (!tradeId) return []
+  return db.prepare(`
+    select *
+    from deepdraw_trade_field_cache
+    where tenant_name = ?
+      and merchant_id = ?
+      and trade_id = ?
+    order by required desc, sale_prop desc, field_name
+  `).all(draft.tenant_name, draft.merchant_id, tradeId) as JsonRecord[]
+}
+
+function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeFields: JsonRecord[], existingFields: JsonRecord[] = []) {
+  const spu = db.prepare("select * from product_spu where spu_code = ?").get(draft.spu_code) as JsonRecord | undefined
+  if (!spu) throw new Error(`MDM 款号不存在：${draft.spu_code}`)
+  const rules = db.prepare(`
+    select *
+    from product_archive_field_rule
+    order by id
+  `).all() as JsonRecord[]
+  const sourceRows = sourceRowsForSpu(db, stringValue(draft.spu_code))
+  const fieldNames = new Set<string>()
+  for (const field of tradeFields) fieldNames.add(stringValue(field.field_name))
+  for (const rule of rules) fieldNames.add(stringValue(rule.deepdraw_field))
+
+  const fieldTemplateByName = new Map(tradeFields.map((field) => [stringValue(field.field_name), field]))
+  const ruleByName = new Map(rules.map((rule) => [stringValue(rule.deepdraw_field), rule]))
+  const existingByName = new Map(existingFields.map((field) => [stringValue(field.field_name), field]))
+
+  return Array.from(fieldNames).filter(Boolean).map((fieldName) => {
+    const rule = ruleByName.get(fieldName) ?? {}
+    const template = fieldTemplateByName.get(fieldName) ?? {}
+    const existing = existingByName.get(fieldName) ?? {}
+    const sourceType = stringValue(rule.source_type) || "manual"
+    const existingManual = Boolean(existing.manual_override)
+    const valueText = existingManual
+      ? stringValue(existing.value_text)
+      : readSourceValue(spu, rule, sourceRows)
+    const valueJson = existingManual ? recordValue(existing.value_json) : {}
+    const required = Boolean(template.required) || Boolean(rule.blocking)
+    const blocking = Boolean(rule.blocking) || Boolean(template.required)
+    const missing = blocking && sourceType !== "skip" && !hasValue(valueText) && !hasValue(valueJson)
+    return {
+      fieldName,
+      fieldId: stringValue(template.field_id) || null,
+      sourceType: existingManual ? "manual" : sourceType,
+      sourceRef: stringValue(rule.source_field || rule.source_table) || null,
+      valueText: valueText || null,
+      valueJson,
+      required,
+      blocking,
+      manualOverride: existingManual,
+      validationStatus: sourceType === "skip" ? "skipped" : missing ? "missing" : "valid",
+      validationMessage: missing ? "必填字段缺失" : null,
+    }
+  })
+}
+
+function rebuildProductArchiveDraftFields(
+  db: SyncPostgresDatabase,
+  draftId: number,
+  tradeFields: JsonRecord[] = tradeFieldsForDraft(db, draftById(db, draftId)),
+) {
+  const draft = draftById(db, draftId)
+  const now = nowIso()
+  const existingFields = db.prepare("select * from product_archive_draft_field where draft_id = ?").all(draftId) as JsonRecord[]
+  const insertRows = fieldInsertData(db, draft, tradeFields, existingFields)
+  const insertField = db.prepare(`
+    insert into product_archive_draft_field (
+      draft_id,
+      field_name,
+      field_id,
+      source_type,
+      source_ref,
+      value_text,
+      value_json,
+      required,
+      blocking,
+      manual_override,
+      validation_status,
+      validation_message,
+      updated_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?::timestamptz)
+  `)
+  db.transaction(() => {
+    db.prepare("delete from product_archive_draft_field where draft_id = ?").run(draftId)
+    for (const row of insertRows) {
+      insertField.run(
+        draftId,
+        row.fieldName,
+        row.fieldId,
+        row.sourceType,
+        row.sourceRef,
+        row.valueText,
+        jsonText(row.valueJson),
+        row.required,
+        row.blocking,
+        row.manualOverride,
+        row.validationStatus,
+        row.validationMessage,
+        now,
+      )
+    }
+    db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(now, draftId)
+  })()
+}
+
 function serializeDraftDetail(db: SyncPostgresDatabase, draftId: number) {
   const draft = draftById(db, draftId)
   return {
     draft,
     fields: db.prepare(`
-      select *
-      from product_archive_draft_field
-      where draft_id = ?
-      order by required desc, blocking desc, field_name
-    `).all(draftId),
+      select field.*, template.options_json
+      from product_archive_draft_field field
+      left join deepdraw_trade_field_cache template
+        on template.tenant_name = ?
+       and template.merchant_id = ?
+       and template.trade_id = ?
+       and template.field_name = field.field_name
+      where field.draft_id = ?
+      order by field.required desc, field.blocking desc, field.field_name
+    `).all(draft.tenant_name, draft.merchant_id, draft.trade_id, draftId),
     skus: db.prepare(`
       select *
       from product_archive_draft_sku
@@ -455,22 +877,15 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
     order by skc.skc_code, sku.size_code, sku.sku_code
   `).all(input.spuCode) as JsonRecord[]
 
-  const tradeFields = input.tradeId
-    ? db.prepare(`
-        select *
-        from deepdraw_trade_field_cache
-        where tenant_name = ?
-          and merchant_id = ?
-          and trade_id = ?
-        order by required desc, sale_prop desc, field_name
-      `).all(tenantName, merchantId, input.tradeId) as JsonRecord[]
-    : []
-  const rules = db.prepare(`
-    select *
-    from product_archive_field_rule
-    order by id
-  `).all() as JsonRecord[]
   const sourceRows = sourceRowsForSpu(db, input.spuCode)
+  const autoMatchedTrade = input.tradeId
+    ? null
+    : inferDeepdrawTradeFromLaunchPlan(db, { tenantName, merchantId, sourceRows })
+  const draftTradeId = input.tradeId ?? autoMatchedTrade?.tradeId ?? null
+  const draftTradePath = input.tradePath ?? autoMatchedTrade?.tradePath ?? null
+  const tradeFields = draftTradeId
+    ? tradeFieldsForDraft(db, { tenant_name: tenantName, merchant_id: merchantId, trade_id: draftTradeId }, draftTradeId)
+    : []
 
   const now = nowIso()
   const result = db.transaction(() => {
@@ -494,21 +909,22 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
       input.spuCode,
       tenantName,
       merchantId,
-      input.tradeId ?? null,
-      input.tradePath ?? null,
+      draftTradeId,
+      draftTradePath,
       chooseTitle(spu, sourceRows),
       numberValue(spu.price_tag),
-      jsonText({ spu, sourceRows, sourceBatchId: input.sourceBatchId ?? null }),
+      jsonText({ spu, sourceRows, sourceBatchId: input.sourceBatchId ?? null, autoMatchedTrade }),
       input.createdBy ?? null,
       now,
     )
     const draftId = Number(inserted.lastInsertRowid)
-    const fieldNames = new Set<string>()
-    for (const field of tradeFields) fieldNames.add(stringValue(field.field_name))
-    for (const rule of rules) fieldNames.add(stringValue(rule.deepdraw_field))
-
-    const fieldTemplateByName = new Map(tradeFields.map((field) => [stringValue(field.field_name), field]))
-    const ruleByName = new Map(rules.map((rule) => [stringValue(rule.deepdraw_field), rule]))
+    const fieldRows = fieldInsertData(db, {
+      id: draftId,
+      spu_code: input.spuCode,
+      tenant_name: tenantName,
+      merchant_id: merchantId,
+      trade_id: draftTradeId,
+    }, tradeFields)
     const insertField = db.prepare(`
       insert into product_archive_draft_field (
         draft_id,
@@ -527,26 +943,19 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
       )
       values (?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, false, ?, ?, ?::timestamptz)
     `)
-    for (const fieldName of Array.from(fieldNames).filter(Boolean)) {
-      const rule = ruleByName.get(fieldName) ?? {}
-      const template = fieldTemplateByName.get(fieldName) ?? {}
-      const sourceType = stringValue(rule.source_type) || "manual"
-      const valueText = readSourceValue(spu, rule, sourceRows)
-      const required = Boolean(template.required) || Boolean(rule.blocking)
-      const blocking = Boolean(rule.blocking) || Boolean(template.required)
-      const missing = blocking && sourceType !== "skip" && !hasValue(valueText)
+    for (const field of fieldRows) {
       insertField.run(
         draftId,
-        fieldName,
-        stringValue(template.field_id) || null,
-        sourceType,
-        stringValue(rule.source_field || rule.source_table) || null,
-        valueText || null,
+        field.fieldName,
+        field.fieldId,
+        field.sourceType,
+        field.sourceRef,
+        field.valueText,
         jsonText({}),
-        required,
-        blocking,
-        sourceType === "skip" ? "skipped" : missing ? "missing" : "valid",
-        missing ? "必填字段缺失" : null,
+        field.required,
+        field.blocking,
+        field.validationStatus,
+        field.validationMessage,
         now,
       )
     }
@@ -593,6 +1002,37 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
   return serializeDraftDetail(db, result)
 }
 
+export function applyProductArchiveDraftTrade(db: SyncPostgresDatabase, draftId: number, input: ApplyTradeInput) {
+  const draft = draftById(db, draftId)
+  const tradeId = stringValue(input.tradeId)
+  if (!tradeId) throw new Error("请选择深绘类目")
+  const trade = db.prepare(`
+    select *
+    from deepdraw_trade_cache
+    where tenant_name = ?
+      and merchant_id = ?
+      and trade_id = ?
+    limit 1
+  `).get(draft.tenant_name, draft.merchant_id, tradeId) as JsonRecord | undefined
+  if (!trade) throw new Error("本地未找到该深绘类目，请先同步类目主数据")
+
+  const now = nowIso()
+  db.prepare(`
+    update product_archive_draft
+    set trade_id = ?,
+      trade_path = ?,
+      updated_at = ?::timestamptz
+    where id = ?
+  `).run(
+    tradeId,
+    stringValue(input.tradePath) || stringValue(trade.trade_path) || stringValue(trade.trade_name) || tradeId,
+    now,
+    draftId,
+  )
+  rebuildProductArchiveDraftFields(db, draftId)
+  return validateProductArchiveDraft(db, draftId)
+}
+
 export function patchProductArchiveDraftFields(db: SyncPostgresDatabase, draftId: number, input: PatchFieldInput) {
   const now = nowIso()
   db.transaction(() => {
@@ -623,6 +1063,83 @@ export function patchProductArchiveDraftFields(db: SyncPostgresDatabase, draftId
     db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(now, draftId)
   })()
   return validateProductArchiveDraft(db, draftId)
+}
+
+export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDatabase, draftId: number, options: AiFillOptions = {}) {
+  const detail = serializeDraftDetail(db, draftId)
+  const draft = detail.draft as JsonRecord
+  const fields = detail.fields as JsonRecord[]
+  const skus = detail.skus as JsonRecord[]
+  const contextText = [
+    draft.title,
+    draft.trade_path,
+    draft.source_snapshot_json,
+    ...skus.map((sku) => `${stringValue(sku.color_name)} ${stringValue(sku.size_name)}`),
+  ].map(stringValue).join(" ")
+  const candidates = fields
+    .filter((field) => !hasValue(field.value_text) && stringValue(field.source_type) !== "skip")
+    .map((field) => ({
+      id: Number(field.id),
+      fieldName: stringValue(field.field_name),
+      options: fieldOptionsFromTemplate(field.options_json),
+    }))
+    .filter((field) => Number.isInteger(field.id) && field.fieldName && field.options.length > 0)
+
+  if (candidates.length === 0) {
+    return { saved: [], detail }
+  }
+
+  const prompt = buildDeepdrawAiFillPrompt({ draft, fields: candidates, skus })
+  const aiFills = await callDeepdrawAiFill(prompt, options).catch(() => [] as JsonRecord[])
+  const aiById = new Map(aiFills.map((fill) => [Number(fill.field_id), fill]))
+  const now = nowIso()
+  const saved: Array<{ field_id: number; field_name: string; field_value: string; source: string; confidence: number | null }> = []
+  const updateField = db.prepare(`
+    update product_archive_draft_field
+    set value_text = ?,
+      value_json = ?::jsonb,
+      source_type = ?,
+      manual_override = true,
+      validation_status = 'valid',
+      validation_message = null,
+      updated_at = ?::timestamptz
+    where draft_id = ? and id = ?
+  `)
+
+  db.transaction(() => {
+    for (const field of candidates) {
+      const aiFill = aiById.get(field.id)
+      const aiValue = stringValue(aiFill?.field_value)
+      const allowed = new Set(field.options.map((option) => option.value))
+      const fieldValue = aiValue && allowed.has(aiValue)
+        ? aiValue
+        : heuristicDeepdrawOptionValue(field.fieldName, field.options, contextText)
+      if (!fieldValue || !allowed.has(fieldValue)) continue
+      const confidence = Number(aiFill?.confidence)
+      updateField.run(
+        fieldValue,
+        jsonText({
+          ai_fill: aiFill ?? { fallback: true },
+          source: aiFill ? "AI_SUGGESTED" : "AI_RULE_FALLBACK",
+        }),
+        aiFill ? "ai" : "ai_rule_fallback",
+        now,
+        draftId,
+        field.id,
+      )
+      saved.push({
+        field_id: field.id,
+        field_name: field.fieldName,
+        field_value: fieldValue,
+        source: aiFill ? "AI_SUGGESTED" : "AI_RULE_FALLBACK",
+        confidence: Number.isFinite(confidence) ? confidence : null,
+      })
+    }
+    db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(now, draftId)
+  })()
+
+  const validated = validateProductArchiveDraft(db, draftId)
+  return { saved, detail: validated.detail }
 }
 
 export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: number) {
