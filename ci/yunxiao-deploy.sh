@@ -5,6 +5,7 @@ SRC_DIR="${1:?missing source dir}"
 APP_DIR="${APP_DIR:-/opt/listingfy}"
 DATABASE_URL_VALUE="${PROD_DATABASE_URL:-${DATABASE_URL:-}}"
 ALLOWED_ORIGINS="${LISTINGIFY_ALLOWED_ORIGINS:-http://10.90.20.221,http://127.0.0.1:3001,http://localhost:3001}"
+RUN_SEED_IMPORT_VALUE="${RUN_SEED_IMPORT:-1}"
 
 if [ -z "$DATABASE_URL_VALUE" ]; then
   echo "ERROR: PROD_DATABASE_URL is required. Configure it as a Yunxiao secret variable."
@@ -83,7 +84,7 @@ if [ "$HOST_NODE_MAJOR" -ge 24 ]; then
 
   echo "===== Migrate database on host ====="
   npm run db:migrate
-  if [ "${RUN_SEED_IMPORT:-0}" = "1" ]; then
+  if [ "$RUN_SEED_IMPORT_VALUE" = "1" ]; then
     echo "===== Import seed data on host ====="
     npm run seed:import
   else
@@ -113,7 +114,7 @@ else
     -v "$APP_DIR:/app" \
     -w /app \
     --env-file "$APP_DIR/.env.local" \
-    -e RUN_SEED_IMPORT="${RUN_SEED_IMPORT:-0}" \
+    -e RUN_SEED_IMPORT="$RUN_SEED_IMPORT_VALUE" \
     "$NODE_IMAGE" \
     bash -lc 'set -e; node -v; npm -v; npm --prefix web ci --include=dev; npm --prefix web run build; npm run db:migrate; if [ "${RUN_SEED_IMPORT:-0}" = "1" ]; then echo "===== Import seed data in Docker ====="; npm run seed:import; else echo "===== Skip seed import; set RUN_SEED_IMPORT=1 to enable ====="; fi'
 
