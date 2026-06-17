@@ -99,3 +99,36 @@ test("SHEIN product bucket keeps product images square and previewable", async (
   assert.match(page, /查看大图/);
   assert.match(page, /previewImage/);
 });
+
+test("SHEIN product bucket uses the shared kids category fallback before marking category missing", async () => {
+  const route = await readFile(ROUTE_FILE, "utf8");
+  const fallbackSource = await readFile(path.join(PROJECT_ROOT, "web/server/services/pre-publish/category-fallback.ts"), "utf8");
+
+  assert.match(route, /resolveSheinKidsCategoryFallback/);
+  assert.match(fallbackSource, /女童（大）T恤/);
+  assert.match(fallbackSource, /女童（大）卫衣/);
+  assert.match(fallbackSource, /女童（小）外套/);
+  assert.match(fallbackSource, /女童（小）长裤/);
+});
+
+test("SHEIN product bucket only selects AI category after exact and fallback miss", async () => {
+  const route = await readFile(ROUTE_FILE, "utf8");
+  const prePublishRoute = await readFile(PRE_PUBLISH_ROUTE_FILE, "utf8");
+
+  assert.match(route, /const fallback = fallbackCategory\(row\)[\s\S]+if \(fallback\.category_id && fallback\.product_type_id\) return fallback[\s\S]+if \(row\.suggested_shein_category_id/);
+  assert.match(prePublishRoute, /const fallback = fallbackCategory\(row\)[\s\S]+if \(fallback\.category_id && fallback\.product_type_id\) return fallback[\s\S]+if \(row\.suggested_shein_category_id/);
+});
+
+test("SHEIN product bucket can request targeted AI category suggestions for selected SPUs", async () => {
+  const page = await readFile(PAGE_FILE, "utf8");
+
+  assert.match(page, /categoryAiMutation/);
+  assert.match(page, /useAsyncTasks/);
+  assert.match(page, /addTask/);
+  assert.match(page, /openTaskCenter/);
+  assert.match(page, /\/category-mapping\/ai-suggestions\/jobs/);
+  assert.match(page, /\/category-mapping\/ai-suggestions\/jobs\/\$\{result\.id\}/);
+  assert.match(page, /category_mapping_ai_suggestions/);
+  assert.match(page, /spu_codes:\s*targetSpus/);
+  assert.match(page, /AI 生成类目建议/);
+});

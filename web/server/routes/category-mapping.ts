@@ -1,5 +1,9 @@
+import { randomUUID } from "node:crypto"
 import { Hono } from "hono"
 import { getDb } from "../db"
+import { uniqueStrings } from "../services/pre-publish/shared"
+import { resolveSheinKidsCategoryFallback } from "../services/pre-publish/category-fallback"
+import { refreshBucketProduct } from "./shein-products"
 import {
   buildCategoryMatchPrompt,
   callAiCategoryMatcher,
@@ -67,6 +71,53 @@ type SkcExample = {
   mdm_image_url: string | null
   tmall_color_image_url: string | null
 }
+
+type CategoryAiSuggestionRequest = {
+  limit?: number
+  dry_run?: boolean
+  spu_codes?: unknown
+}
+
+type CategoryAiSuggestionResponse = {
+  groups: UnmappedGroup[]
+  candidates: CategoryCandidate[]
+  suggestions: Array<Record<string, unknown>>
+  requested_spu_codes: string[]
+  provider?: unknown
+  prompt?: string
+  refreshed_spu_codes?: string[]
+}
+
+type CategoryAiSuggestionJobItem = {
+  spu_code: string
+  status: "queued" | "running" | "completed" | "failed"
+  error?: string | null
+}
+
+type CategoryAiSuggestionJob = {
+  id: string
+  status: "queued" | "running" | "completed"
+  total_count: number
+  completed_count: number
+  failed_count: number
+  limit: number
+  requested_spu_codes: string[]
+  refreshed_spu_codes: string[]
+  items: CategoryAiSuggestionJobItem[]
+  groups: UnmappedGroup[]
+  candidates: CategoryCandidate[]
+  suggestions: Array<Record<string, unknown>>
+  provider?: unknown
+  error?: string | null
+  created_at: string
+  started_at?: string | null
+  finished_at?: string | null
+  updated_at: string
+}
+
+const categoryAiPending: string[] = []
+let categoryAiRunning = false
+let categoryAiScheduled = false
 
 function normalizeText(value: unknown) {
   return String(value ?? "").trim()
@@ -144,6 +195,19 @@ function toUnmappedGroup(row: Record<string, unknown>): UnmappedGroup {
   }
 }
 
+function categoryFallbackInputForGroup(group: UnmappedGroup) {
+  return {
+    ...group,
+    middle_class_name: group.mdm_middle_category_name,
+    subclass_name: group.mdm_small_category_name,
+    deepdraw_trade_path: group.trade_path,
+  }
+}
+
+function filterGroupsWithoutCodeFallback(groups: UnmappedGroup[]) {
+  return groups.filter((group) => !resolveSheinKidsCategoryFallback(categoryFallbackInputForGroup(group)))
+}
+
 function collectCandidateKeywords(groups: UnmappedGroup[]) {
   const keywords = new Set<string>()
   for (const group of groups) {
@@ -155,6 +219,10 @@ function collectCandidateKeywords(groups: UnmappedGroup[]) {
     ]) {
       const text = normalizeText(value)
       if (!text) continue
+      if (text.includes("T恤") || /t恤/i.test(text)) keywords.add("T恤")
+      if (text.includes("卫衣")) keywords.add("卫衣")
+      if (text.includes("外套")) keywords.add("外套")
+      if (text.includes("裤")) keywords.add("裤")
       if (text.includes("衬衫")) keywords.add("衬衫")
       if (text.includes("连衣裙")) keywords.add("连衣裙")
       if (text.includes("毛衫") || text.includes("毛衣")) keywords.add("毛衣")
@@ -166,6 +234,10 @@ function collectCandidateKeywords(groups: UnmappedGroup[]) {
     }
   }
   if (keywords.size === 0) {
+    keywords.add("T恤")
+    keywords.add("卫衣")
+    keywords.add("外套")
+    keywords.add("裤")
     keywords.add("衬衫")
     keywords.add("连衣裙")
     keywords.add("毛衣")
@@ -175,7 +247,11 @@ function collectCandidateKeywords(groups: UnmappedGroup[]) {
   return [...keywords]
 }
 
-function listUnmappedGroups(db: ReturnType<typeof getDb>, limit: number) {
+function listUnmappedGroups(db: ReturnType<typeof getDb>, limit: number, spuCodes: string[] = []) {
+  const queryLimit = Math.max(limit, Math.min(500, limit * 5))
+  const spuFilter = spuCodes.length
+    ? `and spu.spu_code in (${spuCodes.map(() => "?").join(",")})`
+    : ""
   const rows = db.prepare(`
     with grouped as (
       select
@@ -199,6 +275,7 @@ function listUnmappedGroups(db: ReturnType<typeof getDb>, limit: number) {
       from product_spu spu
       left join product_content_package pkg on pkg.spu_code = spu.spu_code
       where coalesce(spu.subclass_name, '') <> ''
+        ${spuFilter}
       group by
         spu.middle_class_code,
         spu.middle_class_name,
@@ -223,11 +300,18 @@ function listUnmappedGroups(db: ReturnType<typeof getDb>, limit: number) {
           coalesce(grouped.age_group_name, '')
         )
     )
+      and not exists (
+        select 1
+        from mdm_shein_category_mapping_rule rule
+        where rule.status = 'ACTIVE'
+          and rule.match_mode = 'FALLBACK'
+          and rule.mdm_small_category_name = grouped.mdm_small_category_name
+      )
     order by spu_count desc, mdm_middle_category_name, mdm_small_category_name
     limit ?
-  `).all(limit) as Record<string, unknown>[]
+  `).all(...spuCodes, queryLimit) as Record<string, unknown>[]
 
-  return rows.map(toUnmappedGroup)
+  return filterGroupsWithoutCodeFallback(rows.map(toUnmappedGroup)).slice(0, limit)
 }
 
 function listSkcExamplesForGroup(
@@ -407,6 +491,379 @@ function listPersistedAiSuggestions(db: ReturnType<typeof getDb>, limit: number)
   }
 }
 
+function readCategoryAiSuggestionRequest(
+  body: CategoryAiSuggestionRequest,
+  queryLimit: string | undefined,
+) {
+  const limit = readLimit(String(body.limit ?? queryLimit ?? 20), 20, 50)
+  const rawSpuCodes = Array.isArray(body.spu_codes) ? body.spu_codes : []
+  return {
+    limit,
+    dryRun: Boolean(body.dry_run),
+    spuCodes: uniqueStrings(rawSpuCodes),
+  }
+}
+
+function refreshAffectedBucketProducts(
+  db: ReturnType<typeof getDb>,
+  groups: UnmappedGroup[],
+  requestedSpuCodes: string[],
+) {
+  const codes = uniqueStrings([
+    ...requestedSpuCodes,
+    ...groups.flatMap((group) => group.spus),
+  ])
+  const refreshed: string[] = []
+  for (const code of codes) {
+    try {
+      if (refreshBucketProduct(db, code)) refreshed.push(code)
+    } catch {
+      // Category suggestions should not fail just because a bucket row cannot be refreshed.
+    }
+  }
+  return refreshed
+}
+
+async function generateCategoryAiSuggestions({
+  limit,
+  spuCodes,
+  dryRun,
+  refreshBuckets = false,
+}: {
+  limit: number
+  spuCodes: string[]
+  dryRun?: boolean
+  refreshBuckets?: boolean
+}): Promise<CategoryAiSuggestionResponse> {
+  const db = getDb()
+  const groups = attachSkcExamples(db, listUnmappedGroups(db, limit, spuCodes))
+  const candidates = listCategoryCandidates(db, groups)
+
+  if (groups.length === 0) {
+    return { groups, candidates, suggestions: [], requested_spu_codes: spuCodes, refreshed_spu_codes: [] }
+  }
+
+  if (dryRun) {
+    return {
+      groups,
+      candidates,
+      suggestions: [],
+      requested_spu_codes: spuCodes,
+      refreshed_spu_codes: [],
+      prompt: buildCategoryMatchPrompt({ groups, candidates: candidates.slice(0, AI_CATEGORY_CANDIDATE_LIMIT) }),
+    }
+  }
+
+  const result = await callAiCategoryMatcher({ groups, candidates: candidates.slice(0, AI_CATEGORY_CANDIDATE_LIMIT) })
+  const suggestions = enrichSuggestions({
+    groups,
+    suggestions: result.suggestions as unknown as Array<Record<string, unknown>>,
+  })
+  persistAiSuggestions({
+    db,
+    groups,
+    suggestions,
+    provider: result.provider,
+  })
+  return {
+    groups,
+    candidates,
+    suggestions,
+    requested_spu_codes: spuCodes,
+    provider: result.provider,
+    refreshed_spu_codes: refreshBuckets ? refreshAffectedBucketProducts(db, groups, spuCodes) : [],
+  }
+}
+
+function snapshotCategoryAiJob(job: CategoryAiSuggestionJob): CategoryAiSuggestionJob {
+  return {
+    ...job,
+    requested_spu_codes: [...job.requested_spu_codes],
+    refreshed_spu_codes: [...job.refreshed_spu_codes],
+    items: job.items.map((item) => ({ ...item })),
+    groups: job.groups.map((group) => ({
+      ...group,
+      spus: [...group.spus],
+      skc_examples: group.skc_examples.map((example) => ({ ...example })),
+    })),
+    candidates: job.candidates.map((candidate) => ({ ...candidate })),
+    suggestions: job.suggestions.map((suggestion) => ({ ...suggestion })),
+  }
+}
+
+function isoTimestamp(value: unknown) {
+  if (!value) return null
+  if (value instanceof Date) return value.toISOString()
+  return String(value)
+}
+
+function categoryAiJobFromRow(row: Record<string, unknown>): CategoryAiSuggestionJob {
+  const createdAt = isoTimestamp(row.created_at) ?? new Date().toISOString()
+  const updatedAt = isoTimestamp(row.updated_at) ?? createdAt
+  return {
+    id: String(row.id),
+    status: (normalizeText(row.status) || "queued") as CategoryAiSuggestionJob["status"],
+    total_count: Number(row.total_count ?? 0),
+    completed_count: Number(row.completed_count ?? 0),
+    failed_count: Number(row.failed_count ?? 0),
+    limit: Number(row.limit_count ?? 30),
+    requested_spu_codes: parseJsonArray(row.requested_spu_codes_json).map(String),
+    refreshed_spu_codes: parseJsonArray(row.refreshed_spu_codes_json).map(String),
+    items: parseJsonArray(row.items_json) as CategoryAiSuggestionJobItem[],
+    groups: parseJsonArray(row.groups_json) as UnmappedGroup[],
+    candidates: parseJsonArray(row.candidates_json) as CategoryCandidate[],
+    suggestions: parseJsonArray(row.suggestions_json) as Array<Record<string, unknown>>,
+    provider: parseJsonObject(row.provider_json),
+    error: row.error_message == null ? null : String(row.error_message),
+    created_at: createdAt,
+    started_at: isoTimestamp(row.started_at),
+    finished_at: isoTimestamp(row.finished_at),
+    updated_at: updatedAt,
+  }
+}
+
+function persistCategoryAiJob(db: ReturnType<typeof getDb>, job: CategoryAiSuggestionJob) {
+  db.prepare(`
+    insert into category_ai_suggestion_job (
+      id,
+      status,
+      total_count,
+      completed_count,
+      failed_count,
+      limit_count,
+      requested_spu_codes_json,
+      refreshed_spu_codes_json,
+      items_json,
+      groups_json,
+      candidates_json,
+      suggestions_json,
+      provider_json,
+      error_message,
+      started_at,
+      finished_at,
+      created_at,
+      updated_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb, ?, ?::timestamptz, ?::timestamptz, ?::timestamptz, ?::timestamptz)
+    on conflict(id) do update set
+      status = excluded.status,
+      total_count = excluded.total_count,
+      completed_count = excluded.completed_count,
+      failed_count = excluded.failed_count,
+      limit_count = excluded.limit_count,
+      requested_spu_codes_json = excluded.requested_spu_codes_json,
+      refreshed_spu_codes_json = excluded.refreshed_spu_codes_json,
+      items_json = excluded.items_json,
+      groups_json = excluded.groups_json,
+      candidates_json = excluded.candidates_json,
+      suggestions_json = excluded.suggestions_json,
+      provider_json = excluded.provider_json,
+      error_message = excluded.error_message,
+      started_at = excluded.started_at,
+      finished_at = excluded.finished_at,
+      updated_at = excluded.updated_at
+  `).run(
+    job.id,
+    job.status,
+    job.total_count,
+    job.completed_count,
+    job.failed_count,
+    job.limit,
+    JSON.stringify(job.requested_spu_codes ?? []),
+    JSON.stringify(job.refreshed_spu_codes ?? []),
+    JSON.stringify(job.items ?? []),
+    JSON.stringify(job.groups ?? []),
+    JSON.stringify(job.candidates ?? []),
+    JSON.stringify(job.suggestions ?? []),
+    JSON.stringify(job.provider ?? {}),
+    job.error ?? null,
+    job.started_at ?? null,
+    job.finished_at ?? null,
+    job.created_at,
+    job.updated_at,
+  )
+  return snapshotCategoryAiJob(job)
+}
+
+function readCategoryAiSuggestionJob(db: ReturnType<typeof getDb>, jobId: string) {
+  const row = db.prepare(`
+    select *
+    from category_ai_suggestion_job
+    where id = ?
+  `).get(jobId) as Record<string, unknown> | undefined
+  return row ? snapshotCategoryAiJob(categoryAiJobFromRow(row)) : null
+}
+
+function updateCategoryAiJob(
+  db: ReturnType<typeof getDb>,
+  job: CategoryAiSuggestionJob,
+  patch: Partial<CategoryAiSuggestionJob>,
+) {
+  const next = snapshotCategoryAiJob({
+    ...job,
+    ...patch,
+    updated_at: new Date().toISOString(),
+  })
+  persistCategoryAiJob(db, next)
+  return next
+}
+
+function buildCategoryAiJobItems(groups: UnmappedGroup[], requestedSpuCodes: string[]) {
+  if (requestedSpuCodes.length > 0) {
+    return requestedSpuCodes.map((spuCode) => ({
+      spu_code: spuCode,
+      status: "running" as const,
+      error: null,
+    }))
+  }
+  return groups.map((group) => ({
+    spu_code: group.spus[0] ?? group.match_key,
+    status: "running" as const,
+    error: null,
+  }))
+}
+
+function scheduleCategoryAiSuggestionJob(jobId: string) {
+  if (!categoryAiPending.includes(jobId)) {
+    categoryAiPending.push(jobId)
+  }
+  if (!categoryAiScheduled) {
+    categoryAiScheduled = true
+    queueMicrotask(() => {
+      void processCategoryAiSuggestionQueue()
+    })
+  }
+}
+
+function recoverCategoryAiSuggestionJobs(db: ReturnType<typeof getDb>) {
+  const rows = db.prepare(`
+    select id
+    from category_ai_suggestion_job
+    where status in ('queued', 'running')
+    order by created_at asc
+    limit 20
+  `).all() as Array<{ id: string }>
+  for (const row of rows) scheduleCategoryAiSuggestionJob(String(row.id))
+}
+
+function enqueueCategoryAiSuggestionJob(options: { limit: number; spuCodes: string[] }) {
+  const db = getDb()
+  const now = new Date().toISOString()
+  const initialItems = options.spuCodes.map((spuCode) => ({
+    spu_code: spuCode,
+    status: "queued" as const,
+    error: null,
+  }))
+  const job: CategoryAiSuggestionJob = {
+    id: randomUUID(),
+    status: "queued",
+    total_count: initialItems.length,
+    completed_count: 0,
+    failed_count: 0,
+    limit: options.limit,
+    requested_spu_codes: options.spuCodes,
+    refreshed_spu_codes: [],
+    items: initialItems,
+    groups: [],
+    candidates: [],
+    suggestions: [],
+    provider: null,
+    error: null,
+    created_at: now,
+    started_at: null,
+    finished_at: null,
+    updated_at: now,
+  }
+  persistCategoryAiJob(db, job)
+  scheduleCategoryAiSuggestionJob(job.id)
+  return snapshotCategoryAiJob(job)
+}
+
+async function runCategoryAiSuggestionJob(jobId: string) {
+  const db = getDb()
+  let job = readCategoryAiSuggestionJob(db, jobId)
+  if (!job) return
+  if (job.status === "completed") return
+  job = updateCategoryAiJob(db, job, {
+    status: "running",
+    started_at: new Date().toISOString(),
+  })
+
+  try {
+    const groups = attachSkcExamples(db, listUnmappedGroups(db, job.limit, job.requested_spu_codes))
+    const candidates = listCategoryCandidates(db, groups)
+    const items = buildCategoryAiJobItems(groups, job.requested_spu_codes)
+    job = updateCategoryAiJob(db, job, {
+      groups,
+      candidates,
+      items,
+      total_count: items.length,
+      completed_count: 0,
+      failed_count: 0,
+    })
+
+    if (groups.length === 0) {
+      const completedItems = items.map((item) => ({ ...item, status: "completed" as const }))
+      updateCategoryAiJob(db, job, {
+        status: "completed",
+        completed_count: completedItems.length,
+        items: completedItems,
+        finished_at: new Date().toISOString(),
+      })
+      return
+    }
+
+    const result = await callAiCategoryMatcher({ groups, candidates: candidates.slice(0, AI_CATEGORY_CANDIDATE_LIMIT) })
+    const suggestions = enrichSuggestions({
+      groups,
+      suggestions: result.suggestions as unknown as Array<Record<string, unknown>>,
+    })
+    persistAiSuggestions({
+      db,
+      groups,
+      suggestions,
+      provider: result.provider,
+    })
+    const refreshedSpuCodes = refreshAffectedBucketProducts(db, groups, job.requested_spu_codes)
+    const completedItems = items.map((item) => ({ ...item, status: "completed" as const }))
+    updateCategoryAiJob(db, job, {
+      status: "completed",
+      completed_count: completedItems.length,
+      failed_count: 0,
+      items: completedItems,
+      suggestions,
+      provider: result.provider,
+      refreshed_spu_codes: refreshedSpuCodes,
+      finished_at: new Date().toISOString(),
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    const failedItems = job.items.length
+      ? job.items.map((item) => ({ ...item, status: "failed" as const, error: message }))
+      : [{ spu_code: job.requested_spu_codes[0] ?? "AI_CATEGORY_MATCH", status: "failed" as const, error: message }]
+    updateCategoryAiJob(db, job, {
+      status: "completed",
+      completed_count: 0,
+      failed_count: failedItems.length || 1,
+      total_count: failedItems.length || 1,
+      items: failedItems,
+      error: message,
+      finished_at: new Date().toISOString(),
+    })
+  }
+}
+
+async function processCategoryAiSuggestionQueue() {
+  categoryAiScheduled = false
+  if (categoryAiRunning) return
+  categoryAiRunning = true
+  while (categoryAiPending.length > 0) {
+    const jobId = categoryAiPending.shift()
+    if (jobId) await runCategoryAiSuggestionJob(jobId)
+  }
+  categoryAiRunning = false
+}
+
 // GET /api/category-mapping/rules
 categoryMapping.get("/rules", (c) => {
   const db = getDb()
@@ -569,47 +1026,38 @@ categoryMapping.get("/ai-suggestions", (c) => {
   return c.json(listPersistedAiSuggestions(db, limit))
 })
 
+// POST /api/category-mapping/ai-suggestions/jobs - enqueue AI category recommendations
+categoryMapping.post("/ai-suggestions/jobs", async (c) => {
+  const body = await c.req.json().catch(() => ({})) as CategoryAiSuggestionRequest
+  const { limit, spuCodes } = readCategoryAiSuggestionRequest(body, c.req.query("limit"))
+  const job = enqueueCategoryAiSuggestionJob({ limit, spuCodes })
+  return c.json(job, 202)
+})
+
+// GET /api/category-mapping/ai-suggestions/jobs/:jobId - poll an AI category recommendation job
+categoryMapping.get("/ai-suggestions/jobs/:jobId", (c) => {
+  const db = getDb()
+  recoverCategoryAiSuggestionJobs(db)
+  const job = readCategoryAiSuggestionJob(db, c.req.param("jobId"))
+  if (!job) return c.json({ error: "AI category suggestion job not found" }, 404)
+  if (job.status !== "completed") scheduleCategoryAiSuggestionJob(job.id)
+  return c.json(job)
+})
+
 // POST /api/category-mapping/ai-suggestions - ask AI to recommend SHEIN categories for unmapped groups
 categoryMapping.post("/ai-suggestions", async (c) => {
-  const db = getDb()
-  const body = await c.req.json().catch(() => ({})) as {
-    limit?: number
-    dry_run?: boolean
+  const body = await c.req.json().catch(() => ({})) as CategoryAiSuggestionRequest
+  const { limit, dryRun, spuCodes } = readCategoryAiSuggestionRequest(body, c.req.query("limit"))
+  if (!dryRun) {
+    const job = enqueueCategoryAiSuggestionJob({ limit, spuCodes })
+    return c.json(job, 202)
   }
-  const limit = readLimit(String(body.limit ?? c.req.query("limit") ?? 20), 20, 50)
-  const groups = attachSkcExamples(db, listUnmappedGroups(db, limit))
-  const candidates = listCategoryCandidates(db, groups)
-
-  if (groups.length === 0) {
-    return c.json({ groups, candidates, suggestions: [] })
-  }
-
-  if (body.dry_run) {
-    return c.json({
-      groups,
-      candidates,
-      suggestions: [],
-      prompt: buildCategoryMatchPrompt({ groups, candidates: candidates.slice(0, AI_CATEGORY_CANDIDATE_LIMIT) }),
-    })
-  }
-
-  const result = await callAiCategoryMatcher({ groups, candidates: candidates.slice(0, AI_CATEGORY_CANDIDATE_LIMIT) })
-  const suggestions = enrichSuggestions({
-    groups,
-    suggestions: result.suggestions as unknown as Array<Record<string, unknown>>,
+  const result = await generateCategoryAiSuggestions({
+    limit,
+    spuCodes,
+    dryRun,
   })
-  persistAiSuggestions({
-    db,
-    groups,
-    suggestions,
-    provider: result.provider,
-  })
-  return c.json({
-    groups,
-    candidates,
-    suggestions,
-    provider: result.provider,
-  })
+  return c.json(result)
 })
 
 // POST /api/category-mapping/ai-suggestions/confirm - persist one AI suggestion as a mapping rule

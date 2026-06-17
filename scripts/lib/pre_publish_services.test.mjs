@@ -325,7 +325,7 @@ test("pre-publish AI and batch fixes keep critical fields rule-owned", async () 
   assert.match(source, /normalizeMaterialValue/);
   assert.match(source, /normalizeFillFieldValue/);
   assert.match(source, /shouldAutoApplyCategory/);
-  assert.match(source, /AI_CATEGORY_SUGGESTED/);
+  assert.match(source, /AI_CATEGORY_LIVE/);
   assert.doesNotMatch(source, /if \(mode === "all" \|\| mode === "category"\) \{\s*persistCategoryFill\(db, readiness\)\s*if \(readiness\.category\.category_id/s);
   assert.match(source, /quick_fixes:\s*\{\s*fields/);
   assert.match(source, /sku_commercials/);
@@ -341,15 +341,19 @@ test("pre-publish AI and batch fixes keep critical fields rule-owned", async () 
   assert.match(draftList, /batch-import-folders/);
 });
 
-test("pre-publish route resolves SHEIN size sale attribute by metadata and direct category enum before generic conversion", async () => {
+test("pre-publish route resolves SHEIN size sale attribute by metadata and conversion rule before direct category enum", async () => {
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
   const detailPage = await readFile(path.join(PROJECT_ROOT, "web/src/pages/pre-publish-validation/[listingId]/page.tsx"), "utf8");
 
   assert.match(source, /function isSizeSaleAttribute/);
   assert.match(source, /is_size_attribute/);
   assert.match(source, /function findSizeSaleAttribute/);
+  assert.match(source, /function findEnumOptionByValue/);
   assert.match(source, /function resolveSkuSizeSelection/);
-  assert.match(source, /directOption\s*\?\?\s*convertedOption/);
+  assert.match(source, /findEnumOptionByValue\(sizeAttr\.values,\s*convertedCandidates\)/);
+  assert.match(source, /convertedOption\s*\?\?\s*directOption/);
+  assert.match(source, /manual_override:\s*true/);
+  assert.match(source, /Boolean\(existingSizePayload\.manual_override\)/);
   assert.match(source, /findSizeSaleAttribute\(attrs\)/);
   assert.doesNotMatch(source, /attr\.attribute_name === "尺寸"/);
   assert.match(detailPage, /function isSizeSaleAttribute/);
@@ -360,14 +364,56 @@ test("pre-publish route resolves SHEIN size sale attribute by metadata and direc
 
 test("pre-publish category enrichment covers kids pants fallback categories", async () => {
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const fallbackSource = await readFile(path.join(PROJECT_ROOT, "web/server/services/pre-publish/category-fallback.ts"), "utf8");
 
-  assert.match(source, /function kidsPantsFallbackCategory/);
-  assert.match(source, /女童（大）长裤/);
-  assert.match(source, /product_type_id:\s*9601/);
-  assert.match(source, /Straight Pants|straight pants/i);
-  assert.match(source, /女童（小）长裤/);
-  assert.match(source, /男童（大）裤子/);
-  assert.match(source, /男童（小）裤子/);
+  assert.match(source, /resolveSheinKidsCategoryFallback/);
+  assert.match(fallbackSource, /function kidsPantsFallbackCategory/);
+  assert.match(fallbackSource, /女童（大）长裤/);
+  assert.match(fallbackSource, /product_type_id:\s*9601/);
+  assert.match(fallbackSource, /Straight Pants|straight pants/i);
+  assert.match(fallbackSource, /女童（小）长裤/);
+  assert.match(fallbackSource, /男童（大）裤子/);
+  assert.match(fallbackSource, /男童（小）裤子/);
+  assert.match(fallbackSource, /男女童|男童女童/);
+});
+
+test("pre-publish sale attributes require enum ids when SHEIN metadata provides values", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+
+  assert.match(source, /function existingSalePayloadIsValid/);
+  assert.match(source, /if \(attr\.values\.length > 0\) return false/);
+  assert.match(source, /return Boolean\(normalizeText\(payload\.custom_attribute_value\)\)/);
+});
+
+test("draft AI category enrichment calls AI live and applies the suggested category", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+
+  assert.match(source, /callAiCategoryMatcher/);
+  assert.match(source, /function shouldAskLiveAiCategory/);
+  assert.match(source, /async function resolveLiveAiDraftCategory/);
+  assert.match(source, /async function safeResolveLiveAiDraftCategory/);
+  assert.match(source, /safeResolveLiveAiDraftCategory\(db,\s*categoryReadiness\)/);
+  assert.match(source, /applyDraftCategorySelection/);
+  assert.match(source, /source:\s*"AI_CATEGORY_LIVE"/);
+  assert.match(source, /fieldLabel:\s*"SHEIN 类目"/);
+  assert.doesNotMatch(source, /fieldLabel:\s*"SHEIN 类目候选"/);
+});
+
+test("draft color quick fixes resolve the current category color sale attribute and validate enum ids", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const updateBlock = source.slice(
+    source.indexOf("function updateListingSkcColors"),
+    source.indexOf("function persistDraftFields"),
+  );
+
+  assert.match(updateBlock, /getRequiredAttributes\(db,\s*categoryId,\s*productTypeId\)/);
+  assert.match(updateBlock, /findColorSaleAttribute/);
+  assert.match(updateBlock, /hasExplicitColorSelection/);
+  assert.match(updateBlock, /if \(hasExplicitColorSelection && colorAttr\.values\.length > 0 && !colorOption\)/);
+  assert.match(updateBlock, /findEnumOption\(colorAttr\.values,\s*\[String\(item\.attributeValueId\),\s*item\.attributeValue\]\)/);
+  assert.match(updateBlock, /saleAttributePayload\(colorAttr,\s*colorOption,\s*item\.customValue\s*\|\|\s*item\.attributeValue\s*\|\|\s*normalizeText\(current\?\.color_name\)\)/);
+  assert.match(updateBlock, /existingSalePayloadIsValid/);
+  assert.doesNotMatch(updateBlock, /attribute_id:\s*27/);
 });
 
 test("batch publish dialog saves quick fixes through one batched endpoint and includes size fixes", async () => {
@@ -413,13 +459,11 @@ test("draft category AI recomputes from source data instead of replaying the dra
   assert.match(source, /const storedCategory = ignoreStoredCategory\s*\?\s*null\s*:\s*readStoredCategoryOverride\(fills,\s*spuCode\)/);
   assert.match(source, /getReadinessForListing\(db,\s*listing,\s*\{\s*ignoreListingCategory:\s*true,\s*ignoreStoredCategory:\s*true,\s*\}\)/);
   assert.match(source, /shouldAutoApplyCategory\(categoryReadiness\.category,\s*\{\s*allowRuleFallback:\s*mode === "category" \|\| mode === "all"\s*\}\)/);
-  assert.match(source, /const enrichmentReadiness = mode === "all" \? categoryReadiness : readiness/);
+  assert.match(source, /let enrichmentReadiness = mode === "all" \? categoryReadiness : readiness/);
+  assert.match(source, /const updatedReadiness = updatedListing \? getReadinessForListing\(db,\s*updatedListing\) : null/);
   assert.match(source, /function safeAiTranslateTitle/);
   assert.match(source, /const titleEn = await safeAiTranslateTitle\(enrichmentReadiness\)/);
   assert.match(source, /const aiFills = await callAiFill\(enrichmentReadiness\)/);
-  assert.match(source, /女童（大）T恤/);
-  assert.match(source, /isSmallKid \? 2116 : 2013/);
-
-  assert.match(bucketSource, /女童（大）T恤/);
-  assert.match(bucketSource, /isSmallKid \? 2116 : 2013/);
+  assert.match(source, /resolveSheinKidsCategoryFallback/);
+  assert.match(bucketSource, /resolveSheinKidsCategoryFallback/);
 });

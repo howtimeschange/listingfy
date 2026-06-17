@@ -17,7 +17,7 @@ export interface AsyncTaskJob {
 
 export interface AsyncTaskRecord {
   id: string
-  type: "product_archive_mdm_draft"
+  type: "product_archive_mdm_draft" | "category_mapping_ai_suggestions"
   title: string
   description?: string
   endpoint: string

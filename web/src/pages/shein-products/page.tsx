@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from "react"
+import { Fragment, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
@@ -12,9 +12,11 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  Sparkles,
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
+import { useAsyncTasks, type AsyncTaskJob } from "@/lib/async-task-context"
 import { formatCurrency, formatDateTime, formatNumber, formatPercent } from "@/lib/format"
 import { parseBatchSearch } from "@/lib/spreadsheet"
 import { FilterTrigger } from "@/components/filter-trigger"
@@ -161,6 +163,13 @@ interface AiFillResult {
 interface ImportBucketResult {
   imported_count: number
   missing: string[]
+}
+
+interface CategoryAiSuggestionJob extends AsyncTaskJob {
+  requested_spu_codes?: string[]
+  refreshed_spu_codes?: string[]
+  suggestions?: Array<{ match_key: string; status: string; confidence: number }>
+  error?: string | null
 }
 
 type ImagePreviewState = {
@@ -369,6 +378,10 @@ function fieldCompleteness(item: SheinBucketItem) {
   }
 }
 
+function categoryAiMutationIsActive(jobId: string | null, job: CategoryAiSuggestionJob | null | undefined) {
+  return Boolean(jobId && (!job || job.status !== "completed"))
+}
+
 export default function SheinProductsPage() {
   const [search, setSearch] = useState("")
   const [batchSearchText, setBatchSearchText] = useState("")
@@ -383,9 +396,12 @@ export default function SheinProductsPage() {
   const [selectedSkcCodesBySpu, setSelectedSkcCodesBySpu] = useState<Record<string, string[]>>({})
   const [expandedSpus, setExpandedSpus] = useState<string[]>([])
   const [previewImage, setPreviewImage] = useState<ImagePreviewState | null>(null)
+  const [categoryAiJobId, setCategoryAiJobId] = useState<string | null>(null)
+  const handledCategoryAiJobs = useRef(new Set<string>())
   const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const { addTask, getTaskByJobId, openTaskCenter } = useAsyncTasks()
 
   const { data, isLoading } = useSheinProducts({
     q: search,
@@ -405,6 +421,19 @@ export default function SheinProductsPage() {
   const allVisibleSelected = items.length > 0 && items.every((item) => selectedSet.has(item.spu_code))
   const batchCount = parseBatchSearch(batchSearchText).length
   const batchImportCount = parseBatchSearch(batchImportText).length
+  const { data: categoryAiJob } = useQuery<CategoryAiSuggestionJob>({
+    queryKey: ["category-mapping", "ai-suggestions-job", categoryAiJobId],
+    queryFn: () => api.get<CategoryAiSuggestionJob>(`/category-mapping/ai-suggestions/jobs/${categoryAiJobId}`),
+    enabled: Boolean(categoryAiJobId),
+    refetchInterval: (query) => {
+      const job = query.state.data
+      return job && job.status !== "completed" ? 1500 : false
+    },
+    refetchOnWindowFocus: false,
+  })
+  const trackedCategoryAiTask = getTaskByJobId(categoryAiJobId)
+  const trackedCategoryAiJob = (trackedCategoryAiTask?.job ?? categoryAiJob) as CategoryAiSuggestionJob | null | undefined
+  const categoryAiActive = categoryAiMutationIsActive(categoryAiJobId, trackedCategoryAiJob)
 
   const refreshMutation = useMutation({
     mutationFn: (spuCode: string) => api.post(`/shein-products/${encodeURIComponent(spuCode)}/refresh`, {}),
@@ -426,6 +455,45 @@ export default function SheinProductsPage() {
     },
     onError: () => toast.error("AI 补齐失败，请稍后重试"),
   })
+
+  const categoryAiMutation = useMutation({
+    mutationFn: async () => {
+      const targetSpus = selectedSpus.length ? selectedSpus : items.map((item) => item.spu_code)
+      return api.post<CategoryAiSuggestionJob>("/category-mapping/ai-suggestions/jobs", {
+        spu_codes: targetSpus,
+        limit: Math.max(20, targetSpus.length),
+      })
+    },
+    onSuccess: (result) => {
+      addTask({
+        job: result as AsyncTaskJob,
+        type: "category_mapping_ai_suggestions",
+        title: "SHEIN 分桶类目 AI 建议",
+        description: `目标款号 ${formatNumber(result.requested_spu_codes?.length ?? result.total_count)} 个`,
+        endpoint: `/category-mapping/ai-suggestions/jobs/${result.id}`,
+      })
+      setCategoryAiJobId(result.id)
+      openTaskCenter()
+      toast.success("AI 类目建议任务已加入队列")
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "AI 类目建议生成失败"),
+  })
+
+  useEffect(() => {
+    if (!trackedCategoryAiJob || trackedCategoryAiJob.status !== "completed") return
+    if (handledCategoryAiJobs.current.has(trackedCategoryAiJob.id)) return
+    handledCategoryAiJobs.current.add(trackedCategoryAiJob.id)
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["shein-products"] }),
+      queryClient.invalidateQueries({ queryKey: ["shein-products", "filters"] }),
+      queryClient.invalidateQueries({ queryKey: ["category-mapping"] }),
+    ])
+    if (trackedCategoryAiJob.failed_count > 0) {
+      toast.error(trackedCategoryAiJob.error ?? "AI 类目建议生成失败")
+    } else {
+      toast.success(`AI 类目建议已生成，已刷新 ${formatNumber(trackedCategoryAiJob.refreshed_spu_codes?.length ?? 0)} 款`)
+    }
+  }, [queryClient, trackedCategoryAiJob])
 
   const importBucketMutation = useMutation({
     mutationFn: () => {
@@ -537,6 +605,16 @@ export default function SheinProductsPage() {
         description="从商品档案挑选进入 SHEIN 平台业务字段清洗池，在这里完成勾选发布商品、字段完整度检查、类目尺码价格毛重图片清洗和草稿创建。"
         actions={(
           <>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => categoryAiMutation.mutate()}
+              disabled={categoryAiMutation.isPending || categoryAiActive || items.length === 0}
+            >
+              {categoryAiMutation.isPending || categoryAiActive ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+              AI 生成类目建议
+            </Button>
             <Button
               type="button"
               size="sm"

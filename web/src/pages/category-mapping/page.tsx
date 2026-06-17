@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   ArrowRight,
@@ -12,6 +12,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
+import { useAsyncTasks, type AsyncTaskJob } from "@/lib/async-task-context"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { EmptyState } from "@/components/empty-state"
@@ -146,6 +147,13 @@ interface AiSuggestionsResponse {
   }
 }
 
+interface CategoryAiSuggestionJob extends AsyncTaskJob {
+  requested_spu_codes?: string[]
+  refreshed_spu_codes?: string[]
+  suggestions?: AiSuggestion[]
+  error?: string | null
+}
+
 function useCategoryRules(search: string, pagination: { limit: number; offset: number }) {
   return useQuery<RulesResponse>({
     queryKey: ["category-mapping", "rules", search, pagination],
@@ -168,8 +176,8 @@ function usePersistedAiSuggestions() {
 }
 
 function useCategoryMatchSuggestions() {
-  return useMutation<AiSuggestionsResponse>({
-    mutationFn: () => api.post("/category-mapping/ai-suggestions", { limit: 30 }),
+  return useMutation<CategoryAiSuggestionJob>({
+    mutationFn: () => api.post("/category-mapping/ai-suggestions/jobs", { limit: 30 }),
   })
 }
 
@@ -426,14 +434,27 @@ function SkcSuggestionPanel({
 
 export default function CategoryMappingPage() {
   const queryClient = useQueryClient()
+  const { addTask, getTaskByJobId, openTaskCenter } = useAsyncTasks()
   const [searchText, setSearchText] = useState("")
   const [selectedSuggestion, setSelectedSuggestion] = useState<AiSuggestion | null>(null)
+  const [categoryAiJobId, setCategoryAiJobId] = useState<string | null>(null)
+  const handledCategoryAiJobs = useRef(new Set<string>())
   const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
   const debouncedSearch = useDebounce(searchText, 300)
   const rulesQuery = useCategoryRules(debouncedSearch, pagination)
   const groupsQuery = useUnmappedGroups()
   const suggestionsQuery = usePersistedAiSuggestions()
   const aiMutation = useCategoryMatchSuggestions()
+  const { data: categoryAiJob } = useQuery<CategoryAiSuggestionJob>({
+    queryKey: ["category-mapping", "ai-suggestions-job", categoryAiJobId],
+    queryFn: () => api.get<CategoryAiSuggestionJob>(`/category-mapping/ai-suggestions/jobs/${categoryAiJobId}`),
+    enabled: Boolean(categoryAiJobId),
+    refetchInterval: (query) => {
+      const job = query.state.data
+      return job && job.status !== "completed" ? 1500 : false
+    },
+    refetchOnWindowFocus: false,
+  })
 
   const confirmMutation = useMutation({
     mutationFn: ({
@@ -460,15 +481,42 @@ export default function CategoryMappingPage() {
 
   const rules = rulesQuery.data?.rules ?? []
   const groups = groupsQuery.data?.groups ?? []
-  const suggestions = aiMutation.data?.suggestions ?? suggestionsQuery.data?.suggestions ?? []
+  const trackedTask = getTaskByJobId(categoryAiJobId)
+  const trackedJob = (trackedTask?.job ?? categoryAiJob) as CategoryAiSuggestionJob | null | undefined
+  const aiJobActive = aiMutation.isPending || Boolean(trackedJob && trackedJob.status !== "completed")
+  const suggestions = suggestionsQuery.data?.suggestions ?? []
   const highConfidenceCount = suggestions.filter((item) => item.confidence >= 0.8 && item.status === "READY").length
   const ambiguousCount = suggestions.filter((item) => item.status === "AMBIGUOUS" || item.confidence < 0.8).length
+
+  useEffect(() => {
+    if (!trackedJob || trackedJob.status !== "completed") return
+    if (handledCategoryAiJobs.current.has(trackedJob.id)) return
+    handledCategoryAiJobs.current.add(trackedJob.id)
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["category-mapping"] }),
+      queryClient.invalidateQueries({ queryKey: ["shein-products"] }),
+      queryClient.invalidateQueries({ queryKey: ["shein-products", "filters"] }),
+    ])
+    if (trackedJob.failed_count > 0) {
+      toast.error(trackedJob.error ?? "AI 类目建议生成失败")
+    } else {
+      toast.success(`AI 已生成 ${formatNumber(trackedJob.suggestions?.length ?? 0)} 条类目建议`)
+    }
+  }, [queryClient, trackedJob])
 
   const handleRunAi = () => {
     aiMutation.mutate(undefined, {
       onSuccess: (result) => {
-        queryClient.setQueryData(["category-mapping", "ai-suggestions"], result)
-        toast.success(`AI 已生成 ${result.suggestions.length} 条类目建议`)
+        addTask({
+          job: result as AsyncTaskJob,
+          type: "category_mapping_ai_suggestions",
+          title: "SHEIN 类目 AI 建议",
+          description: `未映射组合上限 ${formatNumber(result.total_count || 30)} 个`,
+          endpoint: `/category-mapping/ai-suggestions/jobs/${result.id}`,
+        })
+        setCategoryAiJobId(result.id)
+        openTaskCenter()
+        toast.success("AI 类目建议任务已加入队列")
       },
       onError: (error) => {
         toast.error(error instanceof Error ? error.message : "AI 匹配失败")
@@ -483,9 +531,9 @@ export default function CategoryMappingPage() {
         summary={`规则 ${formatNumber(rules.length)} / 未映射 ${formatNumber(groups.length)} / 需复核 ${formatNumber(ambiguousCount)}`}
         description="管理 MDM 类目到 SHEIN 叶子类目的映射。AI 先给候选，运营确认后沉淀为正式规则。"
         actions={(
-          <Button size="sm" onClick={handleRunAi} disabled={aiMutation.isPending}>
+          <Button size="sm" onClick={handleRunAi} disabled={aiJobActive}>
             <Sparkles className="size-4" />
-            {aiMutation.isPending ? "AI 匹配中" : "AI 匹配未映射商品"}
+            {aiJobActive ? "AI 匹配中" : "AI 匹配未映射商品"}
           </Button>
         )}
       />
@@ -499,13 +547,13 @@ export default function CategoryMappingPage() {
                 规则 {formatNumber(rules.length)} / 未映射组合 {formatNumber(groups.length)} / 高置信建议 {formatNumber(highConfidenceCount)} / 需复核 {formatNumber(ambiguousCount)}
               </div>
             </div>
-            <Button variant="outline" onClick={handleRunAi} disabled={aiMutation.isPending}>
+            <Button variant="outline" onClick={handleRunAi} disabled={aiJobActive}>
               <Bot className="size-4" />
               重新生成建议
             </Button>
           </CardHeader>
           <CardContent>
-            {aiMutation.isPending ? (
+            {aiJobActive ? (
               <div className="space-y-4 rounded-2xl border bg-muted/30 p-5">
                 <div className="flex items-center justify-between text-sm">
                   <span>正在整理 MDM/深绘字段、TMALL 款色图并请求 AI 服务，可能需要 1-2 分钟</span>

@@ -3,6 +3,7 @@ import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
 import { getSheinPriceConfig } from "../lib/price-config"
 import { resolvePackageRule } from "../lib/rule-resolver"
+import { resolveSheinKidsCategoryFallback } from "../services/pre-publish/category-fallback"
 
 const sheinProducts = new Hono()
 
@@ -80,6 +81,9 @@ function buildMatchKey(row: SourceRow) {
 }
 
 function fallbackCategory(row: SourceRow) {
+  const sharedFallback = resolveSheinKidsCategoryFallback(row)
+  if (sharedFallback) return sharedFallback
+
   const text = [
     row.middle_class_name,
     row.subclass_name,
@@ -248,6 +252,8 @@ function resolveCategory(row: SourceRow) {
       status: "READY",
     }
   }
+  const fallback = fallbackCategory(row)
+  if (fallback.category_id && fallback.product_type_id) return fallback
   if (row.suggested_shein_category_id && row.suggested_shein_product_type_id) {
     return {
       category_id: Number(row.suggested_shein_category_id),
@@ -258,7 +264,7 @@ function resolveCategory(row: SourceRow) {
       status: "NEEDS_REVIEW",
     }
   }
-  return fallbackCategory(row)
+  return fallback
 }
 
 function activeSizeConversions(db: ReturnType<typeof getDb>) {
