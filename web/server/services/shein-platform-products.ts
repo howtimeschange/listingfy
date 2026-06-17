@@ -289,6 +289,48 @@ export function lifecycleActorFromContext(c: Parameters<typeof currentUser>[0]) 
   return actorFromUser(currentUser(c))
 }
 
+function platformAccountKeyFromCredentials(credentials: SheinCredentials) {
+  return credentials.platformIntegrationId
+    ? `integration:${credentials.platformIntegrationId}`
+    : `env:${credentials.openKeyId || "default"}`
+}
+
+function compatiblePlatformAccountKeys(credentials: SheinCredentials) {
+  return Array.from(new Set([
+    platformAccountKeyFromCredentials(credentials),
+    credentials.platformIntegrationId ? `integration:${credentials.platformIntegrationId}` : "",
+    credentials.openKeyId ? `env:${credentials.openKeyId}` : "",
+    "default",
+  ].filter(Boolean)))
+}
+
+export function resolveSheinPlatformAccountKey(db: SyncPostgresDatabase, credentials: SheinCredentials) {
+  const preferredKey = platformAccountKeyFromCredentials(credentials)
+  for (const accountKey of compatiblePlatformAccountKeys(credentials)) {
+    const row = db.prepare(`
+      select count(*) as count
+      from shein_platform_product
+      where platform = 'SHEIN'
+        and platform_account_key = ?
+    `).get(accountKey) as { count: number } | undefined
+    if (Number(row?.count ?? 0) > 0) return accountKey
+  }
+
+  const accountRows = db.prepare(`
+    select platform_account_key, count(*) as count
+    from shein_platform_product
+    where platform = 'SHEIN'
+    group by platform_account_key
+    order by count(*) desc, max(updated_at) desc
+    limit 2
+  `).all() as Array<{ platform_account_key: string; count: number }>
+  if (accountRows.length === 1 && Number(accountRows[0].count ?? 0) > 0) {
+    return stringValue(accountRows[0].platform_account_key) || preferredKey
+  }
+
+  return preferredKey
+}
+
 function platformContext(db: SyncPostgresDatabase): SheinPlatformContext {
   ensurePlatformProductNameColumns(db)
   const credentials = resolveSheinCredentials(db)
@@ -296,9 +338,7 @@ function platformContext(db: SyncPostgresDatabase): SheinPlatformContext {
     credentials,
     platform: "SHEIN",
     platformIntegrationId: credentials.platformIntegrationId,
-    platformAccountKey: credentials.platformIntegrationId
-      ? `integration:${credentials.platformIntegrationId}`
-      : `env:${credentials.openKeyId || "default"}`,
+    platformAccountKey: resolveSheinPlatformAccountKey(db, credentials),
   }
 }
 

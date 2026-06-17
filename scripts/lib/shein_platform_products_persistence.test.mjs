@@ -571,3 +571,38 @@ test("SHEIN platform product list summary includes every SKC with nested SKU row
   assert.match(page, /详情同步后显示 SKC/);
   assert.match(page, /<ProductThumb src=\{skc\.imageUrl\} alt=\{skc\.skcName\} size="xs" \/>/);
 });
+
+test("SHEIN platform product account key resolver keeps historical platform rows visible", async () => {
+  const service = await importService();
+  const calls = [];
+  const db = {
+    prepare(sql) {
+      return {
+        get(value) {
+          calls.push(["get", sql, value]);
+          if (sql.includes("where platform = 'SHEIN'") && sql.includes("platform_account_key = ?")) {
+            return { count: value === "env:legacy-open-key" ? 3572 : 0 };
+          }
+          throw new Error(`Unexpected get SQL: ${sql}`);
+        },
+        all() {
+          calls.push(["all", sql]);
+          return [];
+        },
+      };
+    },
+  };
+
+  const accountKey = service.resolveSheinPlatformAccountKey(db, {
+    source: "database",
+    platformIntegrationId: 1,
+    baseUrl: "https://example.invalid",
+    language: "zh-cn",
+    openKeyId: "legacy-open-key",
+    secretKey: "secret",
+  });
+
+  assert.equal(accountKey, "env:legacy-open-key");
+  assert.equal(calls.some((call) => call[2] === "integration:1"), true);
+  assert.equal(calls.some((call) => call[2] === "env:legacy-open-key"), true);
+});
