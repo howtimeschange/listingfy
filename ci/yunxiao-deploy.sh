@@ -4,7 +4,8 @@ set -euo pipefail
 SRC_DIR="${1:?missing source dir}"
 APP_DIR="${APP_DIR:-/opt/listingfy}"
 DATABASE_URL_VALUE="${PROD_DATABASE_URL:-${DATABASE_URL:-}}"
-ALLOWED_ORIGINS="${LISTINGIFY_ALLOWED_ORIGINS:-http://10.90.20.221,http://127.0.0.1:3001,http://localhost:3001}"
+ALLOWED_ORIGINS="${LISTINGIFY_ALLOWED_ORIGINS:-https://listingify.semirapp.com,https://smbd.semirapp.cn,http://10.90.20.221,http://127.0.0.1:3001,http://localhost:3001}"
+PUBLIC_ORIGIN="${LISTINGIFY_PUBLIC_ORIGIN:-https://listingify.semirapp.com}"
 RUN_SEED_IMPORT_VALUE="${RUN_SEED_IMPORT:-0}"
 
 if [ -z "$DATABASE_URL_VALUE" ]; then
@@ -41,6 +42,7 @@ echo "===== Write production env ====="
   printf 'DATABASE_CONNECT_TIMEOUT_MS=%s\n' "${DATABASE_CONNECT_TIMEOUT_MS:-3000}"
   printf 'DATABASE_IDLE_TIMEOUT_MS=%s\n' "${DATABASE_IDLE_TIMEOUT_MS:-30000}"
   printf 'LISTINGIFY_ALLOWED_ORIGINS=%s\n' "$ALLOWED_ORIGINS"
+  printf 'LISTINGIFY_PUBLIC_ORIGIN=%s\n' "$PUBLIC_ORIGIN"
   printf 'NODE_ENV=production\n'
   printf 'PORT=%s\n' "${PORT:-3001}"
   [ -n "${LISTINGIFY_ADMIN_USERNAME:-}" ] && printf 'LISTINGIFY_ADMIN_USERNAME=%s\n' "$LISTINGIFY_ADMIN_USERNAME"
@@ -144,6 +146,11 @@ echo "===== Restart web container ====="
 if command -v docker >/dev/null 2>&1; then
   test -f "$APP_DIR/web/dist/index.html"
   cat > "$APP_DIR/nginx.conf" <<'NGINXEOF'
+map $http_x_forwarded_proto $listingify_forwarded_proto {
+    default $http_x_forwarded_proto;
+    "" $scheme;
+}
+
 server {
     listen 80;
     server_name _;
@@ -159,7 +166,8 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto $listingify_forwarded_proto;
+        proxy_set_header X-Forwarded-Scheme $listingify_forwarded_proto;
     }
 
     location /assets/ {
@@ -183,7 +191,8 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto $listingify_forwarded_proto;
+        proxy_set_header X-Forwarded-Scheme $listingify_forwarded_proto;
     }
 }
 NGINXEOF

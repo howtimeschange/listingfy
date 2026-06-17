@@ -20,7 +20,10 @@ export default function LoginPage() {
   const from = (location.state as { from?: string } | null)?.from ?? "/dashboard"
 
   const mutation = useMutation({
-    mutationFn: () => api.post<{ user: AuthUser }>("/auth/login", { username, password }),
+    mutationFn: async () => {
+      await api.post<{ user: AuthUser }>("/auth/login", { username, password })
+      return api.get<{ user: AuthUser }>("/auth/me")
+    },
     onSuccess: (result) => {
       queryClient.setQueryData(["auth", "me"], result)
       navigate(from, { replace: true })

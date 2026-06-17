@@ -63,6 +63,7 @@ test("system management exposes auth, users, platform integrations, sync tasks, 
 
   assert.match(loginPage, /登录/);
   assert.match(loginPage, /api\.post<.*>\("\/auth\/login"/s);
+  assert.match(loginPage, /api\.get<.*>\("\/auth\/me"/s);
   assert.match(usersPage, /用户管理/);
   assert.match(usersPage, /角色/);
   assert.match(usersPage, /重置密码/);
@@ -77,6 +78,14 @@ test("system management exposes auth, users, platform integrations, sync tasks, 
   assert.doesNotMatch(operationLogsPage, /ComingSoonPage/);
   assert.match(operationLogsPage, /操作日志/);
   assert.match(operationLogsPage, /\/system\/operation-logs/);
+});
+
+test("Yunxiao deploy preserves external HTTPS headers for auth cookies", async () => {
+  const deploy = await file("ci/yunxiao-deploy.sh");
+
+  assert.match(deploy, /https:\/\/listingify\.semirapp\.com/);
+  assert.match(deploy, /map \$http_x_forwarded_proto \$listingify_forwarded_proto/);
+  assert.match(deploy, /proxy_set_header X-Forwarded-Proto \$listingify_forwarded_proto/);
 });
 
 test("system management migration defines RBAC, sessions, audit logs, and platform integrations", async () => {

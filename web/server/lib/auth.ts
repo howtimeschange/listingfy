@@ -46,22 +46,39 @@ function expiresAt() {
 export function secureCookieFromRequest({
   requestUrl,
   forwardedProto,
+  forwardedScheme,
+  forwardedSsl,
+  frontEndHttps,
 }: {
   requestUrl?: string
   forwardedProto?: string | null
+  forwardedScheme?: string | null
+  forwardedSsl?: string | null
+  frontEndHttps?: string | null
 }) {
   const override = process.env.LISTINGIFY_COOKIE_SECURE?.trim().toLowerCase()
   if (["1", "true", "yes", "on"].includes(override ?? "")) return true
   if (["0", "false", "no", "off"].includes(override ?? "")) return false
 
-  const proto = String(forwardedProto ?? "")
-    .split(",")[0]
-    .trim()
-    .toLowerCase()
-  if (proto) return proto === "https"
+  const protoValues = [forwardedProto, forwardedScheme]
+    .flatMap((value) => String(value ?? "").split(","))
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean)
+  if (protoValues.includes("https")) return true
+  if (["1", "true", "yes", "on", "https"].includes(String(forwardedSsl ?? "").trim().toLowerCase())) return true
+  if (["1", "true", "yes", "on", "https"].includes(String(frontEndHttps ?? "").trim().toLowerCase())) return true
+  if (protoValues.length) return false
 
   try {
-    return new URL(requestUrl ?? "").protocol === "https:"
+    const url = new URL(requestUrl ?? "")
+    if (url.protocol === "https:") return true
+
+    const publicOrigin = process.env.LISTINGIFY_PUBLIC_ORIGIN?.trim()
+    if (publicOrigin) {
+      const origin = new URL(publicOrigin)
+      if (origin.protocol === "https:" && origin.host === url.host) return true
+    }
+    return false
   } catch {
     return false
   }
@@ -239,6 +256,9 @@ export function createSession(c: Context, db: SyncPostgresDatabase, userId: numb
     secure: secureCookieFromRequest({
       requestUrl: c.req.url,
       forwardedProto: c.req.header("x-forwarded-proto"),
+      forwardedScheme: c.req.header("x-forwarded-scheme") ?? c.req.header("x-url-scheme"),
+      forwardedSsl: c.req.header("x-forwarded-ssl"),
+      frontEndHttps: c.req.header("front-end-https"),
     }),
     maxAge: SESSION_TTL_DAYS * 24 * 60 * 60,
   })

@@ -266,6 +266,11 @@ test("session cookie secure flag follows the actual request protocol instead of 
       requestUrl: "http://listingify.internal/api/auth/login",
       forwardedProto: "https",
     }), true);
+    assert.equal(secureCookieFromRequest({
+      requestUrl: "http://listingify.internal/api/auth/login",
+      forwardedProto: "http",
+      forwardedSsl: "on",
+    }), true);
   });
 
   await withEnv({ LISTINGIFY_COOKIE_SECURE: "1" }, () => {
