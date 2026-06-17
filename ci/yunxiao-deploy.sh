@@ -5,7 +5,7 @@ SRC_DIR="${1:?missing source dir}"
 APP_DIR="${APP_DIR:-/opt/listingfy}"
 DATABASE_URL_VALUE="${PROD_DATABASE_URL:-${DATABASE_URL:-}}"
 ALLOWED_ORIGINS="${LISTINGIFY_ALLOWED_ORIGINS:-http://10.90.20.221,http://127.0.0.1:3001,http://localhost:3001}"
-RUN_SEED_IMPORT_VALUE="${RUN_SEED_IMPORT:-1}"
+RUN_SEED_IMPORT_VALUE="${RUN_SEED_IMPORT:-0}"
 
 if [ -z "$DATABASE_URL_VALUE" ]; then
   echo "ERROR: PROD_DATABASE_URL is required. Configure it as a Yunxiao secret variable."
