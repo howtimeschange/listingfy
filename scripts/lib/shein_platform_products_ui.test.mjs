@@ -94,6 +94,9 @@ test("SHEIN platform products page wires durable P0 lifecycle operations", async
   assert.match(page, /useStoreSites/);
   assert.match(page, /usePlatformProducts/);
   assert.match(page, /placeholderData:\s*keepPreviousData/);
+  assert.match(page, /productsQuery\.isError/);
+  assert.match(page, /平台商品列表读取失败/);
+  assert.match(page, /productsQuery\.refetch/);
   assert.match(page, /useProductDetail/);
   assert.match(page, /useEditTemplate/);
   assert.match(page, /useVariantTemplate/);
@@ -225,6 +228,7 @@ test("SHEIN platform products page exposes sale sites, filters, and export", asy
   assert.match(page, /siteOptions/);
   assert.match(page, /siteFilter/);
   assert.match(page, /search\.set\("site", params\.siteFilter\.trim\(\)\)/);
+  assert.match(page, /site\.count > 0/);
   assert.match(page, /全部销售站点/);
   assert.match(page, /销售站点/);
   assert.match(page, /setSaleSitesDialogProduct/);

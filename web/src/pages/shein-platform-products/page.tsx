@@ -795,6 +795,9 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
 
   const siteRows = useMemo(() => sitesQuery.data?.items ?? [], [sitesQuery.data])
   const productRows = productsQuery.data?.items ?? []
+  const productsErrorMessage = productsQuery.error instanceof Error
+    ? productsQuery.error.message
+    : "平台商品列表读取失败"
   const brandOptions = productsQuery.data?.filters?.brands ?? []
   const categoryOptions = productsQuery.data?.filters?.categories ?? []
   const siteOptions = productsQuery.data?.filters?.sites ?? []
@@ -1649,7 +1652,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                       <SelectItem value={ALL_FILTER_VALUE}>全部销售站点</SelectItem>
                       {siteOptions.map((site) => (
                         <SelectItem key={site.value} value={site.value}>
-                          {site.label} ({formatNumber(site.count)})
+                          {site.count > 0 ? `${site.label} (${formatNumber(site.count)})` : site.label}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -1725,7 +1728,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                           <SelectItem value={ALL_FILTER_VALUE}>全部销售站点</SelectItem>
                           {siteOptions.map((site) => (
                             <SelectItem key={site.value} value={site.value}>
-                              {site.label} ({formatNumber(site.count)})
+                              {site.count > 0 ? `${site.label} (${formatNumber(site.count)})` : site.label}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -1781,6 +1784,24 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                     <TableRow>
                       <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
                         加载本地平台商品...
+                      </TableCell>
+                    </TableRow>
+                  ) : productsQuery.isError ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="h-32 text-center">
+                        <div className="mx-auto flex max-w-xl flex-col items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                          <div className="font-medium">平台商品列表读取失败</div>
+                          <div className="text-xs">{productsErrorMessage}</div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void productsQuery.refetch()}
+                          >
+                            <RefreshCw className="size-4" />
+                            重新加载
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ) : productRows.length ? (

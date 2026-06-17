@@ -105,6 +105,9 @@ interface ProductFilterOptions {
 
 interface ProductSummaryOptions {
   includeDetails?: boolean
+  skcs?: JsonRecord[]
+  skuDetailRows?: JsonRecord[]
+  costRows?: JsonRecord[]
 }
 
 interface NormalizedSku {
@@ -332,7 +335,6 @@ export function resolveSheinPlatformAccountKey(db: SyncPostgresDatabase, credent
 }
 
 function platformContext(db: SyncPostgresDatabase): SheinPlatformContext {
-  ensurePlatformProductNameColumns(db)
   const credentials = resolveSheinCredentials(db)
   return {
     credentials,
@@ -340,19 +342,6 @@ function platformContext(db: SyncPostgresDatabase): SheinPlatformContext {
     platformIntegrationId: credentials.platformIntegrationId,
     platformAccountKey: resolveSheinPlatformAccountKey(db, credentials),
   }
-}
-
-function ensurePlatformProductNameColumns(db: SyncPostgresDatabase) {
-  if (!db.tableHasColumn("shein_platform_product", "brand_name")) {
-    db.exec("alter table shein_platform_product add column if not exists brand_name text")
-  }
-  if (!db.tableHasColumn("shein_platform_product", "category_name")) {
-    db.exec("alter table shein_platform_product add column if not exists category_name text")
-  }
-  db.exec(`
-    create index if not exists idx_shein_platform_product_brand_category
-      on shein_platform_product(platform, platform_account_key, brand_name, category_name)
-  `)
 }
 
 function multiText(value: unknown, textKey: string) {
@@ -1269,6 +1258,29 @@ function productOperations(db: SyncPostgresDatabase, context: SheinPlatformConte
   `).all(...params).map((row) => serializeOperation(row as JsonRecord))
 }
 
+function warnAuxiliaryQuery(scope: string, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  console.warn(`[shein-platform-products] ${scope} unavailable: ${message}`)
+}
+
+function safeSiteNameLookup(db: SyncPostgresDatabase, context: SheinPlatformContext) {
+  try {
+    return siteNameLookup(db, context)
+  } catch (error) {
+    warnAuxiliaryQuery("site name lookup", error)
+    return new Map<string, string>()
+  }
+}
+
+function safeProductOperations(db: SyncPostgresDatabase, context: SheinPlatformContext, spuName?: string, limit = 12) {
+  try {
+    return productOperations(db, context, spuName, limit)
+  } catch (error) {
+    warnAuxiliaryQuery("recent operations", error)
+    return []
+  }
+}
+
 function serializeProductSummary(
   db: SyncPostgresDatabase,
   row: JsonRecord,
@@ -1276,14 +1288,14 @@ function serializeProductSummary(
   siteNames?: Map<string, string>,
   options: ProductSummaryOptions = {},
 ) {
-  const skcs = db.prepare(`
+  const skcs = options.skcs ?? db.prepare(`
     select *
     from shein_platform_skc
     where product_id = ?
     order by id asc
   `).all(row.id) as JsonRecord[]
   const includeDetails = Boolean(options.includeDetails)
-  const skuDetailRows = includeDetails
+  const skuDetailRows = options.skuDetailRows ?? (includeDetails
     ? db.prepare(`
       select sku.*, skc.id as skc_id
       from shein_platform_sku sku
@@ -1291,13 +1303,13 @@ function serializeProductSummary(
       where skc.product_id = ?
       order by skc.id asc, sku.id asc
     `).all(row.id) as JsonRecord[]
-    : []
+    : [])
   const skuDetailsBySkc = new Map<number, JsonRecord[]>()
   for (const sku of skuDetailRows) {
     const skcId = Number(sku.skc_id)
     skuDetailsBySkc.set(skcId, [...(skuDetailsBySkc.get(skcId) ?? []), sku])
   }
-  const costRows = db.prepare(`
+  const costRows = options.costRows ?? db.prepare(`
     select sku.cost_price, sku.currency, sku.cost_text
     from shein_platform_sku sku
     join shein_platform_skc skc on skc.id = sku.skc_id
@@ -1385,66 +1397,178 @@ function serializeProductSummary(
   }
 }
 
-function saleSiteFilterOptions(db: SyncPostgresDatabase, context: SheinPlatformContext, siteNames: Map<string, string>) {
-  const rows = db.prepare(`
-    select ${productDisplaySelectSql}
-    from shein_platform_product product
-    ${productDisplayJoinSql}
-    where product.platform = ?
-      and product.platform_account_key = ?
-  `).all(context.platform, context.platformAccountKey) as JsonRecord[]
-  const counts = new Map<string, { value: string; label: string; count: number }>()
+function groupRowsByNumber(rows: JsonRecord[], key: string) {
+  const grouped = new Map<number, JsonRecord[]>()
   for (const row of rows) {
-    const skcs = db.prepare(`
-      select *
-      from shein_platform_skc
-      where product_id = ?
-    `).all(row.id) as JsonRecord[]
-    for (const siteAbbr of activeSaleSiteAbbrs(saleSitesFromProduct(row, skcs, siteNames))) {
-      const current = counts.get(siteAbbr) ?? {
-        value: siteAbbr,
-        label: firstString(siteNames.get(siteAbbr), siteAbbr),
-        count: 0,
-      }
-      current.count += 1
-      counts.set(siteAbbr, current)
-    }
+    const id = Number(row[key])
+    if (!Number.isFinite(id)) continue
+    grouped.set(id, [...(grouped.get(id) ?? []), row])
   }
-  return Array.from(counts.values()).sort((left, right) => left.label.localeCompare(right.label))
+  return grouped
 }
 
-function productIdsForSaleSite(
-  db: SyncPostgresDatabase,
-  context: SheinPlatformContext,
+function prefetchProductSummaryRows(db: SyncPostgresDatabase, rows: JsonRecord[], includeDetails: boolean) {
+  const productIds = rows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id))
+  if (!productIds.length) {
+    return {
+      skcsByProductId: new Map<number, JsonRecord[]>(),
+      skusByProductId: new Map<number, JsonRecord[]>(),
+      costsByProductId: new Map<number, JsonRecord[]>(),
+    }
+  }
+  const placeholders = productIds.map(() => "?").join(", ")
+  const skcRows = db.prepare(`
+    select *
+    from shein_platform_skc
+    where product_id in (${placeholders})
+    order by product_id asc, id asc
+  `).all(...productIds) as JsonRecord[]
+  const skuRows = includeDetails
+    ? db.prepare(`
+      select sku.*, skc.id as skc_id, skc.product_id as product_id
+      from shein_platform_sku sku
+      join shein_platform_skc skc on skc.id = sku.skc_id
+      where skc.product_id in (${placeholders})
+      order by skc.product_id asc, skc.id asc, sku.id asc
+    `).all(...productIds) as JsonRecord[]
+    : []
+  const costRows = db.prepare(`
+    select skc.product_id as product_id, sku.cost_price, sku.currency, sku.cost_text
+    from shein_platform_sku sku
+    join shein_platform_skc skc on skc.id = sku.skc_id
+    where skc.product_id in (${placeholders})
+      and (
+        sku.cost_text is not null
+        or sku.cost_price is not null
+      )
+    order by skc.product_id asc, sku.id asc
+  `).all(...productIds) as JsonRecord[]
+  return {
+    skcsByProductId: groupRowsByNumber(skcRows, "product_id"),
+    skusByProductId: groupRowsByNumber(skuRows, "product_id"),
+    costsByProductId: groupRowsByNumber(costRows, "product_id"),
+  }
+}
+
+function saleSiteFilterOptions(db: SyncPostgresDatabase, context: SheinPlatformContext, siteNames: Map<string, string>) {
+  const rows = db.prepare(`
+    select site_abbr, site_name, site_status
+    from shein_platform_site
+    where platform = ?
+      and platform_account_key = ?
+    order by site_name asc, site_abbr asc
+  `).all(context.platform, context.platformAccountKey) as JsonRecord[]
+  return rows
+    .filter((row) => numberValue(row.site_status) === 1)
+    .map((row) => {
+      const siteAbbr = stringValue(row.site_abbr)
+      return {
+        value: siteAbbr,
+        label: firstString(row.site_name, siteNames.get(siteAbbr), siteAbbr),
+        count: 0,
+      }
+    })
+    .filter((row) => row.value)
+}
+
+function safeProductFilterOptions(db: SyncPostgresDatabase, context: SheinPlatformContext, siteNames: Map<string, string>) {
+  try {
+    return productFilterOptions(db, context, siteNames)
+  } catch (error) {
+    warnAuxiliaryQuery("filter options", error)
+    return {
+      brands: [],
+      categories: [],
+      sites: saleSiteFilterOptionsFallback(siteNames),
+    }
+  }
+}
+
+function saleSiteFilterOptionsFallback(siteNames: Map<string, string>) {
+  return Array.from(siteNames.entries())
+    .map(([value, label]) => ({ value, label: label || value, count: 0 }))
+    .filter((row) => row.value)
+    .sort((left, right) => left.label.localeCompare(right.label))
+}
+
+function saleSiteFilterTerms(
   site: string,
   siteNames: Map<string, string>,
 ) {
   const normalizedSite = normalizeText(site)
   if (!normalizedSite) return []
-  const rows = db.prepare(`
-    select ${productDisplaySelectSql}
-    from shein_platform_product product
-    ${productDisplayJoinSql}
-    where product.platform = ?
-      and product.platform_account_key = ?
-  `).all(context.platform, context.platformAccountKey) as JsonRecord[]
-  const productIds: number[] = []
-  for (const row of rows) {
-    const skcs = db.prepare(`
-      select *
-      from shein_platform_skc
-      where product_id = ?
-    `).all(row.id) as JsonRecord[]
-    const matched = saleSitesFromProduct(row, skcs, siteNames).some((saleSite) =>
-      saleSite.shelfStatus === 1
-      && (
-        saleSite.siteAbbr === normalizedSite
-        || saleSite.siteName === normalizedSite
-      ),
-    )
-    if (matched) productIds.push(Number(row.id))
+  const terms = new Set([normalizedSite])
+  const directName = normalizeText(siteNames.get(normalizedSite))
+  if (directName) terms.add(directName)
+  for (const [siteAbbr, siteName] of siteNames.entries()) {
+    if (normalizeText(siteName) === normalizedSite) terms.add(siteAbbr)
   }
-  return productIds
+  return Array.from(terms)
+}
+
+function saleSiteJsonArraySql(expression: string) {
+  return `case
+    when jsonb_typeof(${expression}) = 'array' then ${expression}
+    else '[]'::jsonb
+  end`
+}
+
+const productSaleSiteJsonSql = `coalesce(
+  product.raw_detail_payload_json::jsonb #> '{info,shelfStatusInfoList}',
+  product.raw_detail_payload_json::jsonb #> '{info,shelf_status_info_list}',
+  product.raw_detail_payload_json::jsonb -> 'shelfStatusInfoList',
+  product.raw_detail_payload_json::jsonb -> 'shelf_status_info_list',
+  '[]'::jsonb
+)`
+
+const skcSaleSiteJsonSql = `coalesce(
+  skc.raw_payload_json::jsonb -> 'shelfStatusInfoList',
+  skc.raw_payload_json::jsonb -> 'shelf_status_info_list',
+  '[]'::jsonb
+)`
+
+function saleSiteActiveSql(alias: string) {
+  return `coalesce(${alias}->>'shelfStatus', ${alias}->>'shelf_status') = '1'`
+}
+
+function saleSiteCodeSql(alias: string, placeholders: string) {
+  return `coalesce(
+    ${alias}->>'siteAbbr',
+    ${alias}->>'site_abbr',
+    ${alias}->>'site',
+    ${alias}->>'siteCode',
+    ${alias}->>'site_code',
+    ${alias}->>'siteName',
+    ${alias}->>'site_name'
+  ) in (${placeholders})`
+}
+
+function appendSaleSiteFilter(
+  where: string[],
+  params: unknown[],
+  site: string,
+  siteNames: Map<string, string>,
+) {
+  const terms = saleSiteFilterTerms(site, siteNames)
+  if (!terms.length) return
+  const placeholders = terms.map(() => "?").join(", ")
+  where.push(`(
+    exists (
+      select 1
+      from jsonb_array_elements(${saleSiteJsonArraySql(productSaleSiteJsonSql)}) as sale_site(value)
+      where ${saleSiteActiveSql("sale_site.value")}
+        and ${saleSiteCodeSql("sale_site.value", placeholders)}
+    )
+    or exists (
+      select 1
+      from shein_platform_skc skc
+      cross join lateral jsonb_array_elements(${saleSiteJsonArraySql(skcSaleSiteJsonSql)}) as sale_site(value)
+      where skc.product_id = product.id
+        and ${saleSiteActiveSql("sale_site.value")}
+        and ${saleSiteCodeSql("sale_site.value", placeholders)}
+    )
+  )`)
+  params.push(...terms, ...terms)
 }
 
 function productFilterOptions(db: SyncPostgresDatabase, context: SheinPlatformContext, siteNames = siteNameLookup(db, context)) {
@@ -1511,7 +1635,7 @@ export function listPlatformProducts(input: ProductListInput = {}) {
   const category = normalizeText(input.category)
   const site = normalizeText(input.site)
   const includeDetails = readListIncludeDetails(input.includeDetails)
-  const siteNames = siteNameLookup(db, context)
+  const siteNames = safeSiteNameLookup(db, context)
   const params: unknown[] = [context.platform, context.platformAccountKey]
   const where = [
     "product.platform = ?",
@@ -1568,27 +1692,7 @@ export function listPlatformProducts(input: ProductListInput = {}) {
   }
 
   if (site) {
-    const productIds = productIdsForSaleSite(db, context, site, siteNames)
-    if (!productIds.length) {
-      const filters = productFilterOptions(db, context, siteNames)
-      return {
-        items: [],
-        pagination: {
-          total: 0,
-          limit,
-          offset,
-        },
-        account: productWhereForContext(context),
-        filters: {
-          brands: filters.brands,
-          categories: filters.categories,
-          sites: filters.sites,
-        },
-        operations: productOperations(db, context, undefined, 8),
-      }
-    }
-    where.push(`product.id in (${productIds.map(() => "?").join(", ")})`)
-    params.push(...productIds)
+    appendSaleSiteFilter(where, params, site, siteNames)
   }
 
   const whereSql = where.join(" and ")
@@ -1609,10 +1713,19 @@ export function listPlatformProducts(input: ProductListInput = {}) {
     limit ?
     offset ?
   `).all(...params, limit, offset) as JsonRecord[]
-  const filters = productFilterOptions(db, context, siteNames)
+  const prefetched = prefetchProductSummaryRows(db, rows, includeDetails)
+  const filters = safeProductFilterOptions(db, context, siteNames)
 
   return {
-    items: rows.map((row) => serializeProductSummary(db, row, context, siteNames, { includeDetails })),
+    items: rows.map((row) => {
+      const productId = Number(row.id)
+      return serializeProductSummary(db, row, context, siteNames, {
+        includeDetails,
+        skcs: prefetched.skcsByProductId.get(productId) ?? [],
+        skuDetailRows: prefetched.skusByProductId.get(productId) ?? [],
+        costRows: prefetched.costsByProductId.get(productId) ?? [],
+      })
+    }),
     pagination: {
       total: Number(totalRow.count ?? 0),
       limit,
@@ -1624,7 +1737,7 @@ export function listPlatformProducts(input: ProductListInput = {}) {
       categories: filters.categories,
       sites: filters.sites,
     },
-    operations: productOperations(db, context, undefined, 8),
+    operations: safeProductOperations(db, context, undefined, 8),
   }
 }
 

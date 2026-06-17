@@ -231,6 +231,20 @@ test("SHEIN platform products list resolves brand and category display names fro
   assert.doesNotMatch(service, /coalesce\(nullif\(category_name, ''\), nullif\(category_id, ''\)\) as label/);
 });
 
+test("SHEIN platform product list stays read-only and avoids full-table sale site filter scans", async () => {
+  const service = await fileText(SERVICE_FILE);
+
+  assert.doesNotMatch(service, /ensurePlatformProductNameColumns/);
+  assert.doesNotMatch(service, /alter table shein_platform_product add column if not exists/);
+  assert.doesNotMatch(service, /create index if not exists idx_shein_platform_product_brand_category/);
+  assert.match(service, /from shein_platform_site/);
+  assert.doesNotMatch(service, /function saleSiteFilterOptions[\s\S]*from shein_platform_product product[\s\S]*function safeProductFilterOptions/);
+  assert.doesNotMatch(service, /function productIdsForSaleSite/);
+  assert.match(service, /appendSaleSiteFilter/);
+  assert.match(service, /jsonb_array_elements/);
+  assert.match(service, /cross join lateral/);
+});
+
 test("SHEIN platform products derive sale site details from synced SPU detail payloads", async () => {
   const service = await fileText(SERVICE_FILE);
 
@@ -267,8 +281,12 @@ test("SHEIN platform products keep list pagination light and cache filter option
   assert.match(service, /productFilterCache/);
   assert.match(service, /clearProductFilterCache/);
   assert.match(service, /readListIncludeDetails\(input\.includeDetails\)/);
-  assert.match(service, /serializeProductSummary\(db, row, context, siteNames, \{ includeDetails \}\)/);
-  assert.match(service, /skuDetailRows = includeDetails/);
+  assert.match(service, /prefetchProductSummaryRows\(db, rows, includeDetails\)/);
+  assert.match(service, /skcsByProductId/);
+  assert.match(service, /skuDetailRows:\s*prefetched\.skusByProductId/);
+  assert.match(service, /safeProductFilterOptions/);
+  assert.match(service, /safeProductOperations/);
+  assert.match(service, /warnAuxiliaryQuery/);
   assert.match(service, /skus: includeDetails \?/);
   assert.match(page, /placeholderData:\s*keepPreviousData/);
   assert.match(page, /includeDetails:\s*true/);
