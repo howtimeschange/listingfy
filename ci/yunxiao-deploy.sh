@@ -22,6 +22,10 @@ mkdir -p "$APP_DIR"
 
 rsync -a --delete "$SRC_DIR"/ "$APP_DIR"/ \
   --exclude='.env.local' \
+  --exclude='data/*.sqlite' \
+  --exclude='data/*.sqlite-*' \
+  --exclude='data/*.db' \
+  --exclude='data/*.db-*' \
   --exclude='data/listing-assets' \
   --exclude='node_modules' \
   --exclude='web/node_modules'
