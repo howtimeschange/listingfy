@@ -2130,13 +2130,17 @@ export default function PrePublishDraftDetailPage() {
     })
   }
 
-  function downloadManualSizeChartTemplate() {
+  async function downloadManualSizeChartTemplate() {
     const rows = manualSizeChartTemplateRows()
     if (rows.length === 0) {
       toast.error("请先勾选要发布的 SKU")
       return
     }
-    exportSpreadsheet("SHEIN类目尺码表导入模板.xlsx", rows)
+    try {
+      await exportSpreadsheet("SHEIN类目尺码表导入模板.xlsx", rows)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "导出模板失败")
+    }
   }
 
   function spreadsheetText(row: SpreadsheetRow, keys: Array<string | null | undefined>) {

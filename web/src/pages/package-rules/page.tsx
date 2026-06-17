@@ -240,7 +240,7 @@ export default function PackageRulesPage() {
 
   async function exportRows() {
     const result = await api.get<{ rows: SpreadsheetRow[] }>("/business-rules/product-weights/export")
-    exportSpreadsheet("库存毛重表-导出.xlsx", result.rows)
+    await exportSpreadsheet("库存毛重表-导出.xlsx", result.rows)
   }
 
   function openCreate() {
@@ -315,7 +315,7 @@ export default function PackageRulesPage() {
                 导入库存毛重表
                 <Input
                   type="file"
-                  accept=".xlsx,.xls,.csv"
+                  accept=".xlsx,.csv"
                   className="hidden"
                   onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
                 />

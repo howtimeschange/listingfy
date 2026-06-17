@@ -1343,8 +1343,12 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
     }
   }
 
-  function downloadCostImportTemplate() {
-    exportSpreadsheet("SHEIN平台商品供货价导入模板.xlsx", COST_IMPORT_TEMPLATE_ROWS)
+  async function downloadCostImportTemplate() {
+    try {
+      await exportSpreadsheet("SHEIN平台商品供货价导入模板.xlsx", COST_IMPORT_TEMPLATE_ROWS)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "导出模板失败")
+    }
   }
 
   async function fetchAllPlatformProductsForExport() {
@@ -1372,7 +1376,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
         toast.error("当前筛选条件下没有可导出的平台商品")
         return
       }
-      exportPlatformProductsWorkbook(rows)
+      await exportPlatformProductsWorkbook(rows)
       toast.success(`已导出 ${formatNumber(rows.length)} 条平台商品`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "导出平台商品失败")
@@ -1381,8 +1385,8 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
     }
   }
 
-  function exportPlatformProductsWorkbook(rows: PlatformProductRow[]) {
-    exportWorkbook("SHEIN平台商品列表.xlsx", platformProductWorkbookSheets(rows))
+  async function exportPlatformProductsWorkbook(rows: PlatformProductRow[]) {
+    await exportWorkbook("SHEIN平台商品列表.xlsx", platformProductWorkbookSheets(rows))
   }
 
   function openEditDialog(spuName: string) {
@@ -2765,7 +2769,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                   上传表格
                   <Input
                     type="file"
-                    accept=".xlsx,.xls,.csv"
+                    accept=".xlsx,.csv"
                     className="hidden"
                     onChange={(event) => void handleCostImportFile(event.target.files?.[0] ?? null)}
                   />

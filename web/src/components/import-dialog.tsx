@@ -29,7 +29,6 @@ export function ImportDialog({
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [
       ".xlsx",
     ],
-    "application/vnd.ms-excel": [".xls"],
     "text/csv": [".csv"],
   },
   onImport,
@@ -103,7 +102,7 @@ export function ImportDialog({
                 拖拽文件到此处，或点击选择
               </p>
               <p className="text-xs text-muted-foreground">
-                .xlsx / .xls / .csv
+                .xlsx / .csv
               </p>
             </>
           )}

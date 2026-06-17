@@ -194,13 +194,29 @@ function sourceFieldValue(rows: JsonRecord[], sourceType: string, sourceField: s
   return ""
 }
 
-function sourceRowsForSpu(db: SyncPostgresDatabase, spuCode: string) {
+function sourceRowsForSpu(db: SyncPostgresDatabase, spuCode: string, sourceBatchId?: number | null) {
+  const batchId = numberValue(sourceBatchId)
+  const where = ["source.spu_code = ?"]
+  const params: unknown[] = [spuCode]
+  if (batchId !== null && Number.isInteger(batchId) && batchId > 0) {
+    where.push("source.source_batch_id = ?")
+    params.push(batchId)
+  }
   return db.prepare(`
-    select *
-    from product_archive_source_row
-    where spu_code = ?
-    order by source_type, skc_code nulls first, id desc
-  `).all(spuCode) as JsonRecord[]
+    select source.*
+    from product_archive_source_row source
+    where ${where.join(" and ")}
+    order by source.source_type, source.skc_code nulls first, source.id desc
+  `).all(...params) as JsonRecord[]
+}
+
+function sourceRowsForDraft(db: SyncPostgresDatabase, draft: JsonRecord) {
+  const snapshot = recordValue(draft.source_snapshot_json)
+  return sourceRowsForSpu(
+    db,
+    stringValue(draft.spu_code),
+    numberValue(snapshot.sourceBatchId),
+  )
 }
 
 export function missingMdmSpuCodes(db: SyncPostgresDatabase, sourceBatchId: number) {
@@ -585,7 +601,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     from product_archive_field_rule
     order by id
   `).all() as JsonRecord[]
-  const sourceRows = sourceRowsForSpu(db, stringValue(draft.spu_code))
+  const sourceRows = sourceRowsForDraft(db, draft)
   const fieldNames = new Set<string>()
   for (const field of tradeFields) fieldNames.add(stringValue(field.field_name))
   for (const rule of rules) fieldNames.add(stringValue(rule.deepdraw_field))
@@ -877,7 +893,7 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
     order by skc.skc_code, sku.size_code, sku.sku_code
   `).all(input.spuCode) as JsonRecord[]
 
-  const sourceRows = sourceRowsForSpu(db, input.spuCode)
+  const sourceRows = sourceRowsForSpu(db, input.spuCode, input.sourceBatchId)
   const autoMatchedTrade = input.tradeId
     ? null
     : inferDeepdrawTradeFromLaunchPlan(db, { tenantName, merchantId, sourceRows })
@@ -888,6 +904,7 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
     : []
 
   const now = nowIso()
+  const sourceSnapshot = { spu, sourceRows, sourceBatchId: input.sourceBatchId ?? null, autoMatchedTrade }
   const result = db.transaction(() => {
     const inserted = db.prepare(`
       insert into product_archive_draft (
@@ -913,7 +930,7 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
       draftTradePath,
       chooseTitle(spu, sourceRows),
       numberValue(spu.price_tag),
-      jsonText({ spu, sourceRows, sourceBatchId: input.sourceBatchId ?? null, autoMatchedTrade }),
+      jsonText(sourceSnapshot),
       input.createdBy ?? null,
       now,
     )
@@ -924,6 +941,7 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
       tenant_name: tenantName,
       merchant_id: merchantId,
       trade_id: draftTradeId,
+      source_snapshot_json: jsonText(sourceSnapshot),
     }, tradeFields)
     const insertField = db.prepare(`
       insert into product_archive_draft_field (
@@ -1317,6 +1335,23 @@ function writeSubmitLog(
   )
 }
 
+function assertDeepdrawProductArchiveSuccess(result: DeepdrawResult, type: string) {
+  const payload = recordValue(result.payload)
+  const response = recordValue(payload.response)
+  const outerStatus = numberValue(payload.status)
+  const responseCode = numberValue(response.code)
+  const responseState = stringValue(response.response).toLowerCase()
+  if (
+    !result.ok
+    || (outerStatus !== null && outerStatus !== 200)
+    || (responseCode !== null && responseCode !== 10200)
+    || (responseState && responseState !== "success")
+  ) {
+    const reason = stringValue(response.reason ?? response.message ?? payload.reason ?? payload.message)
+    throw new Error(`DeepDraw ${type} failed: ${reason || result.status}`)
+  }
+}
+
 function duplicateRecords(payload: unknown) {
   const body = recordValue(recordValue(payload).body)
   const candidates = [
@@ -1347,6 +1382,7 @@ export async function checkDuplicateProductArchiveDraft(db: SyncPostgresDatabase
     }) as DeepdrawResult
   })
   const result = await runSearch()
+  assertDeepdrawProductArchiveSuccess(result, "search")
   const records = duplicateRecords(result.payload)
   const duplicateFound = records.length > 0
   const summary = {

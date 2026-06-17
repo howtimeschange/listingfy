@@ -84,6 +84,15 @@ test("product archive draft service is PG-first and covers build validate patch 
   assert.doesNotMatch(service, /openDatabase|applyMigrations|better-sqlite3|node:sqlite/);
 });
 
+test("product archive draft source rows stay scoped to the import batch when present", async () => {
+  const service = await readFile(files.draftService, "utf8");
+
+  assert.match(service, /function sourceRowsForSpu\(db: SyncPostgresDatabase, spuCode: string, sourceBatchId\?: number \| null\)/);
+  assert.match(service, /source\.source_batch_id = \?/);
+  assert.match(service, /sourceRowsForSpu\(db, input\.spuCode, input\.sourceBatchId/);
+  assert.match(service, /sourceRowsForDraft\(db, draft\)/);
+});
+
 test("product archive draft service resolves merchant identity from DeepDraw credentials and keeps it out of create payload overrides", async () => {
   const service = await readFile(files.draftService, "utf8");
 
@@ -101,6 +110,52 @@ test("product archive draft service blocks ready status when required template a
   assert.match(service, /duplicate_product_found/);
   assert.match(service, /sku_color_not_in_template/);
   assert.match(service, /sku_size_not_in_template/);
+});
+
+test("product archive duplicate check rejects DeepDraw business failures", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const statements = [];
+  const fakeDb = {
+    prepare(sql) {
+      statements.push(sql);
+      return {
+        get(id) {
+          assert.equal(id, 101);
+          return {
+            id: 101,
+            spu_code: "SPU001",
+            tenant_name: "电商巴拉巴拉",
+            merchant_id: "1162",
+            trade_id: "100",
+          };
+        },
+        run() {
+          throw new Error("duplicate check should reject before mutating draft state");
+        },
+      };
+    },
+    transaction(fn) {
+      return fn;
+    },
+  };
+
+  await assert.rejects(
+    () => service.checkDuplicateProductArchiveDraft(fakeDb, 101, {
+      search: async () => ({
+        status: 200,
+        ok: true,
+        requestId: "request-1",
+        payload: {
+          response: {
+            code: 50001,
+            reason: "signature invalid",
+            response: "fail",
+          },
+        },
+      }),
+    }),
+    /DeepDraw .*failed/i,
+  );
 });
 
 test("routes delegate to PG services and enforce the deepdraw archive permission boundary", async () => {

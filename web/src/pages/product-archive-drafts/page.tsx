@@ -201,7 +201,7 @@ export default function ProductArchiveDraftsPage() {
       let inputRowCount = 0
       let autoSyncedCount = 0
       let skippedExistingDraftCount = 0
-      let syncJob: DraftBatchJob | null = null
+      const syncJobs: DraftBatchJob[] = []
       for (const sheet of sheets) {
         const result = await api.post<SourceImportResponse>("/product-archive-drafts/source-imports", {
           sourceType,
@@ -214,19 +214,22 @@ export default function ProductArchiveDraftsPage() {
         insertedRowCount += result.insertedRowCount
         autoSyncedCount += result.missingMdmSpuCodes?.length ?? 0
         skippedExistingDraftCount += result.skippedExistingDraftCount ?? 0
-        syncJob = result.syncJob ?? syncJob
+        if (result.syncJob) syncJobs.push(result.syncJob)
       }
-      return { inputRowCount, insertedRowCount, sheetCount: sheets.length, autoSyncedCount, skippedExistingDraftCount, syncJob }
+      return { inputRowCount, insertedRowCount, sheetCount: sheets.length, autoSyncedCount, skippedExistingDraftCount, syncJobs }
     },
     onSuccess: (result) => {
-      if (result.syncJob) {
-        addTask({
-          job: result.syncJob as AsyncTaskJob,
-          type: "product_archive_mdm_draft",
-          title: "上市计划表自动同步 MDM",
-          description: `待同步 ${formatNumber(result.autoSyncedCount)} 个款号，已跳过已有草稿 ${formatNumber(result.skippedExistingDraftCount)} 个`,
-        })
-        setBatchJobId(result.syncJob.id)
+      if (result.syncJobs.length > 0) {
+        for (const syncJob of result.syncJobs) {
+          addTask({
+            job: syncJob as AsyncTaskJob,
+            type: "product_archive_mdm_draft",
+            title: "上市计划表自动同步 MDM",
+            description: `待同步 ${formatNumber(syncJob.total_count)} 个款号，已跳过已有草稿 ${formatNumber(result.skippedExistingDraftCount)} 个`,
+          })
+        }
+        const latestSyncJob = result.syncJobs[result.syncJobs.length - 1]
+        setBatchJobId(latestSyncJob.id)
         setMdmSyncDialogOpen(true)
       }
       const syncText = result.autoSyncedCount > 0

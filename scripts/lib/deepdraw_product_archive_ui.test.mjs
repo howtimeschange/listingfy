@@ -239,6 +239,9 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.doesNotMatch(draftListPage, /导入字段对应关系/);
   assert.match(draftListPage, /先同步 MDM 款号，再导入上市计划表和标准文案表/);
   assert.match(draftListPage, /autoSyncMissingMdm:\s*sourceType === "launch_plan"/);
+  assert.match(draftListPage, /syncJobs:\s*DraftBatchJob\[\]/);
+  assert.match(draftListPage, /syncJobs\.push\(result\.syncJob\)/);
+  assert.match(draftListPage, /for \(const syncJob of result\.syncJobs\)/);
   assert.match(draftListPage, /useAsyncTasks/);
   assert.match(draftListPage, /addTask/);
   assert.match(draftListPage, /openTaskCenter/);

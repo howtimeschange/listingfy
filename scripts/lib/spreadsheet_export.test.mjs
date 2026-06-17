@@ -5,6 +5,7 @@ import test from "node:test";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const SPREADSHEET_FILE = path.join(PROJECT_ROOT, "web/src/lib/spreadsheet.ts");
+const WEB_PACKAGE_FILE = path.join(PROJECT_ROOT, "web/package.json");
 
 async function fileText(file) {
   try {
@@ -17,15 +18,26 @@ async function fileText(file) {
 test("spreadsheet export uses an explicit browser download link", async () => {
   const spreadsheet = await fileText(SPREADSHEET_FILE);
 
-  assert.match(spreadsheet, /XLSX\.write\(workbook/);
-  assert.match(spreadsheet, /compression:\s*true/);
+  assert.match(spreadsheet, /new ExcelJS\.Workbook\(\)/);
+  assert.match(spreadsheet, /workbook\.xlsx\.writeBuffer\(\)/);
   assert.match(spreadsheet, /new Blob/);
   assert.match(spreadsheet, /URL\.createObjectURL/);
   assert.match(spreadsheet, /document\.createElement\("a"\)/);
   assert.match(spreadsheet, /link\.download = filename/);
   assert.match(spreadsheet, /link\.click\(\)/);
   assert.match(spreadsheet, /URL\.revokeObjectURL/);
-  assert.doesNotMatch(spreadsheet, /XLSX\.writeFile\(workbook, filename\)/);
+  assert.doesNotMatch(spreadsheet, /writeFile\(workbook, filename\)/);
+});
+
+test("spreadsheet utilities avoid the vulnerable xlsx package", async () => {
+  const [spreadsheet, packageJson] = await Promise.all([
+    fileText(SPREADSHEET_FILE),
+    fileText(WEB_PACKAGE_FILE),
+  ]);
+
+  assert.doesNotMatch(spreadsheet, /from "xlsx"/);
+  assert.doesNotMatch(packageJson, /"xlsx"/);
+  assert.match(spreadsheet, /ExcelJS/);
 });
 
 test("spreadsheet export can write multiple named sheets", async () => {
@@ -36,14 +48,15 @@ test("spreadsheet export can write multiple named sheets", async () => {
   assert.match(spreadsheet, /sheet\.name/);
   assert.match(spreadsheet, /sheetNameWithIndex/);
   assert.match(spreadsheet, /SHEET_ROW_LIMIT/);
-  assert.match(spreadsheet, /XLSX\.utils\.book_append_sheet\(workbook, worksheet, sheetNameWithIndex\(sheet\.name, index, chunkCount\)\)/);
+  assert.match(spreadsheet, /workbook\.addWorksheet\(sheetNameWithIndex\(sheet\.name, index, chunkCount\)\)/);
+  assert.match(spreadsheet, /appendRowsToWorksheet\(worksheet, columns, rows, start, end\)/);
 });
 
 test("spreadsheet export streams sheet chunks without copying million-row ranges", async () => {
   const spreadsheet = await fileText(SPREADSHEET_FILE);
 
-  assert.match(spreadsheet, /function appendRowsToWorksheet\(rows: SpreadsheetRow\[\], start = 0, end = rows\.length\)/);
-  assert.match(spreadsheet, /appendRowsToWorksheet\(rows, start, end\)/);
+  assert.match(spreadsheet, /function appendRowsToWorksheet\(\s*worksheet: ExcelJS\.Worksheet,\s*columns: string\[\],\s*rows: SpreadsheetRow\[\],\s*start = 0,\s*end = rows\.length,\s*\)/);
+  assert.match(spreadsheet, /appendRowsToWorksheet\(worksheet, columns, rows, start, end\)/);
   assert.doesNotMatch(spreadsheet, /appendRowsToWorksheet\(rows\.slice\(start, end\)\)/);
 });
 

@@ -160,7 +160,7 @@ export default function BrandRulesPage() {
 
   async function exportRows() {
     const result = await api.get<{ rows: SpreadsheetRow[] }>("/business-rules/brand-rules/export")
-    exportSpreadsheet("SHEIN品牌管理-导出.xlsx", result.rows)
+    await exportSpreadsheet("SHEIN品牌管理-导出.xlsx", result.rows)
   }
 
   function openCreate() {
@@ -214,7 +214,7 @@ export default function BrandRulesPage() {
                 导入品牌映射
                 <Input
                   type="file"
-                  accept=".xlsx,.xls,.csv"
+                  accept=".xlsx,.csv"
                   className="hidden"
                   onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
                 />

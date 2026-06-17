@@ -140,7 +140,7 @@ export default function SizeConversionPage() {
 
   async function exportRows() {
     const result = await api.get<{ rows: SpreadsheetRow[] }>("/business-rules/size-conversions/export")
-    exportSpreadsheet("SHEIN尺码转换规则.xlsx", result.rows)
+    await exportSpreadsheet("SHEIN尺码转换规则.xlsx", result.rows)
   }
 
   function openCreate() {
@@ -182,7 +182,7 @@ export default function SizeConversionPage() {
                 导入表格
                 <Input
                   type="file"
-                  accept=".xlsx,.xls,.csv"
+                  accept=".xlsx,.csv"
                   className="hidden"
                   onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
                 />

@@ -242,7 +242,7 @@ export default function PriceRulesPage() {
 
   async function exportRows() {
     const result = await api.get<{ rows: SpreadsheetRow[] }>("/business-rules/discount-rules/export")
-    exportSpreadsheet("SHEIN价格规则-导出.xlsx", result.rows)
+    await exportSpreadsheet("SHEIN价格规则-导出.xlsx", result.rows)
   }
 
   function openCreate() {
@@ -366,7 +366,7 @@ export default function PriceRulesPage() {
                       导入价格规则
                       <Input
                         type="file"
-                        accept=".xlsx,.xls,.csv"
+                        accept=".xlsx,.csv"
                         className="hidden"
                         onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
                       />
