@@ -322,11 +322,6 @@ productArchiveDrafts.post("/:draftId/submit", async (c) => {
   const db = getDb()
   const draftId = readId(c.req.param("draftId"))
   const body = await readJson(c)
-  if (!body.dryRun) {
-    throw new HTTPException(501, {
-      message: "DeepDraw 真实创建需要 SDK Product entity/body adapter，当前仅开放 dry-run 预览",
-    })
-  }
   const result = await submitProductArchiveDraft(db, draftId, { dryRun: Boolean(body.dryRun) })
   auditFromContext(c, {
     action: body.dryRun ? "draft.submit.dry_run" : "draft.submit.create",

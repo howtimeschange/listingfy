@@ -4,6 +4,7 @@ import {
   buildDeepdrawGetRequest,
   buildDeepdrawPostRequest,
   createDeepdrawProduct,
+  getDeepdrawProduct,
   parseTenantCredentialsFromText,
   resolveDeepdrawConfig,
 } from "./deepdraw_client.mjs";
@@ -146,26 +147,73 @@ test("buildDeepdrawGetRequest does not let payload fields override signed creden
   assert.doesNotMatch(request.stringToSign, /payload-dop-key|dp\.product\.create/);
 });
 
-test("createDeepdrawProduct refuses direct REST creation without an explicit adapter", async () => {
+test("createDeepdrawProduct delegates creation to the SDK adapter contract", async () => {
   const previousFetch = globalThis.fetch;
   globalThis.fetch = async () => {
-    throw new Error("fetch should not be called for unverified product create");
+    throw new Error("fetch should not be called for SDK product create");
   };
 
   try {
-    await assert.rejects(
-      () => createDeepdrawProduct({
-        config: {
-          baseUrl: "http://open.deepdraw.cn",
-          appKey: "app-key",
-          appSecret: "app-secret",
-          dopKey: "dop-key",
-          merchantId: "1162",
-        },
-        payload: { code: "208226102001", merchantId: "" },
-      }),
-      /DeepDraw product create adapter is not configured/,
-    );
+    const calls = [];
+    const result = await createDeepdrawProduct({
+      config: {
+        baseUrl: "http://open.deepdraw.cn",
+        appKey: "app-key",
+        appSecret: "app-secret",
+        dopKey: "dop-key",
+        merchantId: "1162",
+      },
+      payload: { code: "208226102001", merchantId: "" },
+      adapter: async (input) => {
+        calls.push(input);
+        return {
+          status: 200,
+          ok: true,
+          requestId: "request-1",
+          payload: { response: { code: 10200, response: "success" } },
+        };
+      },
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].payload.code, "208226102001");
+    assert.equal(result.ok, true);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("getDeepdrawProduct delegates product resource reads to the SDK adapter contract", async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("fetch should not be called for SDK product resource reads");
+  };
+
+  try {
+    const calls = [];
+    const result = await getDeepdrawProduct({
+      config: {
+        baseUrl: "http://open.deepdraw.cn",
+        appKey: "app-key",
+        appSecret: "app-secret",
+        dopKey: "dop-key",
+        merchantId: "1162",
+      },
+      productCode: "208326105214",
+      adapter: async (input) => {
+        calls.push(input);
+        return {
+          status: 200,
+          ok: true,
+          requestId: "request-2",
+          payload: { response: { code: 10200, response: "success", body: { productId: 7788 } } },
+        };
+      },
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].productCode, "208326105214");
+    assert.equal(result.ok, true);
   } finally {
     globalThis.fetch = previousFetch;
   }

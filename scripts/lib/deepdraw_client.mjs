@@ -2,6 +2,10 @@ import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import {
+  createDeepdrawProductWithSdk,
+  getDeepdrawProductWithSdk,
+} from "./deepdraw_sdk_adapter.mjs";
 
 export const DEFAULT_DEEPDRAW_BASE_URL = "http://open.deepdraw.cn";
 export const DEFAULT_DEEPDRAW_TENANT_NAME = "电商巴拉巴拉";
@@ -319,29 +323,29 @@ export async function requestDeepdrawPost({ config, type, query, timeoutMs = 300
   };
 }
 
-export async function getDeepdrawProduct({ config, productCode, timeoutMs = 30000 }) {
-  return requestDeepdraw({
-    config,
-    type: PRODUCT_RESOURCE_TYPE,
-    query: { productCode },
-    timeoutMs,
-  });
+export async function getDeepdrawProduct({ config, productCode, timeoutMs = 30000, adapter } = {}) {
+  const resourceAdapter = adapter ?? getDeepdrawProductWithSdk;
+  if (typeof resourceAdapter !== "function") {
+    throw new Error("DeepDraw product resource adapter must be a function.");
+  }
+  return resourceAdapter({ config, productCode, resource: "form", timeoutMs });
 }
 
 export async function searchDeepdrawProductBasic({ config, productCode, timeoutMs = 30000 }) {
   return requestDeepdraw({
     config,
     type: PRODUCT_BASIC_SEARCH_TYPE,
-    query: { productCode },
+    query: { productCodes: productCode, pageNo: 1, pageSize: 20, excludeDraft: 0 },
     timeoutMs,
   });
 }
 
 export async function createDeepdrawProduct({ config, payload = {}, timeoutMs = 30000, adapter } = {}) {
-  if (typeof adapter !== "function") {
-    throw new Error("DeepDraw product create adapter is not configured; dp.product.create requires the SDK Product entity/body shape.");
+  const createAdapter = adapter ?? createDeepdrawProductWithSdk;
+  if (typeof createAdapter !== "function") {
+    throw new Error("DeepDraw product create adapter must be a function.");
   }
-  return adapter({ config, payload, timeoutMs });
+  return createAdapter({ config, payload, timeoutMs });
 }
 
 export async function getDeepdrawTrades({ config, timeoutMs = 30000 }) {

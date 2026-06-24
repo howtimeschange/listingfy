@@ -6,11 +6,15 @@ const FIELD_ALIASES = {
   defaultValue: ["defaultValue", "default_value", "固定值", "默认值"],
   blocking: ["blocking", "required", "必填", "是否必填", "阻断"],
   notes: ["notes", "备注", "说明"],
+  importability: ["是否能MDM导入", "是否能 MDM 导入", "MDM导入", "来源说明"],
 };
 
 const SPU_KEYS = ["spuCode", "spu_code", "款号", "大货款号", "货号", "商品编码", "Product.code"];
 const SKC_KEYS = ["skcCode", "skc_code", "款色", "款色号", "款色编码", "颜色编码"];
 const ALLOWED_SOURCE_TYPES = new Set(["mdm", "launch_plan", "copywriting", "fixed", "manual", "skip"]);
+const FIXED_LITERAL_VALUES = new Set(["不设置", "不可定制"]);
+const LAUNCH_PLAN_FIELD_HINTS = new Set(["款号", "大货款号", "货号", "吊牌价", "吊牌价格", "核算吊牌价", "颜色", "颜色名称", "上市时间", "内容上市时间", "搜索上市时间", "产品季", "对应日期"]);
+const COPYWRITING_FIELD_HINTS = new Set(["搜索标题", "商品标题", "标题", "唯品标题", "内容平台标题", "内容标题", "导购标题", "推荐理由", "面料成分", "材质成分", "面料名称", "面料文案", "面料三个关键词", "细节文案", "主图4第1句", "主图4第2-3句", "柔软度", "厚薄", "弹性", "去掉巴拉巴拉"]);
 const HEADER_HINTS = new Set([
   "深绘字段",
   "来源类型",
@@ -83,6 +87,7 @@ function booleanValue(value, fallback = false) {
 
 function sourceTypeValue(value) {
   const text = stringValue(value).toLowerCase();
+  const compact = compactKey(value);
   const normalized = {
     mdm: "mdm",
     "主数据": "mdm",
@@ -95,14 +100,52 @@ function sourceTypeValue(value) {
     "标准文案": "copywriting",
     "标准文案表": "copywriting",
     "文案": "copywriting",
+    "文案表": "copywriting",
     fixed: "fixed",
     "固定": "fixed",
     manual: "manual",
     "人工": "manual",
+    "人工判断": "manual",
+    "人为判断": "manual",
+    "判断": "manual",
     skip: "skip",
     "跳过": "skip",
-  }[text] ?? text;
+    "不填": "skip",
+    "可不填": "skip",
+    "无需填写": "skip",
+    "无": "skip",
+  }[text] ?? {
+    "主数据": "mdm",
+    "上市计划": "launch_plan",
+    "上市计划表": "launch_plan",
+    "标准文案": "copywriting",
+    "标准文案表": "copywriting",
+    "文案": "copywriting",
+    "文案表": "copywriting",
+    "固定": "fixed",
+    "人工": "manual",
+    "人工判断": "manual",
+    "人为判断": "manual",
+    "判断": "manual",
+    "不填": "skip",
+    "可不填": "skip",
+    "无需填写": "skip",
+  }[compact] ?? text;
   return ALLOWED_SOURCE_TYPES.has(normalized) ? normalized : "manual";
+}
+
+function inferredSourceType(rawSourceType, rawSourceField, importability) {
+  const sourceType = sourceTypeValue(rawSourceType);
+  const sourceField = normalizeHeaderName(rawSourceField);
+  const mdmFlag = stringValue(importability);
+  if (sourceType !== "manual") return sourceType;
+  if (FIXED_LITERAL_VALUES.has(stringValue(rawSourceType)) || mdmFlag.includes("固定")) return "fixed";
+  if (mdmFlag.includes("本地表格") || mdmFlag.includes("云盘")) {
+    if (LAUNCH_PLAN_FIELD_HINTS.has(sourceField)) return "launch_plan";
+    if (COPYWRITING_FIELD_HINTS.has(sourceField)) return "copywriting";
+    if (sourceField) return "copywriting";
+  }
+  return sourceType;
 }
 
 function cleanRow(row) {
@@ -133,7 +176,6 @@ function keyHeaderScore(row) {
     const normalized = normalizeHeaderName(key);
     if (!normalized) continue;
     if (HEADER_HINTS.has(normalized)) score += 2;
-    if ([...HEADER_HINTS].some((hint) => normalized.includes(hint))) score += 1;
   }
   return score;
 }
@@ -178,16 +220,23 @@ export function parseProductArchiveFieldRuleRows(rows = []) {
       const deepdrawField = firstValue(row, FIELD_ALIASES.deepdrawField);
       if (!deepdrawField) return null;
       const sourceType = sourceTypeValue(firstValue(row, FIELD_ALIASES.sourceType));
+      const rawImportability = firstValue(row, FIELD_ALIASES.importability);
       const notes = firstValue(row, FIELD_ALIASES.notes) || null;
-      const defaultValue = firstValue(row, FIELD_ALIASES.defaultValue) || (sourceType === "fixed" ? notes : null);
+      const rawSourceField = firstValue(row, FIELD_ALIASES.sourceField);
+      const rawDefaultValue = firstValue(row, FIELD_ALIASES.defaultValue);
+      const resolvedSourceType = inferredSourceType(firstValue(row, FIELD_ALIASES.sourceType), rawSourceField, rawImportability);
+      const sourceField = ["fixed", "manual", "skip"].includes(resolvedSourceType) ? null : rawSourceField || null;
+      const defaultValue = resolvedSourceType === "fixed"
+        ? rawDefaultValue || rawSourceField || notes || (FIXED_LITERAL_VALUES.has(firstValue(row, FIELD_ALIASES.sourceType)) ? firstValue(row, FIELD_ALIASES.sourceType) : null)
+        : rawDefaultValue || null;
       return {
         deepdrawField,
-        sourceType,
+        sourceType: resolvedSourceType,
         sourceTable: firstValue(row, FIELD_ALIASES.sourceTable) || null,
-        sourceField: firstValue(row, FIELD_ALIASES.sourceField) || null,
+        sourceField,
         defaultValue,
         transformRule: {},
-        blocking: booleanValue(firstValue(row, FIELD_ALIASES.blocking), true),
+        blocking: resolvedSourceType === "skip" ? false : booleanValue(firstValue(row, FIELD_ALIASES.blocking), false),
         notes,
       };
     })

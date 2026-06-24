@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -6,6 +7,7 @@ import test from "node:test";
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const SPREADSHEET_FILE = path.join(PROJECT_ROOT, "web/src/lib/spreadsheet.ts");
 const WEB_PACKAGE_FILE = path.join(PROJECT_ROOT, "web/package.json");
+const requireFromWeb = createRequire(WEB_PACKAGE_FILE);
 
 async function fileText(file) {
   try {
@@ -38,6 +40,34 @@ test("spreadsheet utilities avoid the vulnerable xlsx package", async () => {
   assert.doesNotMatch(spreadsheet, /from "xlsx"/);
   assert.doesNotMatch(packageJson, /"xlsx"/);
   assert.match(spreadsheet, /ExcelJS/);
+});
+
+test("spreadsheet import preserves duplicate title-row headers for merged-title workbooks", async () => {
+  const ExcelJS = requireFromWeb("exceljs");
+  const { readSpreadsheetWorkbook } = await import("../../web/src/lib/spreadsheet.ts");
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet("Sheet1");
+  worksheet.addRow([
+    "",
+    "深绘字段对应关系整理",
+    "深绘字段对应关系整理",
+    "深绘字段对应关系整理",
+    "深绘字段对应关系整理",
+  ]);
+  worksheet.addRow(["通用字段", "深绘字段", "对应表格", "对应字段", "备注"]);
+  worksheet.addRow(["通用字段", "产品标题", "文案表", "搜索标题", "来自文案表"]);
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const [sheet] = await readSpreadsheetWorkbook(new File([buffer], "深绘字段对应关系整理.xlsx"));
+
+  assert.deepEqual(sheet.rows[0], {
+    "Column 1": "通用字段",
+    "深绘字段对应关系整理": "深绘字段",
+    "深绘字段对应关系整理 2": "对应表格",
+    "深绘字段对应关系整理 3": "对应字段",
+    "深绘字段对应关系整理 4": "备注",
+  });
+  assert.equal(sheet.rows[1]["深绘字段对应关系整理 2"], "文案表");
 });
 
 test("spreadsheet export can write multiple named sheets", async () => {

@@ -7,7 +7,6 @@ import {
   createDeepdrawProduct,
   getDeepdrawProduct,
   resolveDeepdrawConfig,
-  searchDeepdrawProductBasic,
 } from "../../../scripts/lib/deepdraw_client.mjs"
 import { resolveAiConfig } from "../../../scripts/lib/ai_category_matcher.mjs"
 
@@ -103,6 +102,10 @@ function optionText(value: unknown) {
   const record = recordValue(value)
   return stringValue(
     record.value
+      ?? record.optionValue
+      ?? record.option_value
+      ?? record.code
+      ?? record.key
       ?? record.name
       ?? record.label
       ?? record.text
@@ -110,6 +113,26 @@ function optionText(value: unknown) {
       ?? record.option_name
       ?? record.id,
   )
+}
+
+function optionTextCandidates(value: unknown) {
+  if (value == null) return []
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return [stringValue(value)].filter(Boolean)
+  const record = recordValue(value)
+  return uniqueTextValues([
+    record.value,
+    record.optionValue,
+    record.option_value,
+    record.code,
+    record.key,
+    record.name,
+    record.label,
+    record.text,
+    record.optionName,
+    record.option_name,
+    record.title,
+    record.id,
+  ])
 }
 
 function numberValue(value: unknown): number | null {
@@ -192,6 +215,314 @@ function sourceFieldValue(rows: JsonRecord[], sourceType: string, sourceField: s
     if (value) return value
   }
   return ""
+}
+
+function sourceFieldValueAny(rows: JsonRecord[], sourceType: string, sourceFields: string[], skcCode?: string | null) {
+  for (const sourceField of sourceFields) {
+    const value = sourceFieldValue(rows, sourceType, sourceField, skcCode)
+    if (value) return value
+  }
+  return ""
+}
+
+function compactFieldKey(value: unknown) {
+  return stringValue(value).replace(/\s+/g, "").replace(/[()（）]/g, "").toLowerCase()
+}
+
+function uniqueTextValues(values: unknown[]) {
+  const seen = new Set<string>()
+  const output: string[] = []
+  for (const value of values) {
+    const text = stringValue(value)
+    if (!text || seen.has(text)) continue
+    seen.add(text)
+    output.push(text)
+  }
+  return output
+}
+
+function moneyText(value: unknown) {
+  const number = numberValue(value)
+  return number === null ? stringValue(value) : String(number)
+}
+
+function merchantSkuFieldValue(spu: JsonRecord, skus: JsonRecord[], dateText = "") {
+  const productCode = stringValue(spu.spu_code)
+  const retailPrice = moneyText(spu.price_tag)
+  const skuDate = dateFromText(dateText) || stringValue(dateText)
+  const output: JsonRecord = {
+    title: "价格,货号,上市时间,数量,商家编码,条形码,零售价,供货价,唯品会货号,唯品会条形码",
+  }
+  for (const sku of skus) {
+    const color = stringValue(sku.color_name)
+    const size = deepdrawSizeValue(sku.size_name)
+    if (!color || !size) continue
+    const price = moneyText(sku.price_tag) || retailPrice
+    const sellerCode = stringValue(sku.inner_code) || stringValue(sku.ean_code) || stringValue(sku.sku_code)
+    const barcode = stringValue(sku.ean_code)
+    const skuCode = stringValue(sku.sku_code) || sellerCode
+    const colorBucket = recordValue(output[color])
+    colorBucket[size] = [
+      price,
+      productCode,
+      skuDate,
+      "0",
+      sellerCode,
+      barcode,
+      retailPrice || price,
+      price,
+      skuCode,
+      barcode,
+    ].join(",")
+    output[color] = colorBucket
+  }
+  return output
+}
+
+const SIZE_TABLE_TITLE = "身高,衣长,胸围,袖长"
+
+function sizeTableValue(skus: JsonRecord[]) {
+  const sizes = uniqueTextValues(skus.map((sku) => deepdrawSizeValue(sku.size_name)))
+  if (!sizes.length) return {}
+  const output: JsonRecord = { title: SIZE_TABLE_TITLE }
+  for (const size of sizes) {
+    const height = size.match(/^(\d+)/)?.[1] ?? "0"
+    output[size] = [height, "0", "0", "0"].join(",")
+  }
+  return output
+}
+
+function baseColorName(value: unknown) {
+  const text = stringValue(value)
+  if (text.includes("粉")) return "粉红"
+  const colors = ["黑色", "白色", "红色", "蓝色", "绿色", "黄色", "紫色", "灰色", "棕色", "橙色"]
+  for (const color of colors) {
+    if (text.includes(color.slice(0, 1))) return color
+  }
+  return text
+}
+
+function deepdrawColorValue(value: unknown) {
+  const text = stringValue(value)
+  if (!text) return ""
+  const base = baseColorName(text)
+  return base && base !== text ? `${base},${text}` : text
+}
+
+function deepdrawSizeValue(value: unknown) {
+  const text = stringValue(value)
+  if (!text) return ""
+  if (/cm$/i.test(text)) return text
+  const match = text.match(/^0*(\d{2,3})$/)
+  return match ? `${Number(match[1])}cm` : text
+}
+
+function sourceAliases(sourceField: string) {
+  const field = stringValue(sourceField)
+  const aliases: Record<string, string[]> = {
+    款号: ["款号", "大货款号", "货号", "商品品种编号"],
+    吊牌价格: ["吊牌价格", "吊牌价", "核算吊牌价", "挂牌单价"],
+    吊牌价: ["吊牌价", "吊牌价格", "核算吊牌价", "挂牌单价"],
+    颜色: ["颜色", "颜色名称"],
+    内容平台标题: ["内容平台标题", "内容标题"],
+    细节文案: ["细节文案", "细节文案（不限定8个字，细节数量3-4个）"],
+    材质成分: ["材质成分", "面料成分"],
+    文案表: ["搜索标题", "唯品标题", "内容平台标题", "内容标题", "导购标题"],
+  }
+  return uniqueTextValues([field, ...(aliases[field] ?? [])])
+}
+
+function launchValue(sourceRows: JsonRecord[], sourceField: string) {
+  return sourceFieldValueAny(sourceRows, "launch_plan", sourceAliases(sourceField))
+}
+
+function copywritingValue(sourceRows: JsonRecord[], sourceField: string) {
+  return sourceFieldValueAny(sourceRows, "copywriting", sourceAliases(sourceField))
+}
+
+function aggregateSourceValues(sourceRows: JsonRecord[], sourceType: string, fields: string[]) {
+  const values: unknown[] = []
+  for (const row of sourceRows) {
+    if (stringValue(row.source_type) !== sourceType) continue
+    const rowJson = recordValue(row.row_json)
+    for (const field of fields) values.push(rowJson[field])
+  }
+  return uniqueTextValues(values)
+}
+
+function dateFromText(value: unknown) {
+  const text = stringValue(value)
+  if (!text) return ""
+  const parsed = new Date(text)
+  if (Number.isFinite(parsed.getTime())) {
+    const year = parsed.getUTCFullYear()
+    const month = String(parsed.getUTCMonth() + 1).padStart(2, "0")
+    const day = String(parsed.getUTCDate()).padStart(2, "0")
+    return `${year}-${month}-${day}`
+  }
+  const match = text.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})/)
+  if (match) {
+    return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`
+  }
+  return text
+}
+
+function launchDateValue(sourceRows: JsonRecord[]) {
+  return launchValue(sourceRows, "内容上市时间")
+    || launchValue(sourceRows, "搜索上市时间")
+    || launchValue(sourceRows, "上市时间")
+}
+
+export function buildProductArchivePayloadDate(sourceRows: JsonRecord[]) {
+  return dateFromText(launchDateValue(sourceRows))
+}
+
+function copyTextBlock(sourceRows: JsonRecord[]) {
+  return [
+    copywritingValue(sourceRows, "FAB") || launchValue(sourceRows, "FAB"),
+    copywritingValue(sourceRows, "推荐理由"),
+    copywritingValue(sourceRows, "面料文案"),
+    copywritingValue(sourceRows, "细节文案"),
+  ].filter(Boolean).join("\n")
+}
+
+function stripBalabalaBrand(value: string) {
+  return value.replace(/【?balaOne】?/gi, "").replace(/巴拉巴拉/g, "").replace(/\s+/g, "").trim()
+}
+
+function firstLines(value: unknown) {
+  return stringValue(value).split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+}
+
+function materialPercentText(sourceRows: JsonRecord[]) {
+  const composition = copywritingValue(sourceRows, "面料成分") || copywritingValue(sourceRows, "材质成分")
+  const match = composition.match(/面料[:：]\s*([0-9.]+%)/)
+  return match?.[1] ?? (composition.match(/([0-9.]+%)/)?.[1] ?? "")
+}
+
+export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, input: {
+  spu: JsonRecord
+  sourceRows: JsonRecord[]
+  sourceField?: string | null
+}) {
+  const key = compactFieldKey(fieldName)
+  const sourceField = stringValue(input.sourceField)
+  const sourceRows = input.sourceRows ?? []
+  if (sourceField === "款号") return launchValue(sourceRows, "款号") || stringValue(input.spu.spu_code)
+  if (sourceField === "吊牌价格" || sourceField === "吊牌价") return launchValue(sourceRows, sourceField) || moneyText(input.spu.price_tag)
+  if (sourceField === "颜色") return aggregateSourceValues(sourceRows, "launch_plan", ["颜色名称", "颜色"]).join(";")
+  if (sourceField === "内容平台标题") return copywritingValue(sourceRows, "内容平台标题")
+  if (sourceField === "细节文案") return copywritingValue(sourceRows, "细节文案")
+  if (sourceField === "材质成分") return copywritingValue(sourceRows, "材质成分")
+  if (sourceField === "主图4第1句") return firstLines(copywritingValue(sourceRows, "设计师说——主图4"))[0] ?? ""
+  if (sourceField === "主图4第2-3句") return firstLines(copywritingValue(sourceRows, "设计师说——主图4")).slice(1, 3).join("\n")
+  if (sourceField === "面料名称-面料文案*面料三个关键词") {
+    return [
+      copywritingValue(sourceRows, "面料名称"),
+      copywritingValue(sourceRows, "面料文案"),
+      copywritingValue(sourceRows, "面料三个关键词"),
+    ].filter(Boolean).join("\n")
+  }
+  if (sourceField === "去掉巴拉巴拉") return stripBalabalaBrand(copywritingValue(sourceRows, "搜索标题"))
+
+  if (key === "上市时间" || key === "上市时间文本") return dateFromText(launchDateValue(sourceRows))
+  if (key === "选择期数") return launchValue(sourceRows, "产品季") || stringValue(input.spu.season_name) || stringValue(input.spu.year)
+  if (key === "京东材质成分" || key === "材质多选" || key === "材质成分多选" || key === "面料俗称") return copywritingValue(sourceRows, "面料成分")
+  if (key === "厚薄") return copywritingValue(sourceRows, "厚薄")
+  if (key === "分类" || key === "类型") return "外套"
+  if (key === "品牌单选") return stringValue(input.spu.brand_name) || "巴拉巴拉"
+  if (key === "功能多选") return copywritingValue(sourceRows, "面料三个关键词") || copywritingValue(sourceRows, "推荐理由")
+  if (key === "安全等级" || key === "安全等级多选") return stringValue(input.spu.article_prop_name) || "C类"
+  if (key === "尺码表") return ""
+  if (key === "性别多选") return launchValue(sourceRows, "性别") || stringValue(input.spu.gender_name)
+  if (key === "成分含量") return materialPercentText(sourceRows)
+  if (key === "是否带帽") return "连帽"
+  if (key === "是否库存") return "否"
+  if (key === "主面料成分含量") return materialPercentText(sourceRows)
+  if (key === "唯品会副标题") return copywritingValue(sourceRows, "唯品标题") || copywritingValue(sourceRows, "搜索标题")
+  if (key === "弹力") return copywritingValue(sourceRows, "弹性")
+  if (key === "商品短标题") return copywritingValue(sourceRows, "导购标题") || copywritingValue(sourceRows, "搜索标题")
+  if (key === "商品详情" || key === "商品描述") return copyTextBlock(sourceRows)
+  if (key === "微信视频小店副标题" || key === "快手商品卖点") return copywritingValue(sourceRows, "推荐理由") || copyTextBlock(sourceRows)
+  if (key === "微信视频小店标题" || key === "抖音标题") return copywritingValue(sourceRows, "内容平台标题") || copywritingValue(sourceRows, "搜索标题")
+  if (key === "快手标题" || key === "拼多多标题") return copywritingValue(sourceRows, "搜索标题")
+  if (key === "计量单位") return stringValue(input.spu.unit_name) || "件"
+  if (key === "是否跨境出口专供货源" || key === "是否加绒" || key === "是否可开档" || key === "是否开裆") return "否"
+  if (key === "是否可定制") return "不可定制"
+  if (key === "售后服务承诺") return "不设置"
+  if (key === "balaone仅专供新品") return launchValue(sourceRows, "属性").includes("专供新品") ? "是" : ""
+  if (key === "填充物种类") return stringValue(input.spu.filler) || launchValue(sourceRows, "填充物") || "无"
+  if (key === "款式" || key === "款式多选" || key === "款式单选") return launchValue(sourceRows, "主款式 （唯品四级品类）") || stringValue(input.spu.spu_name)
+  if (key === "袖长多选") return "长袖"
+  if (key === "袖长") return "长袖"
+  if (key === "衣长") return "常规"
+  if (key === "腰型" || key === "裤长" || key === "裤门襟") return "不适用"
+  if (key === "童装产地多选") return "中国大陆"
+  if (key === "适用场合") return "日常"
+  if (key === "退款规则") return "支持7天无理由退货"
+  if (key === "适用人群多选") return launchValue(sourceRows, "年龄段") || stringValue(input.spu.age_group_name)
+  if (key === "适用季节" || key === "适用季节多选") return "秋季"
+  if (key === "适用年龄" || key === "适用年龄多选") return launchValue(sourceRows, "年龄段") || stringValue(input.spu.age_group_name)
+  if (key === "适用年龄文本") return "3周岁以上"
+  if (key === "面料工艺") return "涂层"
+  if (key === "领型") return "连帽"
+  if (key === "风格" || key === "风格多选") return "休闲"
+  if (key === "京东自营子属性") return buildProductArchiveMdmDerivedFieldValue("尺码", { spu: input.spu, skus: [] }).valueText
+  if (key === "京东规格子属性") return aggregateSourceValues(sourceRows, "launch_plan", ["颜色名称", "颜色"]).join(";")
+  return ""
+}
+
+export function buildProductArchiveMdmDerivedFieldValue(fieldName: string, input: {
+  spu: JsonRecord
+  skus: JsonRecord[]
+  dateText?: string
+}) {
+  const key = compactFieldKey(fieldName)
+  if (key === "货号" || key === "款号") {
+    return { valueText: stringValue(input.spu.spu_code), valueJson: {} }
+  }
+  if (key === "价格" || key === "吊牌价格" || key === "吊牌价") {
+    return { valueText: moneyText(input.spu.price_tag), valueJson: {} }
+  }
+  if (key === "上市时间") {
+    return { valueText: stringValue(input.dateText), valueJson: {} }
+  }
+  if (key === "颜色") {
+    return { valueText: uniqueTextValues(input.skus.map((sku) => deepdrawColorValue(sku.color_name))).join(";"), valueJson: {} }
+  }
+  if (key === "尺码" || key === "尺寸") {
+    return { valueText: uniqueTextValues(input.skus.map((sku) => deepdrawSizeValue(sku.size_name))).join(";"), valueJson: {} }
+  }
+  if (key === "尺码表") {
+    return { valueText: "", valueJson: sizeTableValue(input.skus) }
+  }
+  if (key === "商家sku") {
+    return {
+      valueText: "",
+      valueJson: merchantSkuFieldValue(input.spu, input.skus, stringValue(input.dateText)),
+    }
+  }
+  return { valueText: "", valueJson: {} }
+}
+
+function mdmSkuRowsForSpu(db: SyncPostgresDatabase, spuCode: string) {
+  return db.prepare(`
+    select
+      sku.sku_code,
+      sku.ean_code,
+      sku.inner_code,
+      sku.size_code,
+      sku.size_name,
+      sku.price_tag,
+      skc.skc_code,
+      skc.color_code,
+      skc.color_name
+    from product_sku sku
+    join product_skc skc on skc.id = sku.skc_id
+    join product_spu spu on spu.id = skc.spu_id
+    where spu.spu_code = ?
+    order by skc.skc_code, sku.size_code, sku.sku_code
+  `).all(spuCode) as JsonRecord[]
 }
 
 function sourceRowsForSpu(db: SyncPostgresDatabase, spuCode: string, sourceBatchId?: number | null) {
@@ -315,13 +646,18 @@ function scoreTradeMatch(trade: JsonRecord, category: { field: string; value: st
   const candidatePathText = normalizeTradeText(candidatePath)
   const candidateNameText = normalizeTradeText(candidateName)
   const categoryLeaf = tradeLeaf(category.value)
+  const candidateLeaf = tradeLeaf(candidatePath)
   if (!categoryText || (!candidatePathText && !candidateNameText)) return 0
-  const fieldBoost = category.field.includes("官方") ? 40 : category.field.includes("唯品四级") ? 20 : 10
-  if (candidatePathText === categoryText) return 1000 + fieldBoost
-  if (candidateNameText === categoryText) return 850 + fieldBoost
-  if (candidateNameText && candidateNameText === categoryLeaf) return 760 + fieldBoost
-  if (candidatePathText.endsWith(`>${categoryLeaf}`) || candidatePathText === categoryLeaf) return 720 + fieldBoost
-  if (categoryLeaf && candidatePathText.includes(categoryLeaf)) return 520 + fieldBoost
+  const fieldBoost = category.field.includes("官方") ? 400 : category.field.includes("唯品四级") ? 20 : 10
+  const pathBoost = /blbl&mini/i.test(candidatePath) ? 80 : candidatePathText.includes("童装服饰") ? 40 : 0
+  const boost = fieldBoost + pathBoost
+  if (candidatePathText === categoryText) return 1000 + boost
+  if (candidateNameText === categoryText) return 850 + boost
+  if (candidateNameText && candidateNameText === categoryLeaf) return 760 + boost
+  if (candidatePathText.endsWith(`>${categoryLeaf}`) || candidatePathText === categoryLeaf) return 720 + boost
+  if (categoryLeaf && candidatePathText.includes(categoryLeaf)) return 520 + boost
+  if (categoryLeaf && candidateLeaf && categoryLeaf.includes(candidateLeaf)) return 500 + boost
+  if (categoryLeaf && candidateNameText && categoryLeaf.includes(candidateNameText)) return 480 + boost
   return 0
 }
 
@@ -384,15 +720,20 @@ function readMdmField(spu: JsonRecord, sourceField: string) {
   return stringValue(spu[sourceField])
 }
 
-function readSourceValue(spu: JsonRecord, rule: JsonRecord, sourceRows: JsonRecord[] = []) {
+function readSourceValue(spu: JsonRecord, rule: JsonRecord, sourceRows: JsonRecord[] = [], fieldName = "") {
   const sourceType = stringValue(rule.source_type)
-  if (sourceType === "fixed") return stringValue(rule.default_value)
+  const derived = buildProductArchiveSourceDerivedFieldValue(fieldName, {
+    spu,
+    sourceRows,
+    sourceField: stringValue(rule.source_field),
+  })
+  if (sourceType === "fixed") return stringValue(rule.default_value) || derived
   if (sourceType === "mdm") return readMdmField(spu, stringValue(rule.source_field))
-  if (sourceType === "launch_plan") return sourceFieldValue(sourceRows, "launch_plan", stringValue(rule.source_field)) || stringValue(rule.default_value)
-  if (sourceType === "copywriting") return sourceFieldValue(sourceRows, "copywriting", stringValue(rule.source_field)) || stringValue(rule.default_value)
-  if (sourceType === "manual") return stringValue(rule.default_value)
+  if (sourceType === "launch_plan") return derived || launchValue(sourceRows, stringValue(rule.source_field)) || stringValue(rule.default_value)
+  if (sourceType === "copywriting") return derived || copywritingValue(sourceRows, stringValue(rule.source_field)) || stringValue(rule.default_value)
+  if (sourceType === "manual") return stringValue(rule.default_value) || derived
   if (sourceType === "skip") return ""
-  return stringValue(rule.default_value)
+  return stringValue(rule.default_value) || derived
 }
 
 function sanitizeDeepdrawLogPayload(value: unknown): unknown {
@@ -456,6 +797,189 @@ function fieldOptionsFromTemplate(optionsJson: unknown) {
       return { value: value || label, label: label || value }
     })
     .filter((option): option is { value: string; label: string } => Boolean(option))
+}
+
+export function productArchiveFieldValueMatchesOptions(value: unknown, options: unknown[]) {
+  if (!options.length || !hasValue(value)) return true
+  if (value && typeof value === "object" && !Array.isArray(value)) return true
+  const allowed = new Set(options.flatMap(optionTextCandidates).filter(Boolean))
+  if (!allowed.size) return true
+  const text = stringValue(value)
+  const groups = text.split(/[;；]/).map((part) => part.trim()).filter(Boolean)
+  const values = groups.length ? groups : [text].filter(Boolean)
+  return values.every((item) => {
+    if (allowed.has(item)) return true
+    const aliases = item.split(/[,，]/).map((part) => part.trim()).filter(Boolean)
+    return (aliases.length ? aliases : [item]).some((alias) => allowed.has(alias))
+  })
+}
+
+function optionValues(options: unknown[]) {
+  return uniqueTextValues(options.flatMap(optionTextCandidates))
+}
+
+function pickOption(options: unknown[], predicates: Array<(value: string) => boolean>) {
+  const values = optionValues(options)
+  for (const predicate of predicates) {
+    const match = values.find(predicate)
+    if (match) return match
+  }
+  return ""
+}
+
+function seasonFromMonth(month: number) {
+  if (month >= 3 && month <= 5) return "春"
+  if (month >= 6 && month <= 8) return "夏"
+  if (month >= 9 && month <= 11) return "秋"
+  return "冬"
+}
+
+function seasonOptionValue(value: string, options: unknown[]) {
+  const dateText = dateFromText(value)
+  const match = dateText.match(/^(\d{4})-(\d{2})-\d{2}/)
+  if (!match) return ""
+  const year = match[1]
+  const season = seasonFromMonth(Number(match[2]))
+  const candidates = [
+    `${year}年${season}季`,
+    `${year}年${season}`,
+    `${year}${season}季`,
+    `${year}${season}`,
+    year,
+  ]
+  return pickOption(options, candidates.map((candidate) => (option) => option === candidate))
+}
+
+export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, value: unknown, options: unknown[]) {
+  const text = stringValue(value)
+  if (!text || !options.length) return text
+  const key = compactFieldKey(fieldName)
+  if (key.includes("颜色")) {
+    const values = text.split(/[;；]/).map((part) => part.trim()).filter(Boolean)
+    const normalized = values.map((item) => {
+      const parts = item.split(/[,，]/).map((part) => part.trim()).filter(Boolean)
+      const rawBase = parts[0] || item
+      const rawAlias = parts[1] || ""
+      const base = baseColorName(rawBase)
+      const option = pickOption(options, [
+        (option) => option === base,
+        (option) => option === rawBase,
+        (option) => option === item,
+        (option) => item.includes(option) || option.includes(item),
+      ])
+      if (!option) return ""
+      const alias = rawAlias || (item !== option ? item : "")
+      return alias && alias !== option ? `${option},${alias}` : option
+    }).filter(Boolean)
+    if (normalized.length) return uniqueTextValues(normalized).join(";")
+  }
+  if (key === "品牌单选" || key === "品牌") {
+    if (/巴拉巴拉|balabala/i.test(text)) {
+      return pickOption(options, [(option) => /巴拉巴拉|balabala/i.test(option)]) || text
+    }
+  }
+  if (key === "分类" || key === "类型") {
+    if (text.includes("外套")) {
+      return pickOption(options, [
+        (option) => option === "普通外套",
+        (option) => option === "外套",
+        (option) => option.includes("外套"),
+      ]) || text
+    }
+  }
+  if (key === "款式单选" || key === "款式") {
+    return pickOption(options, [
+      (option) => option === text,
+      (option) => option === "连帽外套",
+      (option) => option.includes("外套"),
+    ]) || text
+  }
+  if (key === "功能多选" && /防风|防泼水|透气/.test(text)) {
+    const normalized = ["防风", "防泼水", "透气"].map((needle) => (
+      text.includes(needle) ? pickOption(options, [(option) => option === needle]) : ""
+    )).filter(Boolean)
+    if (normalized.length) return normalized.join(";")
+  }
+  if (key === "安全等级" || key === "安全等级多选") {
+    const level = text.match(/[ABC]类?/i)?.[0]?.toUpperCase().replace(/([ABC])$/, "$1类") ?? ""
+    if (level) return pickOption(options, [(option) => option === level, (option) => option.startsWith(level)]) || text
+  }
+  if (key === "尺码表" && text.includes(";")) {
+    const normalized = text.split(/[;；]/).map((item) => pickOption(options, [(option) => option === item])).filter(Boolean)
+    if (normalized.length) return normalized.join(";")
+  }
+  if (key === "性别多选") {
+    if (["中", "中性", "男女"].some((needle) => text.includes(needle))) return pickOption(options, [(option) => option === "中性", (option) => option === "通用"]) || text
+  }
+  if (key === "成分含量" && text.includes("100%")) {
+    return pickOption(options, [(option) => option === "100%", (option) => option.includes("95%")]) || text
+  }
+  if (key === "是否带帽" && text.includes("帽")) {
+    return pickOption(options, [(option) => option === "连帽", (option) => option.includes("有帽")]) || text
+  }
+  if (key === "是否库存" && text === "否") {
+    return pickOption(options, [(option) => option === "否"]) || text
+  }
+  if ((key === "衣长" || key === "袖长" || key === "领型" || key === "退款规则" || key === "面料工艺") && text) {
+    return pickOption(options, [(option) => option === text, (option) => option.includes(text) || text.includes(option)]) || text
+  }
+  if (key === "适用人群多选" && /幼童|婴幼童/.test(text)) {
+    return pickOption(options, [(option) => option === "幼童", (option) => option === "婴童"]) || text
+  }
+  if (key === "适用季节" || key === "适用季节多选") {
+    return pickOption(options, [(option) => option === "秋季", (option) => option === "秋"]) || text
+  }
+  if (key === "适用年龄多选") {
+    return pickOption(options, [(option) => option === "1-3岁", (option) => option.includes("3岁（含）")]) || text
+  }
+  if (key === "适用年龄文本") {
+    return pickOption(options, [(option) => option === "3周岁以上", (option) => option === "3周岁以下", (option) => option === "通用"]) || text
+  }
+  if (key === "风格" || key === "风格多选") {
+    return pickOption(options, [(option) => option === "休闲", (option) => option === "休闲风", (option) => option === "简约"]) || text
+  }
+
+  if (key.includes("柔软") && text.includes("偏硬")) {
+    return pickOption(options, [(option) => option === "微硬", (option) => option === "硬"]) || text
+  }
+  if (key.includes("发货方式") && text === "快递") {
+    return pickOption(options, [(option) => option === "快递发货", (option) => option.includes("快递")]) || text
+  }
+  if (key === "上市时间") {
+    return seasonOptionValue(text, options) || text
+  }
+  if (key.includes("适用性别") || key === "性别") {
+    if (["中", "中性", "男女"].some((needle) => text.includes(needle))) {
+      return pickOption(options, [
+        (option) => option === "中性/男女均可",
+        (option) => option === "男女通用",
+        (option) => option === "通用",
+      ]) || text
+    }
+    if (text.includes("男")) return pickOption(options, [(option) => option.includes("男")]) || text
+    if (text.includes("女")) return pickOption(options, [(option) => option.includes("女")]) || text
+  }
+  if (key.includes("适用年龄") || key.includes("年龄")) {
+    if (/婴|幼童/.test(text)) {
+      return pickOption(options, [
+        (option) => option.includes("婴幼童"),
+        (option) => option.includes("0—3") || option.includes("0~3"),
+      ]) || text
+    }
+    if (/中小童|100|110|120|130/.test(text)) {
+      return pickOption(options, [(option) => option.includes("中小童")]) || text
+    }
+  }
+  if (/材质|面料/.test(fieldName) && /聚酯纤维|涤纶/.test(text)) {
+    return pickOption(options, [
+      (option) => option === "聚酯纤维（涤纶）",
+      (option) => option === "聚酯纤维",
+      (option) => option.includes("聚酯纤维"),
+      (option) => option.includes("涤纶"),
+    ]) || text
+  }
+  if (productArchiveFieldValueMatchesOptions(text, options)) return text
+  return text
 }
 
 function heuristicDeepdrawOptionValue(fieldName: string, options: Array<{ value: string; label: string }>, contextText: string) {
@@ -602,6 +1126,9 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     order by id
   `).all() as JsonRecord[]
   const sourceRows = sourceRowsForDraft(db, draft)
+  const mdmSkus = mdmSkuRowsForSpu(db, stringValue(draft.spu_code))
+  const dateText = sourceFieldValue(sourceRows, "launch_plan", "内容上市时间")
+    || sourceFieldValue(sourceRows, "launch_plan", "搜索上市时间")
   const fieldNames = new Set<string>()
   for (const field of tradeFields) fieldNames.add(stringValue(field.field_name))
   for (const rule of rules) fieldNames.add(stringValue(rule.deepdraw_field))
@@ -616,10 +1143,15 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     const existing = existingByName.get(fieldName) ?? {}
     const sourceType = stringValue(rule.source_type) || "manual"
     const existingManual = Boolean(existing.manual_override)
-    const valueText = existingManual
+    const sourceValueText = readSourceValue(spu, rule, sourceRows, fieldName)
+    const mdmDerived = existingManual
+      ? { valueText: "", valueJson: {} }
+      : buildProductArchiveMdmDerivedFieldValue(fieldName, { spu, skus: mdmSkus, dateText })
+    const rawValueText = existingManual
       ? stringValue(existing.value_text)
-      : readSourceValue(spu, rule, sourceRows)
-    const valueJson = existingManual ? recordValue(existing.value_json) : {}
+      : sourceValueText || mdmDerived.valueText
+    const valueText = normalizeProductArchiveDeepdrawFieldValue(fieldName, rawValueText, arrayValue(template.options_json))
+    const valueJson = existingManual ? recordValue(existing.value_json) : mdmDerived.valueJson
     const required = Boolean(template.required) || Boolean(rule.blocking)
     const blocking = Boolean(rule.blocking) || Boolean(template.required)
     const missing = blocking && sourceType !== "skip" && !hasValue(valueText) && !hasValue(valueJson)
@@ -969,7 +1501,7 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
         field.sourceType,
         field.sourceRef,
         field.valueText,
-        jsonText({}),
+        jsonText(field.valueJson),
         field.required,
         field.blocking,
         field.validationStatus,
@@ -1095,7 +1627,11 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
     ...skus.map((sku) => `${stringValue(sku.color_name)} ${stringValue(sku.size_name)}`),
   ].map(stringValue).join(" ")
   const candidates = fields
-    .filter((field) => !hasValue(field.value_text) && stringValue(field.source_type) !== "skip")
+    .filter((field) => (
+      !hasValue(field.value_text)
+      && !hasValue(recordValue(field.value_json))
+      && stringValue(field.source_type) !== "skip"
+    ))
     .map((field) => ({
       id: Number(field.id),
       fieldName: stringValue(field.field_name),
@@ -1201,8 +1737,7 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
       message = "必填字段缺失"
       issues.push({ severity: "blocker", issueType: "required_field_missing", fieldName, message })
     } else if (options.length && hasValue(value)) {
-      const allowed = new Set(options.map((option) => optionText(option)).filter(Boolean))
-      if (allowed.size && !allowed.has(stringValue(value))) {
+      if (!productArchiveFieldValueMatchesOptions(value, options)) {
         status = "invalid"
         message = "字段值不在深绘模板选项中"
         issues.push({ severity: blocking ? "blocker" : "warning", issueType: "field_option_invalid", fieldName, message })
@@ -1227,13 +1762,28 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
   for (const sku of skus) {
     if (!stringValue(sku.color_name)) {
       issues.push({ severity: "blocker", issueType: "sku_color_missing", skuCode: stringValue(sku.sku_code), message: "SKU 缺少颜色" })
-    } else if (allowedColors.size && !allowedColors.has(stringValue(sku.color_name)) && !allowedColors.has(stringValue(sku.color_code))) {
-      issues.push({ severity: "blocker", issueType: "sku_color_not_in_template", skuCode: stringValue(sku.sku_code), message: "SKU 颜色不在深绘字段模板选项中" })
+    } else if (allowedColors.size) {
+      const colorCandidates = [
+        stringValue(sku.color_name),
+        stringValue(sku.color_code),
+        ...deepdrawColorValue(sku.color_name).split(/[,，]/).map((part) => part.trim()).filter(Boolean),
+      ]
+      if (!colorCandidates.some((color) => allowedColors.has(color))) {
+        issues.push({ severity: "blocker", issueType: "sku_color_not_in_template", skuCode: stringValue(sku.sku_code), message: "SKU 颜色不在深绘字段模板选项中" })
+      }
     }
     if (!stringValue(sku.size_name)) {
       issues.push({ severity: "blocker", issueType: "sku_size_missing", skuCode: stringValue(sku.sku_code), message: "SKU 缺少尺码" })
-    } else if (allowedSizes.size && !allowedSizes.has(stringValue(sku.size_name)) && !allowedSizes.has(stringValue(sku.size_code))) {
-      issues.push({ severity: "blocker", issueType: "sku_size_not_in_template", skuCode: stringValue(sku.sku_code), message: "SKU 尺码不在深绘字段模板选项中" })
+    } else if (allowedSizes.size) {
+      const sizeCandidates = [
+        stringValue(sku.size_name),
+        stringValue(sku.size_code),
+        deepdrawSizeValue(sku.size_name),
+        deepdrawSizeValue(sku.size_code),
+      ].filter(Boolean)
+      if (!sizeCandidates.some((size) => allowedSizes.has(size))) {
+        issues.push({ severity: "blocker", issueType: "sku_size_not_in_template", skuCode: stringValue(sku.sku_code), message: "SKU 尺码不在深绘字段模板选项中" })
+      }
     }
     const draftPrice = numberValue(draft.retail_price)
     const skuPrice = numberValue(sku.price)
@@ -1278,11 +1828,13 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
 function productPayload(db: SyncPostgresDatabase, draftId: number) {
   const detail = serializeDraftDetail(db, draftId)
   const draft = detail.draft as JsonRecord
+  const sourceRows = sourceRowsForDraft(db, draft)
   return {
     code: stringValue(draft.spu_code),
     title: stringValue(draft.title),
     tradeId: stringValue(draft.trade_id),
     retailPrice: numberValue(draft.retail_price),
+    date: buildProductArchivePayloadDate(sourceRows),
     fields: (detail.fields as JsonRecord[])
       .filter((field) => stringValue(field.source_type) !== "skip")
       .map((field) => ({
@@ -1302,6 +1854,23 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
   }
 }
 
+function deepdrawBusinessResult(payload: unknown) {
+  const top = recordValue(payload)
+  const nested = top.response && typeof top.response === "object" && !Array.isArray(top.response)
+    ? recordValue(top.response)
+    : {}
+  const nestedBody = recordValue(nested.body)
+  const topBody = recordValue(top.body)
+  return {
+    status: numberValue(top.status),
+    code: numberValue(nested.code ?? top.code ?? top.responseCode),
+    state: stringValue(nested.response ?? top.response).toLowerCase(),
+    reason: stringValue(nested.reason ?? nested.message ?? top.reason ?? top.message),
+    requestId: stringValue(nested.requestId ?? top.requestId),
+    body: hasValue(nestedBody) ? nestedBody : topBody,
+  }
+}
+
 function writeSubmitLog(
   db: SyncPostgresDatabase,
   draftId: number,
@@ -1309,6 +1878,7 @@ function writeSubmitLog(
   result: Partial<DeepdrawResult> & { requestSummary?: unknown; productId?: string | null; responseReason?: string | null } = {},
 ) {
   const payload = recordValue(result.payload)
+  const business = deepdrawBusinessResult(payload)
   db.prepare(`
     insert into product_archive_submit_log (
       draft_id,
@@ -1327,33 +1897,37 @@ function writeSubmitLog(
     operation,
     jsonText(result.requestSummary ?? {}),
     result.status ?? null,
-    stringValue(payload.code ?? payload.responseCode) || null,
-    result.responseReason ?? (stringValue(payload.reason ?? payload.message) || null),
-    result.requestId ?? null,
-    result.productId ?? (stringValue(recordValue(payload.body).productId) || null),
+    stringValue(business.code) || null,
+    (result.responseReason ?? business.reason) || null,
+    (result.requestId ?? business.requestId) || null,
+    result.productId ?? (stringValue(business.body.productId) || null),
     jsonText(sanitizeDeepdrawLogPayload(payload)),
   )
 }
 
 function assertDeepdrawProductArchiveSuccess(result: DeepdrawResult, type: string) {
   const payload = recordValue(result.payload)
-  const response = recordValue(payload.response)
-  const outerStatus = numberValue(payload.status)
-  const responseCode = numberValue(response.code)
-  const responseState = stringValue(response.response).toLowerCase()
+  const business = deepdrawBusinessResult(payload)
+  const outerStatus = business.status ?? numberValue(result.status)
+  const responseCode = business.code
+  const responseState = business.state
   if (
     !result.ok
     || (outerStatus !== null && outerStatus !== 200)
     || (responseCode !== null && responseCode !== 10200)
     || (responseState && responseState !== "success")
   ) {
-    const reason = stringValue(response.reason ?? response.message ?? payload.reason ?? payload.message)
-    throw new Error(`DeepDraw ${type} failed: ${reason || result.status}`)
+    throw new Error(`DeepDraw ${type} failed: ${business.reason || result.status}`)
   }
 }
 
+function isDeepdrawProductNotFound(payload: unknown) {
+  const business = deepdrawBusinessResult(payload)
+  return business.code === 10404 || /未在服务器上发现|不存在|未找到|not\s*found/i.test(business.reason)
+}
+
 function duplicateRecords(payload: unknown) {
-  const body = recordValue(recordValue(payload).body)
+  const body = deepdrawBusinessResult(payload).body
   const candidates = [
     body.records,
     body.list,
@@ -1365,6 +1939,15 @@ function duplicateRecords(payload: unknown) {
     const array = arrayValue(candidate)
     if (array.length) return array
   }
+  if (hasValue(body) && (
+    stringValue(body.productId)
+    || stringValue(body.id)
+    || stringValue(body.productCode)
+    || stringValue(body.code)
+    || stringValue(body.title)
+  )) {
+    return [body]
+  }
   return []
 }
 
@@ -1375,15 +1958,16 @@ export async function checkDuplicateProductArchiveDraft(db: SyncPostgresDatabase
       projectRoot: options.projectRoot,
       tenantName: stringValue(draft.tenant_name),
     })
-    return await searchDeepdrawProductBasic({
+    return await getDeepdrawProduct({
       config,
       productCode: stringValue(draft.spu_code),
       timeoutMs: Number(process.env.DEEPDRAW_TIMEOUT_MS ?? 30000),
     }) as DeepdrawResult
   })
   const result = await runSearch()
-  assertDeepdrawProductArchiveSuccess(result, "search")
-  const records = duplicateRecords(result.payload)
+  const productNotFound = isDeepdrawProductNotFound(result.payload)
+  if (!productNotFound) assertDeepdrawProductArchiveSuccess(result, "search")
+  const records = productNotFound ? [] : duplicateRecords(result.payload)
   const duplicateFound = records.length > 0
   const summary = {
     duplicateFound,
@@ -1435,7 +2019,7 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
   })
   db.prepare("update product_archive_draft set status = 'submitting', updated_at = ?::timestamptz where id = ?").run(nowIso(), draftId)
   const result = await runCreate(payload)
-  const body = recordValue(recordValue(result.payload).body)
+  const body = deepdrawBusinessResult(result.payload).body
   const productId = stringValue(body.productId ?? body.id)
   db.transaction(() => {
     writeSubmitLog(db, draftId, "create", { ...result, requestSummary: summary, productId })
@@ -1466,7 +2050,7 @@ export async function readbackProductArchiveDraft(db: SyncPostgresDatabase, draf
     }) as DeepdrawResult
   })
   const result = await runReadback()
-  const body = recordValue(recordValue(result.payload).body)
+  const body = deepdrawBusinessResult(result.payload).body
   const titleMatches = !stringValue(draft.title) || !stringValue(body.title) || stringValue(draft.title) === stringValue(body.title)
   const status = result.ok && titleMatches ? "readback_verified" : "readback_mismatch"
   db.transaction(() => {

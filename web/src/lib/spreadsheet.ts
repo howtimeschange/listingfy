@@ -54,13 +54,21 @@ function cellText(value: ExcelJS.CellValue | unknown) {
   return coerced == null ? "" : String(coerced).trim()
 }
 
+function uniqueHeaderName(rawHeader: string, colNumber: number, seen: Map<string, number>) {
+  const base = rawHeader || `Column ${colNumber}`
+  const count = seen.get(base) ?? 0
+  seen.set(base, count + 1)
+  return count === 0 ? base : `${base} ${count + 1}`
+}
+
 function worksheetToRows(worksheet: ExcelJS.Worksheet): SpreadsheetRow[] {
   const headerRow = worksheet.getRow(1)
   const headers: string[] = []
-  headerRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-    const header = cellText(cell.value)
-    headers[colNumber - 1] = header || `Column ${colNumber}`
-  })
+  const seenHeaders = new Map<string, number>()
+  for (let colNumber = 1; colNumber <= worksheet.columnCount; colNumber += 1) {
+    const header = cellText(headerRow.getCell(colNumber).value)
+    headers[colNumber - 1] = uniqueHeaderName(header, colNumber, seenHeaders)
+  }
   if (headers.length === 0) return []
 
   const rows: SpreadsheetRow[] = []

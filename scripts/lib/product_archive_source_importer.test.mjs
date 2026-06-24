@@ -105,6 +105,186 @@ test("parseProductArchiveFieldRuleRows accepts DeepDraw field mapping workbook h
   assert.equal(rules[1].defaultValue, "1688、天猫、京东");
 });
 
+test("parseProductArchiveFieldRuleRows normalizes manual, skip, fixed, launch plan, and copywriting rules", () => {
+  const rules = parseProductArchiveFieldRuleRows([
+    {
+      "深绘字段": "产品标题",
+      "对应表格": "文案表",
+      "对应字段": "搜索标题",
+      "是否能MDM导入": "否",
+    },
+    {
+      "深绘字段": "货号",
+      "对应表格": "上市计划表",
+      "对应字段": "款号",
+      "是否能MDM导入": "是",
+    },
+    {
+      "深绘字段": "适用平台",
+      "对应表格": "固定",
+      "对应字段": "天猫",
+      "字段类型": "可提取字段",
+    },
+    {
+      "深绘字段": "兼容平台",
+      "对应表格": "固定",
+      "对应字段": "",
+      "备注": "1688、天猫、京东",
+    },
+    {
+      "深绘字段": "模特信息",
+      "对应表格": "人为判断",
+      "对应字段": "判断",
+    },
+    {
+      "深绘字段": "无需填写字段",
+      "对应表格": "不填",
+      "对应字段": "不填",
+    },
+    {
+      "深绘字段": "可选字段",
+      "对应表格": "可不填",
+    },
+  ]);
+
+  assert.deepEqual(rules.map((rule) => ({
+    deepdrawField: rule.deepdrawField,
+    sourceType: rule.sourceType,
+    sourceField: rule.sourceField,
+    defaultValue: rule.defaultValue,
+    blocking: rule.blocking,
+  })), [
+    {
+      deepdrawField: "产品标题",
+      sourceType: "copywriting",
+      sourceField: "搜索标题",
+      defaultValue: null,
+      blocking: false,
+    },
+    {
+      deepdrawField: "货号",
+      sourceType: "launch_plan",
+      sourceField: "款号",
+      defaultValue: null,
+      blocking: false,
+    },
+    {
+      deepdrawField: "适用平台",
+      sourceType: "fixed",
+      sourceField: null,
+      defaultValue: "天猫",
+      blocking: false,
+    },
+    {
+      deepdrawField: "兼容平台",
+      sourceType: "fixed",
+      sourceField: null,
+      defaultValue: "1688、天猫、京东",
+      blocking: false,
+    },
+    {
+      deepdrawField: "模特信息",
+      sourceType: "manual",
+      sourceField: null,
+      defaultValue: null,
+      blocking: false,
+    },
+    {
+      deepdrawField: "无需填写字段",
+      sourceType: "skip",
+      sourceField: null,
+      defaultValue: null,
+      blocking: false,
+    },
+    {
+      deepdrawField: "可选字段",
+      sourceType: "skip",
+      sourceField: null,
+      defaultValue: null,
+      blocking: false,
+    },
+  ]);
+});
+
+test("parseProductArchiveFieldRuleRows infers local workbook and fixed-value rows when table cells are sparse", () => {
+  const rules = parseProductArchiveFieldRuleRows([
+    {
+      "深绘字段": "微信视频小店标题",
+      "对应表格": "",
+      "对应字段": "内容平台标题",
+      "是否能MDM导入": "本地表格",
+    },
+    {
+      "深绘字段": "是否可定制",
+      "对应表格": "不可定制",
+      "是否能MDM导入": "固定",
+    },
+    {
+      "深绘字段": "售后服务承诺",
+      "对应表格": "不设置",
+      "是否能MDM导入": "不填",
+    },
+  ]);
+
+  assert.deepEqual(rules.map((rule) => ({
+    deepdrawField: rule.deepdrawField,
+    sourceType: rule.sourceType,
+    sourceField: rule.sourceField,
+    defaultValue: rule.defaultValue,
+    blocking: rule.blocking,
+  })), [
+    {
+      deepdrawField: "微信视频小店标题",
+      sourceType: "copywriting",
+      sourceField: "内容平台标题",
+      defaultValue: null,
+      blocking: false,
+    },
+    {
+      deepdrawField: "是否可定制",
+      sourceType: "fixed",
+      sourceField: null,
+      defaultValue: "不可定制",
+      blocking: false,
+    },
+    {
+      deepdrawField: "售后服务承诺",
+      sourceType: "fixed",
+      sourceField: null,
+      defaultValue: "不设置",
+      blocking: false,
+    },
+  ]);
+});
+
+test("parseProductArchiveFieldRuleRows detects real headers below duplicate workbook title columns", () => {
+  const rules = parseProductArchiveFieldRuleRows([
+    {
+      "Column 1": "",
+      "深绘字段对应关系整理": "深绘字段",
+      "深绘字段对应关系整理 2": "对应表格",
+      "深绘字段对应关系整理 3": "对应字段",
+      "深绘字段对应关系整理 4": "字段类型",
+      "深绘字段对应关系整理 5": "是否能MDM导入",
+      "深绘字段对应关系整理 6": "备注",
+    },
+    {
+      "Column 1": "通用字段",
+      "深绘字段对应关系整理": "产品标题",
+      "深绘字段对应关系整理 2": "文案表",
+      "深绘字段对应关系整理 3": "搜索标题",
+      "深绘字段对应关系整理 4": "可提取字段",
+      "深绘字段对应关系整理 5": "本地表格",
+      "深绘字段对应关系整理 6": "上市计划表也在云盘",
+    },
+  ]);
+
+  assert.equal(rules.length, 1);
+  assert.equal(rules[0].deepdrawField, "产品标题");
+  assert.equal(rules[0].sourceType, "copywriting");
+  assert.equal(rules[0].sourceField, "搜索标题");
+});
+
 test("normalizeProductArchiveSourceRows accepts launch plan workbook headers", () => {
   const rows = normalizeProductArchiveSourceRows("launch_plan", normalizeSpreadsheetRows([
     {
