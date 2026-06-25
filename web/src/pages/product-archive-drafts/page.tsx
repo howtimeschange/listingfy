@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { Link } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { CheckCircle2, Loader2, RefreshCw, Search, ShieldCheck } from "lucide-react"
+import { CheckCircle2, Loader2, RefreshCw, Search, Send, ShieldCheck } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
@@ -96,7 +96,7 @@ interface SourceImportResponse {
 
 type SourceImportType = "launch_plan" | "copywriting"
 
-type BatchDraftAction = "validate" | "check_duplicate" | "submit_preview"
+type BatchDraftAction = "validate" | "check_duplicate" | "submit_preview" | "submit_publish"
 
 const statusLabels: Record<string, string> = {
   draft: "草稿",
@@ -136,6 +136,7 @@ export default function ProductArchiveDraftsPage() {
   const [batchCodes, setBatchCodes] = useState("")
   const [mdmBatchDialogOpen, setMdmBatchDialogOpen] = useState(false)
   const [mdmSyncDialogOpen, setMdmSyncDialogOpen] = useState(false)
+  const [publishDialogOpen, setPublishDialogOpen] = useState(false)
   const [batchJobId, setBatchJobId] = useState<string | null>(null)
   const [selectedDraftIds, setSelectedDraftIds] = useState<Set<number>>(new Set())
   const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
@@ -247,6 +248,8 @@ export default function ProductArchiveDraftsPage() {
           await api.post<unknown>(`/product-archive-drafts/${draftId}/validate`)
         } else if (action === "check_duplicate") {
           await api.post<unknown>(`/product-archive-drafts/${draftId}/check-duplicate`)
+        } else if (action === "submit_publish") {
+          await api.post<unknown>(`/product-archive-drafts/${draftId}/submit`, { dryRun: false })
         } else {
           await api.post<unknown>(`/product-archive-drafts/${draftId}/submit`, { dryRun: true })
         }
@@ -254,9 +257,19 @@ export default function ProductArchiveDraftsPage() {
       return { action, count: draftIds.length }
     },
     onSuccess: (result) => {
-      const label = result.action === "validate" ? "校验" : result.action === "check_duplicate" ? "查重" : "提交预览"
+      const label = result.action === "validate"
+        ? "校验"
+        : result.action === "check_duplicate"
+          ? "查重"
+          : result.action === "submit_publish"
+            ? "发布到深绘"
+            : "提交预览"
       toast.success(`已完成 ${formatNumber(result.count)} 个草稿的${label}`)
+      if (result.action === "submit_publish") setSelectedDraftIds(new Set())
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "批量操作失败")
     },
   })
 
@@ -340,6 +353,42 @@ export default function ProductArchiveDraftsPage() {
               <CheckCircle2 className="size-4" />
               批量提交预览{selectedDrafts.length ? ` ${selectedDrafts.length}` : ""}
             </Button>
+            <Dialog open={publishDialogOpen} onOpenChange={setPublishDialogOpen}>
+              <DialogTrigger asChild>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={selectedDrafts.length === 0 || batchDraftAction.isPending}
+                >
+                  {batchDraftAction.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+                  批量发布到深绘{selectedDrafts.length ? ` ${selectedDrafts.length}` : ""}
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>批量发布到深绘</DialogTitle>
+                  <DialogDescription>
+                    将对已选择的 {formatNumber(selectedDrafts.length)} 个草稿执行真实深绘建档。系统会逐个查重、提交并回读校验。
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter>
+                  <Button type="button" variant="outline" onClick={() => setPublishDialogOpen(false)}>
+                    取消
+                  </Button>
+                  <Button
+                    type="button"
+                    disabled={selectedDrafts.length === 0 || batchDraftAction.isPending}
+                    onClick={() => {
+                      setPublishDialogOpen(false)
+                      runBatchAction("submit_publish")
+                    }}
+                  >
+                    {batchDraftAction.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+                    确认发布到深绘
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
           </>
         }
       />

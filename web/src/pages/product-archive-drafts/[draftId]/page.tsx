@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { Link, useParams } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ArrowLeft, CheckCircle2, ClipboardCheck, ListTree, Loader2, RefreshCw, Save, Search, Sparkles } from "lucide-react"
+import { ArrowLeft, CheckCircle2, ClipboardCheck, ListTree, Loader2, RefreshCw, Save, Search, Send, Sparkles } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
@@ -199,6 +199,7 @@ export default function ProductArchiveDraftDetailPage() {
   const detail = useDraftDetail(draftId)
   const [fieldValues, setFieldValues] = useState<Record<number, string>>({})
   const [tradeDialogOpen, setTradeDialogOpen] = useState(false)
+  const [publishDialogOpen, setPublishDialogOpen] = useState(false)
   const [tradeSearch, setTradeSearch] = useState("")
   const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null)
   const debouncedTradeSearch = useDebounce(tradeSearch, 250)
@@ -268,6 +269,18 @@ export default function ProductArchiveDraftDetailPage() {
     onSuccess: () => {
       toast.success("已生成提交预览")
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+    },
+  })
+
+  const publishSubmit = useMutation({
+    mutationFn: () => api.post<unknown>(`/product-archive-drafts/${draftId}/submit`, { dryRun: false }),
+    onSuccess: () => {
+      toast.success("已发布到深绘并完成回读校验")
+      setPublishDialogOpen(false)
+      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "发布到深绘失败")
     },
   })
 
@@ -378,6 +391,31 @@ export default function ProductArchiveDraftDetailPage() {
           {dryRunSubmit.isPending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
           提交预览
         </Button>
+        <Dialog open={publishDialogOpen} onOpenChange={setPublishDialogOpen}>
+          <DialogTrigger asChild>
+            <Button type="button" size="sm" disabled={publishSubmit.isPending}>
+              {publishSubmit.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+              确认发布到深绘
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>确认发布到深绘</DialogTitle>
+              <DialogDescription>
+                将对款号 {draft.spu_code} 执行真实深绘建档。系统会先查重，再提交并回读校验。
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setPublishDialogOpen(false)}>
+                取消
+              </Button>
+              <Button type="button" disabled={publishSubmit.isPending} onClick={() => publishSubmit.mutate()}>
+                {publishSubmit.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+                确认发布到深绘
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </PageHeader>
 
       <div className="grid gap-3 md:grid-cols-4">

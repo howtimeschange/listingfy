@@ -235,6 +235,9 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /批量校验/);
   assert.match(draftListPage, /批量查重/);
   assert.match(draftListPage, /批量提交预览/);
+  assert.match(draftListPage, /批量发布到深绘/);
+  assert.match(draftListPage, /submit_publish/);
+  assert.match(draftListPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/submit`, \{ dryRun: false \}\)/s);
   assert.match(draftListPage, /ImportDialog/);
   assert.doesNotMatch(draftListPage, /导入字段对应关系/);
   assert.match(draftListPage, /先同步 MDM 款号，再导入上市计划表和标准文案表/);
@@ -271,6 +274,9 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/ai-fill`/s);
   assert.match(draftDetailPage, /AI 推荐补齐空字段/);
   assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/submit`/s);
+  assert.match(draftDetailPage, /确认发布到深绘/);
+  assert.match(draftDetailPage, /publishSubmit/);
+  assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/submit`, \{ dryRun: false \}\)/s);
 
   assert.match(metadataPage, /深绘类目字段/);
   assert.match(metadataPage, /api\.get<.*>\(`\/deepdraw-metadata\/trades\?/s);
