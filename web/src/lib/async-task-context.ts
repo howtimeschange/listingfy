@@ -12,6 +12,9 @@ export interface AsyncTaskJob {
   total_count: number
   completed_count: number
   failed_count: number
+  created_at?: string | null
+  started_at?: string | null
+  finished_at?: string | null
   items?: AsyncTaskJobItem[]
   downloadUrl?: string
   fileName?: string
@@ -38,6 +41,8 @@ export interface AddTaskInput {
 
 export interface AsyncTaskContextValue {
   tasks: AsyncTaskRecord[]
+  activeTaskCount: number
+  unreadCompletedCount: number
   addTask: (input: AddTaskInput) => void
   getTaskByJobId: (jobId: string | null | undefined) => AsyncTaskRecord | null
   openTaskCenter: () => void

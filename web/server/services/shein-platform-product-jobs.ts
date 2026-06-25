@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import ExcelJS from "exceljs"
@@ -56,6 +56,14 @@ const EXPORT_PAGE_SIZE = 200
 const SHEET_ROW_LIMIT = 1_000_000
 const SHEET_WRITE_CHUNK = 50_000
 const EXPORT_DIR = path.join(os.tmpdir(), "listingify-platform-product-exports")
+const SHEIN_DETAIL_RATE_LIMIT_WINDOW_LIMIT = 800
+const SHEIN_DETAIL_RATE_LIMIT_WINDOW_MS = 1800 * 1000
+const DEFAULT_DETAIL_SYNC_INTERVAL_MS = Math.ceil(SHEIN_DETAIL_RATE_LIMIT_WINDOW_MS / SHEIN_DETAIL_RATE_LIMIT_WINDOW_LIMIT) + 250
+const MAX_DETAIL_SYNC_INTERVAL_MS = 60_000
+const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 60_000
+const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60_000
+const JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+const JOB_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
 
 const syncJobs = new Map<string, PlatformProductJob>()
 const exportJobs = new Map<string, PlatformProductJob>()
@@ -64,6 +72,10 @@ let running = false
 
 function nowIso() {
   return new Date().toISOString()
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function snapshot(job: PlatformProductJob) {
@@ -83,6 +95,66 @@ function stringValue(value: unknown) {
 
 function recordValue(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {}
+}
+
+function boundedDelayMs(value: unknown, fallback: number, min: number, max: number) {
+  const number = Number(value ?? fallback)
+  if (!Number.isFinite(number)) return fallback
+  return Math.max(min, Math.min(max, Math.floor(number)))
+}
+
+export function platformProductDetailSyncIntervalMs(payload: unknown = {}) {
+  const object = recordValue(payload)
+  return boundedDelayMs(
+    object.detailIntervalMs ?? object.detail_interval_ms ?? object.syncIntervalMs ?? object.sync_interval_ms,
+    DEFAULT_DETAIL_SYNC_INTERVAL_MS,
+    DEFAULT_DETAIL_SYNC_INTERVAL_MS,
+    MAX_DETAIL_SYNC_INTERVAL_MS,
+  )
+}
+
+function platformProductRateLimitCooldownMs(payload: unknown = {}) {
+  const object = recordValue(payload)
+  return boundedDelayMs(
+    object.rateLimitCooldownMs ?? object.rate_limit_cooldown_ms,
+    DEFAULT_RATE_LIMIT_COOLDOWN_MS,
+    DEFAULT_RATE_LIMIT_COOLDOWN_MS,
+    MAX_RATE_LIMIT_COOLDOWN_MS,
+  )
+}
+
+export function isSheinRateLimitMessage(value: unknown) {
+  const message = value instanceof Error ? value.message : stringValue(value)
+  return /QPS限流|限流ID|总阈值|rate limit|too many requests/i.test(message)
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function jobFinishedMs(job: PlatformProductJob) {
+  if (!job.finished_at) return null
+  const value = Date.parse(job.finished_at)
+  return Number.isFinite(value) ? value : null
+}
+
+function removeJobFile(job: PlatformProductJob) {
+  if (!job.filePath) return
+  void unlink(job.filePath).catch(() => {})
+}
+
+export function pruneExpiredPlatformProductJobs(now = Date.now()) {
+  let removed = 0
+  for (const jobs of [syncJobs, exportJobs]) {
+    for (const [id, job] of jobs) {
+      const finishedMs = jobFinishedMs(job)
+      if (finishedMs == null || now - finishedMs < JOB_RETENTION_MS) continue
+      removeJobFile(job)
+      jobs.delete(id)
+      removed += 1
+    }
+  }
+  return removed
 }
 
 function responsePayload(result: unknown) {
@@ -130,6 +202,7 @@ function getJobMap(type: PlatformProductJobType) {
 }
 
 function getInternalJob(type: PlatformProductJobType, id: string) {
+  pruneExpiredPlatformProductJobs()
   return getJobMap(type).get(id) ?? null
 }
 
@@ -157,6 +230,7 @@ function markJobFailed(job: PlatformProductJob, error: unknown) {
 async function processSyncJob(job: PlatformProductJob) {
   const codes = detailSyncCodes(job.payload)
   if (codes.length) {
+    const detailIntervalMs = platformProductDetailSyncIntervalMs(job.payload)
     job.total_count = codes.length
     job.items = codes.map((code) => ({
       spu_code: code,
@@ -166,7 +240,11 @@ async function processSyncJob(job: PlatformProductJob) {
       started_at: null,
       finished_at: null,
     }))
-    for (const item of job.items) {
+    for (let index = 0; index < job.items.length; index += 1) {
+      if (index > 0 && detailIntervalMs > 0) {
+        await wait(detailIntervalMs)
+      }
+      const item = job.items[index]
       item.status = "running"
       item.started_at = nowIso()
       try {
@@ -178,9 +256,14 @@ async function processSyncJob(job: PlatformProductJob) {
         item.result = result.persistence
         job.completed_count += 1
       } catch (error) {
+        const message = errorMessage(error)
         item.status = "failed"
-        item.error = error instanceof Error ? error.message : String(error)
+        item.error = message
         job.failed_count += 1
+        const rateLimitCooldownMs = isSheinRateLimitMessage(message) ? platformProductRateLimitCooldownMs(job.payload) : 0
+        if (rateLimitCooldownMs > 0) {
+          await wait(rateLimitCooldownMs)
+        }
       } finally {
         item.finished_at = nowIso()
       }
@@ -330,6 +413,7 @@ async function processLoop() {
 }
 
 function schedule(job: PlatformProductJob) {
+  pruneExpiredPlatformProductJobs()
   pending.push(job.id)
   queueMicrotask(() => {
     void processLoop()
@@ -404,3 +488,8 @@ export async function readPlatformProductExportFile(id: string) {
     buffer: await readFile(job.filePath),
   }
 }
+
+const cleanupTimer = setInterval(() => {
+  pruneExpiredPlatformProductJobs()
+}, JOB_CLEANUP_INTERVAL_MS)
+cleanupTimer.unref?.()

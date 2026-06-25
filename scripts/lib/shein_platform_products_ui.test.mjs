@@ -247,11 +247,12 @@ test("SHEIN platform products page exposes sale sites, filters, and export", asy
 });
 
 test("SHEIN platform products route and page use async jobs for product sync and export", async () => {
-  const [page, route, taskContext, taskCenter] = await Promise.all([
+  const [page, route, taskContext, taskCenter, header] = await Promise.all([
     fileText(PAGE_FILE),
     fileText(path.join(PROJECT_ROOT, "web/server/routes/shein-platform-products.ts")),
     fileText(path.join(PROJECT_ROOT, "web/src/lib/async-task-context.ts")),
     fileText(path.join(PROJECT_ROOT, "web/src/components/async-task-center.tsx")),
+    fileText(path.join(PROJECT_ROOT, "web/src/components/layout/app-header.tsx")),
   ]);
 
   assert.match(route, /post\("\/sync-jobs"/);
@@ -273,8 +274,20 @@ test("SHEIN platform products route and page use async jobs for product sync and
   assert.match(taskContext, /"shein_platform_product_sync"/);
   assert.match(taskContext, /"shein_platform_product_export"/);
   assert.match(taskContext, /downloadUrl\?: string/);
+  assert.match(taskContext, /unreadCompletedCount:\s*number/);
   assert.match(taskCenter, /downloadUrl/);
   assert.match(taskCenter, /下载文件/);
+  assert.match(taskCenter, /TASK_RETENTION_MS\s*=\s*7\s*\*\s*24\s*\*\s*60\s*\*\s*60\s*\*\s*1000/);
+  assert.match(taskCenter, /TASK_PAGE_SIZE\s*=\s*5/);
+  assert.match(taskCenter, /unreadCompletedCount > 0/);
+  assert.match(taskCenter, /bg-\[#d84f4f\]/);
+  assert.match(taskCenter, /currentPageTasks/);
+  assert.match(taskCenter, /setPageIndex/);
+  assert.match(taskCenter, /上一页/);
+  assert.match(taskCenter, /下一页/);
+  assert.match(taskCenter, /window\.setInterval\(\(\) => \{/);
+
+  assert.match(header, /<Breadcrumb[\s\S]+<\/Breadcrumb>[\s\S]+<div className="flex items-center gap-2">[\s\S]+<AsyncTaskTrigger \/>/);
 });
 
 test("SHEIN platform products detail page splits product and site views while widening dialogs", async () => {

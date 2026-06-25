@@ -593,6 +593,23 @@ test("SHEIN platform product list summary includes every SKC with nested SKU row
   assert.match(page, /<ProductThumb src=\{skc\.imageUrl\} alt=\{skc\.skcName\} size="xs" \/>/);
 });
 
+test("SHEIN platform product async detail sync throttles requests and cools down on QPS limits", async () => {
+  const jobService = await fileText(JOB_SERVICE_FILE);
+
+  assert.match(jobService, /SHEIN_DETAIL_RATE_LIMIT_WINDOW_LIMIT\s*=\s*800/);
+  assert.match(jobService, /SHEIN_DETAIL_RATE_LIMIT_WINDOW_MS\s*=\s*1800\s*\*\s*1000/);
+  assert.match(jobService, /DEFAULT_DETAIL_SYNC_INTERVAL_MS\s*=\s*Math\.ceil\(SHEIN_DETAIL_RATE_LIMIT_WINDOW_MS \/ SHEIN_DETAIL_RATE_LIMIT_WINDOW_LIMIT\) \+ 250/);
+  assert.match(jobService, /platformProductDetailSyncIntervalMs/);
+  assert.match(jobService, /detailIntervalMs/);
+  assert.match(jobService, /if \(index > 0 && detailIntervalMs > 0\)/);
+  assert.match(jobService, /await wait\(detailIntervalMs\)/);
+  assert.match(jobService, /isSheinRateLimitMessage/);
+  assert.match(jobService, /QPS限流/);
+  assert.match(jobService, /限流ID/);
+  assert.match(jobService, /总阈值/);
+  assert.match(jobService, /await wait\(rateLimitCooldownMs\)/);
+});
+
 test("SHEIN platform product account key resolver keeps historical platform rows visible", async () => {
   const service = await importService();
   const calls = [];

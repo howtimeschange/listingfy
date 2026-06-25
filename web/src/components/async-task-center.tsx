@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
-import { Activity, AlertCircle, CheckCircle2, Clock, Download, Trash2 } from "lucide-react"
+import { Activity, AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, Clock, Download, Trash2 } from "lucide-react"
 import { api } from "@/lib/api-client"
 import {
   AsyncTaskContext,
@@ -22,6 +22,11 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 
 const TASK_STORAGE_KEY = "listingify.asyncTasks.v1"
+const TASK_SEEN_STORAGE_KEY = "listingify.asyncTasks.lastSeenAt.v1"
+const TASK_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+const TASK_CLEANUP_INTERVAL_MS = 10 * 60 * 1000
+const TASK_PAGE_SIZE = 5
+const MAX_STORED_TASKS = 100
 
 function readStoredTasks() {
   if (typeof window === "undefined") return []
@@ -29,10 +34,37 @@ function readStoredTasks() {
     const raw = window.localStorage.getItem(TASK_STORAGE_KEY)
     if (!raw) return []
     const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed as AsyncTaskRecord[] : []
+    return Array.isArray(parsed) ? retainedTasks(parsed as AsyncTaskRecord[]) : []
   } catch {
     return []
   }
+}
+
+function readStoredSeenAt() {
+  if (typeof window === "undefined") return ""
+  return window.localStorage.getItem(TASK_SEEN_STORAGE_KEY) ?? ""
+}
+
+function timeValue(value?: string | null) {
+  const time = Date.parse(value ?? "")
+  return Number.isFinite(time) ? time : 0
+}
+
+function taskCreatedTime(task: AsyncTaskRecord) {
+  return timeValue(task.createdAt) || timeValue(task.job?.created_at)
+}
+
+function taskCompletedTime(task: AsyncTaskRecord) {
+  return timeValue(task.job?.finished_at)
+}
+
+function isTaskExpired(task: AsyncTaskRecord, now = Date.now()) {
+  const createdAt = taskCreatedTime(task)
+  return Boolean(createdAt && now - createdAt > TASK_RETENTION_MS)
+}
+
+function retainedTasks(tasks: AsyncTaskRecord[], now = Date.now()) {
+  return tasks.filter((task) => !isTaskExpired(task, now)).slice(0, MAX_STORED_TASKS)
 }
 
 function taskProgress(job?: AsyncTaskJob | null) {
@@ -44,17 +76,40 @@ function activeTaskCount(tasks: AsyncTaskRecord[]) {
   return tasks.filter((task) => task.job?.status !== "completed").length
 }
 
+function unreadCompletedTaskCount(tasks: AsyncTaskRecord[], lastSeenAt: string) {
+  const lastSeenTime = timeValue(lastSeenAt)
+  return tasks.filter((task) => {
+    if (task.job?.status !== "completed") return false
+    const completedAt = taskCompletedTime(task) || taskCreatedTime(task)
+    return completedAt > lastSeenTime
+  }).length
+}
+
 function failedItems(task: AsyncTaskRecord) {
   return task.job?.items?.filter((item) => item.status === "failed") ?? []
 }
 
 export function AsyncTaskProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<AsyncTaskRecord[]>(() => readStoredTasks())
+  const [lastSeenAt, setLastSeenAt] = useState(() => readStoredSeenAt())
   const [open, setOpen] = useState(false)
+  const currentActiveTaskCount = useMemo(() => activeTaskCount(tasks), [tasks])
+  const unreadCompletedCount = useMemo(
+    () => unreadCompletedTaskCount(tasks, lastSeenAt),
+    [lastSeenAt, tasks],
+  )
 
   useEffect(() => {
-    window.localStorage.setItem(TASK_STORAGE_KEY, JSON.stringify(tasks.slice(0, 30)))
+    const retained = retainedTasks(tasks)
+    window.localStorage.setItem(TASK_STORAGE_KEY, JSON.stringify(retained))
   }, [tasks])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setTasks((current) => retainedTasks(current))
+    }, TASK_CLEANUP_INTERVAL_MS)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const refreshTasks = useCallback(async () => {
     const activeTasks = tasks.filter((task) => task.job?.status !== "completed")
@@ -78,12 +133,18 @@ export function AsyncTaskProvider({ children }: { children: ReactNode }) {
   }, [tasks])
 
   useEffect(() => {
-    if (activeTaskCount(tasks) === 0) return
+    if (currentActiveTaskCount === 0) return
     const timer = window.setInterval(() => {
       void refreshTasks()
     }, 1500)
     return () => window.clearInterval(timer)
-  }, [refreshTasks, tasks])
+  }, [currentActiveTaskCount, refreshTasks])
+
+  const markTasksSeen = useCallback(() => {
+    const seenAt = new Date().toISOString()
+    setLastSeenAt(seenAt)
+    window.localStorage.setItem(TASK_SEEN_STORAGE_KEY, seenAt)
+  }, [])
 
   const addTask = useCallback((input: AddTaskInput) => {
     const endpoint = input.endpoint ?? `/product-archive-drafts/batch-jobs/${input.job.id}`
@@ -98,18 +159,29 @@ export function AsyncTaskProvider({ children }: { children: ReactNode }) {
         job: input.job,
         lastError: null,
       }
-      return [record, ...current.filter((task) => task.id !== input.job.id)].slice(0, 30)
+      return retainedTasks([record, ...current.filter((task) => task.id !== input.job.id)])
     })
+  }, [])
+
+  const openTaskCenter = useCallback(() => {
+    setOpen(true)
+    markTasksSeen()
+  }, [markTasksSeen])
+
+  const closeTaskCenter = useCallback(() => {
+    setOpen(false)
   }, [])
 
   const value = useMemo<AsyncTaskContextValue>(() => ({
     tasks,
+    activeTaskCount: currentActiveTaskCount,
+    unreadCompletedCount,
     addTask,
     getTaskByJobId: (jobId) => tasks.find((task) => task.id === jobId) ?? null,
-    openTaskCenter: () => setOpen(true),
-    closeTaskCenter: () => setOpen(false),
+    openTaskCenter,
+    closeTaskCenter,
     removeTask: (taskId) => setTasks((current) => current.filter((task) => task.id !== taskId)),
-  }), [addTask, tasks])
+  }), [addTask, closeTaskCenter, currentActiveTaskCount, openTaskCenter, tasks, unreadCompletedCount])
 
   return (
     <AsyncTaskContext.Provider value={value}>
@@ -120,8 +192,9 @@ export function AsyncTaskProvider({ children }: { children: ReactNode }) {
 }
 
 export function AsyncTaskTrigger() {
-  const { tasks, openTaskCenter } = useAsyncTasks()
-  const activeCount = activeTaskCount(tasks)
+  const { activeTaskCount, unreadCompletedCount, openTaskCenter } = useAsyncTasks()
+  const badgeCount = unreadCompletedCount > 0 ? unreadCompletedCount : activeTaskCount
+  const badgeClass = unreadCompletedCount > 0 ? "bg-[#d84f4f]" : "bg-[var(--brand)]"
   return (
     <Button
       type="button"
@@ -133,9 +206,9 @@ export function AsyncTaskTrigger() {
     >
       <Activity className="size-4" />
       异步任务
-      {activeCount > 0 ? (
-        <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-[var(--brand)] px-1 text-center text-[10px] font-semibold text-white">
-          {activeCount}
+      {badgeCount > 0 ? (
+        <span className={`absolute -right-1 -top-1 min-w-5 rounded-full px-1 text-center text-[10px] font-semibold text-white ${badgeClass}`}>
+          {badgeCount}
         </span>
       ) : null}
     </Button>
@@ -153,13 +226,18 @@ function AsyncTaskDrawer({
   tasks: AsyncTaskRecord[]
   onRemoveTask: (taskId: string) => void
 }) {
+  const [pageIndex, setPageIndex] = useState(0)
+  const totalPages = Math.max(1, Math.ceil(tasks.length / TASK_PAGE_SIZE))
+  const visiblePageIndex = Math.min(pageIndex, totalPages - 1)
+  const currentPageTasks = tasks.slice(visiblePageIndex * TASK_PAGE_SIZE, visiblePageIndex * TASK_PAGE_SIZE + TASK_PAGE_SIZE)
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-[420px] sm:max-w-[420px]">
         <SheetHeader>
           <SheetTitle>异步任务</SheetTitle>
           <SheetDescription>
-            统一查看 MDM 同步、批量建档、导出等后台任务进度。
+            统一查看 MDM 同步、批量建档、导出等后台任务进度，保留最近 7 天。
           </SheetDescription>
         </SheetHeader>
         <ScrollArea className="min-h-0 flex-1 px-4 pb-4">
@@ -168,7 +246,7 @@ function AsyncTaskDrawer({
               <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
                 暂无后台任务。
               </div>
-            ) : tasks.map((task) => {
+            ) : currentPageTasks.map((task) => {
               const job = task.job
               const failures = failedItems(task)
               const done = job?.status === "completed"
@@ -237,6 +315,33 @@ function AsyncTaskDrawer({
             })}
           </div>
         </ScrollArea>
+        {tasks.length > TASK_PAGE_SIZE ? (
+          <div className="flex items-center justify-between border-t px-4 py-3 text-xs text-muted-foreground">
+            <span>第 {visiblePageIndex + 1} / {totalPages} 页 · 共 {formatNumber(tasks.length)} 个任务</span>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                disabled={visiblePageIndex === 0}
+                onClick={() => setPageIndex((current) => Math.max(0, Math.min(current, totalPages - 1) - 1))}
+              >
+                <ChevronLeft className="size-3.5" />
+                上一页
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                disabled={visiblePageIndex >= totalPages - 1}
+                onClick={() => setPageIndex((current) => Math.min(totalPages - 1, Math.min(current, totalPages - 1) + 1))}
+              >
+                下一页
+                <ChevronRight className="size-3.5" />
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </SheetContent>
     </Sheet>
   )

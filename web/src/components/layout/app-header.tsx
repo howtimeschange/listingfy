@@ -52,8 +52,6 @@ export function AppHeader() {
     <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur-xl md:px-6">
       <SidebarTrigger className="-ml-1" />
       <Separator orientation="vertical" className="h-4" />
-      <AsyncTaskTrigger />
-      <Separator orientation="vertical" className="h-4" />
       <Breadcrumb className="min-w-0 flex-1">
         <BreadcrumbList>
           <BreadcrumbItem>
@@ -64,6 +62,8 @@ export function AppHeader() {
         </BreadcrumbList>
       </Breadcrumb>
       <div className="flex items-center gap-2">
+        <AsyncTaskTrigger />
+        <Separator orientation="vertical" className="hidden h-4 md:block" />
         <span className="hidden text-sm text-muted-foreground md:inline">
           {user?.display_name ?? user?.username}
         </span>
