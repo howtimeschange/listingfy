@@ -15,6 +15,7 @@ const SERVICE_FILE = path.join(PROJECT_ROOT, "web/server/services/shein-platform
 const JOB_SERVICE_FILE = path.join(PROJECT_ROOT, "web/server/services/shein-platform-product-jobs.ts");
 const SERVER_INDEX = path.join(PROJECT_ROOT, "web/server/index.ts");
 const PAGE_FILE = path.join(PROJECT_ROOT, "web/src/pages/shein-platform-products/page.tsx");
+const TASK_CENTER_FILE = path.join(PROJECT_ROOT, "web/src/components/async-task-center.tsx");
 const JOB_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/027_shein_platform_product_jobs.sql");
 
 async function fileText(file) {
@@ -133,6 +134,37 @@ test("SHEIN platform product jobs start after the enqueue response can flush", a
   assert.doesNotMatch(jobService, /queueMicrotask\(\(\) => \{\s*void processLoop\(\)/);
   assert.match(jobService, /await wait\(0\)/);
   assert.match(jobService, /await savePlatformProductJob\(job\)/);
+});
+
+test("SHEIN platform product export streams workbook files with progress heartbeats", async () => {
+  const jobService = await fileText(JOB_SERVICE_FILE);
+
+  assert.match(jobService, /async function writeWorkbookFile/);
+  assert.match(jobService, /ExcelJS\.stream\.xlsx\.WorkbookWriter/);
+  assert.match(jobService, /headerRow\.commit\(\)/);
+  assert.match(jobService, /outputRow\.commit\(\)/);
+  assert.match(jobService, /await workbook\.commit\(\)/);
+  assert.match(jobService, /writeWorkbookFile[\s\S]*await savePlatformProductJob\(job\)/);
+  assert.match(jobService, /processExportJob[\s\S]*await writeWorkbookFile\(platformProductWorkbookSheets\(rows\), filePath, job\)/);
+  assert.doesNotMatch(jobService, /workbook\.xlsx\.writeBuffer\(\)/);
+  assert.doesNotMatch(jobService, /Buffer\.from\(buffer\)/);
+  assert.doesNotMatch(jobService, /writeFile\(filePath/);
+});
+
+test("SHEIN platform product export keeps final workbook generation visible and recoverable", async () => {
+  const [jobService, taskCenter] = await Promise.all([
+    fileText(JOB_SERVICE_FILE),
+    fileText(TASK_CENTER_FILE),
+  ]);
+
+  assert.match(jobService, /const RUNNING_JOB_STALE_MS\s*=/);
+  assert.match(jobService, /status = 'running'[\s\S]*updated_at < \?/);
+  assert.match(jobService, /job\.status !== "completed"[\s\S]*schedulePlatformProductJobs\(\)/);
+  assert.match(jobService, /spu_code: "读取平台商品数据"/);
+  assert.match(jobService, /job\.items\[0\]\.spu_code = "生成 Excel 文件"/);
+  assert.match(jobService, /job\.completed_count = rows\.length/);
+  assert.match(taskCenter, /if \(job\.status !== "completed"\) return Math\.min\(99, progress\)/);
+  assert.match(taskCenter, /当前：\{runningItem\.spu_code\}/);
 });
 
 test("SHEIN platform products backend exposes durable sync and lifecycle actions", async () => {

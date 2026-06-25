@@ -1,6 +1,6 @@
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import { randomUUID } from "node:crypto"
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises"
+import { mkdir, readFile, unlink } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import ExcelJS from "exceljs"
@@ -69,6 +69,7 @@ const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 60_000
 const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60_000
 const JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const JOB_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
+const RUNNING_JOB_STALE_MS = 15 * 60 * 1000
 
 let running = false
 
@@ -350,11 +351,17 @@ export function loadPlatformProductJob(type: PlatformProductJobType, id: string,
 
 function claimNextPlatformProductJob(db: SyncPostgresDatabase = getDb()) {
   const now = nowIso()
+  const staleBefore = new Date(Date.now() - RUNNING_JOB_STALE_MS).toISOString()
   const row = db.prepare(`
     with next_job as (
       select id
       from shein_platform_product_job
       where status = 'queued'
+        or (
+          status = 'running'
+          and finished_at is null
+          and updated_at < ?
+        )
       order by created_at asc
       limit 1
       for update skip locked
@@ -366,7 +373,7 @@ function claimNextPlatformProductJob(db: SyncPostgresDatabase = getDb()) {
     from next_job
     where job.id = next_job.id
     returning job.*
-  `).get(now, now) as JsonRecord | undefined
+  `).get(staleBefore, now, now) as JsonRecord | undefined
   return row ? jobFromRow(row) : null
 }
 
@@ -550,26 +557,46 @@ function sheetNameWithIndex(baseName: string, index: number, total: number) {
   return `${safeBase.slice(0, Math.max(1, maxBaseLength))}${suffix}`
 }
 
+type WorksheetWriter = {
+  addRow(values: unknown[]): { commit: () => void }
+  commit: () => void
+}
+
 async function appendRowsToWorksheet(
-  worksheet: ExcelJS.Worksheet,
+  worksheet: WorksheetWriter,
   columns: string[],
   rows: SpreadsheetRow[],
+  job: PlatformProductJob,
+  sheetName: string,
   start = 0,
   end = rows.length,
 ) {
-  worksheet.addRow(columns)
+  const headerRow = worksheet.addRow(columns)
+  headerRow.commit()
   for (let index = start; index < end; index += SHEET_WRITE_CHUNK) {
     const chunkEnd = Math.min(index + SHEET_WRITE_CHUNK, end)
     for (let rowIndex = index; rowIndex < chunkEnd; rowIndex += 1) {
       const row = rows[rowIndex]
-      worksheet.addRow(columns.map((column) => row[column] ?? ""))
+      const outputRow = worksheet.addRow(columns.map((column) => row[column] ?? ""))
+      outputRow.commit()
     }
+    job.items[0].result = {
+      stage: "generating_workbook",
+      sheetName,
+      writtenRows: chunkEnd,
+      totalRows: end,
+    }
+    await savePlatformProductJob(job)
     await wait(0)
   }
 }
 
-async function workbookBuffer(sheets: SpreadsheetSheet[]) {
-  const workbook = new ExcelJS.Workbook()
+async function writeWorkbookFile(sheets: SpreadsheetSheet[], filePath: string, job: PlatformProductJob) {
+  const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+    filename: filePath,
+    useStyles: false,
+    useSharedStrings: false,
+  })
   for (const sheet of sheets) {
     const rows = sheet.rows
     if (!rows.length) continue
@@ -579,11 +606,13 @@ async function workbookBuffer(sheets: SpreadsheetSheet[]) {
       const start = index * SHEET_ROW_LIMIT
       const end = Math.min(start + SHEET_ROW_LIMIT, rows.length)
       const worksheet = workbook.addWorksheet(sheetNameWithIndex(sheet.name, index, chunkCount))
-      await appendRowsToWorksheet(worksheet, columns, rows, start, end)
+      await appendRowsToWorksheet(worksheet, columns, rows, job, sheet.name, start, end)
+      worksheet.commit()
     }
+    await savePlatformProductJob(job)
     await wait(0)
   }
-  return workbook.xlsx.writeBuffer()
+  await workbook.commit()
 }
 
 async function fetchExportRows(job: PlatformProductJob) {
@@ -612,7 +641,13 @@ async function fetchExportRows(job: PlatformProductJob) {
 }
 
 async function processExportJob(job: PlatformProductJob) {
-  job.items = [{ spu_code: "EXPORT", status: "running", error: null, result: null, started_at: nowIso(), finished_at: null }]
+  job.completed_count = 0
+  job.failed_count = 0
+  job.fileName = undefined
+  job.filePath = undefined
+  job.downloadUrl = undefined
+  job.error = null
+  job.items = [{ spu_code: "读取平台商品数据", status: "running", error: null, result: null, started_at: nowIso(), finished_at: null }]
   await savePlatformProductJob(job)
   const rows = await fetchExportRows(job)
   if (!rows.length) {
@@ -621,11 +656,14 @@ async function processExportJob(job: PlatformProductJob) {
   const fileName = `SHEIN平台商品列表-${fileSafeTimestamp()}.xlsx`
   const filePath = path.join(EXPORT_DIR, `${job.id}.xlsx`)
   await mkdir(EXPORT_DIR, { recursive: true })
-  const buffer = await workbookBuffer(platformProductWorkbookSheets(rows))
-  await writeFile(filePath, Buffer.from(buffer))
+  job.items[0].spu_code = "生成 Excel 文件"
+  job.items[0].result = { stage: "generating_workbook", rowCount: rows.length, fileName }
+  await savePlatformProductJob(job)
+  await writeWorkbookFile(platformProductWorkbookSheets(rows), filePath, job)
   job.fileName = fileName
   job.filePath = filePath
   job.downloadUrl = `/api/shein-platform-products/export-jobs/${job.id}/download`
+  job.items[0].spu_code = "EXPORT"
   job.items[0].status = "completed"
   job.items[0].result = { rowCount: rows.length, fileName }
   job.items[0].finished_at = nowIso()
@@ -693,7 +731,7 @@ export function enqueuePlatformProductSyncJob(payload: unknown = {}, actor?: Lif
 
 function getInternalJob(type: PlatformProductJobType, id: string) {
   const job = loadPlatformProductJob(type, id)
-  if (job?.status === "queued") schedulePlatformProductJobs()
+  if (job?.status !== "completed") schedulePlatformProductJobs()
   return job
 }
 
@@ -730,7 +768,7 @@ export function getPlatformProductExportJob(id: string) {
 export async function readPlatformProductExportFile(id: string) {
   const job = loadPlatformProductJob("export", id)
   if (!job) return null
-  if (job.status === "queued") schedulePlatformProductJobs()
+  if (job.status !== "completed") schedulePlatformProductJobs()
   if (job.status !== "completed" || !job.filePath || !job.fileName) {
     return { pending: true as const, job: snapshot(job) }
   }

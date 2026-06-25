@@ -69,7 +69,9 @@ function retainedTasks(tasks: AsyncTaskRecord[], now = Date.now()) {
 
 function taskProgress(job?: AsyncTaskJob | null) {
   if (!job?.total_count) return 0
-  return Math.round(((job.completed_count + job.failed_count) / job.total_count) * 100)
+  const progress = Math.round(((job.completed_count + job.failed_count) / job.total_count) * 100)
+  if (job.status !== "completed") return Math.min(99, progress)
+  return progress
 }
 
 function activeTaskCount(tasks: AsyncTaskRecord[]) {
@@ -87,6 +89,10 @@ function unreadCompletedTaskCount(tasks: AsyncTaskRecord[], lastSeenAt: string) 
 
 function failedItems(task: AsyncTaskRecord) {
   return task.job?.items?.filter((item) => item.status === "failed") ?? []
+}
+
+function runningTaskItem(task: AsyncTaskRecord) {
+  return task.job?.items?.find((item) => item.status === "running") ?? null
 }
 
 export function AsyncTaskProvider({ children }: { children: ReactNode }) {
@@ -249,6 +255,7 @@ function AsyncTaskDrawer({
             ) : currentPageTasks.map((task) => {
               const job = task.job
               const failures = failedItems(task)
+              const runningItem = runningTaskItem(task)
               const done = job?.status === "completed"
               return (
                 <section key={task.id} className="rounded-lg border bg-card p-3">
@@ -262,6 +269,9 @@ function AsyncTaskDrawer({
                         <p className="mt-1 text-xs text-muted-foreground">{task.description}</p>
                       ) : null}
                       <p className="mt-1 text-[11px] text-muted-foreground">{formatDateTime(task.createdAt)}</p>
+                      {!done && runningItem ? (
+                        <p className="mt-1 text-[11px] text-muted-foreground">当前：{runningItem.spu_code}</p>
+                      ) : null}
                     </div>
                     <Button variant="ghost" size="icon" className="size-8" onClick={() => onRemoveTask(task.id)}>
                       <Trash2 className="size-4" />

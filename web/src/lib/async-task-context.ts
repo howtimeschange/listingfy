@@ -4,6 +4,7 @@ export interface AsyncTaskJobItem {
   spu_code: string
   status: "queued" | "running" | "completed" | "failed"
   error?: string | null
+  result?: unknown
 }
 
 export interface AsyncTaskJob {
