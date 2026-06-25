@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
-import { Activity, AlertCircle, CheckCircle2, Clock, Trash2 } from "lucide-react"
+import { Activity, AlertCircle, CheckCircle2, Clock, Download, Trash2 } from "lucide-react"
 import { api } from "@/lib/api-client"
 import {
   AsyncTaskContext,
@@ -205,6 +205,16 @@ function AsyncTaskDrawer({
                   </div>
                   {task.lastError ? (
                     <p className="mt-2 text-xs text-[#d45656]">{task.lastError}</p>
+                  ) : null}
+                  {done && job?.downloadUrl ? (
+                    <a
+                      href={job.downloadUrl}
+                      download={job.fileName}
+                      className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium hover:bg-muted"
+                    >
+                      <Download className="size-3.5" />
+                      下载文件
+                    </a>
                   ) : null}
                   {failures.length > 0 ? (
                     <div className="mt-3 rounded-md border border-[#f1cccc] bg-[#fff8f8] p-2">

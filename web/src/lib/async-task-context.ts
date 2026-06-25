@@ -13,11 +13,13 @@ export interface AsyncTaskJob {
   completed_count: number
   failed_count: number
   items?: AsyncTaskJobItem[]
+  downloadUrl?: string
+  fileName?: string
 }
 
 export interface AsyncTaskRecord {
   id: string
-  type: "product_archive_mdm_draft" | "category_mapping_ai_suggestions"
+  type: "product_archive_mdm_draft" | "category_mapping_ai_suggestions" | "shein_platform_product_sync" | "shein_platform_product_export"
   title: string
   description?: string
   endpoint: string

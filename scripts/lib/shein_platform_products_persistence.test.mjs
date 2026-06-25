@@ -12,6 +12,7 @@ const Database = requireFromWeb("better-sqlite3");
 const MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/021_shein_platform_products.sql");
 const ROUTE_FILE = path.join(PROJECT_ROOT, "web/server/routes/shein-platform-products.ts");
 const SERVICE_FILE = path.join(PROJECT_ROOT, "web/server/services/shein-platform-products.ts");
+const JOB_SERVICE_FILE = path.join(PROJECT_ROOT, "web/server/services/shein-platform-product-jobs.ts");
 const SERVER_INDEX = path.join(PROJECT_ROOT, "web/server/index.ts");
 const PAGE_FILE = path.join(PROJECT_ROOT, "web/src/pages/shein-platform-products/page.tsx");
 
@@ -577,6 +578,7 @@ test("SHEIN platform product persistence stores list rows and SPU detail variant
 
 test("SHEIN platform product list summary includes every SKC with nested SKU rows for display and export", async () => {
   const service = await fileText(SERVICE_FILE);
+  const jobService = await fileText(JOB_SERVICE_FILE);
   const page = await fileText(PAGE_FILE);
 
   assert.match(service, /const skuDetailsBySkc = new Map/);
@@ -584,7 +586,8 @@ test("SHEIN platform product list summary includes every SKC with nested SKU row
   assert.match(service, /skus:\s*includeDetails \?/);
   assert.doesNotMatch(service, /from shein_platform_skc[\s\S]{0,120}limit 8/);
 
-  assert.match(page, /platformProductWorkbookSheets/);
+  assert.match(jobService, /platformProductWorkbookSheets/);
+  assert.match(jobService, /includeDetails:\s*true/);
   assert.match(page, /SKC供方/);
   assert.match(page, /详情同步后显示 SKC/);
   assert.match(page, /<ProductThumb src=\{skc\.imageUrl\} alt=\{skc\.skcName\} size="xs" \/>/);

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate, useParams } from "react-router"
 import {
@@ -70,6 +70,7 @@ import {
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api-client"
+import { useAsyncTasks, type AsyncTaskJob } from "@/lib/async-task-context"
 import { formatNumber } from "@/lib/format"
 import {
   buildCostImportRequests,
@@ -78,10 +79,7 @@ import {
   type CostImportProgress,
   type CostImportRow,
 } from "@/lib/shein-cost-import"
-import {
-  platformProductWorkbookSheets,
-} from "@/lib/shein-platform-product-export"
-import { exportSpreadsheet, exportWorkbook, readSpreadsheetFile, type SpreadsheetRow } from "@/lib/spreadsheet"
+import { exportSpreadsheet, readSpreadsheetFile, type SpreadsheetRow } from "@/lib/spreadsheet"
 
 type JsonRecord = Record<string, unknown>
 
@@ -369,12 +367,6 @@ interface SyncFilters {
   maxPages: string
   detailLimit: string
   syncDetails: boolean
-}
-
-interface SpuSyncItemResult {
-  spuName: string
-  ok: boolean
-  message: string
 }
 
 type PlatformProductView = "list" | "sites" | "detail"
@@ -748,10 +740,12 @@ function ProductThumb({ src, alt, size = "md" }: { src: string | null; alt: stri
 
 export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatformProductsPageProps) {
   const queryClient = useQueryClient()
+  const { tasks, addTask, openTaskCenter } = useAsyncTasks()
   const navigate = useNavigate()
   const { spuName: routeSpuName } = useParams()
   const productTableScrollRef = useRef<HTMLDivElement>(null)
   const productTableBottomScrollRef = useRef<HTMLDivElement>(null)
+  const completedPlatformTaskIdsRef = useRef<Set<string>>(new Set())
   const routeSelectedSpuName = view === "detail" ? routeSpuName?.trim() ?? "" : ""
   const [searchInput, setSearchInput] = useState("")
   const [localSelectedSpuName, setSelectedSpuName] = useState("")
@@ -831,6 +825,16 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
     ? (costImportProgress.completedGroups / costImportProgress.totalGroups) * 100
     : 0
   const spuNamesToSync = useMemo(() => splitSpuNames(spuNameSyncText), [spuNameSyncText])
+
+  useEffect(() => {
+    for (const task of tasks) {
+      if (task.type !== "shein_platform_product_sync" || task.job?.status !== "completed") continue
+      if (completedPlatformTaskIdsRef.current.has(task.id)) continue
+      completedPlatformTaskIdsRef.current.add(task.id)
+      void queryClient.invalidateQueries({ queryKey: ["shein-platform-products"] })
+    }
+  }, [queryClient, tasks])
+
   const detailSectionTabs = useMemo(
     () => [
       { value: "product" as const, label: "商品明细" },
@@ -855,29 +859,22 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
         if (syncFilters.timeStart.trim()) payload[startKey] = platformTimeInputValue(syncFilters.timeStart)
         if (syncFilters.timeEnd.trim()) payload[endKey] = platformTimeInputValue(syncFilters.timeEnd)
       }
-      return api.post<{
-        result: PlatformRequestResult
-        persistence: { rowCount: number; productCount: number; pagesSynced: number; stoppedReason: string }
-        detail: { requested: boolean; attempted: number; succeeded: number; failed: Array<{ spuName: string; message: string }> }
-        sync: { mode: string; incrementalWindowStart: string }
-      }>(
-        "/shein-platform-products/sync",
+      return api.post<AsyncTaskJob>(
+        "/shein-platform-products/sync-jobs",
         payload,
       )
     },
-    onSuccess: (data) => {
-      if (!responseOk(data.result)) {
-        toast.error(`同步平台商品失败：${responseCode(data.result) || data.result.status} ${responseMessage(data.result)}`)
-        return
-      }
-      const detailText = data.detail?.requested
-        ? `，详情 ${formatNumber(data.detail.succeeded)}/${formatNumber(data.detail.attempted)}`
-        : ""
-      toast.success(
-        `同步平台商品完成：${formatNumber(data.persistence.pagesSynced)} 页 / ${formatNumber(data.persistence.productCount)} 个 SPU${detailText}`,
-      )
+    onSuccess: (job) => {
+      addTask({
+        job,
+        type: "shein_platform_product_sync",
+        title: "同步 SHEIN 平台商品",
+        description: `后台同步列表并补齐商品详情，任务 ${job.id.slice(0, 8)}`,
+        endpoint: `/shein-platform-products/sync-jobs/${job.id}`,
+      })
+      toast.success("已加入异步任务：同步 SHEIN 平台商品")
+      openTaskCenter()
       setSyncDialogOpen(false)
-      void queryClient.invalidateQueries({ queryKey: ["shein-platform-products"] })
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "同步平台商品失败"),
   })
@@ -885,34 +882,20 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const syncSpuProductsMutation = useMutation({
     mutationFn: async () => {
       if (!spuNamesToSync.length) throw new Error("请输入要同步的款号/SPU")
-      const results: SpuSyncItemResult[] = []
-      for (const spuName of spuNamesToSync) {
-        try {
-          const data = await api.post<{ result: PlatformRequestResult }>(productSyncDetailUrl(spuName), {})
-          results.push({
-            spuName,
-            ok: responseOk(data.result),
-            message: responseMessage(data.result) || responseCode(data.result) || "",
-          })
-        } catch (error) {
-          results.push({ spuName, ok: false, message: error instanceof Error ? error.message : "同步详情失败" })
-        }
-      }
-      return results
+      return api.post<AsyncTaskJob>("/shein-platform-products/sync-jobs", { spuNames: spuNamesToSync })
     },
-    onSuccess: (results) => {
-      const succeeded = results.filter((result) => result.ok)
-      const failed = results.filter((result) => !result.ok)
-      if (succeeded.length) {
-        const firstSpuName = succeeded[0]?.spuName
-        if (firstSpuName) setSelectedSpuName(firstSpuName)
-        toast.success(`按款号同步完成：${formatNumber(succeeded.length)}/${formatNumber(results.length)} 个 SPU`)
-        setSyncDialogOpen(false)
-        void queryClient.invalidateQueries({ queryKey: ["shein-platform-products"] })
-      }
-      if (failed.length) {
-        toast.error(`按款号同步失败 ${formatNumber(failed.length)} 个：${failed[0]?.spuName} ${failed[0]?.message}`)
-      }
+    onSuccess: (job) => {
+      if (spuNamesToSync[0]) setSelectedSpuName(spuNamesToSync[0])
+      addTask({
+        job,
+        type: "shein_platform_product_sync",
+        title: "按款号同步 SHEIN 平台商品",
+        description: `后台同步 ${formatNumber(job.total_count)} 个 SPU 详情`,
+        endpoint: `/shein-platform-products/sync-jobs/${job.id}`,
+      })
+      toast.success(`已加入异步任务：${formatNumber(job.total_count)} 个 SPU`)
+      openTaskCenter()
+      setSyncDialogOpen(false)
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "按款号同步失败"),
   })
@@ -1351,42 +1334,34 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
     }
   }
 
-  async function fetchAllPlatformProductsForExport() {
-    const pageSize = 200
-    const rows: PlatformProductRow[] = []
-    let offset = 0
-    while (true) {
-      const response = await api.get<ProductListResponse>(platformProductsListUrl(queryParams, {
-        limit: pageSize,
-        offset,
-      }, { includeDetails: true }))
-      rows.push(...response.items)
-      const total = Number(response.pagination.total ?? 0)
-      if (rows.length >= total) break
-      offset += pageSize
-    }
-    return rows
-  }
-
   async function exportPlatformProducts() {
     setExportingPlatformProducts(true)
     try {
-      const rows = await fetchAllPlatformProductsForExport()
-      if (!rows.length) {
+      if (pagination.total <= 0) {
         toast.error("当前筛选条件下没有可导出的平台商品")
         return
       }
-      await exportPlatformProductsWorkbook(rows)
-      toast.success(`已导出 ${formatNumber(rows.length)} 条平台商品`)
+      const job = await api.post<AsyncTaskJob>("/shein-platform-products/export-jobs", {
+        search: queryParams.search,
+        brand: queryParams.brandFilter,
+        category: queryParams.categoryFilter,
+        site: queryParams.siteFilter,
+        includeDetails: true,
+      })
+      addTask({
+        job,
+        type: "shein_platform_product_export",
+        title: "导出 SHEIN 平台商品列表",
+        description: `后台生成 SHEIN平台商品列表.xlsx，预计 ${formatNumber(pagination.total)} 条平台商品`,
+        endpoint: `/shein-platform-products/export-jobs/${job.id}`,
+      })
+      toast.success("已加入异步任务：导出 SHEIN 平台商品列表")
+      openTaskCenter()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "导出平台商品失败")
     } finally {
       setExportingPlatformProducts(false)
     }
-  }
-
-  async function exportPlatformProductsWorkbook(rows: PlatformProductRow[]) {
-    await exportWorkbook("SHEIN平台商品列表.xlsx", platformProductWorkbookSheets(rows))
   }
 
   function openEditDialog(spuName: string) {

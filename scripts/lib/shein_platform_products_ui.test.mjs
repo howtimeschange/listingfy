@@ -234,11 +234,9 @@ test("SHEIN platform products page exposes sale sites, filters, and export", asy
   assert.match(page, /setSaleSitesDialogProduct/);
   assert.match(page, /saleSitesDialogProduct/);
   assert.match(page, /exportPlatformProducts/);
-  assert.match(page, /fetchAllPlatformProductsForExport/);
   assert.match(page, /includeDetails:\s*true/);
   assert.match(page, /SHEIN平台商品列表/);
   assert.match(page, /销售站点明细/);
-  assert.match(page, /exportWorkbook/);
   assert.match(exportSource, /saleSiteDetailRows/);
   assert.match(exportSource, /上架状态/);
   assert.match(exportSource, /首次上架时间/);
@@ -246,6 +244,37 @@ test("SHEIN platform products page exposes sale sites, filters, and export", asy
   assert.match(page, /上架站点数/);
   assert.match(page, /exportSpreadsheet/);
   assert.doesNotMatch(page, /销售站点明细:\s*row\.saleSites\.map/);
+});
+
+test("SHEIN platform products route and page use async jobs for product sync and export", async () => {
+  const [page, route, taskContext, taskCenter] = await Promise.all([
+    fileText(PAGE_FILE),
+    fileText(path.join(PROJECT_ROOT, "web/server/routes/shein-platform-products.ts")),
+    fileText(path.join(PROJECT_ROOT, "web/src/lib/async-task-context.ts")),
+    fileText(path.join(PROJECT_ROOT, "web/src/components/async-task-center.tsx")),
+  ]);
+
+  assert.match(route, /post\("\/sync-jobs"/);
+  assert.match(route, /get\("\/sync-jobs\/:jobId"/);
+  assert.match(route, /post\("\/export-jobs"/);
+  assert.match(route, /get\("\/export-jobs\/:jobId"/);
+  assert.match(route, /get\("\/export-jobs\/:jobId\/download"/);
+  assert.match(route, /c\.json\(job, 202\)/);
+
+  assert.match(page, /useAsyncTasks/);
+  assert.match(page, /\/shein-platform-products\/sync-jobs/);
+  assert.match(page, /\/shein-platform-products\/export-jobs/);
+  assert.match(page, /type: "shein_platform_product_sync"/);
+  assert.match(page, /type: "shein_platform_product_export"/);
+  assert.match(page, /openTaskCenter/);
+  assert.doesNotMatch(page, /fetchAllPlatformProductsForExport/);
+  assert.doesNotMatch(page, /exportPlatformProductsWorkbook/);
+
+  assert.match(taskContext, /"shein_platform_product_sync"/);
+  assert.match(taskContext, /"shein_platform_product_export"/);
+  assert.match(taskContext, /downloadUrl\?: string/);
+  assert.match(taskCenter, /downloadUrl/);
+  assert.match(taskCenter, /下载文件/);
 });
 
 test("SHEIN platform products detail page splits product and site views while widening dialogs", async () => {

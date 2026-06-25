@@ -21,6 +21,13 @@ import {
   syncStoreSites,
   updateProductCost,
 } from "../services/shein-platform-products"
+import {
+  enqueuePlatformProductExportJob,
+  enqueuePlatformProductSyncJob,
+  getPlatformProductExportJob,
+  getPlatformProductSyncJob,
+  readPlatformProductExportFile,
+} from "../services/shein-platform-product-jobs"
 
 const sheinPlatformProducts = new Hono()
 
@@ -50,6 +57,44 @@ sheinPlatformProducts.get("/", (c) => {
 sheinPlatformProducts.post("/sync", async (c) => {
   requirePermission(c, "SYNC_RUN")
   return c.json(await syncPlatformProducts(await jsonBody(c), lifecycleActorFromContext(c)))
+})
+
+sheinPlatformProducts.post("/sync-jobs", async (c) => {
+  requirePermission(c, "SYNC_RUN")
+  const job = enqueuePlatformProductSyncJob(await jsonBody(c), lifecycleActorFromContext(c))
+  return c.json(job, 202)
+})
+
+sheinPlatformProducts.get("/sync-jobs/:jobId", (c) => {
+  requirePermission(c, "SYNC_RUN")
+  const job = getPlatformProductSyncJob(c.req.param("jobId"))
+  if (!job) throw new HTTPException(404, { message: "平台商品同步任务不存在" })
+  return c.json(job)
+})
+
+sheinPlatformProducts.post("/export-jobs", async (c) => {
+  requirePermission(c, "LISTING_READ")
+  const job = enqueuePlatformProductExportJob(await jsonBody(c))
+  return c.json(job, 202)
+})
+
+sheinPlatformProducts.get("/export-jobs/:jobId", (c) => {
+  requirePermission(c, "LISTING_READ")
+  const job = getPlatformProductExportJob(c.req.param("jobId"))
+  if (!job) throw new HTTPException(404, { message: "平台商品导出任务不存在" })
+  return c.json(job)
+})
+
+sheinPlatformProducts.get("/export-jobs/:jobId/download", async (c) => {
+  requirePermission(c, "LISTING_READ")
+  const result = await readPlatformProductExportFile(c.req.param("jobId"))
+  if (!result) throw new HTTPException(404, { message: "平台商品导出任务不存在" })
+  if (result.pending) throw new HTTPException(409, { message: "导出任务尚未完成" })
+  const encodedName = encodeURIComponent(result.fileName)
+  return c.body(result.buffer, 200, {
+    "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "content-disposition": `attachment; filename*=UTF-8''${encodedName}`,
+  })
 })
 
 sheinPlatformProducts.get("/sites", (c) => {
