@@ -15,6 +15,9 @@ export class ApiError extends Error {
 function apiErrorMessage(status: number, body: unknown) {
   if (typeof body === "string") {
     const message = body.trim()
+    if (status === 504 && /<html[\s\S]*gateway time-?out/i.test(message)) {
+      return "网关超时，请稍后重试"
+    }
     if (message) return message
   }
   if (body && typeof body === "object") {

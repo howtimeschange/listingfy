@@ -20,3 +20,12 @@ test("ApiError still supports nested and plain message responses", () => {
   assert.equal(new ApiError(500, { message: "Internal server error" }).message, "Internal server error");
   assert.equal(new ApiError(502, {}).message, "API Error 502");
 });
+
+test("ApiError normalizes nginx gateway timeout HTML", () => {
+  const html = `<html>
+    <head><title>504 Gateway Time-out</title></head>
+    <body><center><h1>504 Gateway Time-out</h1></center></body>
+  </html>`;
+
+  assert.equal(new ApiError(504, html).message, "网关超时，请稍后重试");
+});

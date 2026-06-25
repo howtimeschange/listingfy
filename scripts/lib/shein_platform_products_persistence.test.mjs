@@ -15,6 +15,7 @@ const SERVICE_FILE = path.join(PROJECT_ROOT, "web/server/services/shein-platform
 const JOB_SERVICE_FILE = path.join(PROJECT_ROOT, "web/server/services/shein-platform-product-jobs.ts");
 const SERVER_INDEX = path.join(PROJECT_ROOT, "web/server/index.ts");
 const PAGE_FILE = path.join(PROJECT_ROOT, "web/src/pages/shein-platform-products/page.tsx");
+const JOB_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/027_shein_platform_product_jobs.sql");
 
 async function fileText(file) {
   try {
@@ -96,6 +97,42 @@ test("SHEIN platform products have persistent product, variant, site, and operat
   assert.match(migration, /operation_type text not null/);
   assert.match(migration, /request_payload_json text not null default '\{\}'/);
   assert.match(migration, /response_payload_json text not null default '\{\}'/);
+});
+
+test("SHEIN platform product async jobs are durable across API workers", async () => {
+  const [migration, jobService] = await Promise.all([
+    fileText(JOB_MIGRATION_FILE),
+    fileText(JOB_SERVICE_FILE),
+  ]);
+
+  assert.match(migration, /create table if not exists shein_platform_product_job/);
+  assert.match(migration, /id text primary key/);
+  assert.match(migration, /job_type text not null/);
+  assert.match(migration, /payload_json text not null default '\{\}'/);
+  assert.match(migration, /items_json text not null default '\[\]'/);
+  assert.match(migration, /download_url text/);
+  assert.match(migration, /file_path text/);
+  assert.match(migration, /idx_shein_platform_product_job_status/);
+
+  assert.match(jobService, /createPlatformProductJob/);
+  assert.match(jobService, /updatePlatformProductJob/);
+  assert.match(jobService, /loadPlatformProductJob/);
+  assert.match(jobService, /from shein_platform_product_job/);
+  assert.match(jobService, /insert into shein_platform_product_job/);
+  assert.match(jobService, /update shein_platform_product_job/);
+  assert.match(jobService, /getPlatformProductExportJob[\s\S]*loadPlatformProductJob/);
+  assert.match(jobService, /readPlatformProductExportFile[\s\S]*loadPlatformProductJob/);
+  assert.doesNotMatch(jobService, /exportJobs = new Map/);
+});
+
+test("SHEIN platform product jobs start after the enqueue response can flush", async () => {
+  const jobService = await fileText(JOB_SERVICE_FILE);
+
+  assert.match(jobService, /function schedulePlatformProductJobs/);
+  assert.match(jobService, /setImmediate|setTimeout/);
+  assert.doesNotMatch(jobService, /queueMicrotask\(\(\) => \{\s*void processLoop\(\)/);
+  assert.match(jobService, /await wait\(0\)/);
+  assert.match(jobService, /await savePlatformProductJob\(job\)/);
 });
 
 test("SHEIN platform products backend exposes durable sync and lifecycle actions", async () => {

@@ -1,15 +1,20 @@
+import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import { randomUUID } from "node:crypto"
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import ExcelJS from "exceljs"
+import { getDb } from "../db"
 import {
   listPlatformProducts,
   syncPlatformProducts,
   syncProductDetail,
 } from "./shein-platform-products"
 import { parseSpuCodes } from "../../../scripts/lib/product_archive_sync_queue.mjs"
-import { platformProductWorkbookSheets } from "../../src/lib/shein-platform-product-export"
+import {
+  platformProductWorkbookSheets,
+  type PlatformProductExportRow,
+} from "../../src/lib/shein-platform-product-export"
 
 type JsonRecord = Record<string, unknown>
 type PlatformProductJobType = "sync" | "export"
@@ -54,7 +59,7 @@ interface PlatformProductJob {
 
 const EXPORT_PAGE_SIZE = 200
 const SHEET_ROW_LIMIT = 1_000_000
-const SHEET_WRITE_CHUNK = 50_000
+const SHEET_WRITE_CHUNK = 5_000
 const EXPORT_DIR = path.join(os.tmpdir(), "listingify-platform-product-exports")
 const SHEIN_DETAIL_RATE_LIMIT_WINDOW_LIMIT = 800
 const SHEIN_DETAIL_RATE_LIMIT_WINDOW_MS = 1800 * 1000
@@ -65,9 +70,6 @@ const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60_000
 const JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const JOB_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
 
-const syncJobs = new Map<string, PlatformProductJob>()
-const exportJobs = new Map<string, PlatformProductJob>()
-const pending: string[] = []
 let running = false
 
 function nowIso() {
@@ -78,23 +80,48 @@ function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function snapshot(job: PlatformProductJob) {
-  const publicJob: Partial<PlatformProductJob> = { ...job }
-  delete publicJob.filePath
-  delete publicJob.payload
-  delete publicJob.actor
-  return {
-    ...publicJob,
-    items: job.items.map((item) => ({ ...item })),
-  }
+function stringValue(value: unknown) {
+  if (value == null) return ""
+  if (value instanceof Date) return value.toISOString()
+  if (typeof value === "string") return value.trim()
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  return ""
 }
 
-function stringValue(value: unknown) {
-  return String(value ?? "").trim()
+function numberValue(value: unknown, fallback = 0) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : fallback
 }
 
 function recordValue(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {}
+}
+
+function parseJson(value: unknown, fallback: unknown) {
+  if (value == null || value === "") return fallback
+  if (typeof value !== "string") return value
+  try {
+    return JSON.parse(value)
+  } catch {
+    return fallback
+  }
+}
+
+function parseJsonObject(value: unknown): JsonRecord {
+  return recordValue(parseJson(value, {}))
+}
+
+function parseJsonArray(value: unknown): unknown[] {
+  const parsed = parseJson(value, [])
+  return Array.isArray(parsed) ? parsed : []
+}
+
+function jsonText(value: unknown, fallback: unknown = {}) {
+  return JSON.stringify(value ?? fallback)
+}
+
+function jsonArrayText(value: unknown) {
+  return JSON.stringify(Array.isArray(value) ? value : [])
 }
 
 function boundedDelayMs(value: unknown, fallback: number, min: number, max: number) {
@@ -132,6 +159,79 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
+function jobStatus(value: unknown): PlatformProductJobStatus {
+  const status = stringValue(value)
+  return status === "running" || status === "completed" ? status : "queued"
+}
+
+function itemStatus(value: unknown): PlatformProductJobItemStatus {
+  const status = stringValue(value)
+  if (status === "running" || status === "completed" || status === "failed") return status
+  return "queued"
+}
+
+function jobType(value: unknown): PlatformProductJobType {
+  return stringValue(value) === "sync" ? "sync" : "export"
+}
+
+function parseActor(value: unknown): LifecycleActor | null {
+  const actor = parseJsonObject(value)
+  const id = numberValue(actor.id, Number.NaN)
+  const username = stringValue(actor.username)
+  if (!Number.isFinite(id) && !username) return null
+  return {
+    id: Number.isFinite(id) ? id : null,
+    username: username || null,
+  }
+}
+
+function parseJobItems(value: unknown): PlatformProductJobItem[] {
+  return parseJsonArray(value).map((item) => {
+    const record = recordValue(item)
+    return {
+      spu_code: stringValue(record.spu_code ?? record.spuName) || "ITEM",
+      status: itemStatus(record.status),
+      error: stringValue(record.error) || null,
+      result: record.result ?? null,
+      started_at: stringValue(record.started_at) || null,
+      finished_at: stringValue(record.finished_at) || null,
+    }
+  })
+}
+
+function jobFromRow(row: JsonRecord): PlatformProductJob {
+  return {
+    id: stringValue(row.id),
+    type: jobType(row.job_type),
+    status: jobStatus(row.status),
+    title: stringValue(row.title),
+    total_count: numberValue(row.total_count),
+    completed_count: numberValue(row.completed_count),
+    failed_count: numberValue(row.failed_count),
+    created_at: stringValue(row.created_at) || nowIso(),
+    started_at: stringValue(row.started_at) || null,
+    finished_at: stringValue(row.finished_at) || null,
+    items: parseJobItems(row.items_json),
+    payload: parseJsonObject(row.payload_json),
+    actor: parseActor(row.actor_json),
+    fileName: stringValue(row.file_name) || undefined,
+    filePath: stringValue(row.file_path) || undefined,
+    downloadUrl: stringValue(row.download_url) || undefined,
+    error: stringValue(row.error_message) || null,
+  }
+}
+
+function snapshot(job: PlatformProductJob) {
+  const publicJob: Partial<PlatformProductJob> = { ...job }
+  delete publicJob.filePath
+  delete publicJob.payload
+  delete publicJob.actor
+  return {
+    ...publicJob,
+    items: job.items.map((item) => ({ ...item })),
+  }
+}
+
 function jobFinishedMs(job: PlatformProductJob) {
   if (!job.finished_at) return null
   const value = Date.parse(job.finished_at)
@@ -143,16 +243,148 @@ function removeJobFile(job: PlatformProductJob) {
   void unlink(job.filePath).catch(() => {})
 }
 
-export function pruneExpiredPlatformProductJobs(now = Date.now()) {
+export function createPlatformProductJob(job: PlatformProductJob, db: SyncPostgresDatabase = getDb()) {
+  const now = nowIso()
+  const row = db.prepare(`
+    insert into shein_platform_product_job (
+      id,
+      job_type,
+      status,
+      title,
+      total_count,
+      completed_count,
+      failed_count,
+      payload_json,
+      actor_json,
+      items_json,
+      file_name,
+      file_path,
+      download_url,
+      error_message,
+      started_at,
+      finished_at,
+      created_at,
+      updated_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    returning *
+  `).get(
+    job.id,
+    job.type,
+    job.status,
+    job.title,
+    job.total_count,
+    job.completed_count,
+    job.failed_count,
+    jsonText(job.payload),
+    jsonText(job.actor ?? {}),
+    jsonArrayText(job.items),
+    job.fileName ?? null,
+    job.filePath ?? null,
+    job.downloadUrl ?? null,
+    job.error ?? null,
+    job.started_at,
+    job.finished_at,
+    job.created_at || now,
+    now,
+  ) as JsonRecord | undefined
+  return row ? jobFromRow(row) : job
+}
+
+export function updatePlatformProductJob(job: PlatformProductJob, db: SyncPostgresDatabase = getDb()) {
+  const row = db.prepare(`
+    update shein_platform_product_job
+    set job_type = ?,
+      status = ?,
+      title = ?,
+      total_count = ?,
+      completed_count = ?,
+      failed_count = ?,
+      payload_json = ?,
+      actor_json = ?,
+      items_json = ?,
+      file_name = ?,
+      file_path = ?,
+      download_url = ?,
+      error_message = ?,
+      started_at = ?,
+      finished_at = ?,
+      updated_at = ?
+    where id = ?
+    returning *
+  `).get(
+    job.type,
+    job.status,
+    job.title,
+    job.total_count,
+    job.completed_count,
+    job.failed_count,
+    jsonText(job.payload),
+    jsonText(job.actor ?? {}),
+    jsonArrayText(job.items),
+    job.fileName ?? null,
+    job.filePath ?? null,
+    job.downloadUrl ?? null,
+    job.error ?? null,
+    job.started_at,
+    job.finished_at,
+    nowIso(),
+    job.id,
+  ) as JsonRecord | undefined
+  return row ? jobFromRow(row) : job
+}
+
+export async function savePlatformProductJob(job: PlatformProductJob, db: SyncPostgresDatabase = getDb()) {
+  return updatePlatformProductJob(job, db)
+}
+
+export function loadPlatformProductJob(type: PlatformProductJobType, id: string, db: SyncPostgresDatabase = getDb()) {
+  const row = db.prepare(`
+    select *
+    from shein_platform_product_job
+    where id = ?
+      and job_type = ?
+  `).get(id, type) as JsonRecord | undefined
+  return row ? jobFromRow(row) : null
+}
+
+function claimNextPlatformProductJob(db: SyncPostgresDatabase = getDb()) {
+  const now = nowIso()
+  const row = db.prepare(`
+    with next_job as (
+      select id
+      from shein_platform_product_job
+      where status = 'queued'
+      order by created_at asc
+      limit 1
+      for update skip locked
+    )
+    update shein_platform_product_job as job
+    set status = 'running',
+      started_at = coalesce(job.started_at, ?),
+      updated_at = ?
+    from next_job
+    where job.id = next_job.id
+    returning job.*
+  `).get(now, now) as JsonRecord | undefined
+  return row ? jobFromRow(row) : null
+}
+
+export function pruneExpiredPlatformProductJobs(now = Date.now(), db: SyncPostgresDatabase = getDb()) {
   let removed = 0
-  for (const jobs of [syncJobs, exportJobs]) {
-    for (const [id, job] of jobs) {
-      const finishedMs = jobFinishedMs(job)
-      if (finishedMs == null || now - finishedMs < JOB_RETENTION_MS) continue
-      removeJobFile(job)
-      jobs.delete(id)
-      removed += 1
-    }
+  const rows = db.prepare(`
+    select *
+    from shein_platform_product_job
+    where status = 'completed'
+      and finished_at is not null
+  `).all() as JsonRecord[]
+  for (const row of rows) {
+    const job = jobFromRow(row)
+    const finishedMs = jobFinishedMs(job)
+    if (finishedMs == null || now - finishedMs < JOB_RETENTION_MS) continue
+    removeJobFile(job)
+    db.prepare("delete from shein_platform_product_job where id = ?").run(job.id)
+    removed += 1
   }
   return removed
 }
@@ -197,24 +429,19 @@ function detailSyncCodes(payload: JsonRecord) {
   return parseSpuCodes(payload.spuNames ?? payload.spu_names ?? payload.codes ?? payload.rawCodes ?? payload.raw_codes ?? "")
 }
 
-function getJobMap(type: PlatformProductJobType) {
-  return type === "sync" ? syncJobs : exportJobs
-}
-
-function getInternalJob(type: PlatformProductJobType, id: string) {
-  pruneExpiredPlatformProductJobs()
-  return getJobMap(type).get(id) ?? null
-}
-
 function setJobDone(job: PlatformProductJob) {
   job.status = "completed"
   job.finished_at = nowIso()
 }
 
-function markJobFailed(job: PlatformProductJob, error: unknown) {
+async function markJobFailed(job: PlatformProductJob, error: unknown) {
   const message = error instanceof Error ? error.message : String(error)
   job.error = message
-  job.failed_count = Math.max(1, job.failed_count)
+  if (job.type === "export") {
+    job.total_count = 1
+    job.completed_count = 0
+    job.failed_count = 1
+  }
   if (!job.items.length) {
     job.items.push({ spu_code: job.type === "export" ? "EXPORT" : "SYNC", status: "failed", error: message })
   } else {
@@ -224,7 +451,12 @@ function markJobFailed(job: PlatformProductJob, error: unknown) {
       item.finished_at = nowIso()
     }
   }
+  if (job.type !== "export") {
+    job.completed_count = job.items.filter((item) => item.status === "completed").length
+    job.failed_count = Math.max(1, job.items.filter((item) => item.status === "failed").length)
+  }
   setJobDone(job)
+  await savePlatformProductJob(job)
 }
 
 async function processSyncJob(job: PlatformProductJob) {
@@ -240,6 +472,7 @@ async function processSyncJob(job: PlatformProductJob) {
       started_at: null,
       finished_at: null,
     }))
+    await savePlatformProductJob(job)
     for (let index = 0; index < job.items.length; index += 1) {
       if (index > 0 && detailIntervalMs > 0) {
         await wait(detailIntervalMs)
@@ -247,6 +480,7 @@ async function processSyncJob(job: PlatformProductJob) {
       const item = job.items[index]
       item.status = "running"
       item.started_at = nowIso()
+      await savePlatformProductJob(job)
       try {
         const result = await syncProductDetail(item.spu_code, {}, job.actor)
         if (!responseOk(result.result)) {
@@ -266,14 +500,17 @@ async function processSyncJob(job: PlatformProductJob) {
         }
       } finally {
         item.finished_at = nowIso()
+        await savePlatformProductJob(job)
       }
     }
     setJobDone(job)
+    await savePlatformProductJob(job)
     return
   }
 
   job.total_count = 1
   job.items = [{ spu_code: "平台商品列表", status: "running", error: null, result: null, started_at: nowIso(), finished_at: null }]
+  await savePlatformProductJob(job)
   try {
     const result = await syncPlatformProducts(syncInput(job.payload), job.actor)
     if (!responseOk(result.result)) {
@@ -289,6 +526,7 @@ async function processSyncJob(job: PlatformProductJob) {
   } finally {
     job.items[0].finished_at = nowIso()
     setJobDone(job)
+    await savePlatformProductJob(job)
   }
 }
 
@@ -312,7 +550,7 @@ function sheetNameWithIndex(baseName: string, index: number, total: number) {
   return `${safeBase.slice(0, Math.max(1, maxBaseLength))}${suffix}`
 }
 
-function appendRowsToWorksheet(
+async function appendRowsToWorksheet(
   worksheet: ExcelJS.Worksheet,
   columns: string[],
   rows: SpreadsheetRow[],
@@ -326,6 +564,7 @@ function appendRowsToWorksheet(
       const row = rows[rowIndex]
       worksheet.addRow(columns.map((column) => row[column] ?? ""))
     }
+    await wait(0)
   }
 }
 
@@ -340,15 +579,16 @@ async function workbookBuffer(sheets: SpreadsheetSheet[]) {
       const start = index * SHEET_ROW_LIMIT
       const end = Math.min(start + SHEET_ROW_LIMIT, rows.length)
       const worksheet = workbook.addWorksheet(sheetNameWithIndex(sheet.name, index, chunkCount))
-      appendRowsToWorksheet(worksheet, columns, rows, start, end)
+      await appendRowsToWorksheet(worksheet, columns, rows, start, end)
     }
+    await wait(0)
   }
   return workbook.xlsx.writeBuffer()
 }
 
 async function fetchExportRows(job: PlatformProductJob) {
   const input = exportInput(job.payload)
-  const rows = []
+  const rows: PlatformProductExportRow[] = []
   let offset = 0
   while (true) {
     const response = listPlatformProducts({
@@ -356,13 +596,15 @@ async function fetchExportRows(job: PlatformProductJob) {
       limit: EXPORT_PAGE_SIZE,
       offset,
     })
-    if (offset === 0) {
-      job.total_count = Number(response.pagination.total ?? 0)
-    }
-    rows.push(...response.items)
-    job.completed_count = rows.length
     const total = Number(response.pagination.total ?? 0)
-    if (rows.length >= total) break
+    if (offset === 0) {
+      job.total_count = total
+    }
+    rows.push(...response.items as PlatformProductExportRow[])
+    job.completed_count = rows.length
+    await savePlatformProductJob(job)
+    await wait(0)
+    if (total <= 0 || rows.length >= total) break
     if (response.items.length === 0) break
     offset += EXPORT_PAGE_SIZE
   }
@@ -371,6 +613,7 @@ async function fetchExportRows(job: PlatformProductJob) {
 
 async function processExportJob(job: PlatformProductJob) {
   job.items = [{ spu_code: "EXPORT", status: "running", error: null, result: null, started_at: nowIso(), finished_at: null }]
+  await savePlatformProductJob(job)
   const rows = await fetchExportRows(job)
   if (!rows.length) {
     throw new Error("当前筛选条件下没有可导出的平台商品")
@@ -388,42 +631,47 @@ async function processExportJob(job: PlatformProductJob) {
   job.items[0].finished_at = nowIso()
   job.completed_count = rows.length
   setJobDone(job)
+  await savePlatformProductJob(job)
 }
 
 async function processLoop() {
   if (running) return
   running = true
-  while (pending.length) {
-    const id = pending.shift()
-    const job = id ? syncJobs.get(id) ?? exportJobs.get(id) : null
-    if (!job || job.status !== "queued") continue
-    job.status = "running"
-    job.started_at = nowIso()
-    try {
-      if (job.type === "sync") {
-        await processSyncJob(job)
-      } else {
-        await processExportJob(job)
+  try {
+    while (true) {
+      const job = claimNextPlatformProductJob()
+      if (!job) break
+      try {
+        if (job.type === "sync") {
+          await processSyncJob(job)
+        } else {
+          await processExportJob(job)
+        }
+      } catch (error) {
+        await markJobFailed(job, error)
       }
-    } catch (error) {
-      markJobFailed(job, error)
+      await wait(0)
     }
+  } finally {
+    running = false
   }
-  running = false
 }
 
-function schedule(job: PlatformProductJob) {
-  pruneExpiredPlatformProductJobs()
-  pending.push(job.id)
-  queueMicrotask(() => {
+function schedulePlatformProductJobs() {
+  const run = () => {
     void processLoop()
-  })
+  }
+  if (typeof setImmediate === "function") {
+    setImmediate(run)
+    return
+  }
+  setTimeout(run, 0)
 }
 
 export function enqueuePlatformProductSyncJob(payload: unknown = {}, actor?: LifecycleActor | null) {
   const object = syncInput(payload)
   const codes = detailSyncCodes(object)
-  const job: PlatformProductJob = {
+  const job = createPlatformProductJob({
     id: randomUUID(),
     type: "sync",
     status: "queued",
@@ -438,10 +686,15 @@ export function enqueuePlatformProductSyncJob(payload: unknown = {}, actor?: Lif
     payload: object,
     actor: actor ?? null,
     error: null,
-  }
-  syncJobs.set(job.id, job)
-  schedule(job)
+  })
+  schedulePlatformProductJobs()
   return snapshot(job)
+}
+
+function getInternalJob(type: PlatformProductJobType, id: string) {
+  const job = loadPlatformProductJob(type, id)
+  if (job?.status === "queued") schedulePlatformProductJobs()
+  return job
 }
 
 export function getPlatformProductSyncJob(id: string) {
@@ -450,7 +703,7 @@ export function getPlatformProductSyncJob(id: string) {
 }
 
 export function enqueuePlatformProductExportJob(payload: unknown = {}) {
-  const job: PlatformProductJob = {
+  const job = createPlatformProductJob({
     id: randomUUID(),
     type: "export",
     status: "queued",
@@ -464,9 +717,8 @@ export function enqueuePlatformProductExportJob(payload: unknown = {}) {
     items: [{ spu_code: "EXPORT", status: "queued", error: null, result: null }],
     payload: exportInput(payload),
     error: null,
-  }
-  exportJobs.set(job.id, job)
-  schedule(job)
+  })
+  schedulePlatformProductJobs()
   return snapshot(job)
 }
 
@@ -476,8 +728,9 @@ export function getPlatformProductExportJob(id: string) {
 }
 
 export async function readPlatformProductExportFile(id: string) {
-  const job = getInternalJob("export", id)
+  const job = loadPlatformProductJob("export", id)
   if (!job) return null
+  if (job.status === "queued") schedulePlatformProductJobs()
   if (job.status !== "completed" || !job.filePath || !job.fileName) {
     return { pending: true as const, job: snapshot(job) }
   }
