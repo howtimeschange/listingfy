@@ -1,11 +1,13 @@
 import path from "node:path"
+import os from "node:os"
+import { mkdir, rm, writeFile } from "node:fs/promises"
 import { Hono, type Context } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
 import { requirePermission } from "../lib/auth"
 import { auditFromContext } from "../lib/audit"
 import { assertSafeProductArchiveCode } from "../lib/product-archive-security"
-import { createProductArchiveSyncQueue } from "../../../scripts/lib/product_archive_sync_queue.mjs"
+import { createProductArchiveSyncQueue, parseSpuCodes } from "../../../scripts/lib/product_archive_sync_queue.mjs"
 import { resolveDeepdrawConfig } from "../../../scripts/lib/deepdraw_client.mjs"
 import { syncMdmProduct } from "../services/product-archive-sync"
 import {
@@ -20,15 +22,19 @@ import {
   missingDraftSpuCodes,
   patchProductArchiveDraftFields,
   readbackProductArchiveDraft,
+  refreshProductArchiveDraftsFromSourceBatch,
   submitProductArchiveDraft,
   validateProductArchiveDraft,
 } from "../services/product-archive-drafts"
+import { importListingLaunchPlanSheets } from "../services/listing-launch-plans"
+import { readSpreadsheetSheetsFromFile } from "../../../scripts/lib/listing_launch_plan_importer.mjs"
 
 const productArchiveDrafts = new Hono()
 const PROJECT_ROOT =
   path.basename(process.cwd()) === "web"
     ? path.resolve(process.cwd(), "..")
     : process.cwd()
+const UPLOAD_DIR = path.join(os.tmpdir(), "listingify-upload")
 
 const draftQueue = createProductArchiveSyncQueue({
   allowedSources: ["draft", "mdm_draft"],
@@ -43,6 +49,7 @@ const draftQueue = createProductArchiveSyncQueue({
       tradeId: options.tradeId,
       tradePath: options.tradePath,
       sourceBatchId: options.sourceBatchId,
+      sourceBatchIds: options.sourceBatchIds,
       createdBy: options.createdBy,
       projectRoot: PROJECT_ROOT,
     })
@@ -71,11 +78,158 @@ async function readJson(c: Context) {
   }
 }
 
+function stringValue(value: unknown) {
+  if (value == null) return ""
+  if (typeof value === "string") return value.trim()
+  if (typeof value === "number" || typeof value === "boolean") return String(value).trim()
+  return ""
+}
+
+function booleanFormValue(value: unknown) {
+  const text = stringValue(value).toLowerCase()
+  return ["1", "true", "yes", "y", "是"].includes(text)
+}
+
+function safeUploadName(fileName: string) {
+  const base = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, "_")
+  return `${Date.now()}-${base || "upload.xlsx"}`
+}
+
+async function saveUploadedSpreadsheet(c: Context) {
+  const form = await c.req.formData()
+  const file = form.get("file")
+  if (!(file instanceof File)) {
+    throw new HTTPException(400, { message: "请上传表格文件" })
+  }
+  const filePath = await saveFormFile(file)
+  return { form, file, filePath }
+}
+
+async function saveFormFile(file: File) {
+  await mkdir(UPLOAD_DIR, { recursive: true })
+  const filePath = path.join(UPLOAD_DIR, safeUploadName(file.name))
+  await writeFile(filePath, Buffer.from(await file.arrayBuffer()))
+  return filePath
+}
+
+function uniqueStrings(values: unknown[]) {
+  return Array.from(new Set(values.map((value) => stringValue(value)).filter(Boolean)))
+}
+
+function sourceSpuCodesForBatchIds(db: ReturnType<typeof getDb>, sourceBatchIds: number[]) {
+  const ids = sourceBatchIds.filter((id) => Number.isInteger(id) && id > 0)
+  if (ids.length === 0) return []
+  const rows = db.prepare(`
+    select distinct spu_code
+    from product_archive_source_row
+    where source_batch_id in (${ids.map(() => "?").join(", ")})
+      and coalesce(spu_code, '') <> ''
+    order by spu_code
+  `).all(...ids) as Array<{ spu_code: unknown }>
+  return uniqueStrings(rows.map((row) => row.spu_code))
+}
+
+function existingLaunchPlanSpuCodes(db: ReturnType<typeof getDb>, spuCodes: string[]) {
+  const codes = uniqueStrings(spuCodes)
+  if (codes.length === 0) return new Set<string>()
+  const rows = db.prepare(`
+    select distinct spu_code
+    from product_archive_source_row
+    where source_type = 'launch_plan'
+      and spu_code in (${codes.map(() => "?").join(", ")})
+  `).all(...codes) as Array<{ spu_code: unknown }>
+  return new Set(uniqueStrings(rows.map((row) => row.spu_code)))
+}
+
+function launchPlanBatchIdsForSpuCodes(db: ReturnType<typeof getDb>, spuCodes: string[]) {
+  const codes = uniqueStrings(spuCodes)
+  if (codes.length === 0) return []
+  const rows = db.prepare(`
+    select distinct source_batch_id
+    from product_archive_source_row
+    where source_type = 'launch_plan'
+      and spu_code in (${codes.map(() => "?").join(", ")})
+    order by source_batch_id desc
+  `).all(...codes) as Array<{ source_batch_id: unknown }>
+  return rows.map((row) => Number(row.source_batch_id)).filter((id) => Number.isInteger(id) && id > 0)
+}
+
+function missingDraftCodesForCodes(db: ReturnType<typeof getDb>, spuCodes: string[], input: {
+  tenantName?: string | null
+  merchantId?: string | null
+}) {
+  const codes = uniqueStrings(spuCodes)
+  if (codes.length === 0) return []
+  const rows = db.prepare(`
+    select distinct draft.spu_code
+    from product_archive_draft draft
+    where draft.tenant_name = ?
+      and draft.merchant_id = ?
+      and draft.spu_code in (${codes.map(() => "?").join(", ")})
+  `).all(input.tenantName, input.merchantId, ...codes) as Array<{ spu_code: unknown }>
+  const existing = new Set(uniqueStrings(rows.map((row) => row.spu_code)))
+  return codes.filter((code) => !existing.has(code))
+}
+
+async function importWorkflowSourceFile(
+  db: ReturnType<typeof getDb>,
+  file: File,
+  sourceType: "copywriting" | "launch_plan",
+  createdBy?: number | null,
+) {
+  const filePath = await saveFormFile(file)
+  try {
+    const sheets = await readSpreadsheetSheetsFromFile(filePath, { fileName: file.name })
+    const sourceBatchIds: number[] = []
+    const refreshSummaries = []
+    let inputRowCount = 0
+    let insertedRowCount = 0
+    for (const sheet of sheets) {
+      const result = importProductArchiveSourceRows(db, {
+        sourceType,
+        fileName: file.name,
+        sheetName: sheet.name,
+        rows: sheet.rows,
+      })
+      const sourceBatchId = Number(result.batch.id)
+      sourceBatchIds.push(sourceBatchId)
+      inputRowCount += result.inputRowCount
+      insertedRowCount += result.insertedRowCount
+      refreshSummaries.push(refreshProductArchiveDraftsFromSourceBatch(db, {
+        sourceBatchId,
+        sourceType: result.sourceType,
+      }))
+    }
+    const listingPlanImport = sourceType === "launch_plan"
+      ? importListingLaunchPlanSheets(db, {
+          fileName: file.name,
+          fileSizeBytes: file.size,
+          sheets,
+          sourceBatchIds,
+          createdBy,
+        })
+      : null
+    return {
+      fileName: file.name,
+      sheetCount: sheets.length,
+      inputRowCount,
+      insertedRowCount,
+      sourceBatchIds,
+      refreshSummaries,
+      listingPlanImport,
+      spuCodes: sourceSpuCodesForBatchIds(db, sourceBatchIds),
+    }
+  } finally {
+    await rm(filePath, { force: true })
+  }
+}
+
 productArchiveDrafts.get("/", (c) => {
   requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
   const db = getDb()
   return c.json(listProductArchiveDrafts(db, {
     q: c.req.query("q"),
+    spuCodes: c.req.query("spuCodes") ?? c.req.query("codes"),
     status: c.req.query("status"),
     tenant: c.req.query("tenant"),
     limit: c.req.query("limit"),
@@ -121,6 +275,7 @@ productArchiveDrafts.post("/batch", async (c) => {
         tradeId: body.tradeId,
         tradePath: body.tradePath,
         sourceBatchId: body.sourceBatchId,
+        sourceBatchIds: body.sourceBatchIds,
         createdBy: user.id,
       },
     })
@@ -153,6 +308,7 @@ productArchiveDrafts.post("/mdm-batch", async (c) => {
         tradeId: body.tradeId,
         tradePath: body.tradePath,
         sourceBatchId: body.sourceBatchId,
+        sourceBatchIds: body.sourceBatchIds,
         createdBy: user.id,
       },
     })
@@ -187,13 +343,18 @@ productArchiveDrafts.post("/source-imports", async (c) => {
     rows: Array.isArray(body.rows) ? body.rows : [],
   })
   const sourceBatchId = Number(result.batch.id)
-  const deepdrawConfig = autoSyncMissingMdm && result.sourceType === "launch_plan"
+  const refreshSummary = refreshProductArchiveDraftsFromSourceBatch(db, {
+    sourceBatchId,
+    sourceType: result.sourceType,
+  })
+  const shouldAutoCreateDrafts = autoSyncMissingMdm && ["launch_plan", "copywriting"].includes(result.sourceType)
+  const deepdrawConfig = shouldAutoCreateDrafts
     ? resolveDeepdrawConfig({
         projectRoot: PROJECT_ROOT,
         tenantName: body.deepdrawTenantName ?? body.tenantName,
       })
     : null
-  const missingCodes = autoSyncMissingMdm && result.sourceType === "launch_plan"
+  const missingCodes = shouldAutoCreateDrafts
     ? missingDraftSpuCodes(db, sourceBatchId, {
         tenantName: deepdrawConfig?.tenantName,
         merchantId: deepdrawConfig?.merchantId == null ? null : String(deepdrawConfig.merchantId),
@@ -223,14 +384,249 @@ productArchiveDrafts.post("/source-imports", async (c) => {
       sourceType: result.sourceType,
       inputRowCount: result.inputRowCount,
       insertedRowCount: result.insertedRowCount,
+      refreshSummary,
       autoSyncMissingMdm,
-      skippedExistingDraftCount: result.sourceType === "launch_plan" ? result.insertedRowCount - missingCodes.length : 0,
+      skippedExistingDraftCount: shouldAutoCreateDrafts ? result.insertedRowCount - missingCodes.length : 0,
       missingMdmSpuCodes: missingCodes,
       syncJobId: syncJob?.id ?? null,
       userId: user.id,
     },
   })
-  return c.json({ ...result, missingMdmSpuCodes: missingCodes, syncJob })
+  return c.json({ ...result, missingMdmSpuCodes: missingCodes, syncJob, refreshSummary })
+})
+
+productArchiveDrafts.post("/source-imports/upload", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_RULE_MANAGE")
+  const db = getDb()
+  const { form, file, filePath } = await saveUploadedSpreadsheet(c)
+  try {
+    const sourceType = stringValue(form.get("sourceType") ?? form.get("source_type"))
+    const autoSyncMissingMdm = booleanFormValue(form.get("autoSyncMissingMdm") ?? form.get("auto_sync_missing_mdm"))
+    if (autoSyncMissingMdm) {
+      requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+    }
+    const sheets = await readSpreadsheetSheetsFromFile(filePath, { fileName: file.name })
+    const sourceBatchIds: number[] = []
+    const refreshSummaries = []
+    const missingMdmSpuCodes: string[] = []
+    const syncJobs = []
+    let inputRowCount = 0
+    let insertedRowCount = 0
+    let skippedExistingDraftCount = 0
+
+    for (const sheet of sheets) {
+      const result = importProductArchiveSourceRows(db, {
+        sourceType,
+        fileName: file.name,
+        sheetName: sheet.name,
+        rows: sheet.rows,
+      })
+      const sourceBatchId = Number(result.batch.id)
+      sourceBatchIds.push(sourceBatchId)
+      inputRowCount += result.inputRowCount
+      insertedRowCount += result.insertedRowCount
+      const refreshSummary = refreshProductArchiveDraftsFromSourceBatch(db, {
+        sourceBatchId,
+        sourceType: result.sourceType,
+      })
+      refreshSummaries.push(refreshSummary)
+
+      const shouldAutoCreateDrafts = autoSyncMissingMdm && ["launch_plan", "copywriting"].includes(result.sourceType)
+      const deepdrawConfig = shouldAutoCreateDrafts
+        ? resolveDeepdrawConfig({
+            projectRoot: PROJECT_ROOT,
+            tenantName: stringValue(form.get("deepdrawTenantName") ?? form.get("tenantName")),
+          })
+        : null
+      const missingCodes = shouldAutoCreateDrafts
+        ? missingDraftSpuCodes(db, sourceBatchId, {
+            tenantName: deepdrawConfig?.tenantName,
+            merchantId: deepdrawConfig?.merchantId == null ? null : String(deepdrawConfig.merchantId),
+          })
+        : []
+      missingMdmSpuCodes.push(...missingCodes)
+      skippedExistingDraftCount += shouldAutoCreateDrafts ? result.insertedRowCount - missingCodes.length : 0
+      if (missingCodes.length > 0) {
+        syncJobs.push(draftQueue.enqueue({
+          source: "mdm_draft",
+          rawCodes: missingCodes,
+          intervalMs: stringValue(form.get("intervalMs")),
+          options: {
+            deepdrawTenantName: deepdrawConfig?.tenantName ?? stringValue(form.get("deepdrawTenantName") ?? form.get("tenantName")),
+            tradeId: stringValue(form.get("tradeId")) || null,
+            tradePath: stringValue(form.get("tradePath")) || null,
+            sourceBatchId,
+            createdBy: user.id,
+          },
+        }))
+      }
+    }
+
+    const listingPlanImport = sourceType === "launch_plan"
+      ? importListingLaunchPlanSheets(db, {
+          fileName: file.name,
+          fileSizeBytes: file.size,
+          sheets,
+          sourceBatchIds,
+          createdBy: user.id,
+        })
+      : null
+    auditFromContext(c, {
+      action: "source.imported",
+      module: "PRODUCT_ARCHIVE_DRAFT",
+      entityType: "product_archive_source_batch",
+      entityId: sourceBatchIds[0] ?? null,
+      summary: `服务端导入深绘建档来源表 ${sourceType}`,
+      metadata: {
+        sourceType,
+        fileName: file.name,
+        sheetCount: sheets.length,
+        inputRowCount,
+        insertedRowCount,
+        sourceBatchIds,
+        refreshSummaries,
+        autoSyncMissingMdm,
+        skippedExistingDraftCount,
+        missingMdmSpuCodes,
+        syncJobIds: syncJobs.map((job) => job.id),
+        listingPlanImportId: listingPlanImport?.import?.id ?? null,
+        userId: user.id,
+      },
+    })
+    return c.json({
+      sourceType,
+      inputRowCount,
+      insertedRowCount,
+      sheetCount: sheets.length,
+      sourceBatchIds,
+      refreshSummaries,
+      missingMdmSpuCodes,
+      skippedExistingDraftCount,
+      syncJob: syncJobs.at(-1) ?? null,
+      syncJobs,
+      listingPlanImport,
+    })
+  } finally {
+    await rm(filePath, { force: true })
+  }
+})
+
+productArchiveDrafts.post("/workflow/start", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  requirePermission(c, "PRODUCT_ARCHIVE_RULE_MANAGE")
+  const db = getDb()
+  const form = await c.req.formData()
+  const mdmCodes = parseSpuCodes(form.get("mdmCodes") ?? form.get("codes"))
+  const copywritingFile = form.get("copywritingFile")
+  const launchPlanFile = form.get("launchPlanFile")
+  const skipLaunchPlan = booleanFormValue(form.get("skipLaunchPlan"))
+  const sourceBatchIdsByType: Record<string, number[]> = {}
+  const refreshSummaries = []
+  let copywritingImport = null
+  let launchPlanImport = null
+
+  if (copywritingFile instanceof File && copywritingFile.size > 0) {
+    copywritingImport = await importWorkflowSourceFile(db, copywritingFile, "copywriting", user.id)
+    sourceBatchIdsByType.copywriting = copywritingImport.sourceBatchIds
+    refreshSummaries.push(...copywritingImport.refreshSummaries)
+  }
+
+  if (launchPlanFile instanceof File && launchPlanFile.size > 0) {
+    launchPlanImport = await importWorkflowSourceFile(db, launchPlanFile, "launch_plan", user.id)
+    sourceBatchIdsByType.launch_plan = launchPlanImport.sourceBatchIds
+    refreshSummaries.push(...launchPlanImport.refreshSummaries)
+  }
+
+  const candidateCodes = uniqueStrings([
+    ...mdmCodes,
+    ...(copywritingImport?.spuCodes ?? []),
+    ...(launchPlanImport?.spuCodes ?? []),
+  ])
+  if (candidateCodes.length === 0) {
+    throw new HTTPException(400, { message: "请至少输入 MDM 款号，或上传标准文案表/上市计划表" })
+  }
+
+  const existingLaunchPlans = existingLaunchPlanSpuCodes(db, candidateCodes)
+  if (copywritingImport && !launchPlanImport && !skipLaunchPlan) {
+    const missingLaunchPlanSpuCodes = copywritingImport.spuCodes.filter((code) => !existingLaunchPlans.has(code))
+    if (missingLaunchPlanSpuCodes.length > 0) {
+      return c.json({
+        status: "needs_launch_plan",
+        needsLaunchPlan: true,
+        message: "标准文案表中有款号还没有匹配到上市计划，请上传上市计划表后继续建档。",
+        missingLaunchPlanSpuCodes,
+        copywritingImport,
+        launchPlanImport,
+        sourceBatchIdsByType,
+        refreshSummaries,
+      })
+    }
+  }
+
+  const existingLaunchPlanBatchIds = launchPlanBatchIdsForSpuCodes(db, candidateCodes)
+  if (existingLaunchPlanBatchIds.length > 0) {
+    sourceBatchIdsByType.launch_plan = uniqueStrings([
+      ...(sourceBatchIdsByType.launch_plan ?? []),
+      ...existingLaunchPlanBatchIds,
+    ]).map(Number)
+  }
+
+  const deepdrawConfig = resolveDeepdrawConfig({
+    projectRoot: PROJECT_ROOT,
+    tenantName: stringValue(form.get("deepdrawTenantName") ?? form.get("tenantName")),
+  })
+  const draftCodes = missingDraftCodesForCodes(db, candidateCodes, {
+    tenantName: deepdrawConfig.tenantName,
+    merchantId: deepdrawConfig.merchantId == null ? null : String(deepdrawConfig.merchantId),
+  })
+  const legacySourceBatchId = sourceBatchIdsByType.launch_plan?.[0] ?? null
+  const syncJob = draftCodes.length > 0
+    ? draftQueue.enqueue({
+        source: "mdm_draft",
+        rawCodes: draftCodes,
+        intervalMs: stringValue(form.get("intervalMs")),
+        options: {
+          deepdrawTenantName: deepdrawConfig.tenantName,
+          tradeId: stringValue(form.get("tradeId")) || null,
+          tradePath: stringValue(form.get("tradePath")) || null,
+          sourceBatchId: legacySourceBatchId,
+          sourceBatchIds: sourceBatchIdsByType,
+          createdBy: user.id,
+        },
+      })
+    : null
+
+  auditFromContext(c, {
+    action: "draft.workflow.started",
+    module: "PRODUCT_ARCHIVE_DRAFT",
+    entityType: "product_archive_draft_batch",
+    entityId: syncJob?.id ?? null,
+    summary: `开始商品建档 ${candidateCodes.length} 个款号`,
+    metadata: {
+      mdmCodeCount: mdmCodes.length,
+      candidateCodeCount: candidateCodes.length,
+      draftQueuedCount: draftCodes.length,
+      skippedExistingDraftCount: candidateCodes.length - draftCodes.length,
+      copywritingSourceBatchIds: sourceBatchIdsByType.copywriting ?? [],
+      launchPlanSourceBatchIds: sourceBatchIdsByType.launch_plan ?? [],
+      syncJobId: syncJob?.id ?? null,
+      userId: user.id,
+    },
+  })
+
+  return c.json({
+    status: "queued",
+    needsLaunchPlan: false,
+    mdmCodeCount: mdmCodes.length,
+    candidateCodes,
+    draftQueuedCount: draftCodes.length,
+    skippedExistingDraftCount: candidateCodes.length - draftCodes.length,
+    copywritingImport,
+    launchPlanImport,
+    sourceBatchIdsByType,
+    refreshSummaries,
+    syncJob,
+  }, syncJob ? 202 : 200)
 })
 
 productArchiveDrafts.get("/batch-jobs/:jobId", (c) => {

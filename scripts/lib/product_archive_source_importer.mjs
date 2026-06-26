@@ -41,7 +41,39 @@ function stringValue(value) {
   if (value == null) return "";
   if (typeof value === "string") return value.trim();
   if (typeof value === "number" || typeof value === "boolean") return String(value).trim();
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    return [
+      value.getFullYear(),
+      String(value.getMonth() + 1).padStart(2, "0"),
+      String(value.getDate()).padStart(2, "0"),
+    ].join("-");
+  }
   return "";
+}
+
+function dateFieldKey(value) {
+  return /日期|时间|货期|上市/.test(stringValue(value));
+}
+
+function excelSerialDateText(value) {
+  const number = typeof value === "number"
+    ? value
+    : typeof value === "string" && /^\d{5}(?:\.\d+)?$/.test(value.trim())
+      ? Number(value)
+      : NaN;
+  if (!Number.isFinite(number) || number < 20_000 || number > 80_000) return "";
+  const utc = Date.UTC(1899, 11, 30) + Math.round(number) * 24 * 60 * 60 * 1000;
+  const date = new Date(utc);
+  return [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function fieldStringValue(key, value) {
+  if (dateFieldKey(key)) return excelSerialDateText(value) || stringValue(value);
+  return stringValue(value);
 }
 
 function compactKey(value) {
@@ -153,7 +185,7 @@ function cleanRow(row) {
   for (const [key, value] of Object.entries(row ?? {})) {
     const normalizedKey = normalizeHeaderName(key);
     if (!normalizedKey) continue;
-    const text = stringValue(value);
+    const text = fieldStringValue(normalizedKey, value);
     if (text) output[normalizedKey] = text;
   }
   return output;

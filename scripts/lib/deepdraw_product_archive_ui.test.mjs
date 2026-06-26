@@ -74,6 +74,7 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
     /productArchiveDrafts\.post\("\/from-spu\/:spuCode"/,
     /productArchiveDrafts\.post\("\/batch"/,
     /productArchiveDrafts\.post\("\/mdm-batch"/,
+    /productArchiveDrafts\.post\("\/workflow\/start"/,
     /productArchiveDrafts\.post\("\/source-imports"/,
     /productArchiveDrafts\.get\("\/:draftId"/,
     /productArchiveDrafts\.patch\("\/:draftId\/trade"/,
@@ -223,8 +224,16 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /api\.post<.*>\("\/product-archive-drafts\/mdm-batch"/s);
   assert.doesNotMatch(draftListPage, /api\.post<.*>\("\/product-archive-drafts\/batch"/s);
   assert.match(draftListPage, /api\.get<.*>\(`\/product-archive-drafts\/batch-jobs\/\$\{batchJobId\}`\)/s);
-  assert.match(draftListPage, /同步 MDM 并生成草稿/);
-  assert.match(draftListPage, /batchCodes/);
+  assert.match(draftListPage, /开始商品建档/);
+  assert.match(draftListPage, /MDM 同步建档/);
+  assert.match(draftListPage, /导入标准文案表/);
+  assert.match(draftListPage, /多行款号搜索/);
+  assert.match(draftListPage, /multiLineSearchOpen/);
+  assert.match(draftListPage, /multiLineSpuCodes/);
+  assert.match(draftListPage, /api\.post<.*>\("\/product-archive-drafts\/mdm-batch"/s);
+  assert.match(draftListPage, /api\.postForm<.*>\("\/product-archive-drafts\/source-imports\/upload"/s);
+  assert.match(draftListPage, /sourceType", "copywriting"/);
+  assert.match(draftListPage, /workflowMdmCodes/);
   assert.match(draftListPage, /Textarea/);
   assert.match(draftListPage, /selectedDraftIds/);
   assert.match(draftListPage, /toggleAllVisible/);
@@ -238,24 +247,29 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /批量发布到深绘/);
   assert.match(draftListPage, /submit_publish/);
   assert.match(draftListPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/submit`, \{ dryRun: false \}\)/s);
-  assert.match(draftListPage, /ImportDialog/);
+  assert.match(draftListPage, /StartProductArchiveDialog/);
   assert.doesNotMatch(draftListPage, /导入字段对应关系/);
   assert.match(draftListPage, /先同步 MDM 款号，再导入上市计划表和标准文案表/);
-  assert.match(draftListPage, /autoSyncMissingMdm:\s*sourceType === "launch_plan"/);
-  assert.match(draftListPage, /syncJobs:\s*DraftBatchJob\[\]/);
-  assert.match(draftListPage, /syncJobs\.push\(result\.syncJob\)/);
-  assert.match(draftListPage, /for \(const syncJob of result\.syncJobs\)/);
+  assert.match(draftListPage, /开始商品建档/);
+  assert.match(draftListPage, /1\.\s*同步 MDM/);
+  assert.match(draftListPage, /2\.\s*导入标准文案表/);
+  assert.match(draftListPage, /3\.\s*匹配\/导入上市计划/);
+  assert.match(draftListPage, /api\.postForm<.*>\("\/product-archive-drafts\/workflow\/start"/s);
+  assert.match(draftListPage, /workflowMdmCodes/);
+  assert.match(draftListPage, /copywritingFile/);
+  assert.match(draftListPage, /launchPlanFile/);
+  assert.match(draftListPage, /result\.syncJob/);
   assert.match(draftListPage, /useAsyncTasks/);
   assert.match(draftListPage, /addTask/);
   assert.match(draftListPage, /openTaskCenter/);
-  assert.match(draftListPage, /mdmSyncDialogOpen/);
+  assert.match(draftListPage, /workflowProgressDialogOpen/);
   assert.match(draftListPage, /MDM 同步进度/);
   assert.match(draftListPage, /Progress/);
   assert.match(draftListPage, /失败原因/);
   assert.match(draftListPage, /最小化到任务中心/);
   assert.match(draftListPage, /自动同步/);
-  assert.match(draftListPage, /导入上市计划表/);
-  assert.match(draftListPage, /导入标准文案表/);
+  assert.doesNotMatch(draftListPage, /title="导入上市计划表"/);
+  assert.doesNotMatch(draftListPage, /trigger=\{<Button type="button" variant="outline" size="sm" disabled=\{importSource\.isPending\}>导入上市计划表<\/Button>\}/);
 
   assert.match(draftDetailPage, /TabsTrigger/);
   for (const label of ["概览", "字段填充", "SKU/颜色尺码", "校验问题", "提交记录", "来源快照"]) {

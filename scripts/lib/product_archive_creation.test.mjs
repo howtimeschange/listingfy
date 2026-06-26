@@ -399,6 +399,41 @@ test("product archive service derives core sales fields from MDM master data", a
   );
 });
 
+test("product archive field mapping applies product-line domains only to matching MDM goods", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(service.fieldMappingDomainApplies({ field_domain_type: "通用字段" }, {}), true);
+  assert.equal(service.fieldMappingDomainApplies({ field_domain_type: "1688" }, {}), true);
+  assert.equal(
+    service.fieldMappingDomainApplies(
+      { field_domain_type: "产品线：鞋品" },
+      { product_line_name: "童装服饰", subclass_name: "普通外套" },
+    ),
+    false,
+  );
+  assert.equal(
+    service.fieldMappingDomainApplies(
+      { field_domain_type: "产品线：鞋品" },
+      { product_line_name: "鞋品", subclass_name: "运动鞋" },
+    ),
+    true,
+  );
+  assert.equal(
+    service.fieldMappingDomainApplies(
+      { field_domain_type: "产品线：中童" },
+      { product_line_name: "童装服饰", age_group_name: "中童" },
+    ),
+    true,
+  );
+  assert.equal(
+    service.fieldMappingDomainApplies(
+      { field_domain_type: "鞋品字段" },
+      { product_line_name: "鞋类商品" },
+    ),
+    true,
+  );
+});
+
 test("product archive field option validation supports multi-value strings and object SKU payloads", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 

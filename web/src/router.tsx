@@ -30,6 +30,8 @@ import ProductArchivesPage from "@/pages/product-archives/page"
 import ProductArchiveDetailPage from "@/pages/product-archives/[spuCode]/page"
 import ProductArchiveDraftsPage from "@/pages/product-archive-drafts/page"
 import ProductArchiveDraftDetailPage from "@/pages/product-archive-drafts/[draftId]/page"
+import ListingLaunchPlansPage from "@/pages/listing-launch-plans/page"
+import DeepdrawFieldMappingsPage from "@/pages/deepdraw-field-mappings/page"
 import MdmProductsPage from "@/pages/mdm-products/page"
 import MdmProductDetailPage from "@/pages/mdm-products/[spuCode]/page"
 import DeepDrawContentPage from "@/pages/deepdraw-content/page"
@@ -81,6 +83,8 @@ export const router = createBrowserRouter([
       { path: "product-archives/:spuCode", element: <ProductArchiveDetailPage /> },
       { path: "product-archive-drafts", element: <ProductArchiveDraftsPage /> },
       { path: "product-archive-drafts/:draftId", element: <ProductArchiveDraftDetailPage /> },
+      { path: "listing-launch-plans", element: <ListingLaunchPlansPage /> },
+      { path: "deepdraw-field-mappings", element: <DeepdrawFieldMappingsPage /> },
       { path: "mdm-products", element: <MdmProductsPage /> },
       { path: "mdm-products/:spuCode", element: <MdmProductDetailPage /> },
       { path: "deepdraw-content", element: <DeepDrawContentPage /> },

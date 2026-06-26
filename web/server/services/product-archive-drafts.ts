@@ -14,6 +14,7 @@ type JsonRecord = Record<string, unknown>
 
 interface ListDraftsInput {
   q?: string | null
+  spuCodes?: string | string[] | null
   status?: string | null
   tenant?: string | null
   limit?: unknown
@@ -26,6 +27,7 @@ interface CreateDraftInput {
   tradeId?: string | null
   tradePath?: string | null
   sourceBatchId?: number | null
+  sourceBatchIds?: Record<string, number[]> | number[] | null
   createdBy?: number | null
   projectRoot?: string
 }
@@ -71,6 +73,11 @@ interface SourceImportInput {
   fileName?: string | null
   sheetName?: string | null
   rows?: JsonRecord[]
+}
+
+interface RefreshSourceBatchInput {
+  sourceBatchId: number
+  sourceType: string
 }
 
 function nowIso() {
@@ -176,6 +183,13 @@ function jsonText(value: unknown) {
 
 function likeQuery(value: string) {
   return `%${value.trim()}%`
+}
+
+function parseDraftSpuCodes(value: unknown) {
+  const rawValues = Array.isArray(value)
+    ? value.flatMap((item) => stringValue(item).split(/[\s,，;；]+/))
+    : stringValue(value).split(/[\s,，;；]+/)
+  return uniqueTextValues(rawValues)
 }
 
 function draftNo(spuCode: string) {
@@ -541,8 +555,96 @@ function sourceRowsForSpu(db: SyncPostgresDatabase, spuCode: string, sourceBatch
   `).all(...params) as JsonRecord[]
 }
 
+function sourceRowsForSpuBatchIds(db: SyncPostgresDatabase, spuCode: string, sourceBatchIds: number[]) {
+  const batchIds = Array.from(new Set(sourceBatchIds.filter((id) => Number.isInteger(id) && id > 0)))
+  if (batchIds.length === 0) return sourceRowsForSpu(db, spuCode, null)
+  return db.prepare(`
+    select source.*
+    from product_archive_source_row source
+    where source.spu_code = ?
+      and source.source_batch_id in (${batchIds.map(() => "?").join(", ")})
+    order by source.source_type, source.skc_code nulls first, source.id desc
+  `).all(spuCode, ...batchIds) as JsonRecord[]
+}
+
+function sourceBatchIdsFromSnapshot(snapshot: JsonRecord) {
+  const ids = new Set<number>()
+  const legacy = numberValue(snapshot.sourceBatchId)
+  if (legacy !== null && legacy > 0) ids.add(legacy)
+  const sourceBatchIds = snapshot.sourceBatchIds
+  if (Array.isArray(sourceBatchIds)) {
+    for (const value of sourceBatchIds) {
+      const id = numberValue(value)
+      if (id !== null && id > 0) ids.add(id)
+    }
+  } else {
+    const byType = recordValue(sourceBatchIds)
+    for (const value of Object.values(byType)) {
+      for (const item of arrayValue(value)) {
+        const id = numberValue(item)
+        if (id !== null && id > 0) ids.add(id)
+      }
+    }
+  }
+  return Array.from(ids)
+}
+
+function normalizeSourceBatchIds(value: unknown, legacySourceBatchId?: unknown) {
+  const byType: Record<string, number[]> = {}
+  const push = (sourceType: string, item: unknown) => {
+    const id = numberValue(item)
+    if (id === null || id <= 0) return
+    const key = stringValue(sourceType) || "source"
+    byType[key] = byType[key] ?? []
+    if (!byType[key].includes(id)) byType[key].push(id)
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) push("source", item)
+  } else {
+    const record = recordValue(value)
+    for (const [sourceType, ids] of Object.entries(record)) {
+      for (const item of arrayValue(ids)) push(sourceType, item)
+    }
+  }
+
+  if (Object.keys(byType).length === 0) {
+    push("launch_plan", legacySourceBatchId)
+  }
+  return byType
+}
+
+function sourceBatchIdList(sourceBatchIds: Record<string, number[]>) {
+  const ids = new Set<number>()
+  for (const values of Object.values(sourceBatchIds)) {
+    for (const value of values) {
+      if (Number.isInteger(value) && value > 0) ids.add(value)
+    }
+  }
+  return Array.from(ids)
+}
+
+function appendSourceBatchId(snapshot: JsonRecord, sourceType: string, sourceBatchId: number) {
+  const next = { ...snapshot }
+  const byType = { ...recordValue(next.sourceBatchIds) }
+  const current = arrayValue(byType[sourceType])
+    .map((value) => numberValue(value))
+    .filter((value): value is number => value !== null && value > 0)
+  if (!current.includes(sourceBatchId)) current.push(sourceBatchId)
+  byType[sourceType] = current
+  next.sourceBatchIds = byType
+  if (!numberValue(next.sourceBatchId) && sourceType === "launch_plan") {
+    next.sourceBatchId = sourceBatchId
+  }
+  return next
+}
+
 function sourceRowsForDraft(db: SyncPostgresDatabase, draft: JsonRecord) {
   const snapshot = recordValue(draft.source_snapshot_json)
+  const batchIds = sourceBatchIdsFromSnapshot(snapshot)
+  if (batchIds.length > 0) {
+    return sourceRowsForSpuBatchIds(db, stringValue(draft.spu_code), batchIds)
+  }
   return sourceRowsForSpu(
     db,
     stringValue(draft.spu_code),
@@ -1117,14 +1219,76 @@ function tradeFieldsForDraft(db: SyncPostgresDatabase, draft: JsonRecord, tradeI
   `).all(draft.tenant_name, draft.merchant_id, tradeId) as JsonRecord[]
 }
 
-function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeFields: JsonRecord[], existingFields: JsonRecord[] = []) {
-  const spu = db.prepare("select * from product_spu where spu_code = ?").get(draft.spu_code) as JsonRecord | undefined
-  if (!spu) throw new Error(`MDM 款号不存在：${draft.spu_code}`)
-  const rules = db.prepare(`
+function productLineDomainTarget(value: unknown) {
+  const domain = stringValue(value).replace(/\s+/g, "")
+  if (!domain) return ""
+  const productLine = domain.match(/^产品线[:：]?(.+)$/)?.[1] ?? ""
+  const target = productLine || (/鞋品/.test(domain) ? "鞋品" : /中童/.test(domain) ? "中童" : "")
+  return target.replace(/字段$/g, "")
+}
+
+export function fieldMappingDomainApplies(rule: JsonRecord, spu: JsonRecord = {}) {
+  const domain = stringValue(rule.field_domain_type ?? rule.fieldDomainType)
+  if (!domain || /通用/.test(domain)) return true
+  const target = productLineDomainTarget(domain)
+  if (!target) return true
+  const mdmText = [
+    spu.product_line_name,
+    spu.product_type_name,
+    spu.middle_class_name,
+    spu.subclass_name,
+    spu.age_group_name,
+    spu.spu_name,
+  ].map(stringValue).filter(Boolean).join(" ")
+  if (!mdmText) return false
+  if (/鞋/.test(target)) return /鞋/.test(mdmText)
+  if (/中童/.test(target)) return /中童/.test(mdmText)
+  return mdmText.includes(target)
+}
+
+export function fieldMappingRulesForDraft(db: SyncPostgresDatabase, draft: JsonRecord) {
+  try {
+    const spu = db.prepare(`
+      select product_line_name, product_type_name, middle_class_name, subclass_name, age_group_name, spu_name
+      from product_spu
+      where spu_code = ?
+    `).get(draft.spu_code) as JsonRecord | undefined
+    const tenantRules = db.prepare(`
+      select
+        id,
+        field_domain_type,
+        deepdraw_field,
+        field_source,
+        mapped_field,
+        source_type,
+        source_table,
+        source_field,
+        default_value,
+        blocking,
+        notes
+      from deepdraw_field_mapping_rule
+      where tenant_name = ?
+        and merchant_id = ?
+        and enabled = true
+      order by id
+    `).all(draft.tenant_name, draft.merchant_id) as JsonRecord[]
+    if (tenantRules.length > 0) return tenantRules.filter((rule) => fieldMappingDomainApplies(rule, spu ?? {}))
+  } catch (error) {
+    if (!/deepdraw_field_mapping_rule/i.test(error instanceof Error ? error.message : String(error))) {
+      throw error
+    }
+  }
+  return db.prepare(`
     select *
     from product_archive_field_rule
     order by id
   `).all() as JsonRecord[]
+}
+
+function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeFields: JsonRecord[], existingFields: JsonRecord[] = []) {
+  const spu = db.prepare("select * from product_spu where spu_code = ?").get(draft.spu_code) as JsonRecord | undefined
+  if (!spu) throw new Error(`MDM 款号不存在：${draft.spu_code}`)
+  const rules = fieldMappingRulesForDraft(db, draft)
   const sourceRows = sourceRowsForDraft(db, draft)
   const mdmSkus = mdmSkuRowsForSpu(db, stringValue(draft.spu_code))
   const dateText = sourceFieldValue(sourceRows, "launch_plan", "内容上市时间")
@@ -1159,7 +1323,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
       fieldName,
       fieldId: stringValue(template.field_id) || null,
       sourceType: existingManual ? "manual" : sourceType,
-      sourceRef: stringValue(rule.source_field || rule.source_table) || null,
+      sourceRef: stringValue(rule.mapped_field || rule.source_field || rule.field_source || rule.source_table) || null,
       valueText: valueText || null,
       valueJson,
       required,
@@ -1259,10 +1423,15 @@ export function listProductArchiveDrafts(db: SyncPostgresDatabase, input: ListDr
   const offset = readOffset(input.offset)
   const params: unknown[] = []
   const where: string[] = []
+  const spuCodes = parseDraftSpuCodes(input.spuCodes)
   if (input.q?.trim()) {
     const like = likeQuery(input.q)
     where.push("(draft.spu_code ilike ? or draft.title ilike ? or draft.trade_path ilike ? or draft.created_product_id ilike ?)")
     params.push(like, like, like, like)
+  }
+  if (spuCodes.length > 0) {
+    where.push(`draft.spu_code in (${spuCodes.map(() => "?").join(", ")})`)
+    params.push(...spuCodes)
   }
   if (input.status && input.status !== "all") {
     where.push("draft.status = ?")
@@ -1395,6 +1564,86 @@ export function importProductArchiveSourceRows(db: SyncPostgresDatabase, input: 
   }
 }
 
+export function refreshProductArchiveDraftsFromSourceBatch(db: SyncPostgresDatabase, input: RefreshSourceBatchInput) {
+  const sourceType = sourceImportType(input.sourceType)
+  if (!["launch_plan", "copywriting"].includes(sourceType)) {
+    return { scannedDraftCount: 0, refreshedDraftCount: 0, autoAppliedTradeCount: 0, skippedNoTradeMatchCount: 0, failedDrafts: [] }
+  }
+  const sourceBatchId = numberValue(input.sourceBatchId)
+  if (sourceBatchId === null || sourceBatchId <= 0) {
+    return { scannedDraftCount: 0, refreshedDraftCount: 0, autoAppliedTradeCount: 0, skippedNoTradeMatchCount: 0, failedDrafts: [] }
+  }
+
+  const drafts = db.prepare(`
+    select distinct draft.*
+    from product_archive_draft draft
+    join product_archive_source_row source on source.spu_code = draft.spu_code
+    where source.source_batch_id = ?
+      and source.source_type = ?
+      and draft.status in ('draft', 'missing_fields', 'manual_review', 'ready')
+    order by draft.updated_at desc, draft.id desc
+  `).all(sourceBatchId, sourceType) as JsonRecord[]
+  let refreshedDraftCount = 0
+  let autoAppliedTradeCount = 0
+  let skippedNoTradeMatchCount = 0
+  const failedDrafts: Array<{ draftId: number; spuCode: string; message: string }> = []
+
+  for (const draft of drafts) {
+    const draftId = numberValue(draft.id)
+    if (draftId === null) continue
+    try {
+      const snapshot = appendSourceBatchId(recordValue(draft.source_snapshot_json), sourceType, sourceBatchId)
+      db.prepare(`
+        update product_archive_draft
+        set source_snapshot_json = ?::jsonb,
+          updated_at = ?::timestamptz
+        where id = ?
+      `).run(jsonText(snapshot), nowIso(), draftId)
+
+      if (sourceType === "launch_plan" && !stringValue(draft.trade_id)) {
+        const sourceRows = sourceRowsForSpu(db, stringValue(draft.spu_code), sourceBatchId)
+        const draftMerchantId = stringValue(draft.merchant_id)
+        const autoMatchedTrade = inferDeepdrawTradeFromLaunchPlan(db, {
+          tenantName: stringValue(draft.tenant_name),
+          merchantId: draftMerchantId,
+          sourceRows,
+        })
+        if (autoMatchedTrade?.tradeId) {
+          applyProductArchiveDraftTrade(db, draftId, {
+            tradeId: autoMatchedTrade.tradeId,
+            tradePath: autoMatchedTrade.tradePath,
+          })
+          autoAppliedTradeCount += 1
+          refreshedDraftCount += 1
+        } else {
+          validateProductArchiveDraft(db, draftId)
+          skippedNoTradeMatchCount += 1
+        }
+      } else if (stringValue(draft.trade_id)) {
+        rebuildProductArchiveDraftFields(db, draftId)
+        validateProductArchiveDraft(db, draftId)
+        refreshedDraftCount += 1
+      } else {
+        validateProductArchiveDraft(db, draftId)
+      }
+    } catch (error) {
+      failedDrafts.push({
+        draftId,
+        spuCode: stringValue(draft.spu_code),
+        message: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  return {
+    scannedDraftCount: drafts.length,
+    refreshedDraftCount,
+    autoAppliedTradeCount,
+    skippedNoTradeMatchCount,
+    failedDrafts,
+  }
+}
+
 export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input: CreateDraftInput) {
   const spu = db.prepare("select * from product_spu where spu_code = ?").get(input.spuCode) as JsonRecord | undefined
   if (!spu) throw new Error(`MDM 款号不存在：${input.spuCode}`)
@@ -1425,7 +1674,11 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
     order by skc.skc_code, sku.size_code, sku.sku_code
   `).all(input.spuCode) as JsonRecord[]
 
-  const sourceRows = sourceRowsForSpu(db, input.spuCode, input.sourceBatchId)
+  const sourceBatchIds = normalizeSourceBatchIds(input.sourceBatchIds, input.sourceBatchId)
+  const sourceBatchIdValues = sourceBatchIdList(sourceBatchIds)
+  const sourceRows = sourceBatchIdValues.length > 0
+    ? sourceRowsForSpuBatchIds(db, input.spuCode, sourceBatchIdValues)
+    : sourceRowsForSpu(db, input.spuCode, input.sourceBatchId)
   const autoMatchedTrade = input.tradeId
     ? null
     : inferDeepdrawTradeFromLaunchPlan(db, { tenantName, merchantId, sourceRows })
@@ -1436,7 +1689,14 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
     : []
 
   const now = nowIso()
-  const sourceSnapshot = { spu, sourceRows, sourceBatchId: input.sourceBatchId ?? null, autoMatchedTrade }
+  const sourceBatchId = numberValue(input.sourceBatchId) ?? sourceBatchIds.launch_plan?.[0] ?? null
+  const sourceSnapshot = {
+    spu,
+    sourceRows,
+    sourceBatchId: sourceBatchId ?? null,
+    sourceBatchIds,
+    autoMatchedTrade,
+  }
   const result = db.transaction(() => {
     const inserted = db.prepare(`
       insert into product_archive_draft (

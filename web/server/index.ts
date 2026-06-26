@@ -7,6 +7,7 @@ import metadata from "./routes/metadata"
 import categoryMapping from "./routes/category-mapping"
 import productArchives from "./routes/product-archives"
 import productArchiveDrafts from "./routes/product-archive-drafts"
+import deepdrawFieldMappings from "./routes/deepdraw-field-mappings"
 import mdmProducts from "./routes/mdm-products"
 import deepdrawContent from "./routes/deepdraw-content"
 import deepdrawMetadata from "./routes/deepdraw-metadata"
@@ -19,6 +20,7 @@ import sheinOperations from "./routes/shein-operations"
 import prePublish from "./routes/pre-publish"
 import publishTasks from "./routes/publish-tasks"
 import listingBatches from "./routes/listing-batches"
+import listingLaunchPlans from "./routes/listing-launch-plans"
 import auth from "./routes/auth"
 import users from "./routes/users"
 import platformIntegrations from "./routes/platform-integrations"
@@ -82,6 +84,7 @@ app.route("/api/metadata", metadata)
 app.route("/api/category-mapping", categoryMapping)
 app.route("/api/product-archives", productArchives)
 app.route("/api/product-archive-drafts", productArchiveDrafts)
+app.route("/api/deepdraw-field-mappings", deepdrawFieldMappings)
 app.route("/api/mdm-products", mdmProducts)
 app.route("/api/deepdraw-content", deepdrawContent)
 app.route("/api/deepdraw-metadata", deepdrawMetadata)
@@ -94,6 +97,7 @@ app.route("/api/shein-operations", sheinOperations)
 app.route("/api/pre-publish", prePublish)
 app.route("/api/publish-tasks", publishTasks)
 app.route("/api/listing-batches", listingBatches)
+app.route("/api/listing-launch-plans", listingLaunchPlans)
 
 const port = Number(process.env.PORT ?? 3001)
 console.log(`API server listening on http://localhost:${port}`)

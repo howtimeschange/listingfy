@@ -309,6 +309,82 @@ test("normalizeProductArchiveSourceRows accepts launch plan workbook headers", (
   assert.equal(rows[0].rowJson["内容上市时间"], "2025-12-26");
 });
 
+test("normalizeProductArchiveSourceRows accepts 326 launch plan template headers beyond visible columns", () => {
+  const rows = normalizeProductArchiveSourceRows("launch_plan", normalizeSpreadsheetRows([
+    {
+      "Column 1": "细节差异/产品规格差异/推荐岁段",
+      "Column 33": "买手",
+    },
+    {
+      "Column 1": "上新模块",
+      "Column 20": "商品基础信息",
+      "Column 57": "上市规划",
+      "Column 70": "运营模块",
+    },
+    {
+      "Column 20": "产品季",
+      "Column 21": "大货款号",
+      "Column 27": "款色号",
+      "Column 41": "性别",
+      "Column 42": "品类",
+      "Column 43": "小类",
+      "Column 44": "颜色名称",
+      "Column 62": "内容上市时间",
+      "Column 63": "搜索上市时间",
+      "Column 72": "发布类目 (官方)",
+      "Column 73": "发布类目 (唯品)",
+      "Column 74": "主款式 （唯品四级品类）",
+      "Column 75": "发布类目 (抖音)",
+    },
+    {
+      "Column 20": "326",
+      "Column 21": "200326105103",
+      "Column 27": "20032610510300334",
+      "Column 41": "男",
+      "Column 42": "便服",
+      "Column 43": "梭织便服",
+      "Column 44": "黄绿色调00334",
+      "Column 62": "2026/7/3",
+      "Column 63": "2026/7/3",
+      "Column 72": "童装/婴儿装/亲子装>>外套/夹克/大衣>>普通外套",
+      "Column 73": "婴幼外套",
+      "Column 74": "外套",
+      "Column 75": "服饰内衣>童装>外套",
+    },
+  ]));
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].spuCode, "200326105103");
+  assert.equal(rows[0].skcCode, "20032610510300334");
+  assert.equal(rows[0].rowJson["官方发布类目"], "童装/婴儿装/亲子装>>外套/夹克/大衣>>普通外套");
+  assert.equal(rows[0].rowJson["发布类目 (唯品)"], "婴幼外套");
+  assert.equal(rows[0].rowJson["主款式 （唯品四级品类）"], "外套");
+  assert.equal(rows[0].rowJson["发布类目 (抖音)"], "服饰内衣>童装>外套");
+});
+
+test("normalizeProductArchiveSourceRows converts Excel serial numbers for launch date fields", () => {
+  const rows = normalizeProductArchiveSourceRows("launch_plan", normalizeSpreadsheetRows([
+    {
+      "Column 21": "大货款号",
+      "Column 27": "款色号",
+      "Column 58": "上市时间",
+      "Column 62": "内容上市时间",
+      "Column 63": "搜索上市时间",
+    },
+    {
+      "Column 21": "200326105103",
+      "Column 27": "20032610510300334",
+      "Column 58": 46206,
+      "Column 62": 46206,
+      "Column 63": 46206,
+    },
+  ]));
+
+  assert.equal(rows[0].rowJson["上市时间"], "2026-07-03");
+  assert.equal(rows[0].rowJson["内容上市时间"], "2026-07-03");
+  assert.equal(rows[0].rowJson["搜索上市时间"], "2026-07-03");
+});
+
 test("normalizeProductArchiveSourceRows accepts standard copywriting workbook headers", () => {
   const rows = normalizeProductArchiveSourceRows("copywriting", [
     {

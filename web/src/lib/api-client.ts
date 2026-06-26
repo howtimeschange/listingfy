@@ -52,10 +52,11 @@ async function request<T>(
   options?: RequestInit,
 ): Promise<T> {
   const url = `${BASE_URL}${path}`
+  const isFormData = typeof FormData !== "undefined" && options?.body instanceof FormData
   const res = await fetch(url, {
     credentials: "include",
     headers: {
-      "Content-Type": "application/json",
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
       ...options?.headers,
     },
     ...options,
@@ -82,6 +83,13 @@ export const api = {
     request<T>(path, {
       method: "POST",
       body: body ? JSON.stringify(body) : undefined,
+    }),
+
+  postForm: <T>(path: string, body: FormData) =>
+    request<T>(path, {
+      method: "POST",
+      headers: {},
+      body,
     }),
 
   put: <T>(path: string, body?: unknown) =>
