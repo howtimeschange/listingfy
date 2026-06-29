@@ -37,7 +37,8 @@ test("SHEIN operations center organizes P1 and P2 lifecycle capabilities into se
   assert.match(plan, /P1：运营必需支撑能力/);
   assert.match(plan, /P2：合规、采购、库存、财务扩展/);
 
-  assert.match(sidebar, /SHEIN运营中心/);
+  assert.match(sidebar, /SHEIN 上新运营/);
+  assert.doesNotMatch(sidebar, /label:\s*"SHEIN运营中心"/);
   for (const [label, route] of [
     ["条码尺码", "shein-operations/barcode-size"],
     ["平台标识对账", "shein-operations/platform-identities"],
@@ -52,7 +53,7 @@ test("SHEIN operations center organizes P1 and P2 lifecycle capabilities into se
     assert.match(router, new RegExp(`path: "${route}"`));
   }
 
-  assert.match(header, /"shein-operations": "SHEIN运营中心"/);
+  assert.match(header, /"shein-operations": "审核状态中心"/);
 
   for (const text of [
     "/shein-operations/barcodes/batch-skc-size",

@@ -42,7 +42,7 @@ async function saveUploadedSpreadsheet(c: Context) {
 }
 
 listingLaunchPlans.get("/imports", (c) => {
-  requirePermission(c, "DATA_READ")
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
   const db = getDb()
   return c.json(listListingLaunchPlanImports(db, {
     limit: c.req.query("limit"),
@@ -51,7 +51,7 @@ listingLaunchPlans.get("/imports", (c) => {
 })
 
 listingLaunchPlans.get("/rows", (c) => {
-  requirePermission(c, "DATA_READ")
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
   const db = getDb()
   return c.json(listListingLaunchPlanRows(db, {
     q: c.req.query("q"),

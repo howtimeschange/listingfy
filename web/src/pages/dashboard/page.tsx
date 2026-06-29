@@ -1,4 +1,3 @@
-import { useMemo } from "react"
 import { Link } from "react-router"
 import { useQuery } from "@tanstack/react-query"
 import type { LucideIcon } from "lucide-react"
@@ -7,15 +6,18 @@ import {
   ArrowRight,
   CheckCircle2,
   Database,
+  FileSpreadsheet,
   FileClock,
   GitBranch,
-  PackageCheck,
+  PackageSearch,
+  PenLine,
   Send,
   ShieldCheck,
   ShoppingBag,
   Sparkles,
 } from "lucide-react"
 import { api } from "@/lib/api-client"
+import { useAuth } from "@/lib/auth-context"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
@@ -106,6 +108,31 @@ interface DraftListResponse {
   }
 }
 
+interface ProductArchiveDraftItem {
+  id: number
+  draft_no: string
+  spu_code: string
+  title: string | null
+  tenant_name: string
+  merchant_id: string
+  trade_path: string | null
+  status: string
+  blocker_count: number
+  warning_count: number
+  sku_count: number
+  created_product_id: string | null
+  updated_at: string
+}
+
+interface ProductArchiveDraftListResponse {
+  items: ProductArchiveDraftItem[]
+  pagination: {
+    total: number
+    limit: number
+    offset: number
+  }
+}
+
 interface PublishTask {
   id: number
   listing_id: number
@@ -178,31 +205,57 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   FAILED: "失败",
 }
 
-function useMetadataSummary() {
+const ARCHIVE_STATUS_LABELS: Record<string, string> = {
+  draft: "草稿",
+  missing_fields: "缺字段",
+  manual_review: "待人工判断",
+  ready: "可创建",
+  duplicate_found: "已存在",
+  update_pending: "待更新策略",
+  submitting: "创建中",
+  created: "已创建",
+  readback_verified: "回读通过",
+  readback_mismatch: "回读不一致",
+  failed: "失败",
+}
+
+function useMetadataSummary(enabled = true) {
   return useQuery<MetadataSummary>({
     queryKey: ["metadata", "summary"],
     queryFn: () => api.get("/metadata/summary"),
+    enabled,
   })
 }
 
-function useSheinBucketOverview() {
+function useSheinBucketOverview(enabled = true) {
   return useQuery<SheinBucketResponse>({
     queryKey: ["dashboard", "shein-products"],
     queryFn: () => api.get("/shein-products?limit=5&offset=0"),
+    enabled,
   })
 }
 
-function useDraftOverview() {
+function useDraftOverview(enabled = true) {
   return useQuery<DraftListResponse>({
     queryKey: ["dashboard", "pre-publish", "drafts"],
     queryFn: () => api.get("/pre-publish/drafts?platform=SHEIN&limit=6&offset=0"),
+    enabled,
   })
 }
 
-function usePublishTaskOverview() {
+function usePublishTaskOverview(enabled = true) {
   return useQuery<PublishTasksResponse>({
     queryKey: ["dashboard", "publish-tasks"],
     queryFn: () => api.get("/publish-tasks?platform=SHEIN&limit=6&offset=0"),
+    enabled,
+  })
+}
+
+function useProductArchiveDraftOverview(enabled = true) {
+  return useQuery<ProductArchiveDraftListResponse>({
+    queryKey: ["dashboard", "product-archive-drafts"],
+    queryFn: () => api.get("/product-archive-drafts?limit=6&offset=0"),
+    enabled,
   })
 }
 
@@ -220,16 +273,31 @@ function labelFor(map: Record<string, string>, value: string) {
 }
 
 function statusClass(status: string) {
-  if (status.includes("FAILED") || status === "MISSING") {
+  const normalized = status.toUpperCase()
+  if (normalized.includes("FAILED") || status === "MISSING" || status === "failed" || status === "duplicate_found") {
     return "border-[#f1cccc] bg-[#fff1f1] text-[#d45656]"
   }
-  if (status.includes("SUBMITTED") || status === "PASSED" || status === "READY") {
+  if (
+    normalized.includes("SUBMITTED")
+    || status === "PASSED"
+    || status === "READY"
+    || status === "ready"
+    || status === "created"
+    || status === "readback_verified"
+  ) {
     return "border-[#b9f4d8] bg-[#d4fae8] text-[#0fa76e]"
   }
-  if (status.includes("PUBLISHING") || status.includes("PENDING") || status === "NEEDS_REVIEW") {
+  if (normalized.includes("PUBLISHING") || normalized.includes("PENDING") || status === "NEEDS_REVIEW" || status === "submitting") {
     return "border-[#d7e5fb] bg-[#eef5ff] text-[#3772cf]"
   }
-  if (status.includes("ENRICHMENT") || status.includes("VALIDATE") || status === "NEEDS_DETAIL") {
+  if (
+    normalized.includes("ENRICHMENT")
+    || normalized.includes("VALIDATE")
+    || status === "NEEDS_DETAIL"
+    || status === "missing_fields"
+    || status === "manual_review"
+    || status === "readback_mismatch"
+  ) {
     return "border-[#e7dccd] bg-[#f7f2eb] text-[#7f684c]"
   }
   return "border-border bg-background text-foreground"
@@ -255,90 +323,136 @@ function fieldCompleteness(item: SheinBucketItem) {
 }
 
 export default function DashboardPage() {
-  const { data: metadata, isLoading: metadataLoading } = useMetadataSummary()
-  const { data: bucketData, isLoading: bucketLoading } = useSheinBucketOverview()
-  const { data: draftData, isLoading: draftLoading } = useDraftOverview()
-  const { data: taskData, isLoading: taskLoading } = usePublishTaskOverview()
+  const { hasPermission } = useAuth()
+  const canUseDeepdraw = hasPermission("PRODUCT_ARCHIVE_DRAFT_READ")
+  const canUseShein = hasPermission("LISTING_READ")
+  const deepdrawQueryGate = { enabled: canUseDeepdraw }
+  const sheinQueryGate = { enabled: canUseShein }
+  const { data: metadata, isLoading: metadataLoading } = useMetadataSummary(sheinQueryGate.enabled)
+  const { data: bucketData, isLoading: bucketLoading } = useSheinBucketOverview(sheinQueryGate.enabled)
+  const { data: draftData, isLoading: draftLoading } = useDraftOverview(sheinQueryGate.enabled)
+  const { data: taskData, isLoading: taskLoading } = usePublishTaskOverview(sheinQueryGate.enabled)
+  const { data: archiveDraftData, isLoading: archiveDraftLoading } = useProductArchiveDraftOverview(deepdrawQueryGate.enabled)
 
   const recentDrafts = draftData?.items ?? []
   const recentTasks = taskData?.items ?? []
   const recentProducts = bucketData?.items ?? []
+  const recentArchiveDrafts = archiveDraftData?.items ?? []
   const taskStatus = taskData?.summary.by_status ?? {}
   const failedTasks = numberValue(taskStatus.PUBLISH_FAILED) + numberValue(taskStatus.FAILED)
   const publishingTasks = numberValue(taskStatus.PUBLISHING)
   const submittedTasks = numberValue(taskStatus.PUBLISH_SUBMITTED) + numberValue(taskStatus.SUBMITTED)
   const draftTotal = numberValue(draftData?.pagination.total)
+  const archiveDraftTotal = numberValue(archiveDraftData?.pagination.total)
+  const archiveReadyDrafts = recentArchiveDrafts.filter((item) =>
+    ["ready", "created", "readback_verified"].includes(item.status),
+  ).length
+  const archiveNeedsWork = recentArchiveDrafts.filter((item) =>
+    ["draft", "missing_fields", "manual_review", "update_pending"].includes(item.status),
+  ).length
+  const archiveBlockers = recentArchiveDrafts.reduce((sum, item) => sum + numberValue(item.blocker_count), 0)
+  const archiveWarnings = recentArchiveDrafts.reduce((sum, item) => sum + numberValue(item.warning_count), 0)
   const draftAvgCompleteness = recentDrafts.length
     ? Math.round(recentDrafts.reduce((sum, item) => sum + numberValue(item.completeness), 0) / recentDrafts.length)
     : 0
-  const draftBlockers = recentDrafts.reduce((sum, item) => sum + numberValue(item.blocker_count), 0)
-  const readyDrafts = recentDrafts.filter((item) =>
-    item.validation_status === "PASSED" || item.status === "READY_TO_PUBLISH",
-  ).length
   const leafCategoryCount = metadata?.roots.reduce((sum, item) => sum + numberValue(item.leaf_count), 0) ?? 0
   const bucketSummary = bucketData?.summary
   const bucketCompleteness = clampPercent(bucketSummary?.avg_completeness)
-  const isLoading = metadataLoading || bucketLoading || draftLoading || taskLoading
+  const isLoading =
+    (canUseDeepdraw && archiveDraftLoading)
+    || (canUseShein && (metadataLoading || bucketLoading || draftLoading || taskLoading))
 
-  const workstreams = useMemo(() => [
-    {
-      title: "商品分桶",
-      description: "确认类目、图片、尺码、价格、毛重和 AI 待判断字段。",
-      value: formatNumber(bucketSummary?.needs_work_count ?? 0),
-      meta: `就绪 ${formatNumber(bucketSummary?.ready_count ?? 0)} / 完整度 ${bucketCompleteness}%`,
-      icon: ShoppingBag,
-      to: "/shein-products",
-      action: "处理分桶",
-    },
-    {
-      title: "发布草稿",
-      description: "编辑商品字段、确认 SKC/SKU、保存版本并发起预检。",
-      value: formatNumber(draftTotal),
-      meta: `最近可发布 ${formatNumber(readyDrafts)} / 阻断 ${formatNumber(draftBlockers)}`,
-      icon: ShieldCheck,
-      to: "/pre-publish-validation",
-      action: "打开草稿箱",
-    },
-    {
-      title: "发布任务",
-      description: "追踪提交状态、平台 Trace ID、失败原因和历史发布尝试。",
-      value: formatNumber(taskData?.summary.total ?? 0),
-      meta: `发布中 ${formatNumber(publishingTasks)} / 失败 ${formatNumber(failedTasks)}`,
-      icon: Send,
-      to: "/publish-tasks",
-      action: "查看任务",
-    },
-  ], [
-    bucketCompleteness,
-    bucketSummary?.needs_work_count,
-    bucketSummary?.ready_count,
-    draftBlockers,
-    draftTotal,
-    failedTasks,
-    publishingTasks,
-    readyDrafts,
-    taskData?.summary.total,
-  ])
+  const workstreams: Array<{
+    title: string
+    description: string
+    value: string
+    meta: string
+    icon: LucideIcon
+    to: string
+    action: string
+  }> = []
+
+  if (canUseDeepdraw) {
+    workstreams.push(
+      {
+        title: "深绘建档",
+        description: "从标准文案表、上市计划和 MDM 数据生成深绘商品建档草稿。",
+        value: formatNumber(archiveDraftTotal),
+        meta: `可创建 ${formatNumber(archiveReadyDrafts)} / 阻断 ${formatNumber(archiveBlockers)}`,
+        icon: PenLine,
+        to: "/product-archive-drafts",
+        action: "打开深绘建档草稿",
+      },
+      {
+        title: "上市计划表",
+        description: "维护建档前置的上市计划明细，用于匹配类目、上市时间和商品基础字段。",
+        value: formatNumber(archiveNeedsWork),
+        meta: `最近草稿 ${formatNumber(recentArchiveDrafts.length)} / 警告 ${formatNumber(archiveWarnings)}`,
+        icon: FileSpreadsheet,
+        to: "/listing-launch-plans",
+        action: "查看上市计划表",
+      },
+    )
+  }
+
+  if (canUseShein) {
+    workstreams.push(
+      {
+        title: "SHEIN 上新运营",
+        description: "确认类目、图片、尺码、价格、毛重和 AI 待判断字段，推进发布草稿。",
+        value: formatNumber(bucketSummary?.needs_work_count ?? 0),
+        meta: `就绪 ${formatNumber(bucketSummary?.ready_count ?? 0)} / 完整度 ${bucketCompleteness}%`,
+        icon: ShoppingBag,
+        to: "/shein-products",
+        action: "处理 SHEIN 分桶",
+      },
+      {
+        title: "SHEIN 平台商品运营",
+        description: "追踪平台商品、销售站点、供货价、审核状态和最近操作。",
+        value: formatNumber(taskData?.summary.total ?? 0),
+        meta: `发布中 ${formatNumber(publishingTasks)} / 失败 ${formatNumber(failedTasks)}`,
+        icon: PackageSearch,
+        to: "/shein-platform-products",
+        action: "查看平台商品",
+      },
+    )
+  }
 
   return (
     <PageContainer className="space-y-6">
       <PageHeader
-        title="工作台"
-        description="围绕 SHEIN 商品分桶、发布草稿箱和发布任务，集中查看待处理项、字段完整度、提交状态与平台元数据健康度。"
+        title="全链路运营驾驶舱"
+        description="按角色聚合深绘建档、SHEIN 上新运营和平台商品运营。每个角色只看到自己能处理的链路入口、待办和风险。"
       >
-        <Button asChild>
-          <Link to="/shein-products">
-            <ShoppingBag className="size-4" />
-            SHEIN 商品分桶
-          </Link>
-        </Button>
-        <Button asChild variant="outline">
-          <Link to="/pre-publish-validation">
-            <ShieldCheck className="size-4" />
-            发布草稿箱
-          </Link>
-        </Button>
+        {canUseDeepdraw ? (
+          <Button asChild>
+            <Link to="/product-archive-drafts">
+              <PenLine className="size-4" />
+              深绘建档
+            </Link>
+          </Button>
+        ) : null}
+        {canUseShein ? (
+          <Button asChild variant={canUseDeepdraw ? "outline" : "default"}>
+            <Link to="/shein-platform-products">
+              <PackageSearch className="size-4" />
+              SHEIN 平台商品
+            </Link>
+          </Button>
+        ) : null}
       </PageHeader>
+
+      {!canUseDeepdraw && !canUseShein ? (
+        <Card>
+          <CardContent className="flex min-h-48 flex-col items-center justify-center gap-3 text-center">
+            <ShieldCheck className="size-8 text-muted-foreground" />
+            <div>
+              <p className="font-medium">当前账号暂无运营链路权限</p>
+              <p className="mt-1 text-sm text-muted-foreground">请联系管理员分配深绘建档运营、SHEIN 运营或只读角色。</p>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {isLoading ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -348,53 +462,142 @@ export default function DashboardPage() {
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <StatCard
-            title="SHEIN 分桶商品"
-            value={formatNumber(bucketSummary?.total ?? bucketData?.pagination.total ?? 0)}
-            icon={ShoppingBag}
-            description={`已建草稿 ${formatNumber(bucketSummary?.drafted_count ?? 0)} 款`}
-          />
-          <StatCard
-            title="待处理商品"
-            value={formatNumber(bucketSummary?.needs_work_count ?? 0)}
-            icon={AlertTriangle}
-            description={`缺失字段 ${formatNumber(bucketSummary?.missing_field_count ?? 0)} / 需判断 ${formatNumber(bucketSummary?.needs_ai_count ?? 0)}`}
-          />
-          <StatCard
-            title="发布草稿"
-            value={formatNumber(draftTotal)}
-            icon={FileClock}
-            description={`最近平均完整度 ${draftAvgCompleteness}%`}
-          />
-          <StatCard
-            title="发布任务"
-            value={formatNumber(taskData?.summary.total ?? 0)}
-            icon={Send}
-            description={`已提交 ${formatNumber(submittedTasks)} / 失败 ${formatNumber(failedTasks)}`}
-          />
+          {canUseDeepdraw ? (
+            <>
+              <StatCard
+                title="深绘建档草稿"
+                value={formatNumber(archiveDraftTotal)}
+                icon={PenLine}
+                description={`最近可创建 ${formatNumber(archiveReadyDrafts)} 个`}
+              />
+              <StatCard
+                title="深绘待补齐"
+                value={formatNumber(archiveNeedsWork)}
+                icon={AlertTriangle}
+                description={`阻断 ${formatNumber(archiveBlockers)} / 警告 ${formatNumber(archiveWarnings)}`}
+              />
+            </>
+          ) : null}
+          {canUseShein ? (
+            <>
+              <StatCard
+                title="SHEIN 分桶商品"
+                value={formatNumber(bucketSummary?.total ?? bucketData?.pagination.total ?? 0)}
+                icon={ShoppingBag}
+                description={`已建草稿 ${formatNumber(bucketSummary?.drafted_count ?? 0)} 款`}
+              />
+              <StatCard
+                title="SHEIN 待处理"
+                value={formatNumber(bucketSummary?.needs_work_count ?? 0)}
+                icon={AlertTriangle}
+                description={`缺失字段 ${formatNumber(bucketSummary?.missing_field_count ?? 0)} / 需判断 ${formatNumber(bucketSummary?.needs_ai_count ?? 0)}`}
+              />
+              <StatCard
+                title="发布草稿"
+                value={formatNumber(draftTotal)}
+                icon={FileClock}
+                description={`最近平均完整度 ${draftAvgCompleteness}%`}
+              />
+              <StatCard
+                title="发布任务"
+                value={formatNumber(taskData?.summary.total ?? 0)}
+                icon={Send}
+                description={`已提交 ${formatNumber(submittedTasks)} / 失败 ${formatNumber(failedTasks)}`}
+              />
+            </>
+          ) : null}
         </div>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-3">
-        {workstreams.map((item) => (
-          <WorkstreamCard key={item.title} {...item} />
-        ))}
-      </div>
+      {workstreams.length ? (
+        <div className="grid gap-4 xl:grid-cols-4">
+          {workstreams.map((item) => (
+            <WorkstreamCard key={item.title} {...item} />
+          ))}
+        </div>
+      ) : null}
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(340px,0.85fr)]">
+      {canUseDeepdraw ? (
         <Card>
           <CardHeader className="gap-2">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div>
-                <CardTitle>待处理焦点</CardTitle>
+                <CardTitle>深绘建档焦点</CardTitle>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  先补齐建档字段和类目，再校验、查重并提交到深绘。
+                </p>
+              </div>
+              <Button asChild variant="outline" size="sm">
+                <Link to="/product-archive-drafts">
+                  <PenLine className="size-4" />
+                  全部建档草稿
+                </Link>
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="grid gap-3 md:grid-cols-3">
+              <FocusMetric
+                label="草稿总数"
+                value={formatNumber(archiveDraftTotal)}
+                description={`最近 ${formatNumber(recentArchiveDrafts.length)} 个建档草稿`}
+                icon={PenLine}
+              />
+              <FocusMetric
+                label="可创建"
+                value={formatNumber(archiveReadyDrafts)}
+                description="可进入提交或回读验证"
+                icon={CheckCircle2}
+                tone="success"
+              />
+              <FocusMetric
+                label="字段阻断"
+                value={formatNumber(archiveBlockers)}
+                description={archiveBlockers ? "需要补齐字段或类目" : "暂无阻断字段"}
+                icon={archiveBlockers ? AlertTriangle : CheckCircle2}
+                tone={archiveBlockers ? "danger" : "success"}
+              />
+            </div>
+
+            <div className="divide-y">
+              {recentArchiveDrafts.length ? (
+                recentArchiveDrafts.map((draft) => <ArchiveDraftRow key={draft.id} draft={draft} />)
+              ) : (
+                <EmptyQueue
+                  icon={PenLine}
+                  title="暂无深绘建档草稿"
+                  description="导入标准文案表和上市计划表后，这里会显示待补齐、待校验和可创建的草稿。"
+                  to="/product-archive-drafts"
+                  action="开始建档"
+                />
+              )}
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-3">
+              <QuickAction icon={FileSpreadsheet} title="上市计划表" to="/listing-launch-plans" />
+              <QuickAction icon={GitBranch} title="字段对应关系" to="/deepdraw-field-mappings" />
+              <QuickAction icon={Database} title="深绘类目字段" to="/deepdraw-metadata" />
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {canUseShein ? (
+        <>
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(340px,0.85fr)]">
+            <Card>
+          <CardHeader className="gap-2">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <CardTitle>SHEIN 上新运营焦点</CardTitle>
                 <p className="mt-1 text-sm text-muted-foreground">
                   按当前工作流优先级聚合：先清洗分桶，再完善草稿，最后追踪发布回执。
                 </p>
               </div>
               <Button asChild variant="outline" size="sm">
-                <Link to="/product-archives">
-                  <PackageCheck className="size-4" />
-                  商品档案
+                <Link to="/shein-platform-products">
+                  <PackageSearch className="size-4" />
+                  平台商品列表
                 </Link>
               </Button>
             </div>
@@ -442,9 +645,9 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
 
-        <Card>
+            <Card>
           <CardHeader>
-            <CardTitle>平台元数据</CardTitle>
+            <CardTitle>SHEIN 平台元数据</CardTitle>
           </CardHeader>
           <CardContent className="space-y-5">
             <div className="rounded-lg border bg-background p-4">
@@ -484,10 +687,10 @@ export default function DashboardPage() {
               <QuickAction icon={GitBranch} title="维护 SHEIN 类目映射" to="/category-mapping" />
             </div>
           </CardContent>
-        </Card>
-      </div>
+            </Card>
+          </div>
 
-      <div className="grid gap-6 xl:grid-cols-2">
+          <div className="grid gap-6 xl:grid-cols-2">
         <Card>
           <CardHeader className="flex-row items-center justify-between">
             <CardTitle>最近发布草稿</CardTitle>
@@ -541,7 +744,9 @@ export default function DashboardPage() {
             </div>
           </CardContent>
         </Card>
-      </div>
+          </div>
+        </>
+      ) : null}
     </PageContainer>
   )
 }
@@ -652,6 +857,46 @@ function ProductQueueRow({ item }: { item: SheinBucketItem }) {
         <Button asChild variant="outline" size="sm">
           <Link to={item.latest_listing_id ? `/pre-publish-validation/${item.latest_listing_id}` : "/shein-products"}>
             {item.latest_listing_id ? "打开草稿" : "处理"}
+          </Link>
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function ArchiveDraftRow({ draft }: { draft: ProductArchiveDraftItem }) {
+  return (
+    <div className="flex flex-col gap-3 py-4 md:flex-row md:items-center md:justify-between">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <Link to={`/product-archive-drafts/${draft.id}`} className="font-mono text-sm font-medium hover:text-[var(--brand-deep)] hover:underline">
+            {draft.spu_code}
+          </Link>
+          <Badge variant="outline">{draft.draft_no}</Badge>
+          <Badge variant="outline" className={statusClass(draft.status)}>
+            {labelFor(ARCHIVE_STATUS_LABELS, draft.status)}
+          </Badge>
+          {draft.created_product_id ? <Badge variant="outline">深绘 ID {draft.created_product_id}</Badge> : null}
+        </div>
+        <p className="mt-1 max-w-[720px] truncate text-sm text-muted-foreground">
+          {draft.title ?? "商品标题待补齐"}
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {draft.trade_path ?? "未匹配深绘类目"} · SKU {formatNumber(draft.sku_count)} · {formatDateTime(draft.updated_at)}
+        </p>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        {draft.blocker_count > 0 ? (
+          <Badge variant="destructive">{formatNumber(draft.blocker_count)} 阻断</Badge>
+        ) : (
+          <Badge variant="outline" className="border-[#b9f4d8] bg-[#d4fae8] text-[#0fa76e]">
+            可推进
+          </Badge>
+        )}
+        {draft.warning_count > 0 ? <Badge variant="outline">{formatNumber(draft.warning_count)} 提醒</Badge> : null}
+        <Button asChild variant="ghost" size="icon-sm">
+          <Link to={`/product-archive-drafts/${draft.id}`} aria-label={`查看深绘建档草稿 ${draft.draft_no}`}>
+            <ArrowRight className="size-4" />
           </Link>
         </Button>
       </div>

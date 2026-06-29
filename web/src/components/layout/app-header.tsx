@@ -20,9 +20,9 @@ const PATH_LABELS: Record<string, string> = {
   "image-management": "图片管理",
   "shein-products": "SHEIN 商品分桶",
   "shein-platform-products": "平台商品列表",
-  "shein-operations": "SHEIN运营中心",
+  "shein-operations": "审核状态中心",
   "pre-publish-validation": "SHEIN 发布草稿箱",
-  "publish-tasks": "发布任务",
+  "publish-tasks": "发布与审核任务",
   "category-mapping": "SHEIN 类目映射",
   "size-conversion": "SHEIN 尺码转换",
   "package-rules": "SHEIN 包装规则",
@@ -30,6 +30,10 @@ const PATH_LABELS: Record<string, string> = {
   "brand-rules": "SHEIN 品牌管理",
   "shein-metadata": "SHEIN 元数据",
   "product-archives": "商品档案",
+  "product-archive-drafts": "深绘建档草稿",
+  "listing-launch-plans": "上市计划表",
+  "deepdraw-field-mappings": "深绘字段对应关系",
+  "deepdraw-metadata": "深绘类目字段",
   "mdm-products": "MDM 商品主数据",
   "deepdraw-content": "深绘内容包",
   "image-library": "图片素材库",
@@ -71,9 +75,14 @@ export function AppHeader() {
           variant="ghost"
           size="sm"
           onClick={async () => {
-            await logout()
-            toast.success("已退出登录")
-            navigate("/login", { replace: true })
+            try {
+              await logout()
+              toast.success("已退出登录")
+            } catch {
+              toast.error("退出登录请求失败，已回到登录页")
+            } finally {
+              navigate("/login", { replace: true })
+            }
           }}
         >
           <LogOut className="size-4" />

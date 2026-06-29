@@ -71,13 +71,21 @@ const EMPTY_FORM: UserForm = {
   roles: ["VIEWER"],
 }
 
+const ACTIVE_ROLE_KEYS = ["ADMIN", "DEEPDRAW_OPERATOR", "SHEIN_OPERATOR", "VIEWER"]
+
 function roleLabel(role: string) {
   const labels: Record<string, string> = {
     ADMIN: "管理员",
-    OPERATOR: "运营",
+    DEEPDRAW_OPERATOR: "深绘建档运营",
+    SHEIN_OPERATOR: "SHEIN 运营",
     VIEWER: "只读",
   }
   return labels[role] ?? role
+}
+
+function visibleRoles(roles: string[]) {
+  const normalized = roles.map((role) => role === "OPERATOR" ? "SHEIN_OPERATOR" : role)
+  return Array.from(new Set(normalized.filter((role) => ACTIVE_ROLE_KEYS.includes(role))))
 }
 
 export default function UsersPage() {
@@ -95,7 +103,10 @@ export default function UsersPage() {
     queryFn: () => api.get("/users/roles"),
   })
 
-  const roles = useMemo(() => rolesData?.items ?? [], [rolesData])
+  const roles = useMemo(
+    () => (rolesData?.items ?? []).filter((role) => ACTIVE_ROLE_KEYS.includes(role.role_key)),
+    [rolesData],
+  )
   const users = useMemo(() => usersData?.items ?? [], [usersData])
 
   const saveMutation = useMutation({
@@ -187,7 +198,7 @@ export default function UsersPage() {
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
-                        {item.roles.map((role) => (
+                        {visibleRoles(item.roles).map((role) => (
                           <Badge key={role} variant="outline">
                             {roleLabel(role)}
                           </Badge>
@@ -215,7 +226,7 @@ export default function UsersPage() {
                               email: item.email ?? "",
                               password: "",
                               status: item.status,
-                              roles: item.roles,
+                              roles: visibleRoles(item.roles),
                             })
                             setOpen(true)
                           }}

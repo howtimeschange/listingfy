@@ -6,12 +6,13 @@ import {
   Database,
   DollarSign,
   FileCheck2,
+  FileSpreadsheet,
   GitBranch,
   Globe2,
-  Layers3,
   LineChart,
   PackageCheck,
   PackageSearch,
+  PenLine,
   RefreshCw,
   Send,
   ShieldCheck,
@@ -29,16 +30,21 @@ const navItems = [
 ]
 
 const metrics = [
-  { value: "P0", label: "平台商品闭环" },
-  { value: "P1", label: "运营中心接入" },
-  { value: "140", label: "关键测试用例" },
+  { value: "01", label: "深绘建档" },
+  { value: "02", label: "SHEIN 上新" },
+  { value: "03", label: "平台运营" },
 ]
 
 const featureCards = [
   {
-    title: "商品档案与内容底座",
-    description: "从 MDM、深绘内容包、图片素材和规则 Excel 聚合 SPU/SKC/SKU，为发布和运营保留清晰源头。",
-    icon: Database,
+    title: "深绘商品建档",
+    description: "从标准文案表、上市计划表和 MDM 商品数据生成建档草稿，补齐字段、类目、SKU 和提交记录。",
+    icon: PenLine,
+  },
+  {
+    title: "上市计划与字段映射",
+    description: "沉淀上市计划明细和深绘字段对应关系，让建档字段来源、默认值和阻断项可维护。",
+    icon: FileSpreadsheet,
   },
   {
     title: "SHEIN 发布闭环",
@@ -79,12 +85,12 @@ const featureCards = [
 
 const workflowSteps = [
   {
-    title: "沉淀商品档案",
-    description: "从 MDM、深绘和图片素材库同步商品、内容、图片、尺码表与规则数据，形成可追溯的数据底座。",
-    icon: Layers3,
+    title: "完成深绘建档",
+    description: "导入标准文案表和上市计划表，匹配 MDM 与深绘类目字段，生成可校验、可查重、可提交的建档草稿。",
+    icon: PenLine,
   },
   {
-    title: "完成发布准备",
+    title: "推进 SHEIN 上新",
     description: "在 SHEIN 商品分桶中应用类目映射、字段推荐、图片规则、价格包装和尺码转换，生成多版本发布草稿。",
     icon: PackageCheck,
   },
@@ -102,9 +108,9 @@ const workflowSteps = [
 
 const architectureItems = [
   "PlatformAdapter 隔离 SHEIN、TEMU 等平台差异，核心商品模型不绑定单一渠道",
-  "商品档案、发布草稿、平台商品和运营动作分层建模，便于追踪生命周期",
+  "深绘建档草稿、发布草稿、平台商品和运营动作分层建模，便于追踪生命周期",
   "发布版本、任务回执、审核状态、最近操作和操作日志全链路留痕",
-  "PostgreSQL、RBAC、凭据加密、种子快照和测试入口支撑持续交付",
+  "PostgreSQL、RBAC、角色菜单、凭据加密、种子快照和测试入口支撑持续交付",
 ]
 
 const platformModules = [
@@ -160,13 +166,13 @@ export default function LandingPage() {
               className="max-w-[calc(100vw-40px)] text-4xl font-semibold leading-[1.12] tracking-[-0.8px] text-foreground sm:text-5xl md:max-w-full md:text-[64px] md:leading-[1.06] md:tracking-[-1.1px]"
               style={{ overflowWrap: "anywhere" }}
             >
-              跨境运营，从商品发布到平台商品生命周期的一条清晰链路
+              从深绘商品建档，到 SHEIN 上新运营，再到平台商品回流
             </h1>
             <p
               className="mt-6 max-w-[calc(100vw-40px)] text-base leading-8 text-muted-foreground sm:text-lg md:max-w-2xl"
               style={{ overflowWrap: "anywhere" }}
             >
-              Listingify 将 MDM、深绘内容包、图片素材、平台规则、发布任务、SHEIN 平台商品回捞、供货价维护和审核状态聚合成一个可审计、可批量操作的跨境运营平台。
+              Listingify 将标准文案表、上市计划、深绘类目字段、MDM 商品主数据、SHEIN 发布草稿、平台商品回捞、供货价维护和审核状态放进同一个可审计的运营节奏。
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Button asChild size="lg">
@@ -198,8 +204,8 @@ export default function LandingPage() {
       <section id="capabilities" className="border-t bg-background py-20 md:py-24">
         <div className="mx-auto w-full max-w-7xl px-5 md:px-8">
           <SectionHeading
-            title="项目已经从发品闭环，推进到平台商品运营闭环。"
-            description="首页内容基于当前最新进度：SHEIN 仍是首个落地平台，但能力已经覆盖发布前、发布中、发布后和运营中心聚合视图。"
+            title="平台已经从发品闭环，扩展到建档、上新和平台运营三段链路。"
+            description="深绘建档负责把商品资料变成可提交的商品档案；SHEIN 上新负责发布准备和任务追踪；平台运营负责回捞后的日常同步、对账、导出和审核状态。"
           />
           <div className="mt-10 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             {featureCards.map((feature) => (
@@ -212,8 +218,8 @@ export default function LandingPage() {
       <section className="border-t bg-[linear-gradient(180deg,#ffffff_0%,#fafafa_100%)] py-20 md:py-24">
         <div className="mx-auto grid w-full max-w-7xl gap-10 px-5 md:px-8 lg:grid-cols-[minmax(0,0.76fr)_minmax(0,1.24fr)] lg:items-start">
           <SectionHeading
-            title="SHEIN 运营中心开始承接发布后的日常动作。"
-            description="平台商品不再只是发布结果，而是后续同步、修改、对账、导出、审核追踪和真实数据回归的运营对象。"
+            title="SHEIN 上新运营和平台运营合并成同一条权限链路。"
+            description="平台商品不再只是发布结果，而是后续同步、修改、对账、导出、审核追踪和真实数据回归的运营对象；深绘建档角色不会进入这些操作入口。"
             align="left"
           />
           <div className="grid gap-3 sm:grid-cols-2">
@@ -228,8 +234,8 @@ export default function LandingPage() {
         <div className="mx-auto w-full max-w-7xl px-5 md:px-8">
           <div className="grid gap-10 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] lg:items-start">
             <SectionHeading
-              title="运营每天真正推进的，是商品所处的下一段生命周期。"
-              description="从商品档案到发布草稿，再到平台商品回捞和运营动作，系统把阻断项、完整度、平台回执、销售站点和最近操作放在同一个节奏里。"
+              title="运营每天推进的，是商品从建档到平台运营的下一段状态。"
+              description="从深绘建档草稿到 SHEIN 发布草稿，再到平台商品回捞和运营动作，系统把阻断项、完整度、平台回执、销售站点和最近操作放在同一个节奏里。"
               align="left"
             />
             <div className="grid gap-4">
@@ -245,8 +251,8 @@ export default function LandingPage() {
         <div className="mx-auto grid w-full max-w-7xl gap-8 px-5 md:px-8 lg:grid-cols-[minmax(0,1fr)_minmax(360px,0.78fr)] lg:items-center">
           <div>
             <SectionHeading
-              title="首个平台深入 SHEIN，但工程边界按多平台和长期运营设计。"
-              description="商品模型、平台元数据、发布任务、平台身份和运营动作保持分层，平台差异通过适配器隔离；运行底座已经切到 PostgreSQL，并补齐安全、种子快照和测试入口。"
+              title="首个平台深入 SHEIN，前置建档接入深绘，但工程边界按多平台设计。"
+              description="商品模型、深绘建档草稿、平台元数据、发布任务、平台身份和运营动作保持分层，平台差异通过适配器隔离；角色权限把深绘建档和 SHEIN 运营分开。"
               align="left"
             />
             <div className="mt-8 grid gap-3">
@@ -276,9 +282,9 @@ export default function LandingPage() {
       <section className="border-t px-5 py-16 md:px-8">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 rounded-[24px] border bg-primary px-6 py-8 text-primary-foreground shadow-[0_2px_4px_rgba(0,0,0,0.03)] md:flex-row md:items-center md:justify-between md:px-8">
           <div>
-            <h2 className="text-3xl font-semibold leading-tight tracking-[-0.6px]">开始处理下一批上新。</h2>
+            <h2 className="text-3xl font-semibold leading-tight tracking-[-0.6px]">进入全链路运营驾驶舱。</h2>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-primary-foreground/70">
-              进入工作台查看分桶、草稿、批次、发布任务、平台商品、销售站点、审核状态和运营中心健康度。
+              按角色查看深绘建档草稿、上市计划、SHEIN 分桶、发布草稿、平台商品、销售站点和审核状态。
             </p>
           </div>
           <Button asChild variant="brand" size="lg" className="self-start md:self-center">
@@ -304,29 +310,29 @@ function HeroWorkbench() {
               <p className="font-mono text-xs font-semibold uppercase tracking-[0.6px] text-[var(--brand-deep)]">
                 Operation cockpit
               </p>
-              <CardTitle className="mt-2">SHEIN 运营闭环</CardTitle>
+              <CardTitle className="mt-2">全链路运营驾驶舱</CardTitle>
             </div>
             <span className="rounded-full border border-[#b9f4d8] bg-[var(--brand-light)] px-3 py-1 text-xs font-medium text-[var(--brand-deep)]">
-              平台商品已回捞
+              角色菜单已拆分
             </span>
           </div>
         </CardHeader>
         <CardContent className="space-y-5 p-6">
           <div className="grid gap-3 sm:grid-cols-3">
-            <HeroMetric label="平台商品" value="P0" />
-            <HeroMetric label="运营中心" value="P1" tone="info" />
-            <HeroMetric label="测试覆盖" value="140" />
+            <HeroMetric label="深绘建档" value="01" />
+            <HeroMetric label="SHEIN 上新" value="02" tone="info" />
+            <HeroMetric label="平台运营" value="03" />
           </div>
           <div className="space-y-3">
-            <QueueRow title="SHEIN 平台商品列表" description="按款号或时间范围同步，补拉 SPU 详情" status="运营中" icon={PackageSearch} />
-            <QueueRow title="销售站点明细" description="上架站点、链接、首次与最近上架时间独立展开" status="可筛选" icon={Globe2} />
-            <QueueRow title="批量供货价维护" description="模板下载、上传预览、按 SPU/SKC 聚合提交" status="已接入" icon={DollarSign} />
-            <QueueRow title="发布与审核任务" description="失败归因、幂等任务、状态轮询和批量重试" status="追踪中" icon={LineChart} />
+            <QueueRow title="深绘建档草稿" description="标准文案、上市计划、字段规则和类目字段" status="前置链路" icon={PenLine} />
+            <QueueRow title="SHEIN 发布草稿箱" description="分桶清洗、预检、版本和批次发布" status="上新运营" icon={FileCheck2} />
+            <QueueRow title="平台商品列表" description="同步、筛选、供货价、站点和最近操作" status="平台运营" icon={PackageSearch} />
+            <QueueRow title="审核状态中心" description="平台回执、失败归因、状态轮询和批量重试" status="追踪中" icon={LineChart} />
           </div>
           <div className="rounded-2xl border bg-[var(--surface-tint)] p-4">
             <div className="flex items-center justify-between gap-4 text-sm">
-              <span className="font-medium">生命周期运营闭环</span>
-              <span className="font-mono text-xs tabular-nums text-muted-foreground">P1</span>
+              <span className="font-medium">建档到运营的链路覆盖</span>
+              <span className="font-mono text-xs tabular-nums text-muted-foreground">3/3</span>
             </div>
             <div className="mt-3 h-2 overflow-hidden rounded-full bg-secondary">
               <div className="h-full w-[72%] rounded-full bg-[var(--brand)]" />

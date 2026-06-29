@@ -4,7 +4,7 @@ import { api, ApiError } from "@/lib/api-client"
 import { AuthContext, type AuthContextValue, type AuthUser } from "@/lib/auth-context"
 
 interface AuthResponse {
-  user: AuthUser
+  user: AuthUser | null
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -20,8 +20,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     user,
     isLoading,
     logout: async () => {
-      await api.post("/auth/logout")
-      queryClient.removeQueries({ queryKey: ["auth"] })
+      try {
+        await api.post("/auth/logout")
+      } catch (error) {
+        if (!(error instanceof ApiError && error.status === 401)) throw error
+      } finally {
+        await queryClient.cancelQueries()
+        queryClient.setQueryData<AuthResponse>(["auth", "me"], { user: null })
+        queryClient.removeQueries({
+          predicate: (query) => query.queryKey[0] !== "auth",
+        })
+      }
     },
     hasPermission: (permission: string) => Boolean(user?.permissions.includes(permission)),
   }), [isLoading, queryClient, user])

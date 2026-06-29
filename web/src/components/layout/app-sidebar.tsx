@@ -60,23 +60,33 @@ type NavGroup = {
 
 const NAV_GROUPS: NavGroup[] = [
   {
-    label: "上新工作",
+    label: "运营总览",
     items: [
       { label: "工作台", to: "/dashboard", icon: LayoutDashboard, permission: "DASHBOARD_READ" },
+    ],
+  },
+  {
+    label: "深绘建档",
+    items: [
+      { label: "深绘建档草稿", to: "/product-archive-drafts", icon: PenLine, permission: "PRODUCT_ARCHIVE_DRAFT_READ" },
+      { label: "上市计划表", to: "/listing-launch-plans", icon: FileSpreadsheet, permission: "PRODUCT_ARCHIVE_DRAFT_READ" },
+      { label: "深绘字段对应关系", to: "/deepdraw-field-mappings", icon: ClipboardList, permission: "PRODUCT_ARCHIVE_RULE_MANAGE" },
+      { label: "深绘类目字段", to: "/deepdraw-metadata", icon: Database, permission: "PRODUCT_ARCHIVE_DRAFT_READ" },
+    ],
+  },
+  {
+    label: "SHEIN 上新运营",
+    items: [
       { label: "上新批次", to: "/listing-batches", icon: PackagePlus, permission: "LISTING_READ" },
       { label: "SHEIN 商品分桶", to: "/shein-products", icon: ShoppingBag, permission: "LISTING_READ" },
       { label: "SHEIN 发布草稿箱", to: "/pre-publish-validation", icon: ShieldCheck, permission: "LISTING_READ" },
       { label: "发布任务", to: "/publish-tasks", icon: Send, permission: "LISTING_READ" },
-    ],
-  },
-  {
-    label: "SHEIN运营中心",
-    items: [
       { label: "平台商品列表", to: "/shein-platform-products", icon: PackageSearch, permission: "LISTING_READ" },
+      { label: "SHEIN 元数据", to: "/shein-metadata", icon: Database, permission: "LISTING_READ" },
       { label: "站点币种", to: "/shein-platform-products/sites", icon: Globe2, permission: "LISTING_READ", disabled: true },
       { label: "条码尺码", to: "/shein-operations/barcode-size", icon: Barcode, permission: "LISTING_READ", disabled: true },
       { label: "平台标识对账", to: "/shein-operations/platform-identities", icon: Tags, permission: "LISTING_READ", disabled: true },
-      { label: "审核状态", to: "/shein-operations/audit-status", icon: ClipboardList, permission: "LISTING_READ" },
+      { label: "审核状态中心", to: "/shein-operations/audit-status", icon: ClipboardList, permission: "LISTING_READ" },
       { label: "合规证书", to: "/shein-operations/compliance", icon: FileText, permission: "LISTING_READ", disabled: true },
       { label: "采购备货", to: "/shein-operations/procurement", icon: Truck, permission: "LISTING_READ", disabled: true },
       { label: "库存运营", to: "/shein-operations/inventory", icon: Warehouse, permission: "LISTING_READ", disabled: true },
@@ -84,27 +94,22 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    label: "规则中心",
+    label: "商品数据",
+    items: [
+      { label: "商品档案", to: "/product-archives", icon: Archive, permission: "DATA_READ" },
+      { label: "MDM 商品主数据", to: "/mdm-products", icon: Boxes, permission: "DATA_READ" },
+      { label: "深绘内容包", to: "/deepdraw-content", icon: FileText, permission: "DATA_READ" },
+      { label: "图片素材库", to: "/image-library", icon: ImagePlus, permission: "DATA_READ" },
+    ],
+  },
+  {
+    label: "规则配置",
     items: [
       { label: "SHEIN 类目映射", to: "/category-mapping", icon: GitBranch, permission: "RULE_READ" },
       { label: "SHEIN 尺码转换", to: "/size-conversion", icon: Ruler, permission: "RULE_READ" },
       { label: "SHEIN 包装规则", to: "/package-rules", icon: Box, permission: "RULE_READ" },
       { label: "SHEIN 价格规则", to: "/price-rules", icon: DollarSign, permission: "RULE_READ" },
       { label: "SHEIN 品牌管理", to: "/brand-rules", icon: BadgeCheck, permission: "RULE_READ" },
-    ],
-  },
-  {
-    label: "数据中心",
-    items: [
-      { label: "SHEIN 元数据", to: "/shein-metadata", icon: Database, permission: "DATA_READ" },
-      { label: "商品档案", to: "/product-archives", icon: Archive, permission: "DATA_READ" },
-      { label: "深绘建档草稿", to: "/product-archive-drafts", icon: PenLine, permission: "PRODUCT_ARCHIVE_DRAFT_READ" },
-      { label: "上市计划表", to: "/listing-launch-plans", icon: FileSpreadsheet, permission: "DATA_READ" },
-      { label: "深绘字段对应关系", to: "/deepdraw-field-mappings", icon: ClipboardList, permission: "PRODUCT_ARCHIVE_DRAFT_READ" },
-      { label: "MDM 商品主数据", to: "/mdm-products", icon: Boxes, permission: "DATA_READ" },
-      { label: "深绘内容包", to: "/deepdraw-content", icon: FileText, permission: "DATA_READ" },
-      { label: "深绘类目字段", to: "/deepdraw-metadata", icon: Database, permission: "PRODUCT_ARCHIVE_DRAFT_READ" },
-      { label: "图片素材库", to: "/image-library", icon: ImagePlus, permission: "DATA_READ" },
     ],
   },
   {
