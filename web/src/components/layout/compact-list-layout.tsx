@@ -147,5 +147,5 @@ export function CompactListFilterPopover({
 }
 
 export function CompactListTableFrame({ className, ...props }: DivProps) {
-  return <div className={cn("min-h-0 flex-1 overflow-hidden rounded-md border", className)} {...props} />
+  return <div className={cn("min-h-0 flex-1 overflow-auto rounded-md border", className)} {...props} />
 }

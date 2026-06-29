@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { Link } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { CheckCircle2, FileSpreadsheet, FileText, Loader2, PackagePlus, RefreshCw, Search, Send, ShieldCheck, Upload } from "lucide-react"
+import { CheckCircle2, Download, FileSpreadsheet, FileText, Loader2, PackagePlus, RefreshCw, Search, Send, ShieldCheck, Upload } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
@@ -97,7 +97,6 @@ interface ProductArchiveWorkflowResponse {
   status: "queued" | "needs_launch_plan"
   needsLaunchPlan: boolean
   message?: string
-  mdmCodeCount?: number
   candidateCodes?: string[]
   draftQueuedCount?: number
   skippedExistingDraftCount?: number
@@ -162,8 +161,6 @@ function multiLineCodeCount(value: string) {
 interface StartProductArchiveDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  workflowMdmCodes: string
-  onWorkflowMdmCodesChange: (value: string) => void
   copywritingFile: File | null
   onCopywritingFileChange: (file: File | null) => void
   launchPlanFile: File | null
@@ -178,8 +175,6 @@ interface StartProductArchiveDialogProps {
 function StartProductArchiveDialog({
   open,
   onOpenChange,
-  workflowMdmCodes,
-  onWorkflowMdmCodesChange,
   copywritingFile,
   onCopywritingFileChange,
   launchPlanFile,
@@ -203,27 +198,22 @@ function StartProductArchiveDialog({
         <DialogHeader>
           <DialogTitle>开始商品建档</DialogTitle>
           <DialogDescription>
-            按 MDM、标准文案、上市计划的顺序准备数据，完成后自动生成深绘建档草稿。
+            按标准文案表和上市计划表里的款号生成草稿，缺少 MDM 主数据时系统会自动同步。
           </DialogDescription>
         </DialogHeader>
         <div className="grid max-h-[68vh] gap-4 overflow-auto pr-1">
           <section className="rounded-lg border p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <Badge variant="secondary">1. 同步 MDM</Badge>
-              <span className="text-sm text-muted-foreground">支持多行复制款号</span>
-            </div>
-            <Textarea
-              value={workflowMdmCodes}
-              onChange={(event) => onWorkflowMdmCodesChange(event.target.value)}
-              placeholder={"209326133201\n200326105103"}
-              className="min-h-32 font-mono text-sm"
-            />
-          </section>
-
-          <section className="rounded-lg border p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <Badge variant="secondary">2. 导入标准文案表</Badge>
-              <span className="text-sm text-muted-foreground">缺少 MDM 主数据的款会自动同步</span>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary">1. 导入标准文案表</Badge>
+                <span className="text-sm text-muted-foreground">按表内款号自动匹配 MDM</span>
+              </div>
+              <Button asChild type="button" variant="outline" size="sm">
+                <a href="/api/product-archive-drafts/templates/copywriting" download>
+                  <Download className="size-4" />
+                  下载标准文案模板
+                </a>
+              </Button>
             </div>
             <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-dashed px-3 py-3 text-sm hover:bg-muted/40">
               <span className="flex min-w-0 items-center gap-2">
@@ -240,9 +230,17 @@ function StartProductArchiveDialog({
           </section>
 
           <section className="rounded-lg border p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <Badge variant="secondary">3. 匹配/导入上市计划</Badge>
-              <span className="text-sm text-muted-foreground">已有上市计划可跳过上传</span>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary">2. 匹配/导入上市计划</Badge>
+                <span className="text-sm text-muted-foreground">已有上市计划可跳过上传</span>
+              </div>
+              <Button asChild type="button" variant="outline" size="sm">
+                <a href="/api/product-archive-drafts/templates/launch-plan" download>
+                  <Download className="size-4" />
+                  下载上市计划模板
+                </a>
+              </Button>
             </div>
             <label className="mb-3 flex cursor-pointer items-center justify-between gap-3 rounded-md border border-dashed px-3 py-3 text-sm hover:bg-muted/40">
               <span className="flex min-w-0 items-center gap-2">
@@ -279,7 +277,7 @@ function StartProductArchiveDialog({
           </Button>
           <Button
             type="button"
-            disabled={isPending || (!workflowMdmCodes.trim() && !copywritingFile && !launchPlanFile)}
+            disabled={isPending || (!copywritingFile && !launchPlanFile)}
             onClick={onSubmit}
           >
             {isPending ? <Loader2 className="size-4 animate-spin" /> : <PackagePlus className="size-4" />}
@@ -303,7 +301,6 @@ export default function ProductArchiveDraftsPage() {
   const [mdmCodes, setMdmCodes] = useState("")
   const [workflowDialogOpen, setWorkflowDialogOpen] = useState(false)
   const [workflowProgressDialogOpen, setWorkflowProgressDialogOpen] = useState(false)
-  const [workflowMdmCodes, setWorkflowMdmCodes] = useState("")
   const [copywritingFile, setCopywritingFile] = useState<File | null>(null)
   const [launchPlanFile, setLaunchPlanFile] = useState<File | null>(null)
   const [skipLaunchPlan, setSkipLaunchPlan] = useState(false)
@@ -407,7 +404,6 @@ export default function ProductArchiveDraftsPage() {
   const startProductArchiveWorkflow = useMutation({
     mutationFn: async () => {
       const form = new FormData()
-      form.append("mdmCodes", workflowMdmCodes)
       form.append("skipLaunchPlan", skipLaunchPlan ? "true" : "false")
       if (copywritingFile) form.append("copywritingFile", copywritingFile)
       if (launchPlanFile) form.append("launchPlanFile", launchPlanFile)
@@ -433,7 +429,6 @@ export default function ProductArchiveDraftsPage() {
         toast.success("来源数据已导入，当前款号已有对应草稿")
       }
       setWorkflowDialogOpen(false)
-      setWorkflowMdmCodes("")
       setCopywritingFile(null)
       setLaunchPlanFile(null)
       setSkipLaunchPlan(false)
@@ -511,7 +506,7 @@ export default function ProductArchiveDraftsPage() {
     <CompactListPage>
       <CompactListHeader
         title="深绘建档草稿"
-        description="先同步 MDM 款号，再导入上市计划表和标准文案表，最后按深绘类目模板完成字段填充、校验和提交预览。"
+        description="按标准文案表和上市计划表里的款号生成草稿，系统自动补齐缺失 MDM，再按深绘类目模板完成字段填充、校验和提交预览。"
         summary={`共 ${formatNumber(summary.total)} 个草稿`}
         actions={
           <>
@@ -725,8 +720,6 @@ export default function ProductArchiveDraftsPage() {
                   setWorkflowDialogOpen(open)
                   if (open) setWorkflowResult(null)
                 }}
-                workflowMdmCodes={workflowMdmCodes}
-                onWorkflowMdmCodesChange={setWorkflowMdmCodes}
                 copywritingFile={copywritingFile}
                 onCopywritingFileChange={setCopywritingFile}
                 launchPlanFile={launchPlanFile}

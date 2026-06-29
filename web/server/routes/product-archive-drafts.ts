@@ -1,13 +1,13 @@
 import path from "node:path"
 import os from "node:os"
-import { mkdir, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { Hono, type Context } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
 import { requirePermission } from "../lib/auth"
 import { auditFromContext } from "../lib/audit"
 import { assertSafeProductArchiveCode } from "../lib/product-archive-security"
-import { createProductArchiveSyncQueue, parseSpuCodes } from "../../../scripts/lib/product_archive_sync_queue.mjs"
+import { createProductArchiveSyncQueue } from "../../../scripts/lib/product_archive_sync_queue.mjs"
 import { resolveDeepdrawConfig } from "../../../scripts/lib/deepdraw_client.mjs"
 import { syncMdmProduct } from "../services/product-archive-sync"
 import {
@@ -35,6 +35,17 @@ const PROJECT_ROOT =
     ? path.resolve(process.cwd(), "..")
     : process.cwd()
 const UPLOAD_DIR = path.join(os.tmpdir(), "listingify-upload")
+const TEMPLATE_DIR = path.join(PROJECT_ROOT, "data", "product-archive-templates")
+const PRODUCT_ARCHIVE_TEMPLATES = {
+  copywriting: {
+    fileName: "标准文案表-模板.xlsx",
+    filePath: path.join(TEMPLATE_DIR, "标准文案表-模板.xlsx"),
+  },
+  "launch-plan": {
+    fileName: "上市计划表-模板.xlsx",
+    filePath: path.join(TEMPLATE_DIR, "上市计划表-模板.xlsx"),
+  },
+} as const
 
 const draftQueue = createProductArchiveSyncQueue({
   allowedSources: ["draft", "mdm_draft"],
@@ -235,6 +246,26 @@ productArchiveDrafts.get("/", (c) => {
     limit: c.req.query("limit"),
     offset: c.req.query("offset"),
   }))
+})
+
+productArchiveDrafts.get("/templates/:templateType", async (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const templateType = c.req.param("templateType") as keyof typeof PRODUCT_ARCHIVE_TEMPLATES
+  const template = PRODUCT_ARCHIVE_TEMPLATES[templateType]
+  if (!template) {
+    throw new HTTPException(404, { message: "模板不存在" })
+  }
+  let buffer: Buffer
+  try {
+    buffer = await readFile(template.filePath)
+  } catch {
+    throw new HTTPException(404, { message: "模板文件未配置，请先放入 data/product-archive-templates" })
+  }
+  return c.body(buffer, 200, {
+    "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(template.fileName)}`,
+    "cache-control": "private, max-age=3600",
+  })
 })
 
 productArchiveDrafts.post("/from-spu/:spuCode", async (c) => {
@@ -516,7 +547,6 @@ productArchiveDrafts.post("/workflow/start", async (c) => {
   requirePermission(c, "PRODUCT_ARCHIVE_RULE_MANAGE")
   const db = getDb()
   const form = await c.req.formData()
-  const mdmCodes = parseSpuCodes(form.get("mdmCodes") ?? form.get("codes"))
   const copywritingFile = form.get("copywritingFile")
   const launchPlanFile = form.get("launchPlanFile")
   const skipLaunchPlan = booleanFormValue(form.get("skipLaunchPlan"))
@@ -538,12 +568,11 @@ productArchiveDrafts.post("/workflow/start", async (c) => {
   }
 
   const candidateCodes = uniqueStrings([
-    ...mdmCodes,
     ...(copywritingImport?.spuCodes ?? []),
     ...(launchPlanImport?.spuCodes ?? []),
   ])
   if (candidateCodes.length === 0) {
-    throw new HTTPException(400, { message: "请至少输入 MDM 款号，或上传标准文案表/上市计划表" })
+    throw new HTTPException(400, { message: "请上传标准文案表或上市计划表，系统会按表格款号自动同步 MDM 并生成草稿" })
   }
 
   const existingLaunchPlans = existingLaunchPlanSpuCodes(db, candidateCodes)
@@ -603,7 +632,6 @@ productArchiveDrafts.post("/workflow/start", async (c) => {
     entityId: syncJob?.id ?? null,
     summary: `开始商品建档 ${candidateCodes.length} 个款号`,
     metadata: {
-      mdmCodeCount: mdmCodes.length,
       candidateCodeCount: candidateCodes.length,
       draftQueuedCount: draftCodes.length,
       skippedExistingDraftCount: candidateCodes.length - draftCodes.length,
@@ -617,7 +645,6 @@ productArchiveDrafts.post("/workflow/start", async (c) => {
   return c.json({
     status: "queued",
     needsLaunchPlan: false,
-    mdmCodeCount: mdmCodes.length,
     candidateCodes,
     draftQueuedCount: draftCodes.length,
     skippedExistingDraftCount: candidateCodes.length - draftCodes.length,

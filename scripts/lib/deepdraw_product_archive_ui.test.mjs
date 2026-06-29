@@ -20,6 +20,7 @@ const files = {
   draftDetailPage: path.join(PROJECT_ROOT, "web/src/pages/product-archive-drafts/[draftId]/page.tsx"),
   metadataPage: path.join(PROJECT_ROOT, "web/src/pages/deepdraw-metadata/page.tsx"),
   productArchiveDetailPage: path.join(PROJECT_ROOT, "web/src/pages/product-archives/[spuCode]/page.tsx"),
+  gitignore: path.join(PROJECT_ROOT, ".gitignore"),
 };
 
 test("deepdraw product archive schema defines draft metadata rules validation and submit log tables", async () => {
@@ -75,6 +76,7 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
     /productArchiveDrafts\.post\("\/batch"/,
     /productArchiveDrafts\.post\("\/mdm-batch"/,
     /productArchiveDrafts\.post\("\/workflow\/start"/,
+    /productArchiveDrafts\.get\("\/templates\/:templateType"/,
     /productArchiveDrafts\.post\("\/source-imports"/,
     /productArchiveDrafts\.get\("\/:draftId"/,
     /productArchiveDrafts\.patch\("\/:draftId\/trade"/,
@@ -94,6 +96,9 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
   assert.match(draftRoute, /autoSyncMissingMdm/);
   assert.match(draftRoute, /missingMdmSpuCodes/);
   assert.match(draftRoute, /missingDraftSpuCodes/);
+  assert.match(draftRoute, /copywriting/);
+  assert.match(draftRoute, /launch-plan/);
+  assert.doesNotMatch(draftRoute, /const mdmCodes = parseSpuCodes\(form\.get\("mdmCodes"\)/);
   assert.match(draftRoute, /sourceBatchId:\s*Number\(result\.batch\.id\)/);
   assert.match(draftRoute, /applyProductArchiveDraftTrade/);
   assert.match(draftService, /export function applyProductArchiveDraftTrade/);
@@ -233,7 +238,11 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /api\.post<.*>\("\/product-archive-drafts\/mdm-batch"/s);
   assert.match(draftListPage, /api\.postForm<.*>\("\/product-archive-drafts\/source-imports\/upload"/s);
   assert.match(draftListPage, /sourceType", "copywriting"/);
-  assert.match(draftListPage, /workflowMdmCodes/);
+  assert.doesNotMatch(draftListPage, /workflowMdmCodes/);
+  assert.match(draftListPage, /下载标准文案模板/);
+  assert.match(draftListPage, /下载上市计划模板/);
+  assert.match(draftListPage, /\/api\/product-archive-drafts\/templates\/copywriting/);
+  assert.match(draftListPage, /\/api\/product-archive-drafts\/templates\/launch-plan/);
   assert.match(draftListPage, /Textarea/);
   assert.match(draftListPage, /selectedDraftIds/);
   assert.match(draftListPage, /toggleAllVisible/);
@@ -249,13 +258,13 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/submit`, \{ dryRun: false \}\)/s);
   assert.match(draftListPage, /StartProductArchiveDialog/);
   assert.doesNotMatch(draftListPage, /导入字段对应关系/);
-  assert.match(draftListPage, /先同步 MDM 款号，再导入上市计划表和标准文案表/);
+  assert.match(draftListPage, /按标准文案表和上市计划表里的款号生成草稿/);
   assert.match(draftListPage, /开始商品建档/);
-  assert.match(draftListPage, /1\.\s*同步 MDM/);
-  assert.match(draftListPage, /2\.\s*导入标准文案表/);
-  assert.match(draftListPage, /3\.\s*匹配\/导入上市计划/);
+  assert.doesNotMatch(draftListPage, /1\.\s*同步 MDM/);
+  assert.match(draftListPage, /1\.\s*导入标准文案表/);
+  assert.match(draftListPage, /2\.\s*匹配\/导入上市计划/);
   assert.match(draftListPage, /api\.postForm<.*>\("\/product-archive-drafts\/workflow\/start"/s);
-  assert.match(draftListPage, /workflowMdmCodes/);
+  assert.doesNotMatch(draftListPage, /form\.append\("mdmCodes"/);
   assert.match(draftListPage, /copywritingFile/);
   assert.match(draftListPage, /launchPlanFile/);
   assert.match(draftListPage, /result\.syncJob/);
@@ -314,4 +323,10 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(productArchiveDetailPage, /生成建档草稿/);
   assert.match(productArchiveDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/from-spu\/\$\{spuCode\}`/s);
   assert.match(productArchiveDetailPage, /navigate\(`\/product-archive-drafts\/\$\{result\.draft\.id\}`\)/);
+});
+
+test("product archive workflow templates are repository assets", async () => {
+  const gitignore = await readFile(files.gitignore, "utf8");
+
+  assert.doesNotMatch(gitignore, /data\/product-archive-templates\//);
 });
