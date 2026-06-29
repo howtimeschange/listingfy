@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { FileSpreadsheet, Search } from "lucide-react"
 import { toast } from "sonner"
@@ -7,6 +7,7 @@ import { formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { ImportDialog } from "@/components/import-dialog"
 import { ServerPagination } from "@/components/server-pagination"
+import { useAsyncTasks, type AsyncTaskJob } from "@/lib/async-task-context"
 import {
   CompactListCard,
   CompactListCardContent,
@@ -71,12 +72,21 @@ interface LaunchPlanRowsResponse {
   pagination: { total: number; limit: number; offset: number }
 }
 
-interface LaunchPlanImportResponse {
+interface LaunchPlanImportResult {
+  import?: { id?: number; import_no?: string }
   inputRowCount: number
   insertedRowCount: number
   sheetCount: number
   sourceBatchIds: number[]
   refreshSummaries?: Array<{ refreshedDraftCount: number; autoAppliedTradeCount: number }>
+  autoAppliedTradeCount?: number
+}
+
+interface LaunchPlanImportJob extends AsyncTaskJob {
+  title?: string
+  result?: LaunchPlanImportResult
+  fileName?: string
+  error?: string | null
 }
 
 function categoryText(row: ListingLaunchPlanRow) {
@@ -85,9 +95,12 @@ function categoryText(row: ListingLaunchPlanRow) {
 
 export default function ListingLaunchPlansPage() {
   const queryClient = useQueryClient()
+  const { addTask, getTaskByJobId, openTaskCenter } = useAsyncTasks()
   const [searchText, setSearchText] = useState("")
   const [sheetName, setSheetName] = useState("all")
   const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
+  const [importJobId, setImportJobId] = useState<string | null>(null)
+  const handledImportJobIdRef = useRef<string | null>(null)
   const debouncedQuery = useDebounce(searchText, 300)
 
   const rows = useQuery<LaunchPlanRowsResponse>({
@@ -102,17 +115,59 @@ export default function ListingLaunchPlansPage() {
     mutationFn: async (file: File) => {
       const form = new FormData()
       form.append("file", file)
-      return api.postForm<LaunchPlanImportResponse>("/listing-launch-plans/imports", form)
+      return api.postForm<LaunchPlanImportJob>("/listing-launch-plans/imports", form)
     },
-    onSuccess: (result) => {
-      const autoAppliedTradeCount = (result.refreshSummaries ?? []).reduce((sum, item) => sum + (item.autoAppliedTradeCount ?? 0), 0)
-      toast.success(
-        `导入上市计划表完成：${formatNumber(result.insertedRowCount)} / ${formatNumber(result.inputRowCount)} 行，${formatNumber(result.sheetCount)} 个页签，自动应用类目 ${formatNumber(autoAppliedTradeCount)} 个`,
-      )
-      queryClient.invalidateQueries({ queryKey: ["listing-launch-plan-rows"] })
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    onSuccess: (job) => {
+      addTask({
+        job: job as AsyncTaskJob,
+        type: "listing_launch_plan_import",
+        title: "导入上市计划表",
+        description: "后台解析文件、写入明细并刷新已有关联草稿",
+        endpoint: `/listing-launch-plans/import-jobs/${job.id}`,
+      })
+      setImportJobId(job.id)
+      handledImportJobIdRef.current = null
+      openTaskCenter()
+      toast.success("上市计划表导入任务已加入队列")
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "导入上市计划表失败")
     },
   })
+
+  const importJob = useQuery<LaunchPlanImportJob>({
+    queryKey: ["listing-launch-plan-import-job", importJobId],
+    queryFn: () => api.get<LaunchPlanImportJob>(`/listing-launch-plans/import-jobs/${importJobId}`),
+    enabled: Boolean(importJobId),
+    refetchInterval: (query) => {
+      const job = query.state.data
+      return job && job.status !== "completed" ? 1500 : false
+    },
+    refetchOnWindowFocus: false,
+  })
+
+  const trackedImportJob = (getTaskByJobId(importJobId)?.job ?? importJob.data) as LaunchPlanImportJob | null | undefined
+
+  useEffect(() => {
+    if (!trackedImportJob || trackedImportJob.status !== "completed") return
+    if (handledImportJobIdRef.current === trackedImportJob.id) return
+    handledImportJobIdRef.current = trackedImportJob.id
+    if (trackedImportJob.failed_count > 0) {
+      const message = trackedImportJob.error
+        || trackedImportJob.items?.find((item) => item.status === "failed")?.error
+        || "导入上市计划表失败"
+      toast.error(message)
+      return
+    }
+    const result = trackedImportJob.result
+    const autoAppliedTradeCount = result?.autoAppliedTradeCount
+      ?? (result?.refreshSummaries ?? []).reduce((sum, item) => sum + (item.autoAppliedTradeCount ?? 0), 0)
+    toast.success(
+      `导入上市计划表完成：${formatNumber(result?.insertedRowCount ?? 0)} / ${formatNumber(result?.inputRowCount ?? 0)} 行，${formatNumber(result?.sheetCount ?? 0)} 个页签，自动应用类目 ${formatNumber(autoAppliedTradeCount)} 个`,
+    )
+    queryClient.invalidateQueries({ queryKey: ["listing-launch-plan-rows"] })
+    queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+  }, [queryClient, trackedImportJob])
 
   const summary = useMemo(() => {
     const total = rows.data?.pagination.total ?? 0

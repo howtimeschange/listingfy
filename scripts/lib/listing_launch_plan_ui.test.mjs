@@ -6,9 +6,11 @@ import test from "node:test";
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const files = {
   migration: path.join(PROJECT_ROOT, "db/migrations/028_listing_launch_plan.sql"),
+  importJobMigration: path.join(PROJECT_ROOT, "db/migrations/033_listing_launch_plan_import_jobs.sql"),
   server: path.join(PROJECT_ROOT, "web/server/index.ts"),
   route: path.join(PROJECT_ROOT, "web/server/routes/listing-launch-plans.ts"),
   service: path.join(PROJECT_ROOT, "web/server/services/listing-launch-plans.ts"),
+  importJobService: path.join(PROJECT_ROOT, "web/server/services/listing-launch-plan-import-jobs.ts"),
   draftRoute: path.join(PROJECT_ROOT, "web/server/routes/product-archive-drafts.ts"),
   draftService: path.join(PROJECT_ROOT, "web/server/services/product-archive-drafts.ts"),
   router: path.join(PROJECT_ROOT, "web/src/router.tsx"),
@@ -19,6 +21,7 @@ const files = {
 
 test("listing launch plan schema stores imports and normalized rows separately from draft source rows", async () => {
   const migration = await readFile(files.migration, "utf8");
+  const importJobMigration = await readFile(files.importJobMigration, "utf8");
 
   assert.match(migration, /postgres-only/);
   assert.match(migration, /create table if not exists listing_launch_plan_import/);
@@ -31,17 +34,25 @@ test("listing launch plan schema stores imports and normalized rows separately f
   assert.match(migration, /idx_listing_launch_plan_row_spu/);
   assert.match(migration, /idx_listing_launch_plan_row_category/);
   assert.doesNotMatch(migration, /sqlite|autoincrement|strftime/i);
+
+  assert.match(importJobMigration, /postgres-only/);
+  assert.match(importJobMigration, /create table if not exists listing_launch_plan_import_job/);
+  assert.match(importJobMigration, /result_json jsonb not null default '\{\}'::jsonb/);
+  assert.match(importJobMigration, /check\(status in \('queued', 'running', 'completed'\)\)/);
+  assert.doesNotMatch(importJobMigration, /sqlite|autoincrement|strftime/i);
 });
 
 test("listing launch plan API and page expose server-side upload and parsed row browsing", async () => {
-  const [server, route, service, router, sidebar, page, draftRoute, draftListPage] = await Promise.all([
+  const [server, route, service, importJobService, router, sidebar, page, draftRoute, draftService, draftListPage] = await Promise.all([
     readFile(files.server, "utf8"),
     readFile(files.route, "utf8"),
     readFile(files.service, "utf8"),
+    readFile(files.importJobService, "utf8"),
     readFile(files.router, "utf8"),
     readFile(files.sidebar, "utf8"),
     readFile(files.page, "utf8"),
     readFile(files.draftRoute, "utf8"),
+    readFile(files.draftService, "utf8"),
     readFile(files.draftListPage, "utf8"),
   ]);
 
@@ -50,15 +61,27 @@ test("listing launch plan API and page expose server-side upload and parsed row 
   assert.match(route, /listingLaunchPlans\.get\("\/imports"/);
   assert.match(route, /listingLaunchPlans\.get\("\/rows"/);
   assert.match(route, /listingLaunchPlans\.post\("\/imports"/);
+  assert.match(route, /listingLaunchPlans\.get\("\/import-jobs\/:jobId"/);
   assert.match(route, /c\.req\.formData\(\)/);
-  assert.match(route, /readSpreadsheetSheetsFromFile/);
-  assert.match(route, /importProductArchiveSourceRows/);
+  assert.match(route, /enqueueListingLaunchPlanImportJob/);
+  assert.match(route, /getListingLaunchPlanImportJob/);
   assert.match(service, /export function importListingLaunchPlanSheets/);
+  assert.match(service, /export async function importListingLaunchPlanSheetsInChunks/);
   assert.match(service, /normalizeListingLaunchPlanRows/);
   assert.match(service, /insert into listing_launch_plan_import/);
   assert.match(service, /insert into listing_launch_plan_row/);
   assert.match(service, /export function listListingLaunchPlanRows/);
   assert.match(service, /export function listListingLaunchPlanImports/);
+  assert.match(importJobService, /readSpreadsheetSheetsFromFile/);
+  assert.match(importJobService, /importProductArchiveSourceRows/);
+  assert.match(importJobService, /refreshProductArchiveDraftsFromSourceBatchInChunks/);
+  assert.match(importJobService, /importListingLaunchPlanSheetsInChunks/);
+  assert.doesNotMatch(importJobService, /importListingLaunchPlanSheets\(getDb\(\)/);
+  assert.match(draftService, /export async function refreshProductArchiveDraftsFromSourceBatchInChunks/);
+  assert.match(importJobService, /export function enqueueListingLaunchPlanImportJob/);
+  assert.match(importJobService, /export function getListingLaunchPlanImportJob/);
+  assert.match(importJobService, /scheduleListingLaunchPlanImportJobs/);
+  assert.doesNotMatch(importJobService, /id:\s*job\.actor\.id\s*\?\?\s*0/);
 
   assert.match(router, /ListingLaunchPlansPage/);
   assert.match(router, /path: "listing-launch-plans"/);
@@ -67,6 +90,11 @@ test("listing launch plan API and page expose server-side upload and parsed row 
   assert.match(page, /上市计划表/);
   assert.match(page, /FormData/);
   assert.match(page, /\/listing-launch-plans\/imports/);
+  assert.match(page, /\/listing-launch-plans\/import-jobs\/\$\{job\.id\}/);
+  assert.match(page, /useAsyncTasks/);
+  assert.match(page, /addTask/);
+  assert.match(page, /openTaskCenter/);
+  assert.match(page, /listing_launch_plan_import/);
   assert.match(page, /\/listing-launch-plans\/rows/);
   assert.match(page, /ServerPagination/);
   assert.match(page, /官方发布类目/);

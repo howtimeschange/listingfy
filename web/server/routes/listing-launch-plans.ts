@@ -1,18 +1,22 @@
-import { mkdir, rm, writeFile } from "node:fs/promises"
+import { createWriteStream } from "node:fs"
+import { mkdir, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { Readable } from "node:stream"
+import { pipeline } from "node:stream/promises"
 import { Hono, type Context } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
 import { auditFromContext } from "../lib/audit"
 import { requirePermission } from "../lib/auth"
-import { importProductArchiveSourceRows, refreshProductArchiveDraftsFromSourceBatch } from "../services/product-archive-drafts"
 import {
-  importListingLaunchPlanSheets,
   listListingLaunchPlanImports,
   listListingLaunchPlanRows,
 } from "../services/listing-launch-plans"
-import { readSpreadsheetSheetsFromFile } from "../../../scripts/lib/listing_launch_plan_importer.mjs"
+import {
+  enqueueListingLaunchPlanImportJob,
+  getListingLaunchPlanImportJob,
+} from "../services/listing-launch-plan-import-jobs"
 
 const listingLaunchPlans = new Hono()
 const UPLOAD_DIR = path.join(os.tmpdir(), "listingify-upload")
@@ -37,7 +41,7 @@ async function saveUploadedSpreadsheet(c: Context) {
   }
   await mkdir(UPLOAD_DIR, { recursive: true })
   const filePath = path.join(UPLOAD_DIR, safeUploadName(file.name))
-  await writeFile(filePath, Buffer.from(await file.arrayBuffer()))
+  await pipeline(Readable.fromWeb(file.stream()), createWriteStream(filePath))
   return { file, filePath }
 }
 
@@ -63,51 +67,43 @@ listingLaunchPlans.get("/rows", (c) => {
 
 listingLaunchPlans.post("/imports", async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_RULE_MANAGE")
-  const db = getDb()
   const { file, filePath } = await saveUploadedSpreadsheet(c)
+  let job: ReturnType<typeof enqueueListingLaunchPlanImportJob>
   try {
-    const sheets = await readSpreadsheetSheetsFromFile(filePath, { fileName: file.name })
-    const sourceBatchIds: number[] = []
-    const refreshSummaries = []
-    for (const sheet of sheets) {
-      const sourceImport = importProductArchiveSourceRows(db, {
-        sourceType: "launch_plan",
-        fileName: file.name,
-        sheetName: sheet.name,
-        rows: sheet.rows,
-      })
-      const sourceBatchId = Number(sourceImport.batch.id)
-      sourceBatchIds.push(sourceBatchId)
-      refreshSummaries.push(refreshProductArchiveDraftsFromSourceBatch(db, {
-        sourceBatchId,
-        sourceType: "launch_plan",
-      }))
-    }
-    const result = importListingLaunchPlanSheets(db, {
+    job = enqueueListingLaunchPlanImportJob({
       fileName: file.name,
       fileSizeBytes: file.size,
-      sheets,
-      sourceBatchIds,
       createdBy: user.id,
+      username: user.username,
+      filePath,
     })
-    auditFromContext(c, {
-      action: "listing_launch_plan.imported",
-      module: "LISTING_LAUNCH_PLAN",
-      entityType: "listing_launch_plan_import",
-      entityId: result.import.id,
-      summary: `导入上市计划表 ${stringValue(file.name)}`,
-      metadata: {
-        fileName: file.name,
-        inputRowCount: result.inputRowCount,
-        insertedRowCount: result.insertedRowCount,
-        sourceBatchIds,
-        userId: user.id,
-      },
-    })
-    return c.json({ ...result, sourceBatchIds, refreshSummaries })
-  } finally {
+  } catch (error) {
     await rm(filePath, { force: true })
+    throw error
   }
+  auditFromContext(c, {
+    action: "listing_launch_plan.import_queued",
+    module: "LISTING_LAUNCH_PLAN",
+    entityType: "listing_launch_plan_import_job",
+    entityId: job.id,
+    summary: `上市计划表导入任务已加入队列 ${stringValue(file.name)}`,
+    metadata: {
+      jobId: job.id,
+      fileName: file.name,
+      fileSizeBytes: file.size,
+      userId: user.id,
+    },
+  })
+  return c.json(job, 202)
+})
+
+listingLaunchPlans.get("/import-jobs/:jobId", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const job = getListingLaunchPlanImportJob(c.req.param("jobId"))
+  if (!job) {
+    throw new HTTPException(404, { message: "上市计划表导入任务不存在" })
+  }
+  return c.json(job)
 })
 
 export default listingLaunchPlans

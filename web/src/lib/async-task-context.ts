@@ -23,7 +23,7 @@ export interface AsyncTaskJob {
 
 export interface AsyncTaskRecord {
   id: string
-  type: "product_archive_mdm_draft" | "category_mapping_ai_suggestions" | "shein_platform_product_sync" | "shein_platform_product_export"
+  type: "product_archive_mdm_draft" | "listing_launch_plan_import" | "category_mapping_ai_suggestions" | "shein_platform_product_sync" | "shein_platform_product_export"
   title: string
   description?: string
   endpoint: string

@@ -12,7 +12,12 @@ export interface AuditInput {
   metadata?: unknown
 }
 
-export function writeOperationLog(db: SyncPostgresDatabase, input: AuditInput, actor?: { id: number; username: string } | null, ipAddress?: string) {
+export interface AuditActor {
+  id?: number | null
+  username?: string | null
+}
+
+export function writeOperationLog(db: SyncPostgresDatabase, input: AuditInput, actor?: AuditActor | null, ipAddress?: string) {
   db.prepare(`
     insert into operation_log (
       actor_user_id,

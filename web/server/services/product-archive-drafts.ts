@@ -80,8 +80,25 @@ interface RefreshSourceBatchInput {
   sourceType: string
 }
 
+interface RefreshSourceBatchChunkOptions {
+  chunkSize?: number
+  onProgress?: (progress: {
+    sourceBatchId: number
+    scannedDraftCount: number
+    processedDraftCount: number
+    refreshedDraftCount: number
+    autoAppliedTradeCount: number
+    skippedNoTradeMatchCount: number
+    failedDraftCount: number
+  }) => void | Promise<void>
+}
+
 function nowIso() {
   return new Date().toISOString()
+}
+
+function wait(ms = 0) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function readLimit(value: unknown, fallback = 50, max = 200) {
@@ -1633,6 +1650,105 @@ export function refreshProductArchiveDraftsFromSourceBatch(db: SyncPostgresDatab
         message: error instanceof Error ? error.message : String(error),
       })
     }
+  }
+
+  return {
+    scannedDraftCount: drafts.length,
+    refreshedDraftCount,
+    autoAppliedTradeCount,
+    skippedNoTradeMatchCount,
+    failedDrafts,
+  }
+}
+
+export async function refreshProductArchiveDraftsFromSourceBatchInChunks(
+  db: SyncPostgresDatabase,
+  input: RefreshSourceBatchInput,
+  options: RefreshSourceBatchChunkOptions = {},
+) {
+  const sourceType = sourceImportType(input.sourceType)
+  if (!["launch_plan", "copywriting"].includes(sourceType)) {
+    return { scannedDraftCount: 0, refreshedDraftCount: 0, autoAppliedTradeCount: 0, skippedNoTradeMatchCount: 0, failedDrafts: [] }
+  }
+  const sourceBatchId = numberValue(input.sourceBatchId)
+  if (sourceBatchId === null || sourceBatchId <= 0) {
+    return { scannedDraftCount: 0, refreshedDraftCount: 0, autoAppliedTradeCount: 0, skippedNoTradeMatchCount: 0, failedDrafts: [] }
+  }
+
+  const drafts = db.prepare(`
+    select distinct draft.*
+    from product_archive_draft draft
+    join product_archive_source_row source on source.spu_code = draft.spu_code
+    where source.source_batch_id = ?
+      and source.source_type = ?
+      and draft.status in ('draft', 'missing_fields', 'manual_review', 'ready')
+    order by draft.updated_at desc, draft.id desc
+  `).all(sourceBatchId, sourceType) as JsonRecord[]
+  let refreshedDraftCount = 0
+  let autoAppliedTradeCount = 0
+  let skippedNoTradeMatchCount = 0
+  const failedDrafts: Array<{ draftId: number; spuCode: string; message: string }> = []
+  const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 10)))
+
+  for (let start = 0; start < drafts.length; start += chunkSize) {
+    const end = Math.min(start + chunkSize, drafts.length)
+    for (let index = start; index < end; index += 1) {
+      const draft = drafts[index]
+      const draftId = numberValue(draft.id)
+      if (draftId === null) continue
+      try {
+        const snapshot = appendSourceBatchId(recordValue(draft.source_snapshot_json), sourceType, sourceBatchId)
+        db.prepare(`
+          update product_archive_draft
+          set source_snapshot_json = ?::jsonb,
+            updated_at = ?::timestamptz
+          where id = ?
+        `).run(jsonText(snapshot), nowIso(), draftId)
+
+        if (sourceType === "launch_plan" && !stringValue(draft.trade_id)) {
+          const sourceRows = sourceRowsForSpu(db, stringValue(draft.spu_code), sourceBatchId)
+          const draftMerchantId = stringValue(draft.merchant_id)
+          const autoMatchedTrade = inferDeepdrawTradeFromLaunchPlan(db, {
+            tenantName: stringValue(draft.tenant_name),
+            merchantId: draftMerchantId,
+            sourceRows,
+          })
+          if (autoMatchedTrade?.tradeId) {
+            applyProductArchiveDraftTrade(db, draftId, {
+              tradeId: autoMatchedTrade.tradeId,
+              tradePath: autoMatchedTrade.tradePath,
+            })
+            autoAppliedTradeCount += 1
+            refreshedDraftCount += 1
+          } else {
+            validateProductArchiveDraft(db, draftId)
+            skippedNoTradeMatchCount += 1
+          }
+        } else if (stringValue(draft.trade_id)) {
+          rebuildProductArchiveDraftFields(db, draftId)
+          validateProductArchiveDraft(db, draftId)
+          refreshedDraftCount += 1
+        } else {
+          validateProductArchiveDraft(db, draftId)
+        }
+      } catch (error) {
+        failedDrafts.push({
+          draftId,
+          spuCode: stringValue(draft.spu_code),
+          message: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    await options.onProgress?.({
+      sourceBatchId,
+      scannedDraftCount: drafts.length,
+      processedDraftCount: end,
+      refreshedDraftCount,
+      autoAppliedTradeCount,
+      skippedNoTradeMatchCount,
+      failedDraftCount: failedDrafts.length,
+    })
+    await wait()
   }
 
   return {
