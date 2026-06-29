@@ -1,13 +1,10 @@
 #!/usr/bin/env node
 
 import path from "node:path";
-import { createRequire } from "node:module";
+import { DatabaseSync } from "node:sqlite";
 import { getDatabaseConfig } from "./lib/database_config.mjs";
 import { loadLocalEnv } from "./lib/local_env.mjs";
 import { createPostgresPool, identitySequenceSetvalSql } from "./lib/postgres_db.mjs";
-
-const requireFromWeb = createRequire(new URL("../web/package.json", import.meta.url));
-const Database = requireFromWeb("better-sqlite3");
 
 const DEFAULT_SQLITE_PATH = path.resolve("data", "app.sqlite");
 const DEFAULT_BATCH_SIZE = 500;
@@ -187,7 +184,7 @@ function sqliteRowCounts(sqlite, tables) {
 }
 
 async function migrateData({ databaseUrl, sqlitePath, batchSize, truncate }) {
-  const sqlite = new Database(sqlitePath, { readonly: true, fileMustExist: true });
+  const sqlite = new DatabaseSync(sqlitePath, { readOnly: true });
   const pool = createPostgresPool(databaseUrl, { max: 1 });
   const client = await pool.connect();
 

@@ -1,20 +1,31 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
-const requireFromWeb = createRequire(path.join(PROJECT_ROOT, "web/package.json"));
-const Database = requireFromWeb("better-sqlite3");
-
 const service = await import("../../web/server/services/publish/publish-job-service.ts");
+
+function addTransactionShim(db) {
+  db.transaction = (fn) => (...args) => {
+    db.exec("begin immediate");
+    try {
+      const result = fn(...args);
+      db.exec("commit");
+      return result;
+    } catch (error) {
+      db.exec("rollback");
+      throw error;
+    }
+  };
+  return db;
+}
 
 async function createTempDb() {
   const tempPath = await mkdtemp(path.join(os.tmpdir(), "listingify-batch-publish-"));
-  const db = new Database(path.join(tempPath, "test.sqlite"));
-  db.pragma("foreign_keys = ON");
+  const db = addTransactionShim(new DatabaseSync(path.join(tempPath, "test.sqlite")));
+  db.exec("pragma foreign_keys = on");
   db.exec(`
     create table listing_batch (
       id integer primary key autoincrement,

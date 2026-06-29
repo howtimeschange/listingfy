@@ -1,13 +1,9 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-
-const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
-const requireFromWeb = createRequire(path.join(PROJECT_ROOT, "web/package.json"));
-const Database = requireFromWeb("better-sqlite3");
 
 const {
   credentialIsEncrypted,
@@ -20,8 +16,8 @@ const {
 
 async function createTempDb() {
   const tempPath = await mkdtemp(path.join(os.tmpdir(), "listingify-platform-config-"));
-  const db = new Database(path.join(tempPath, "test.sqlite"));
-  db.pragma("foreign_keys = ON");
+  const db = new DatabaseSync(path.join(tempPath, "test.sqlite"));
+  db.exec("pragma foreign_keys = on");
   db.exec(`
     create table platform_integration (
       id integer primary key autoincrement,

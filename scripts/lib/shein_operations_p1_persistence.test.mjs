@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
+import { DatabaseSync } from "node:sqlite";
 import { readFile } from "node:fs/promises";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -7,8 +7,6 @@ import path from "node:path";
 import test from "node:test";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
-const requireFromWeb = createRequire(path.join(PROJECT_ROOT, "web/package.json"));
-const Database = requireFromWeb("better-sqlite3");
 const MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/022_shein_operations_p1.sql");
 const SERVICE_FILE = path.join(PROJECT_ROOT, "web/server/services/shein-operations.ts");
 const ROUTE_FILE = path.join(PROJECT_ROOT, "web/server/routes/shein-operations.ts");
@@ -24,8 +22,8 @@ async function fileText(file) {
 
 async function createTempDb() {
   const tempPath = await mkdtemp(path.join(os.tmpdir(), "listingify-shein-operations-p1-"));
-  const db = new Database(path.join(tempPath, "test.sqlite"));
-  db.pragma("foreign_keys = ON");
+  const db = new DatabaseSync(path.join(tempPath, "test.sqlite"));
+  db.exec("pragma foreign_keys = on");
   db.exec(`
     create table platform_integration (
       id integer primary key autoincrement

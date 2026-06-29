@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 import { getDatabaseConfig } from "./database_config.mjs";
+
+const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 
 function withEnv(env, fn) {
   const previous = {};
@@ -64,4 +68,20 @@ test("getDatabaseConfig rejects SQLite runtime configuration", () => {
     DATABASE_PROVIDER: "sqlite",
     APP_DB_PATH: "data/dev.sqlite",
   }), /requires PostgreSQL/);
+});
+
+test("production dependency graph does not install legacy better-sqlite3", async () => {
+  const [packageJsonText, lockJsonText] = await Promise.all([
+    readFile(path.join(PROJECT_ROOT, "web/package.json"), "utf8"),
+    readFile(path.join(PROJECT_ROOT, "web/package-lock.json"), "utf8"),
+  ]);
+
+  const packageJson = JSON.parse(packageJsonText);
+  const lockJson = JSON.parse(lockJsonText);
+
+  assert.equal(packageJson.dependencies?.["better-sqlite3"], undefined);
+  assert.equal(packageJson.devDependencies?.["better-sqlite3"], undefined);
+  assert.equal(packageJson.devDependencies?.["@types/better-sqlite3"], undefined);
+  assert.equal(lockJson.packages?.["node_modules/better-sqlite3"], undefined);
+  assert.equal(lockJson.packages?.["node_modules/@types/better-sqlite3"], undefined);
 });
