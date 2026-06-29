@@ -9,7 +9,6 @@ import { useDebounce } from "@/hooks/use-debounce"
 import { cn } from "@/lib/utils"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
-import { StatCard } from "@/components/stat-card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -258,16 +257,19 @@ export default function ProductArchiveDraftDetailPage() {
   const unresolvedIssues = useMemo(() => {
     return (detail.data?.issues ?? []).filter((issue) => !issue.resolved_at)
   }, [detail.data?.issues])
+  const unresolvedFieldIssues = useMemo(() => {
+    return unresolvedIssues.filter((issue) => Boolean(issue.field_name))
+  }, [unresolvedIssues])
   const fieldIssueMap = useMemo(() => {
     const map = new Map<string, DraftIssue[]>()
-    for (const issue of unresolvedIssues) {
+    for (const issue of unresolvedFieldIssues) {
       if (!issue.field_name) continue
       const issues = map.get(issue.field_name) ?? []
       issues.push(issue)
       map.set(issue.field_name, issues)
     }
     return map
-  }, [unresolvedIssues])
+  }, [unresolvedFieldIssues])
   const fieldIssueNames = useMemo(() => {
     const orderedNames: string[] = []
     const seen = new Set<string>()
@@ -283,8 +285,9 @@ export default function ProductArchiveDraftDetailPage() {
     : 0
   const activeIssueFieldName = fieldIssueNames[normalizedActiveIssueIndex] ?? ""
   const activeFieldIssues = activeIssueFieldName ? fieldIssueMap.get(activeIssueFieldName) ?? [] : []
-  const blockerIssueCount = unresolvedIssues.filter((issue) => issue.severity === "blocker").length
-  const warningIssueCount = unresolvedIssues.filter((issue) => issue.severity === "warning").length
+  const hasValidationIssues = fieldIssueNames.length > 0
+  const blockerIssueCount = unresolvedFieldIssues.filter((issue) => issue.severity === "blocker").length
+  const warningIssueCount = unresolvedFieldIssues.filter((issue) => issue.severity === "warning").length
   const scrollToFieldIssue = (nextIndex: number) => {
     if (fieldIssueNames.length === 0) return
     const normalizedIndex = ((nextIndex % fieldIssueNames.length) + fieldIssueNames.length) % fieldIssueNames.length
@@ -335,7 +338,12 @@ export default function ProductArchiveDraftDetailPage() {
   })
 
   const validate = useMutation({
-    mutationFn: () => api.post<unknown>(`/product-archive-drafts/${draftId}/validate`),
+    mutationFn: async () => {
+      if (changedFields.length > 0) {
+        await saveFields.mutateAsync()
+      }
+      return api.post<unknown>(`/product-archive-drafts/${draftId}/validate`)
+    },
     onSuccess: () => {
       toast.success("校验已完成")
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
@@ -378,6 +386,21 @@ export default function ProductArchiveDraftDetailPage() {
       </PageContainer>
     )
   }
+
+  const draftSummaryItems = [
+    { label: "状态", value: draft.status, detail: draft.trade_path || "待确认类目" },
+    { label: "阻断问题", value: formatNumber(summary.blocker_count ?? 0) },
+    { label: "警告", value: formatNumber(summary.warning_count ?? 0) },
+    { label: "深绘 productId", value: draft.created_product_id || "-" },
+    { label: "草稿编号", value: draft.draft_no },
+    { label: "商户 ID", value: draft.merchant_id },
+    { label: "吊牌价", value: draft.retail_price ?? "-" },
+    { label: "字段数", value: formatNumber(detail.data?.fields.length ?? 0) },
+    { label: "最近校验", value: summary.validated_at ? formatDateTime(summary.validated_at) : "-" },
+    { label: "更新时间", value: formatDateTime(draft.updated_at) },
+    { label: "深绘类目", value: draft.trade_path || "待确认类目" },
+    { label: "款号", value: draft.spu_code },
+  ]
 
   return (
     <PageContainer ref={pageScrollRef}>
@@ -488,7 +511,7 @@ export default function ProductArchiveDraftDetailPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-        <Button type="button" variant="outline" size="sm" onClick={() => validate.mutate()} disabled={validate.isPending}>
+        <Button type="button" variant="outline" size="sm" onClick={() => validate.mutate()} disabled={validate.isPending || saveFields.isPending}>
           {validate.isPending ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />}
           重新校验
         </Button>
@@ -527,16 +550,25 @@ export default function ProductArchiveDraftDetailPage() {
         </Dialog>
       </PageHeader>
 
-      <div className="grid gap-3 md:grid-cols-4">
-        <StatCard title="状态" value={draft.status} description={draft.trade_path || "待确认类目"} />
-        <StatCard title="阻断问题" value={formatNumber(summary.blocker_count ?? 0)} />
-        <StatCard title="警告" value={formatNumber(summary.warning_count ?? 0)} />
-        <StatCard title="深绘 productId" value={draft.created_product_id || "-"} />
-      </div>
+      <section data-draft-summary-table="true" className="overflow-hidden rounded-lg border bg-card/80 text-sm shadow-[0_8px_18px_rgba(15,23,42,0.04)]">
+        <div className="border-b px-4 py-2">
+          <h2 className="text-sm font-semibold">草稿摘要</h2>
+        </div>
+        <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+          {draftSummaryItems.map((item) => (
+            <div key={item.label} className="min-w-0 border-b border-r px-4 py-2.5">
+              <dt className="text-xs font-medium text-muted-foreground">{item.label}</dt>
+              <dd className="mt-1 truncate text-sm font-semibold text-foreground">{item.value}</dd>
+              {"detail" in item && item.detail ? (
+                <dd className="mt-0.5 truncate text-xs text-muted-foreground">{item.detail}</dd>
+              ) : null}
+            </div>
+          ))}
+        </dl>
+      </section>
 
-      <Tabs defaultValue="overview" className="min-h-0">
+      <Tabs defaultValue="fields" className="min-h-0">
         <TabsList>
-          <TabsTrigger value="overview">概览</TabsTrigger>
           <TabsTrigger value="fields" className={cn(fieldIssueNames.length > 0 && "pr-5")}>
             字段填充
             {fieldIssueNames.length > 0 ? (
@@ -554,49 +586,14 @@ export default function ProductArchiveDraftDetailPage() {
           <TabsTrigger value="source">来源快照</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="overview">
-          <Card>
-            <CardHeader>
-              <CardTitle>草稿摘要</CardTitle>
-            </CardHeader>
-            <CardContent className="grid gap-3 text-sm md:grid-cols-2">
-              <div>草稿编号：{draft.draft_no}</div>
-              <div>商户 ID：{draft.merchant_id}</div>
-              <div>吊牌价：{draft.retail_price ?? "-"}</div>
-              <div>更新时间：{formatDateTime(draft.updated_at)}</div>
-              <div>最近校验：{summary.validated_at ? formatDateTime(summary.validated_at) : "-"}</div>
-              <div>字段数：{formatNumber(detail.data?.fields.length ?? 0)}</div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
         <TabsContent value="fields">
           <Card>
-            <CardHeader className="flex-row items-center justify-between">
+            <CardHeader>
               <div>
                 <CardTitle>字段填充</CardTitle>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {draft.trade_path || "待确认类目"}，字段来自深绘类目模板和字段规则。
                 </p>
-              </div>
-              <div className="flex flex-wrap justify-end gap-2">
-                <Button type="button" variant="outline" size="sm" onClick={() => setTradeDialogOpen(true)}>
-                  <ListTree className="size-4" />
-                  选择深绘类目
-                </Button>
-                <Button type="button" variant="outline" size="sm" onClick={() => aiFill.mutate()} disabled={aiFill.isPending}>
-                  {aiFill.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-                  AI 推荐补齐空字段
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={changedFields.length === 0 || saveFields.isPending}
-                  onClick={() => saveFields.mutate()}
-                >
-                  {saveFields.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
-                  保存字段
-                </Button>
               </div>
             </CardHeader>
             <CardContent className="px-0">
@@ -608,21 +605,43 @@ export default function ProductArchiveDraftDetailPage() {
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="flex items-center gap-2 text-sm font-medium">
-                      <AlertTriangle className={cn("size-4", unresolvedIssues.length > 0 ? "text-[#d45656]" : "text-muted-foreground")} />
+                      {hasValidationIssues ? (
+                        <AlertTriangle className="size-4 text-[#d45656]" />
+                      ) : (
+                        <CheckCircle2 className="size-4 text-[#0fa76e]" />
+                      )}
                       字段校验定位
                     </span>
-                    <Badge variant="outline" className={issueSeverityClass("blocker")}>
-                      阻断 {formatNumber(blockerIssueCount)}
-                    </Badge>
-                    <Badge variant="outline" className={issueSeverityClass("warning")}>
-                      警告 {formatNumber(warningIssueCount)}
-                    </Badge>
-                    <Badge variant="outline">
-                      问题字段 {formatNumber(fieldIssueNames.length)}
-                    </Badge>
+                    {hasValidationIssues ? (
+                      <>
+                        <Badge variant="outline" className={issueSeverityClass("blocker")}>
+                          阻断 {formatNumber(blockerIssueCount)}
+                        </Badge>
+                        <Badge variant="outline" className={issueSeverityClass("warning")}>
+                          警告 {formatNumber(warningIssueCount)}
+                        </Badge>
+                        <Badge variant="outline">
+                          问题字段 {formatNumber(fieldIssueNames.length)}
+                        </Badge>
+                      </>
+                    ) : (
+                      <Badge variant="outline" className="border-[#b9f4d8] bg-[#d4fae8] text-[#0fa76e]">
+                        所有字段校验通过
+                      </Badge>
+                    )}
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <Button type="button" variant="outline" size="sm" onClick={() => validate.mutate()} disabled={validate.isPending}>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={changedFields.length === 0 || saveFields.isPending}
+                      onClick={() => saveFields.mutate()}
+                    >
+                      {saveFields.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+                      保存字段
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" onClick={() => validate.mutate()} disabled={validate.isPending || saveFields.isPending}>
                       {validate.isPending ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />}
                       重新校验
                     </Button>
@@ -661,7 +680,7 @@ export default function ProductArchiveDraftDetailPage() {
                     {issueSummaryText(activeFieldIssues)}
                   </div>
                 ) : (
-                  <div className="mt-2 text-sm text-muted-foreground">当前字段填充没有未解决字段问题</div>
+                  <div className="mt-2 text-sm font-medium text-[#0fa76e]">所有字段校验通过</div>
                 )}
               </div>
               {(detail.data?.fields.length ?? 0) === 0 ? (

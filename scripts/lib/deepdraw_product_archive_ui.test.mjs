@@ -203,6 +203,25 @@ test("draft detail trade picker shows launch-plan category reference above searc
 test("draft detail field fill tab highlights validation issues and can jump between problem fields", async () => {
   const draftDetailPage = await readFile(files.draftDetailPage, "utf8");
 
+  assert.doesNotMatch(draftDetailPage, /StatCard/);
+  assert.match(draftDetailPage, /data-draft-summary-table="true"/);
+  assert.match(draftDetailPage, /草稿摘要/);
+  for (const label of ["状态", "阻断问题", "警告", "深绘 productId", "草稿编号", "商户 ID", "吊牌价", "字段数", "最近校验", "更新时间", "深绘类目", "款号"]) {
+    assert.match(draftDetailPage, new RegExp(label));
+  }
+  assert.match(draftDetailPage, /Tabs defaultValue="fields"/);
+  assert.doesNotMatch(draftDetailPage, /Tabs defaultValue="overview"/);
+  assert.doesNotMatch(draftDetailPage, /TabsTrigger value="overview"/);
+  assert.doesNotMatch(draftDetailPage, /TabsContent value="overview"/);
+
+  const fieldFillHeaderMatch = draftDetailPage.match(/<CardTitle>字段填充<\/CardTitle>[\s\S]*?<\/CardHeader>/);
+  assert.ok(fieldFillHeaderMatch, "expected field fill card header to exist");
+  const fieldFillHeader = fieldFillHeaderMatch[0];
+  assert.doesNotMatch(fieldFillHeader, /选择深绘类目/);
+  assert.doesNotMatch(fieldFillHeader, /AI 推荐补齐空字段/);
+  assert.doesNotMatch(fieldFillHeader, /保存字段/);
+  assert.doesNotMatch(fieldFillHeader, /<Button/);
+
   assert.match(draftDetailPage, /fieldIssueMap/);
   assert.match(draftDetailPage, /fieldRowRefs/);
   assert.match(draftDetailPage, /pageScrollRef/);
@@ -221,6 +240,13 @@ test("draft detail field fill tab highlights validation issues and can jump betw
   assert.match(draftDetailPage, /data-validation-locator-bar/);
   assert.match(draftDetailPage, /top-\[-1\.5rem\]/);
   assert.match(draftDetailPage, /md:top-\[-2rem\]/);
+  assert.match(draftDetailPage, /hasValidationIssues/);
+  assert.match(draftDetailPage, /所有字段校验通过/);
+  assert.doesNotMatch(draftDetailPage, /当前字段填充没有未解决字段问题/);
+  assert.match(draftDetailPage, /hasValidationIssues \? \([\s\S]*阻断[\s\S]*警告[\s\S]*问题字段[\s\S]*\) : \([\s\S]*所有字段校验通过/);
+  assert.match(draftDetailPage, /data-validation-locator-bar[\s\S]*保存字段[\s\S]*重新校验/);
+  assert.match(draftDetailPage, /changedFields\.length > 0[\s\S]*saveFields\.mutateAsync\(\)[\s\S]*api\.post<unknown>\(`\/product-archive-drafts\/\$\{draftId\}\/validate`/);
+  assert.match(draftDetailPage, /disabled=\{validate\.isPending \|\| saveFields\.isPending\}/);
   assert.match(draftDetailPage, /重新校验/);
   assert.match(draftDetailPage, /AI 推荐补齐空字段/);
   assert.match(draftDetailPage, /查找上一个/);
@@ -331,7 +357,8 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.doesNotMatch(draftListPage, /trigger=\{<Button type="button" variant="outline" size="sm" disabled=\{importSource\.isPending\}>导入上市计划表<\/Button>\}/);
 
   assert.match(draftDetailPage, /TabsTrigger/);
-  for (const label of ["概览", "字段填充", "SKU/颜色尺码", "校验问题", "提交记录", "来源快照"]) {
+  assert.doesNotMatch(draftDetailPage, /概览/);
+  for (const label of ["字段填充", "SKU/颜色尺码", "校验问题", "提交记录", "来源快照"]) {
     assert.match(draftDetailPage, new RegExp(label));
   }
   assert.match(draftDetailPage, /api\.patch<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/fields`/s);
