@@ -1,11 +1,12 @@
-import { useMemo, useState } from "react"
+import { Fragment, useMemo, useRef, useState } from "react"
 import { Link, useParams } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ArrowLeft, CheckCircle2, ClipboardCheck, ListTree, Loader2, RefreshCw, Save, Search, Send, Sparkles } from "lucide-react"
+import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, ClipboardCheck, ListTree, Loader2, RefreshCw, Save, Search, Send, Sparkles } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
+import { cn } from "@/lib/utils"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
 import { StatCard } from "@/components/stat-card"
@@ -105,10 +106,22 @@ interface DraftLog {
 
 interface DraftDetail {
   draft: Draft
+  launchPlanReference?: LaunchPlanReference
   fields: DraftField[]
   skus: DraftSku[]
   issues: DraftIssue[]
   logs: DraftLog[]
+}
+
+interface LaunchPlanReferenceField {
+  key: string
+  label: string
+  value: string
+}
+
+interface LaunchPlanReference {
+  matched: boolean
+  fields: LaunchPlanReferenceField[]
 }
 
 interface TradeRow {
@@ -193,19 +206,40 @@ function fieldOptions(field: DraftField): FieldOption[] {
   return deduped
 }
 
+function issueSummaryText(issues: DraftIssue[]) {
+  return Array.from(new Set(issues.map((issue) => issue.message).filter(Boolean))).join("；")
+}
+
+function issueSeverityLabel(severity: string) {
+  if (severity === "blocker") return "阻断"
+  if (severity === "warning") return "警告"
+  return severity || "提示"
+}
+
+function issueSeverityClass(severity: string) {
+  if (severity === "blocker") return "border-[#f1cccc] bg-[#fff1f1] text-[#d45656]"
+  if (severity === "warning") return "border-[#f4ddb3] bg-[#fff8e8] text-[#c37d0d]"
+  return "border-[#d7e5fb] bg-[#eef5ff] text-[#3772cf]"
+}
+
 export default function ProductArchiveDraftDetailPage() {
   const { draftId } = useParams()
   const queryClient = useQueryClient()
   const detail = useDraftDetail(draftId)
+  const pageScrollRef = useRef<HTMLDivElement | null>(null)
+  const validationLocatorRef = useRef<HTMLDivElement | null>(null)
+  const fieldRowRefs = useRef<Record<string, HTMLTableRowElement | null>>({})
   const [fieldValues, setFieldValues] = useState<Record<number, string>>({})
   const [tradeDialogOpen, setTradeDialogOpen] = useState(false)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
   const [tradeSearch, setTradeSearch] = useState("")
   const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null)
+  const [activeIssueIndex, setActiveIssueIndex] = useState(0)
   const debouncedTradeSearch = useDebounce(tradeSearch, 250)
 
   const draft = detail.data?.draft
   const summary = draft?.validation_summary_json ?? {}
+  const launchPlanReference = detail.data?.launchPlanReference ?? { matched: false, fields: [] }
   const trades = useQuery<TradeListResponse>({
     queryKey: ["deepdraw-metadata-trades", draft?.tenant_name, debouncedTradeSearch],
     enabled: Boolean(draft && tradeDialogOpen),
@@ -221,6 +255,59 @@ export default function ProductArchiveDraftDetailPage() {
       .filter(([id, value]) => value !== (currentFields.get(Number(id)) ?? ""))
       .map(([id, valueText]) => ({ id: Number(id), valueText }))
   }, [detail.data?.fields, fieldValues])
+  const unresolvedIssues = useMemo(() => {
+    return (detail.data?.issues ?? []).filter((issue) => !issue.resolved_at)
+  }, [detail.data?.issues])
+  const fieldIssueMap = useMemo(() => {
+    const map = new Map<string, DraftIssue[]>()
+    for (const issue of unresolvedIssues) {
+      if (!issue.field_name) continue
+      const issues = map.get(issue.field_name) ?? []
+      issues.push(issue)
+      map.set(issue.field_name, issues)
+    }
+    return map
+  }, [unresolvedIssues])
+  const fieldIssueNames = useMemo(() => {
+    const orderedNames: string[] = []
+    const seen = new Set<string>()
+    for (const field of detail.data?.fields ?? []) {
+      if (!fieldIssueMap.has(field.field_name) || seen.has(field.field_name)) continue
+      orderedNames.push(field.field_name)
+      seen.add(field.field_name)
+    }
+    return orderedNames
+  }, [detail.data?.fields, fieldIssueMap])
+  const normalizedActiveIssueIndex = fieldIssueNames.length > 0
+    ? Math.min(activeIssueIndex, fieldIssueNames.length - 1)
+    : 0
+  const activeIssueFieldName = fieldIssueNames[normalizedActiveIssueIndex] ?? ""
+  const activeFieldIssues = activeIssueFieldName ? fieldIssueMap.get(activeIssueFieldName) ?? [] : []
+  const blockerIssueCount = unresolvedIssues.filter((issue) => issue.severity === "blocker").length
+  const warningIssueCount = unresolvedIssues.filter((issue) => issue.severity === "warning").length
+  const scrollToFieldIssue = (nextIndex: number) => {
+    if (fieldIssueNames.length === 0) return
+    const normalizedIndex = ((nextIndex % fieldIssueNames.length) + fieldIssueNames.length) % fieldIssueNames.length
+    const fieldName = fieldIssueNames[normalizedIndex]
+    const fieldRow = fieldRowRefs.current[fieldName]
+    setActiveIssueIndex(normalizedIndex)
+    if (!fieldRow) return
+    window.requestAnimationFrame(() => {
+      const scrollContainer = pageScrollRef.current
+      const locatorHeight = validationLocatorRef.current?.offsetHeight ?? 96
+      const rowOffset = locatorHeight + 12
+      if (!scrollContainer) {
+        fieldRow.scrollIntoView({ behavior: "smooth", block: "start" })
+        return
+      }
+      const rowRect = fieldRow.getBoundingClientRect()
+      const containerRect = scrollContainer.getBoundingClientRect()
+      scrollContainer.scrollTo({
+        top: scrollContainer.scrollTop + rowRect.top - containerRect.top - rowOffset,
+        behavior: "smooth",
+      })
+    })
+  }
 
   const saveFields = useMutation({
     mutationFn: () =>
@@ -293,7 +380,7 @@ export default function ProductArchiveDraftDetailPage() {
   }
 
   return (
-    <PageContainer>
+    <PageContainer ref={pageScrollRef}>
       <PageHeader
         title={draft.title || draft.spu_code}
         description={`${draft.spu_code} / ${draft.tenant_name} / ${draft.trade_path || "待确认类目"}`}
@@ -317,13 +404,35 @@ export default function ProductArchiveDraftDetailPage() {
               选择深绘类目
             </Button>
           </DialogTrigger>
-          <DialogContent className="grid max-h-[82vh] grid-rows-[auto_auto_minmax(0,1fr)_auto] sm:max-w-3xl">
+          <DialogContent className="grid max-h-[82vh] grid-rows-[auto_auto_auto_minmax(0,1fr)_auto] sm:max-w-3xl">
             <DialogHeader>
               <DialogTitle>选择深绘类目</DialogTitle>
               <DialogDescription>
                 从已同步的深绘类目主数据中选择模板，应用后会按类目字段重新生成草稿字段。
               </DialogDescription>
             </DialogHeader>
+            <div className="rounded-lg border bg-muted/30 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-sm font-medium">上市计划表类目参考</div>
+                <Badge variant={launchPlanReference.matched ? "secondary" : "outline"}>
+                  {launchPlanReference.matched ? "已匹配上市计划表" : "未匹配上市计划表"}
+                </Badge>
+              </div>
+              {launchPlanReference.matched ? (
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {launchPlanReference.fields.map((field) => (
+                    <div key={field.key} className="rounded-md border bg-background px-3 py-2">
+                      <div className="text-xs text-muted-foreground">{field.label}</div>
+                      <div className="mt-1 break-words text-sm leading-5">{field.value}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-3 rounded-md border border-dashed bg-background px-3 py-2 text-sm text-muted-foreground">
+                  未匹配上市计划表
+                </div>
+              )}
+            </div>
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" />
               <Input
@@ -428,7 +537,17 @@ export default function ProductArchiveDraftDetailPage() {
       <Tabs defaultValue="overview" className="min-h-0">
         <TabsList>
           <TabsTrigger value="overview">概览</TabsTrigger>
-          <TabsTrigger value="fields">字段填充</TabsTrigger>
+          <TabsTrigger value="fields" className={cn(fieldIssueNames.length > 0 && "pr-5")}>
+            字段填充
+            {fieldIssueNames.length > 0 ? (
+              <span
+                aria-label={`问题字段 ${formatNumber(fieldIssueNames.length)}`}
+                className="absolute -right-2 -top-2 z-10 flex h-5 min-w-5 items-center justify-center rounded-full border-2 border-background bg-[#d45656] px-1 text-[10px] font-semibold leading-none text-white shadow-[0_2px_6px_rgba(212,86,86,0.35)]"
+              >
+                {formatNumber(fieldIssueNames.length)}
+              </span>
+            ) : null}
+          </TabsTrigger>
           <TabsTrigger value="skus">SKU/颜色尺码</TabsTrigger>
           <TabsTrigger value="issues">校验问题</TabsTrigger>
           <TabsTrigger value="logs">提交记录</TabsTrigger>
@@ -480,9 +599,73 @@ export default function ProductArchiveDraftDetailPage() {
                 </Button>
               </div>
             </CardHeader>
-            <CardContent>
+            <CardContent className="px-0">
+              <div
+                ref={validationLocatorRef}
+                data-validation-locator-bar="true"
+                className="sticky top-[-1.5rem] z-30 border-y bg-card/95 px-6 py-3 shadow-[0_8px_18px_rgba(15,23,42,0.06)] backdrop-blur md:top-[-2rem]"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="flex items-center gap-2 text-sm font-medium">
+                      <AlertTriangle className={cn("size-4", unresolvedIssues.length > 0 ? "text-[#d45656]" : "text-muted-foreground")} />
+                      字段校验定位
+                    </span>
+                    <Badge variant="outline" className={issueSeverityClass("blocker")}>
+                      阻断 {formatNumber(blockerIssueCount)}
+                    </Badge>
+                    <Badge variant="outline" className={issueSeverityClass("warning")}>
+                      警告 {formatNumber(warningIssueCount)}
+                    </Badge>
+                    <Badge variant="outline">
+                      问题字段 {formatNumber(fieldIssueNames.length)}
+                    </Badge>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button type="button" variant="outline" size="sm" onClick={() => validate.mutate()} disabled={validate.isPending}>
+                      {validate.isPending ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />}
+                      重新校验
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" onClick={() => aiFill.mutate()} disabled={aiFill.isPending}>
+                      {aiFill.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+                      AI 推荐补齐空字段
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={fieldIssueNames.length === 0}
+                      onClick={() => scrollToFieldIssue(normalizedActiveIssueIndex - 1)}
+                    >
+                      <ChevronUp className="size-4" />
+                      查找上一个
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={fieldIssueNames.length === 0}
+                      onClick={() => scrollToFieldIssue(normalizedActiveIssueIndex + 1)}
+                    >
+                      <ChevronDown className="size-4" />
+                      查找下一个
+                    </Button>
+                  </div>
+                </div>
+                {activeIssueFieldName ? (
+                  <div className="mt-2 text-sm text-muted-foreground">
+                    <span className="font-medium text-foreground">
+                      当前 {formatNumber(normalizedActiveIssueIndex + 1)} / {formatNumber(fieldIssueNames.length)}：{activeIssueFieldName}
+                    </span>
+                    <span className="mx-2 text-border">|</span>
+                    {issueSummaryText(activeFieldIssues)}
+                  </div>
+                ) : (
+                  <div className="mt-2 text-sm text-muted-foreground">当前字段填充没有未解决字段问题</div>
+                )}
+              </div>
               {(detail.data?.fields.length ?? 0) === 0 ? (
-                <div className="rounded-lg border border-dashed p-8 text-center">
+                <div className="mx-6 mt-4 rounded-lg border border-dashed p-8 text-center">
                   <div className="text-sm font-medium">还没有字段模板</div>
                   <div className="mt-2 text-sm text-muted-foreground">
                     先选择深绘类目，系统会按该类目的字段模板生成可填字段。
@@ -493,7 +676,7 @@ export default function ProductArchiveDraftDetailPage() {
                   </Button>
                 </div>
               ) : (
-                <Table>
+                <Table containerClassName="px-6 pt-4">
                   <TableHeader>
                     <TableRow>
                       <TableHead>字段名</TableHead>
@@ -508,44 +691,99 @@ export default function ProductArchiveDraftDetailPage() {
                     {detail.data?.fields.map((field) => {
                       const options = fieldOptions(field)
                       const value = fieldValues[field.id] ?? field.value_text ?? ""
+                      const fieldIssues = fieldIssueMap.get(field.field_name) ?? []
+                      const hasFieldIssue = fieldIssues.length > 0
+                      const isActiveIssueField = activeIssueFieldName === field.field_name
+                      const topSeverity = fieldIssues.some((issue) => issue.severity === "blocker")
+                        ? "blocker"
+                        : fieldIssues[0]?.severity ?? ""
+                      const issueToneClass = topSeverity === "blocker" ? "text-[#d45656]" : "text-[#c37d0d]"
+                      const issueBackgroundClass = topSeverity === "blocker" ? "bg-[#fff1f1] hover:bg-[#fff1f1]" : "bg-[#fff8e8] hover:bg-[#fff8e8]"
+                      const issueBorderClass = topSeverity === "blocker" ? "border-l-[#d45656]" : "border-l-[#c37d0d]"
                       return (
-                        <TableRow key={field.id}>
-                          <TableCell>{field.field_name}</TableCell>
-                          <TableCell>{field.source_type}</TableCell>
-                          <TableCell className="max-w-[280px] truncate">{field.value_text || "-"}</TableCell>
-                          <TableCell>{field.required ? "必填" : "可选"}</TableCell>
-                          <TableCell>
-                            <Badge variant="outline" className={field.validation_status === "valid" ? statusClass("ready") : statusClass("manual_review")}>
-                              {field.validation_status}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="min-w-[220px]">
-                            {options.length > 0 ? (
-                              <Select
-                                value={value}
-                                onValueChange={(nextValue) => setFieldValues((current) => ({ ...current, [field.id]: nextValue }))}
-                              >
-                                <SelectTrigger className="h-8">
-                                  <SelectValue placeholder="选择字段值" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {options.map((option) => (
-                                    <SelectItem key={option.value} value={option.value}>
-                                      {option.label}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            ) : (
-                              <Input
-                                value={value}
-                                onChange={(event) => setFieldValues((current) => ({ ...current, [field.id]: event.target.value }))}
-                                placeholder="填写目标值"
-                                className="h-8"
-                              />
+                        <Fragment key={field.id}>
+                          <TableRow
+                            ref={(node) => {
+                              if (hasFieldIssue) {
+                                fieldRowRefs.current[field.field_name] = node
+                              } else {
+                                delete fieldRowRefs.current[field.field_name]
+                              }
+                            }}
+                            data-field-issue={hasFieldIssue ? field.field_name : undefined}
+                            data-active-field-issue={isActiveIssueField ? "true" : undefined}
+                            className={cn(
+                              "scroll-mt-40",
+                              hasFieldIssue && "border-l-4",
+                              hasFieldIssue && issueBorderClass,
+                              hasFieldIssue && issueBackgroundClass,
+                              isActiveIssueField && "ring-2 ring-inset ring-[#18e299]/80",
                             )}
-                          </TableCell>
-                        </TableRow>
+                          >
+                            <TableCell className="whitespace-normal align-top">
+                              <span className={cn(hasFieldIssue && `font-medium ${issueToneClass}`)}>
+                                {field.field_name}
+                              </span>
+                            </TableCell>
+                            <TableCell>{field.source_type}</TableCell>
+                            <TableCell className={cn("max-w-[280px] truncate", hasFieldIssue && issueToneClass)}>
+                              {field.value_text || "-"}
+                            </TableCell>
+                            <TableCell>{field.required ? "必填" : "可选"}</TableCell>
+                            <TableCell>
+                              <Badge variant="outline" className={hasFieldIssue ? issueSeverityClass(topSeverity) : field.validation_status === "valid" ? statusClass("ready") : statusClass("manual_review")}>
+                                {field.validation_status}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="min-w-[220px]">
+                              {options.length > 0 ? (
+                                <Select
+                                  value={value}
+                                  onValueChange={(nextValue) => setFieldValues((current) => ({ ...current, [field.id]: nextValue }))}
+                                >
+                                  <SelectTrigger className="h-8">
+                                    <SelectValue placeholder="选择字段值" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {options.map((option) => (
+                                      <SelectItem key={option.value} value={option.value}>
+                                        {option.label}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              ) : (
+                                <Input
+                                  value={value}
+                                  onChange={(event) => setFieldValues((current) => ({ ...current, [field.id]: event.target.value }))}
+                                  placeholder="填写目标值"
+                                  className="h-8"
+                                />
+                              )}
+                            </TableCell>
+                          </TableRow>
+                          {hasFieldIssue ? (
+                            <TableRow
+                              data-field-issue-reason={field.field_name}
+                              className={cn(
+                                "border-l-4",
+                                issueBorderClass,
+                                issueBackgroundClass,
+                                isActiveIssueField && "ring-2 ring-inset ring-[#18e299]/80",
+                              )}
+                            >
+                              <TableCell colSpan={6} className="py-2 pl-5 pr-4 align-top">
+                                <div className={cn("flex min-w-0 items-center gap-3 overflow-x-auto whitespace-nowrap text-sm leading-6", issueToneClass)}>
+                                  <Badge variant="outline" className={issueSeverityClass(topSeverity)}>
+                                    {issueSeverityLabel(topSeverity)}
+                                  </Badge>
+                                  <span className="font-medium">问题原因：</span>
+                                  <span>{issueSummaryText(fieldIssues)}</span>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          ) : null}
+                        </Fragment>
                       )
                     })}
                   </TableBody>

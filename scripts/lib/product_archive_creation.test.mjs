@@ -174,6 +174,58 @@ test("product archive trade matching gives official launch category priority ove
   assert.equal(service.chooseDeepdrawTradeFromLaunchPlanRows(sourceRows, trades)?.tradeId, "12390");
 });
 
+test("product archive service exposes launch-plan category reference fields for manual trade selection", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const reference = service.buildLaunchPlanCategoryReference([
+    {
+      source_type: "copywriting",
+      row_json: { "官方发布类目": "不应展示" },
+    },
+    {
+      source_type: "launch_plan",
+      row_json: {
+        "官方发布类目": "童装/婴儿装/亲子装 > 外套/夹克/大衣 > 普通外套",
+        "发布类目 (唯品)": "婴幼外套/风衣",
+        "主款式 （唯品四级品类）": "普通外套",
+      },
+    },
+    {
+      source_type: "launch_plan",
+      row_json: {
+        "官方发布类目": "童装/婴儿装/亲子装 > 外套/夹克/大衣 > 普通外套",
+        "发布类目 (抖音)": "童装童鞋>童装>外套",
+      },
+    },
+  ]);
+
+  assert.deepEqual(reference, {
+    matched: true,
+    fields: [
+      {
+        key: "officialCategory",
+        label: "官方发布类目",
+        value: "童装/婴儿装/亲子装 > 外套/夹克/大衣 > 普通外套",
+      },
+      {
+        key: "vipCategory",
+        label: "唯品发布类目",
+        value: "婴幼外套/风衣",
+      },
+      {
+        key: "vipStyleCategory",
+        label: "唯品四级品类",
+        value: "普通外套",
+      },
+      {
+        key: "douyinCategory",
+        label: "抖音发布类目",
+        value: "童装童鞋>童装>外套",
+      },
+    ],
+  });
+  assert.deepEqual(service.buildLaunchPlanCategoryReference([]), { matched: false, fields: [] });
+});
+
 test("product archive draft service resolves merchant identity from DeepDraw credentials and keeps it out of create payload overrides", async () => {
   const service = await readFile(files.draftService, "utf8");
 
@@ -191,6 +243,15 @@ test("product archive draft service blocks ready status when required template a
   assert.match(service, /duplicate_product_found/);
   assert.match(service, /sku_color_not_in_template/);
   assert.match(service, /sku_size_not_in_template/);
+});
+
+test("product archive draft detail picks one matching template per field", async () => {
+  const service = await readFile(files.draftService, "utf8");
+
+  assert.match(service, /left join lateral/);
+  assert.match(service, /template\.field_id = field\.field_id or template\.field_name = field\.field_name/);
+  assert.match(service, /order by case when template\.field_id = field\.field_id then 0 else 1 end/);
+  assert.match(service, /limit 1/);
 });
 
 test("product archive AI fill skips fields that already have JSON values", async () => {

@@ -184,6 +184,56 @@ test("launch plan category fields can auto-select a unique DeepDraw trade", asyn
   });
 });
 
+test("draft detail trade picker shows launch-plan category reference above search", async () => {
+  const [draftService, draftDetailPage] = await Promise.all([
+    readFile(files.draftService, "utf8"),
+    readFile(files.draftDetailPage, "utf8"),
+  ]);
+
+  assert.match(draftService, /buildLaunchPlanCategoryReference/);
+  assert.match(draftService, /launchPlanReference:\s*buildLaunchPlanCategoryReference/);
+  assert.match(draftDetailPage, /launchPlanReference/);
+  assert.match(draftDetailPage, /上市计划表类目参考/);
+  assert.match(draftDetailPage, /未匹配上市计划表/);
+  assert.match(draftDetailPage, /launchPlanReference\.fields\.map/);
+  assert.match(draftDetailPage, /\{field\.label\}/);
+  assert.match(draftDetailPage, /\{field\.value\}/);
+});
+
+test("draft detail field fill tab highlights validation issues and can jump between problem fields", async () => {
+  const draftDetailPage = await readFile(files.draftDetailPage, "utf8");
+
+  assert.match(draftDetailPage, /fieldIssueMap/);
+  assert.match(draftDetailPage, /fieldRowRefs/);
+  assert.match(draftDetailPage, /pageScrollRef/);
+  assert.match(draftDetailPage, /validationLocatorRef/);
+  assert.match(draftDetailPage, /activeIssueIndex/);
+  assert.match(draftDetailPage, /scrollToFieldIssue/);
+  assert.match(draftDetailPage, /scrollContainer\.scrollTo/);
+  assert.match(draftDetailPage, /rowOffset = locatorHeight \+ 12/);
+  assert.match(draftDetailPage, /scrollIntoView\(\{ behavior: "smooth", block: "start" \}\)/);
+  assert.doesNotMatch(draftDetailPage, /block: "center"/);
+  assert.match(draftDetailPage, /字段校验定位/);
+  assert.match(draftDetailPage, /问题字段/);
+  assert.match(draftDetailPage, /aria-label=\{`问题字段 \$\{formatNumber\(fieldIssueNames\.length\)\}`\}/);
+  assert.match(draftDetailPage, /\{formatNumber\(fieldIssueNames\.length\)\}/);
+  assert.match(draftDetailPage, /bg-\[#d45656\]/);
+  assert.match(draftDetailPage, /data-validation-locator-bar/);
+  assert.match(draftDetailPage, /top-\[-1\.5rem\]/);
+  assert.match(draftDetailPage, /md:top-\[-2rem\]/);
+  assert.match(draftDetailPage, /重新校验/);
+  assert.match(draftDetailPage, /AI 推荐补齐空字段/);
+  assert.match(draftDetailPage, /查找上一个/);
+  assert.match(draftDetailPage, /查找下一个/);
+  assert.match(draftDetailPage, /data-active-field-issue/);
+  assert.match(draftDetailPage, /data-field-issue/);
+  assert.match(draftDetailPage, /data-field-issue-reason/);
+  assert.match(draftDetailPage, /colSpan=\{6\}/);
+  assert.match(draftDetailPage, /overflow-x-auto whitespace-nowrap/);
+  assert.match(draftDetailPage, /ring-\[#18e299\]\/80/);
+  assert.match(draftDetailPage, /问题原因/);
+});
+
 test("frontend routes and navigation expose deepdraw archive draft workbench", async () => {
   const [router, sidebar, appLayout, appHeader, asyncTaskCenter, draftListPage, draftDetailPage, metadataPage, productArchiveDetailPage] = await Promise.all([
     readFile(files.router, "utf8"),

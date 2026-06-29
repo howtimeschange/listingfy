@@ -669,6 +669,14 @@ function sourceRowsForDraft(db: SyncPostgresDatabase, draft: JsonRecord) {
   )
 }
 
+function referenceSourceRowsForDraft(db: SyncPostgresDatabase, draft: JsonRecord) {
+  const rows = sourceRowsForDraft(db, draft)
+  if (rows.some((row) => stringValue(row.source_type) === "launch_plan")) return rows
+  const snapshotRows = arrayValue(recordValue(draft.source_snapshot_json).sourceRows)
+    .map((row) => recordValue(row))
+  return [...rows, ...snapshotRows]
+}
+
 export function missingMdmSpuCodes(db: SyncPostgresDatabase, sourceBatchId: number) {
   if (!Number.isInteger(sourceBatchId) || sourceBatchId <= 0) return []
   const rows = db.prepare(`
@@ -708,22 +716,30 @@ export function missingDraftSpuCodes(db: SyncPostgresDatabase, sourceBatchId: nu
   return rows.map((row) => stringValue(row.spu_code)).filter(Boolean)
 }
 
-const LAUNCH_PLAN_CATEGORY_FIELDS = [
-  "官方发布类目",
-  "发布类目(官方)",
-  "发布类目 (官方)",
-  "发布类目（官方）",
-  "发布类目\n(官方)",
-  "发布类目 (唯品)",
-  "发布类目(唯品)",
-  "发布类目（唯品）",
-  "主款式 （唯品四级品类）",
-  "主款式（唯品四级品类）",
-  "主款式 (唯品四级品类)",
-  "发布类目 (抖音)",
-  "发布类目(抖音)",
-  "发布类目（抖音）",
+const LAUNCH_PLAN_CATEGORY_REFERENCE_FIELDS = [
+  {
+    key: "officialCategory",
+    label: "官方发布类目",
+    aliases: ["官方发布类目", "发布类目(官方)", "发布类目 (官方)", "发布类目（官方）", "发布类目\n(官方)"],
+  },
+  {
+    key: "vipCategory",
+    label: "唯品发布类目",
+    aliases: ["发布类目 (唯品)", "发布类目(唯品)", "发布类目（唯品）"],
+  },
+  {
+    key: "vipStyleCategory",
+    label: "唯品四级品类",
+    aliases: ["主款式 （唯品四级品类）", "主款式（唯品四级品类）", "主款式 (唯品四级品类)"],
+  },
+  {
+    key: "douyinCategory",
+    label: "抖音发布类目",
+    aliases: ["发布类目 (抖音)", "发布类目(抖音)", "发布类目（抖音）"],
+  },
 ]
+
+const LAUNCH_PLAN_CATEGORY_FIELDS = LAUNCH_PLAN_CATEGORY_REFERENCE_FIELDS.flatMap((field) => field.aliases)
 
 function normalizeTradeText(value: unknown) {
   return stringValue(value)
@@ -756,6 +772,33 @@ function launchPlanCategoryValues(sourceRows: JsonRecord[]) {
     }
   }
   return values
+}
+
+export function buildLaunchPlanCategoryReference(sourceRows: JsonRecord[]) {
+  const fields: Array<{ key: string; label: string; value: string }> = []
+  for (const field of LAUNCH_PLAN_CATEGORY_REFERENCE_FIELDS) {
+    const values: string[] = []
+    for (const row of sourceRows) {
+      if (stringValue(row.source_type) !== "launch_plan") continue
+      const rowJson = recordValue(row.row_json)
+      for (const alias of field.aliases) {
+        const value = stringValue(rowJson[alias])
+        if (value) values.push(value)
+      }
+    }
+    const uniqueValues = uniqueTextValues(values)
+    if (uniqueValues.length > 0) {
+      fields.push({
+        key: field.key,
+        label: field.label,
+        value: uniqueValues.join("；"),
+      })
+    }
+  }
+  return {
+    matched: fields.length > 0,
+    fields,
+  }
 }
 
 function scoreTradeMatch(trade: JsonRecord, category: { field: string; value: string }) {
@@ -1404,16 +1447,23 @@ function rebuildProductArchiveDraftFields(
 
 function serializeDraftDetail(db: SyncPostgresDatabase, draftId: number) {
   const draft = draftById(db, draftId)
+  const sourceRows = referenceSourceRowsForDraft(db, draft)
   return {
     draft,
+    launchPlanReference: buildLaunchPlanCategoryReference(sourceRows),
     fields: db.prepare(`
       select field.*, template.options_json
       from product_archive_draft_field field
-      left join deepdraw_trade_field_cache template
-        on template.tenant_name = ?
-       and template.merchant_id = ?
-       and template.trade_id = ?
-       and template.field_name = field.field_name
+      left join lateral (
+        select options_json
+        from deepdraw_trade_field_cache template
+        where template.tenant_name = ?
+          and template.merchant_id = ?
+          and template.trade_id = ?
+          and (template.field_id = field.field_id or template.field_name = field.field_name)
+        order by case when template.field_id = field.field_id then 0 else 1 end, template.field_id
+        limit 1
+      ) template on true
       where field.draft_id = ?
       order by field.required desc, field.blocking desc, field.field_name
     `).all(draft.tenant_name, draft.merchant_id, draft.trade_id, draftId),
