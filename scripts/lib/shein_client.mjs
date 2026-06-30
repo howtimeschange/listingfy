@@ -4,6 +4,7 @@ export const TEST_BASE_URL = "https://openapi-test01.sheincorp.cn";
 export const PROD_BASE_URL_CN = "https://openapi.sheincorp.cn";
 
 export const APP_AUTH_PATH = "/open-api/auth/get-by-token";
+export const DEFAULT_SHEIN_REQUEST_TIMEOUT_MS = 30000;
 
 export function readEnv(name, fallback = undefined) {
   const value = process.env[name];
@@ -22,6 +23,18 @@ export function normalizeBody(body) {
   if (body === undefined || body === null) return undefined;
   if (typeof body === "string") return body;
   return JSON.stringify(body);
+}
+
+export function sheinRequestTimeoutMs(value = readEnv("SHEIN_REQUEST_TIMEOUT_MS", DEFAULT_SHEIN_REQUEST_TIMEOUT_MS)) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return DEFAULT_SHEIN_REQUEST_TIMEOUT_MS;
+  return Math.max(0, Math.floor(number));
+}
+
+function timeoutSignal(timeoutMs) {
+  const effectiveTimeoutMs = sheinRequestTimeoutMs(timeoutMs);
+  if (effectiveTimeoutMs <= 0) return undefined;
+  return AbortSignal.timeout(effectiveTimeoutMs);
 }
 
 function randomKey() {
@@ -100,7 +113,7 @@ export function headersForAppAuth(path) {
   };
 }
 
-export async function requestShein(path, { method = "POST", body, appAuth = false, baseUrl } = {}) {
+export async function requestShein(path, { method = "POST", body, appAuth = false, baseUrl, timeoutMs } = {}) {
   const effectiveBaseUrl = baseUrl || readEnv("SHEIN_BASE_URL", TEST_BASE_URL);
   const url = new URL(path, effectiveBaseUrl);
   const headers = appAuth ? headersForAppAuth(path) : headersForOpenApi(path, method);
@@ -109,6 +122,7 @@ export async function requestShein(path, { method = "POST", body, appAuth = fals
     method,
     headers,
     body: method === "GET" ? undefined : normalizedBody,
+    signal: timeoutSignal(timeoutMs),
   });
   const text = await response.text();
   let payload;
@@ -129,6 +143,7 @@ export async function requestSheinWithCredentials(path, {
   body,
   baseUrl = TEST_BASE_URL,
   credentials,
+  timeoutMs,
 } = {}) {
   const effectiveBaseUrl = credentials?.baseUrl || baseUrl;
   const url = new URL(path, effectiveBaseUrl);
@@ -143,6 +158,7 @@ export async function requestSheinWithCredentials(path, {
     method,
     headers,
     body: method === "GET" ? undefined : normalizedBody,
+    signal: timeoutSignal(timeoutMs),
   });
   const text = await response.text();
   let payload;
@@ -163,6 +179,15 @@ export function isRetryableSheinResult(result) {
   return result?.status >= 500 || code === "openapi00006";
 }
 
+export function isRetryableSheinError(error) {
+  const name = error?.name || "";
+  const code = error?.code || error?.cause?.code || "";
+  const message = String(error?.message || error || "");
+  return name === "AbortError"
+    || ["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ENOTFOUND"].includes(code)
+    || /fetch failed|network|socket|timeout|timed out/i.test(message);
+}
+
 export async function requestSheinWithRetry(path, options = {}) {
   const {
     retries = 3,
@@ -170,13 +195,20 @@ export async function requestSheinWithRetry(path, options = {}) {
     ...requestOptions
   } = options;
   let lastResult;
+  let lastError;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
-    lastResult = await requestShein(path, requestOptions);
-    if (!isRetryableSheinResult(lastResult) || attempt === retries) {
-      return lastResult;
+    try {
+      lastResult = await requestShein(path, requestOptions);
+      if (!isRetryableSheinResult(lastResult) || attempt === retries) {
+        return lastResult;
+      }
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableSheinError(error) || attempt === retries) throw error;
     }
     await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)));
   }
+  if (lastError) throw lastError;
   return lastResult;
 }
 
@@ -187,13 +219,20 @@ export async function requestSheinWithCredentialsAndRetry(path, options = {}) {
     ...requestOptions
   } = options;
   let lastResult;
+  let lastError;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
-    lastResult = await requestSheinWithCredentials(path, requestOptions);
-    if (!isRetryableSheinResult(lastResult) || attempt === retries) {
-      return lastResult;
+    try {
+      lastResult = await requestSheinWithCredentials(path, requestOptions);
+      if (!isRetryableSheinResult(lastResult) || attempt === retries) {
+        return lastResult;
+      }
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableSheinError(error) || attempt === retries) throw error;
     }
     await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)));
   }
+  if (lastError) throw lastError;
   return lastResult;
 }
 

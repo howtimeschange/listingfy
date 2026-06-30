@@ -20,7 +20,7 @@ system.get("/sync-tasks", (c) => {
     from (
       select
         'SYNC_BATCH' as task_source,
-        id,
+        cast(id as text) as id,
         source_system as platform,
         source_object as task_name,
         batch_no as task_no,
@@ -36,7 +36,7 @@ system.get("/sync-tasks", (c) => {
       union all
       select
         'PUBLISH_TASK' as task_source,
-        id,
+        cast(id as text) as id,
         platform,
         task_type as task_name,
         cast(id as text) as task_no,
@@ -49,6 +49,22 @@ system.get("/sync-tasks", (c) => {
         error_message,
         created_at
       from listing_publish_task
+      union all
+      select
+        'PLATFORM_PRODUCT_JOB' as task_source,
+        id,
+        'SHEIN' as platform,
+        title as task_name,
+        id as task_no,
+        status,
+        started_at,
+        finished_at,
+        total_count,
+        completed_count as success_count,
+        failed_count,
+        error_message,
+        created_at
+      from shein_platform_product_job
     )
     order by created_at desc
     limit ? offset ?
@@ -56,7 +72,8 @@ system.get("/sync-tasks", (c) => {
   const total = db.prepare(`
     select
       (select count(*) from sync_batch) +
-      (select count(*) from listing_publish_task) as count
+      (select count(*) from listing_publish_task) +
+      (select count(*) from shein_platform_product_job) as count
   `).get() as { count: number }
   return c.json({ items, pagination: { total: total.count, limit, offset } })
 })

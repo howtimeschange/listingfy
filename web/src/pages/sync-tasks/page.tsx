@@ -16,7 +16,7 @@ import {
 
 interface SyncTaskItem {
   task_source: string
-  id: number
+  id: string | number
   platform: string
   task_name: string
   task_no: string

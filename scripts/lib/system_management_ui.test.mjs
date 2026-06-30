@@ -80,6 +80,15 @@ test("system management exposes auth, users, platform integrations, sync tasks, 
   assert.match(operationLogsPage, /\/system\/operation-logs/);
 });
 
+test("system sync task list includes SHEIN platform product async jobs", async () => {
+  const route = await file("web/server/routes/system.ts");
+
+  assert.match(route, /PLATFORM_PRODUCT_JOB/);
+  assert.match(route, /shein_platform_product_job/);
+  assert.match(route, /completed_count as success_count/);
+  assert.match(route, /failed_count/);
+});
+
 test("Yunxiao deploy preserves external HTTPS headers for auth cookies", async () => {
   const deploy = await file("ci/yunxiao-deploy.sh");
 

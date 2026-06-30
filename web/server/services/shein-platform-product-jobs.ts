@@ -6,6 +6,7 @@ import path from "node:path"
 import ExcelJS from "exceljs"
 import { getDb } from "../db"
 import {
+  listPlatformProductSpuNames,
   listPlatformProducts,
   syncPlatformProducts,
   syncProductDetail,
@@ -65,6 +66,20 @@ interface PlatformProductJob {
   shard_size?: number
 }
 
+type PlatformProductSyncScheduleScope = "full" | "spu"
+
+interface PlatformProductSyncScheduleConfig {
+  id: string
+  enabled: boolean
+  schedule_hour: number
+  sync_scope: PlatformProductSyncScheduleScope
+  spu_names: string[]
+  last_enqueued_date: string | null
+  last_enqueued_job_id: string | null
+  updated_at: string | null
+  active_job?: ReturnType<typeof snapshot> | null
+}
+
 const EXPORT_PAGE_SIZE = 200
 const MAX_DETAIL_CODES_PER_JOB = 20_000
 const DETAIL_SYNC_SHARD_SIZE = 2_000
@@ -81,8 +96,14 @@ const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60_000
 const JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const JOB_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
 const RUNNING_JOB_STALE_MS = 15 * 60 * 1000
+const DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_ID = "default"
+const DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_HOUR = 23
+const PLATFORM_PRODUCT_SYNC_SCHEDULE_POLL_MS = 60 * 1000
+const SCHEDULED_PLATFORM_PRODUCT_SYNC_SOURCE = "scheduled_platform_product_sync"
+const SCHEDULED_PLATFORM_PRODUCT_SYNC_ACTOR = "system:scheduled-shein-platform-product-sync"
 
 let running = false
+let nightlyFullSyncSchedulerStarted = false
 
 function nowIso() {
   return new Date().toISOString()
@@ -140,6 +161,28 @@ function boundedDelayMs(value: unknown, fallback: number, min: number, max: numb
   const number = Number(value ?? fallback)
   if (!Number.isFinite(number)) return fallback
   return Math.max(min, Math.min(max, Math.floor(number)))
+}
+
+function boundedHour(value: unknown, fallback: number) {
+  const number = Number(value ?? fallback)
+  if (!Number.isFinite(number)) return fallback
+  return Math.max(0, Math.min(23, Math.floor(number)))
+}
+
+function booleanEnv(value: unknown, fallback = true) {
+  if (typeof value === "boolean") return value
+  if (typeof value === "number") return value !== 0
+  const text = stringValue(value).toLowerCase()
+  if (["1", "true", "yes", "y", "on"].includes(text)) return true
+  if (["0", "false", "no", "n", "off"].includes(text)) return false
+  return fallback
+}
+
+function localNightlySyncDateKey(date = new Date()) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
 }
 
 export function platformProductDetailSyncIntervalMs(payload: unknown = {}) {
@@ -670,6 +713,32 @@ async function markJobFailed(job: PlatformProductJob, error: unknown) {
   await savePlatformProductJob(job)
 }
 
+function requeueFailedPlatformProductJobItems(jobId: string, db: SyncPostgresDatabase = getDb()) {
+  const now = nowIso()
+  const result = db.prepare(`
+    update shein_platform_product_job_item
+    set status = 'queued',
+      error_message = null,
+      result_json = '{}',
+      started_at = null,
+      finished_at = null,
+      updated_at = ?
+    where job_id = ?
+      and status = 'failed'
+  `).run(now, jobId)
+  return numberValue(result.changes)
+}
+
+function failedItemRetryPasses(job: PlatformProductJob) {
+  return numberValue(job.payload.failedItemRetryPasses, 0)
+}
+
+function shouldRetryFailedPlatformProductJobItems(job: PlatformProductJob) {
+  return booleanEnv(job.payload.retryFailedItems, false)
+    && failedItemRetryPasses(job) < 1
+    && job.failed_count > 0
+}
+
 async function processSyncJob(job: PlatformProductJob) {
   const codes = detailSyncCodes(job.payload)
   const db = getDb()
@@ -685,7 +754,21 @@ async function processSyncJob(job: PlatformProductJob) {
     let processedInThisRun = 0
     while (true) {
       const item = nextPlatformProductJobItem(job.id, db)
-      if (!item) break
+      if (!item) {
+        refreshPlatformProductJobCounts(job, db)
+        if (shouldRetryFailedPlatformProductJobItems(job)) {
+          job.payload = {
+            ...job.payload,
+            failedItemRetryPasses: failedItemRetryPasses(job) + 1,
+          }
+          requeueFailedPlatformProductJobItems(job.id, db)
+          job.failed_items = []
+          refreshPlatformProductJobCounts(job, db)
+          await savePlatformProductJob(job)
+          continue
+        }
+        break
+      }
       if (processedInThisRun > 0 && detailIntervalMs > 0) {
         await wait(detailIntervalMs)
       }
@@ -939,6 +1022,201 @@ export function enqueuePlatformProductSyncJob(payload: unknown = {}, actor?: Lif
   if (codes.length) createPlatformProductJobItems(job.id, codes, db)
   schedulePlatformProductJobs()
   return snapshot(job, db)
+}
+
+function platformProductJobMatchesPayload(row: JsonRecord | undefined) {
+  return row ? jobFromRow(row) : null
+}
+
+function syncScheduleScope(value: unknown): PlatformProductSyncScheduleScope {
+  return stringValue(value) === "spu" ? "spu" : "full"
+}
+
+function scheduleSpuNames(value: unknown) {
+  const parsed = typeof value === "string" ? parseJson(value, value) : value
+  return parseSpuCodes(parsed, { maxCodes: MAX_DETAIL_CODES_PER_JOB })
+}
+
+function ensurePlatformProductSyncScheduleRow(db: SyncPostgresDatabase = getDb()) {
+  db.prepare(`
+    insert into shein_platform_product_sync_schedule (
+      id,
+      enabled,
+      schedule_hour,
+      sync_scope,
+      spu_names_json
+    )
+    values (?, 1, ?, 'full', '[]')
+    on conflict(id) do nothing
+  `).run(DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_ID, DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_HOUR)
+}
+
+function scheduleConfigFromRow(row: JsonRecord | undefined, db: SyncPostgresDatabase = getDb()): PlatformProductSyncScheduleConfig {
+  const activeJob = activeScheduledPlatformProductSyncJob(db)
+  return {
+    id: stringValue(row?.id) || DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_ID,
+    enabled: booleanEnv(row?.enabled, true),
+    schedule_hour: boundedHour(row?.schedule_hour, DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_HOUR),
+    sync_scope: syncScheduleScope(row?.sync_scope),
+    spu_names: scheduleSpuNames(row?.spu_names_json),
+    last_enqueued_date: stringValue(row?.last_enqueued_date) || null,
+    last_enqueued_job_id: stringValue(row?.last_enqueued_job_id) || null,
+    updated_at: stringValue(row?.updated_at) || null,
+    active_job: activeJob ? snapshot(activeJob, db) : null,
+  }
+}
+
+export function getPlatformProductSyncScheduleConfig(db: SyncPostgresDatabase = getDb()) {
+  ensurePlatformProductSyncScheduleRow(db)
+  const row = db.prepare(`
+    select *
+    from shein_platform_product_sync_schedule
+    where id = ?
+  `).get(DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_ID) as JsonRecord | undefined
+  return scheduleConfigFromRow(row, db)
+}
+
+export function savePlatformProductSyncScheduleConfig(input: unknown = {}, db: SyncPostgresDatabase = getDb()) {
+  ensurePlatformProductSyncScheduleRow(db)
+  const current = getPlatformProductSyncScheduleConfig(db)
+  const object = recordValue(input)
+  const enabled = object.enabled == null ? current.enabled : booleanEnv(object.enabled, current.enabled)
+  const scheduleHour = boundedHour(
+    object.schedule_hour ?? object.scheduleHour,
+    current.schedule_hour || DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_HOUR,
+  )
+  const syncScope = syncScheduleScope(object.sync_scope ?? object.syncScope ?? current.sync_scope)
+  const spuNames = scheduleSpuNames(object.spu_names ?? object.spuNames ?? current.spu_names)
+  const now = nowIso()
+  const row = db.prepare(`
+    update shein_platform_product_sync_schedule
+    set enabled = ?,
+      schedule_hour = ?,
+      sync_scope = ?,
+      spu_names_json = ?,
+      updated_at = ?
+    where id = ?
+    returning *
+  `).get(
+    enabled ? 1 : 0,
+    scheduleHour,
+    syncScope,
+    jsonArrayText(spuNames),
+    now,
+    DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_ID,
+  ) as JsonRecord | undefined
+  return scheduleConfigFromRow(row, db)
+}
+
+function activeScheduledPlatformProductSyncJob(db: SyncPostgresDatabase = getDb()) {
+  const row = db.prepare(`
+    select *
+    from shein_platform_product_job
+    where job_type = 'sync'
+      and status in ('queued', 'running')
+      and payload_json like ?
+    order by created_at asc
+    limit 1
+  `).get(`%"source":"${SCHEDULED_PLATFORM_PRODUCT_SYNC_SOURCE}"%`) as JsonRecord | undefined
+  return platformProductJobMatchesPayload(row)
+}
+
+function scheduledPlatformProductSyncJobForDate(scheduleDate: string, db: SyncPostgresDatabase = getDb()) {
+  const row = db.prepare(`
+    select *
+    from shein_platform_product_job
+    where job_type = 'sync'
+      and payload_json like ?
+      and payload_json like ?
+    order by created_at desc
+    limit 1
+  `).get(
+    `%"source":"${SCHEDULED_PLATFORM_PRODUCT_SYNC_SOURCE}"%`,
+    `%"scheduleDate":"${scheduleDate}"%`,
+  ) as JsonRecord | undefined
+  return platformProductJobMatchesPayload(row)
+}
+
+function scheduledPlatformProductSyncCodes(schedule: PlatformProductSyncScheduleConfig, db: SyncPostgresDatabase = getDb()) {
+  if (schedule.sync_scope === "spu") return schedule.spu_names
+  return listPlatformProductSpuNames({ limit: MAX_DETAIL_CODES_PER_JOB }, db)
+}
+
+export function enqueueScheduledPlatformProductSyncJob(options: {
+  now?: Date
+  db?: SyncPostgresDatabase
+  schedule?: PlatformProductSyncScheduleConfig
+} = {}) {
+  const db = options.db ?? getDb()
+  const now = options.now ?? new Date()
+  const schedule = options.schedule ?? getPlatformProductSyncScheduleConfig(db)
+  if (!schedule.enabled) return null
+  const activeJob = activeScheduledPlatformProductSyncJob(db)
+  if (activeJob) return snapshot(activeJob, db)
+
+  const scheduleDate = localNightlySyncDateKey(now)
+  const existingJob = scheduledPlatformProductSyncJobForDate(scheduleDate, db)
+  if (existingJob) return snapshot(existingJob, db)
+
+  const codes = scheduledPlatformProductSyncCodes(schedule, db)
+  if (!codes.length) return null
+
+  const job = createPlatformProductJob({
+    id: randomUUID(),
+    type: "sync",
+    status: "queued",
+    title: schedule.sync_scope === "spu" ? "定时按款号同步 SHEIN 平台商品详情" : "定时全量同步 SHEIN 平台商品详情",
+    total_count: codes.length,
+    completed_count: 0,
+    failed_count: 0,
+    created_at: now.toISOString(),
+    started_at: null,
+    finished_at: null,
+    items: [],
+    payload: {
+      spuNames: codes,
+      source: SCHEDULED_PLATFORM_PRODUCT_SYNC_SOURCE,
+      scheduleDate,
+      scheduleHour: schedule.schedule_hour,
+      syncScope: schedule.sync_scope,
+      retryFailedItems: true,
+      detailIntervalMs: DEFAULT_DETAIL_SYNC_INTERVAL_MS,
+    },
+    actor: { id: null, username: SCHEDULED_PLATFORM_PRODUCT_SYNC_ACTOR },
+    error: null,
+  }, db)
+  createPlatformProductJobItems(job.id, codes, db)
+  db.prepare(`
+    update shein_platform_product_sync_schedule
+    set last_enqueued_date = ?,
+      last_enqueued_job_id = ?,
+      updated_at = ?
+    where id = ?
+  `).run(scheduleDate, job.id, nowIso(), DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_ID)
+  schedulePlatformProductJobs()
+  return snapshot(job, db)
+}
+
+export function enqueueNightlyPlatformProductFullSyncJob(options: { now?: Date; db?: SyncPostgresDatabase } = {}) {
+  return enqueueScheduledPlatformProductSyncJob(options)
+}
+
+export function runPlatformProductNightlyFullSyncOnce(now = new Date()) {
+  schedulePlatformProductJobs()
+  const schedule = getPlatformProductSyncScheduleConfig()
+  if (!schedule.enabled) return null
+  if (now.getHours() !== schedule.schedule_hour) return null
+  return enqueueScheduledPlatformProductSyncJob({ now, schedule })
+}
+
+export function startPlatformProductNightlyFullSyncScheduler() {
+  if (nightlyFullSyncSchedulerStarted) return
+  nightlyFullSyncSchedulerStarted = true
+  void runPlatformProductNightlyFullSyncOnce()
+  const timer = setInterval(() => {
+    void runPlatformProductNightlyFullSyncOnce()
+  }, PLATFORM_PRODUCT_SYNC_SCHEDULE_POLL_MS)
+  timer.unref?.()
 }
 
 function getInternalJob(type: PlatformProductJobType, id: string) {

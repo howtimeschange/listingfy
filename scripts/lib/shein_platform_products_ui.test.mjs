@@ -182,6 +182,38 @@ test("SHEIN platform products page opens a dedicated sync dialog for time range 
   assert.doesNotMatch(page, /pageSize:\s*queryParams\.pagination\.limit/);
 });
 
+test("SHEIN platform products page exposes configurable scheduled sync", async () => {
+  const [page, route] = await Promise.all([
+    fileText(PAGE_FILE),
+    fileText(path.join(PROJECT_ROOT, "web/server/routes/shein-platform-products.ts")),
+  ]);
+
+  assert.match(route, /get\("\/sync-schedule"/);
+  assert.match(route, /put\("\/sync-schedule"/);
+  assert.match(route, /getPlatformProductSyncScheduleConfig/);
+  assert.match(route, /savePlatformProductSyncScheduleConfig/);
+
+  assert.match(page, /import \{ Switch \} from "@\/components\/ui\/switch"/);
+  assert.match(page, /type SyncScheduleScope = "full" \| "spu"/);
+  assert.match(page, /interface SyncScheduleConfig/);
+  assert.match(page, /syncScheduleDialogOpen/);
+  assert.match(page, /syncScheduleQuery/);
+  assert.match(page, /\/shein-platform-products\/sync-schedule/);
+  assert.match(page, /syncScheduleMutation/);
+  assert.match(page, /setSyncScheduleDialogOpen\(true\)/);
+  assert.match(page, /<DialogTitle>定时同步<\/DialogTitle>/);
+  assert.match(page, /<Switch/);
+  assert.match(page, /默认 23 点/);
+  assert.match(page, /全量商品同步/);
+  assert.match(page, /自定义 SPU 款号同步/);
+  assert.match(page, /schedule_hour/);
+  assert.match(page, /sync_scope/);
+  assert.match(page, /spu_names/);
+  assert.match(page, /alreadyRunningScheduledSync/);
+  assert.match(page, /已有进行中的定时任务/);
+  assert.match(page, /当前任务会继续执行/);
+});
+
 test("SHEIN platform products page supports brand/category filters and price import", async () => {
   const page = await fileText(PAGE_FILE);
 

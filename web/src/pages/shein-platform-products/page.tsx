@@ -59,6 +59,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Table,
@@ -357,6 +358,7 @@ interface ProductQueryParams {
 type SyncRangeMode = "last-sync" | "custom" | "all"
 type SyncDialogMode = "time" | "spu"
 type SyncTimeField = "updateTime" | "insertTime"
+type SyncScheduleScope = "full" | "spu"
 
 interface SyncFilters {
   rangeMode: SyncRangeMode
@@ -367,6 +369,24 @@ interface SyncFilters {
   maxPages: string
   detailLimit: string
   syncDetails: boolean
+}
+
+interface SyncScheduleConfig {
+  enabled: boolean
+  schedule_hour: number
+  sync_scope: SyncScheduleScope
+  spu_names: string[]
+  last_enqueued_date?: string | null
+  last_enqueued_job_id?: string | null
+  updated_at?: string | null
+  active_job?: AsyncTaskJob | null
+}
+
+interface SyncScheduleForm {
+  enabled: boolean
+  schedule_hour: string
+  sync_scope: SyncScheduleScope
+  spu_names_text: string
 }
 
 type PlatformProductView = "list" | "sites" | "detail"
@@ -442,6 +462,13 @@ const DEFAULT_SYNC_FILTERS: SyncFilters = {
   maxPages: "1000",
   detailLimit: "100000",
   syncDetails: true,
+}
+
+const DEFAULT_SYNC_SCHEDULE_FORM: SyncScheduleForm = {
+  enabled: true,
+  schedule_hour: "23",
+  sync_scope: "full",
+  spu_names_text: "",
 }
 
 const syncRangeOptions: Array<{ value: SyncRangeMode; label: string }> = [
@@ -548,6 +575,16 @@ function splitSpuNames(text: string, limit = Number.POSITIVE_INFINITY) {
         .filter(Boolean),
     ),
   ).slice(0, limit)
+}
+
+function syncScheduleConfigToForm(config?: SyncScheduleConfig | null): SyncScheduleForm {
+  if (!config) return DEFAULT_SYNC_SCHEDULE_FORM
+  return {
+    enabled: config.enabled,
+    schedule_hour: String(config.schedule_hour ?? 23),
+    sync_scope: config.sync_scope === "spu" ? "spu" : "full",
+    spu_names_text: (config.spu_names ?? []).join("\n"),
+  }
 }
 
 function platformTimeInputValue(value: string) {
@@ -664,6 +701,13 @@ function usePlatformProducts(params: ProductQueryParams) {
   })
 }
 
+function useSyncSchedule() {
+  return useQuery<SyncScheduleConfig>({
+    queryKey: ["shein-platform-products", "sync-schedule"],
+    queryFn: () => api.get("/shein-platform-products/sync-schedule"),
+  })
+}
+
 function platformProductsListUrl(
   params: ProductQueryParams,
   pagination: Pick<ServerPaginationState, "limit" | "offset"> = params.pagination,
@@ -770,6 +814,8 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const [syncDialogMode, setSyncDialogMode] = useState<SyncDialogMode>("spu")
   const [syncFilters, setSyncFilters] = useState<SyncFilters>(DEFAULT_SYNC_FILTERS)
   const [spuNameSyncText, setSpuNameSyncText] = useState("")
+  const [syncScheduleDialogOpen, setSyncScheduleDialogOpen] = useState(false)
+  const [syncScheduleForm, setSyncScheduleForm] = useState<SyncScheduleForm>(DEFAULT_SYNC_SCHEDULE_FORM)
   const [saleSitesDialogProduct, setSaleSitesDialogProduct] = useState<PlatformProductRow | null>(null)
   const [detailSection, setDetailSection] = useState<DetailSection>("product")
   const [exportingPlatformProducts, setExportingPlatformProducts] = useState(false)
@@ -783,6 +829,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
 
   const sitesQuery = useStoreSites()
   const productsQuery = usePlatformProducts(queryParams)
+  const syncScheduleQuery = useSyncSchedule()
   const detailQuery = useProductDetail(selectedSpuName)
   const editTemplateQuery = useEditTemplate(selectedSpuName, editDialogOpen)
   const variantTemplateQuery = useVariantTemplate(selectedSpuName, variantDialogOpen)
@@ -828,6 +875,13 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const spuNamesToSync = useMemo(
     () => splitSpuNames(spuNameSyncText, MAX_SPU_NAME_SYNC_COUNT),
     [spuNameSyncText],
+  )
+  const scheduledSpuNames = useMemo(
+    () => splitSpuNames(syncScheduleForm.spu_names_text, MAX_SPU_NAME_SYNC_COUNT),
+    [syncScheduleForm.spu_names_text],
+  )
+  const alreadyRunningScheduledSync = Boolean(
+    syncScheduleQuery.data?.active_job && syncScheduleQuery.data.active_job.status !== "completed",
   )
 
   useEffect(() => {
@@ -904,6 +958,31 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
     onError: (error) => toast.error(error instanceof Error ? error.message : "按款号同步失败"),
   })
 
+  const syncScheduleMutation = useMutation({
+    mutationFn: () => {
+      const scheduleHour = Number(syncScheduleForm.schedule_hour)
+      if (!Number.isInteger(scheduleHour) || scheduleHour < 0 || scheduleHour > 23) {
+        throw new Error("执行小时需为 0-23 的整数")
+      }
+      if (syncScheduleForm.sync_scope === "spu" && scheduledSpuNames.length === 0) {
+        throw new Error("自定义 SPU 款号同步至少需要 1 个款号")
+      }
+      return api.put<SyncScheduleConfig>("/shein-platform-products/sync-schedule", {
+        enabled: syncScheduleForm.enabled,
+        schedule_hour: scheduleHour,
+        sync_scope: syncScheduleForm.sync_scope,
+        spu_names: scheduledSpuNames,
+      })
+    },
+    onSuccess: (config) => {
+      setSyncScheduleForm(syncScheduleConfigToForm(config))
+      void queryClient.invalidateQueries({ queryKey: ["shein-platform-products", "sync-schedule"] })
+      toast.success("定时同步配置已生效")
+      setSyncScheduleDialogOpen(false)
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "保存定时同步配置失败"),
+  })
+
   const detailSaleSiteRows = useMemo(
     () =>
       detailSaleSites.map((site) => ({
@@ -937,6 +1016,14 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
     if (tableScroller.scrollLeft !== bottomScroller.scrollLeft) {
       tableScroller.scrollLeft = bottomScroller.scrollLeft
     }
+  }
+
+  function openSyncScheduleDialog() {
+    setSyncScheduleForm(syncScheduleConfigToForm(syncScheduleQuery.data))
+    setSyncScheduleDialogOpen(true)
+    void syncScheduleQuery.refetch().then((result) => {
+      if (result.data) setSyncScheduleForm(syncScheduleConfigToForm(result.data))
+    })
   }
 
   const syncSitesMutation = useMutation({
@@ -1490,6 +1577,11 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-52">
                   <DropdownMenuLabel>列表操作</DropdownMenuLabel>
+                  <DropdownMenuItem onSelect={() => openSyncScheduleDialog()}>
+                    <Settings2 className="size-4" />
+                    定时同步
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
                   <DropdownMenuItem
                     className="min-[1120px]:hidden"
                     onSelect={() => batchSyncStatusMutation.mutate()}
@@ -2126,6 +2218,103 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                 <PackageSearch className="size-4" />
               )}
               开始同步
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={syncScheduleDialogOpen} onOpenChange={setSyncScheduleDialogOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>定时同步</DialogTitle>
+            <DialogDescription>
+              配置 SHEIN 平台商品详情的自动同步任务，默认 23 点开始。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-4 rounded-md border px-3 py-3">
+              <div className="min-w-0">
+                <Label htmlFor="sync-schedule-enabled" className="text-sm font-medium">启用任务</Label>
+                <p className="mt-1 text-xs text-muted-foreground">关闭后只停止后续自动触发。</p>
+              </div>
+              <Switch
+                id="sync-schedule-enabled"
+                checked={syncScheduleForm.enabled}
+                onCheckedChange={(enabled) => setSyncScheduleForm((current) => ({ ...current, enabled }))}
+                disabled={syncScheduleMutation.isPending}
+              />
+            </div>
+            {alreadyRunningScheduledSync ? (
+              <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                已有进行中的定时任务，修改或关闭只影响后续触发，当前任务会继续执行。
+              </div>
+            ) : null}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-2">
+                <Label htmlFor="sync-schedule-hour">开始小时</Label>
+                <Input
+                  id="sync-schedule-hour"
+                  type="number"
+                  min="0"
+                  max="23"
+                  step="1"
+                  value={syncScheduleForm.schedule_hour}
+                  onChange={(event) => setSyncScheduleForm((current) => ({ ...current, schedule_hour: event.target.value }))}
+                  disabled={syncScheduleMutation.isPending}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="sync-schedule-scope">同步范围</Label>
+                <Select
+                  value={syncScheduleForm.sync_scope}
+                  onValueChange={(sync_scope) => setSyncScheduleForm((current) => ({ ...current, sync_scope: sync_scope as SyncScheduleScope }))}
+                  disabled={syncScheduleMutation.isPending}
+                >
+                  <SelectTrigger id="sync-schedule-scope">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="full">全量商品同步</SelectItem>
+                    <SelectItem value="spu">自定义 SPU 款号同步</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            {syncScheduleForm.sync_scope === "spu" ? (
+              <div className="grid gap-2">
+                <Label htmlFor="sync-schedule-spu-names">SPU 款号</Label>
+                <Textarea
+                  id="sync-schedule-spu-names"
+                  value={syncScheduleForm.spu_names_text}
+                  onChange={(event) => setSyncScheduleForm((current) => ({ ...current, spu_names_text: event.target.value }))}
+                  placeholder="c250722589993&#10;s2409195445"
+                  className="min-h-32 font-mono text-sm"
+                  disabled={syncScheduleMutation.isPending}
+                />
+                <p className="text-xs text-muted-foreground">
+                  已识别 {formatNumber(scheduledSpuNames.length)} 个 SPU。
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-md border px-3 py-2 text-sm text-muted-foreground">
+                全量商品同步会读取本地平台商品列表中的全部 SPU，并按详情接口限流节奏分片执行。
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setSyncScheduleForm(DEFAULT_SYNC_SCHEDULE_FORM)}
+              disabled={syncScheduleMutation.isPending}
+            >
+              恢复默认
+            </Button>
+            <Button variant="outline" onClick={() => setSyncScheduleDialogOpen(false)} disabled={syncScheduleMutation.isPending}>
+              取消
+            </Button>
+            <Button onClick={() => syncScheduleMutation.mutate()} disabled={syncScheduleMutation.isPending}>
+              {syncScheduleMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Settings2 className="size-4" />}
+              保存配置
             </Button>
           </DialogFooter>
         </DialogContent>

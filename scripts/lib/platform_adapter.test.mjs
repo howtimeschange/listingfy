@@ -156,6 +156,7 @@ test("SHEIN lifecycle adapter methods call the documented OpenAPI paths with cre
     assert.equal(new URL(calls[10].url).searchParams.get("per_page"), "100");
     assert.equal(new URL(calls[10].url).searchParams.get("type"), "1");
     assert.equal(calls[0].options.method, "POST");
+    assert.equal(calls[0].options.signal instanceof AbortSignal, true);
     assert.equal(calls[0].options.headers["x-lt-openKeyId"], "open-key");
     assert.equal(calls[0].options.headers.language, "zh-cn");
     assert.equal(calls[0].options.body, "{}");
@@ -168,6 +169,48 @@ test("SHEIN lifecycle adapter methods call the documented OpenAPI paths with cre
         },
       ],
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("SHEIN credential requests retry timeout and network failures before surfacing an error", async () => {
+  const client = await import("./shein_client.mjs");
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async (url, options) => {
+    attempts += 1;
+    assert.equal(String(url), "https://openapi.example.test/open-api/goods/spu-info");
+    assert.equal(options.signal instanceof AbortSignal, true);
+    if (attempts < 3) {
+      const error = new Error("simulated request timeout");
+      error.name = "AbortError";
+      throw error;
+    }
+    return new Response(JSON.stringify({ code: "0", msg: "OK", info: { spuName: "s250805261495" } }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const result = await client.requestSheinWithCredentialsAndRetry("/open-api/goods/spu-info", {
+      credentials: {
+        source: "environment",
+        platformIntegrationId: null,
+        baseUrl: "https://openapi.example.test",
+        language: "zh-cn",
+        openKeyId: "open-key",
+        secretKey: "secret-key",
+      },
+      body: { spuName: "s250805261495" },
+      retries: 2,
+      retryDelayMs: 0,
+      timeoutMs: 50,
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(attempts, 3);
   } finally {
     globalThis.fetch = originalFetch;
   }

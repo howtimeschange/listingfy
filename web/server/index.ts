@@ -17,6 +17,7 @@ import sheinProducts from "./routes/shein-products"
 import sheinLifecycle from "./routes/shein-lifecycle"
 import sheinPlatformProducts from "./routes/shein-platform-products"
 import sheinOperations from "./routes/shein-operations"
+import { startPlatformProductNightlyFullSyncScheduler } from "./services/shein-platform-product-jobs"
 import prePublish from "./routes/pre-publish"
 import publishTasks from "./routes/publish-tasks"
 import listingBatches from "./routes/listing-batches"
@@ -107,4 +108,5 @@ if (adminSeeded) console.log("Seeded configured admin user")
 if (sheinConfigSeeded) console.log("Migrated SHEIN env credentials into platform_integration")
 if (encryptedPlatformCredentials) console.log(`Encrypted platform credentials: ${encryptedPlatformCredentials}`)
 
+startPlatformProductNightlyFullSyncScheduler()
 serve({ fetch: app.fetch, port })

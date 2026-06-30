@@ -16,6 +16,7 @@ const PAGE_FILE = path.join(PROJECT_ROOT, "web/src/pages/shein-platform-products
 const TASK_CENTER_FILE = path.join(PROJECT_ROOT, "web/src/components/async-task-center.tsx");
 const JOB_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/027_shein_platform_product_jobs.sql");
 const JOB_ITEM_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/034_shein_platform_product_job_items.sql");
+const SYNC_SCHEDULE_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/035_shein_platform_product_sync_schedule.sql");
 
 async function fileText(file) {
   try {
@@ -50,6 +51,11 @@ async function createTempDb() {
 async function importService() {
   process.env.DATABASE_URL ||= "postgresql://user:pass@localhost:5432/listingify_test";
   return await import("../../web/server/services/shein-platform-products.ts");
+}
+
+async function importJobService() {
+  process.env.DATABASE_URL ||= "postgresql://user:pass@localhost:5432/listingify_test";
+  return await import("../../web/server/services/shein-platform-product-jobs.ts");
 }
 
 function testContext() {
@@ -708,6 +714,95 @@ test("SHEIN platform product async detail sync throttles requests and cools down
   assert.match(jobService, /限流ID/);
   assert.match(jobService, /总阈值/);
   assert.match(jobService, /await wait\(rateLimitCooldownMs\)/);
+});
+
+test("SHEIN platform product scheduled detail sync is configurable and reuses resumable job items", async () => {
+  const [server, service, jobService, scheduleMigration, route] = await Promise.all([
+    fileText(SERVER_INDEX),
+    fileText(SERVICE_FILE),
+    fileText(JOB_SERVICE_FILE),
+    fileText(SYNC_SCHEDULE_MIGRATION_FILE),
+    fileText(ROUTE_FILE),
+  ]);
+
+  assert.match(server, /startPlatformProductNightlyFullSyncScheduler/);
+  assert.match(server, /startPlatformProductNightlyFullSyncScheduler\(\)/);
+
+  assert.match(service, /export function listPlatformProductSpuNames/);
+  assert.match(service, /from shein_platform_product/);
+  assert.match(service, /last_detail_synced_at/);
+
+  assert.match(scheduleMigration, /create table if not exists shein_platform_product_sync_schedule/);
+  assert.match(scheduleMigration, /enabled integer not null default 1/);
+  assert.match(scheduleMigration, /schedule_hour integer not null default 23/);
+  assert.match(scheduleMigration, /sync_scope text not null default 'full'/);
+  assert.match(scheduleMigration, /spu_names_json text not null default '\[\]'/);
+  assert.match(scheduleMigration, /last_enqueued_date text/);
+  assert.match(scheduleMigration, /last_enqueued_job_id text/);
+  assert.match(scheduleMigration, /check\(schedule_hour >= 0 and schedule_hour <= 23\)/);
+  assert.match(scheduleMigration, /check\(sync_scope in \('full', 'spu'\)\)/);
+  assert.match(scheduleMigration, /values \('default', 1, 23, 'full', '\[\]'\)/);
+
+  assert.match(route, /get\("\/sync-schedule"/);
+  assert.match(route, /put\("\/sync-schedule"/);
+  assert.match(route, /getPlatformProductSyncScheduleConfig/);
+  assert.match(route, /savePlatformProductSyncScheduleConfig/);
+
+  assert.match(jobService, /DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_HOUR\s*=\s*23/);
+  assert.match(jobService, /SCHEDULED_PLATFORM_PRODUCT_SYNC_SOURCE\s*=\s*"scheduled_platform_product_sync"/);
+  assert.match(jobService, /function localNightlySyncDateKey/);
+  assert.match(jobService, /export function getPlatformProductSyncScheduleConfig/);
+  assert.match(jobService, /export function savePlatformProductSyncScheduleConfig/);
+  assert.match(jobService, /function activeScheduledPlatformProductSyncJob/);
+  assert.match(jobService, /function scheduledPlatformProductSyncJobForDate/);
+  assert.match(jobService, /function scheduledPlatformProductSyncCodes/);
+  assert.match(jobService, /export function enqueueScheduledPlatformProductSyncJob/);
+  assert.match(jobService, /export function enqueueNightlyPlatformProductFullSyncJob/);
+  assert.match(jobService, /export function runPlatformProductNightlyFullSyncOnce/);
+  assert.match(jobService, /export function startPlatformProductNightlyFullSyncScheduler/);
+  assert.match(jobService, /schedule\.enabled/);
+  assert.match(jobService, /now\.getHours\(\) !== schedule\.schedule_hour/);
+  assert.match(jobService, /listPlatformProductSpuNames\(\{[\s\S]*limit: MAX_DETAIL_CODES_PER_JOB/);
+  assert.match(jobService, /schedule\.sync_scope === "spu"/);
+  assert.match(jobService, /title:\s*schedule\.sync_scope === "spu"[\s\S]*定时按款号同步 SHEIN 平台商品详情[\s\S]*定时全量同步 SHEIN 平台商品详情/);
+  assert.match(jobService, /source:\s*SCHEDULED_PLATFORM_PRODUCT_SYNC_SOURCE/);
+  assert.match(jobService, /scheduleDate/);
+  assert.match(jobService, /scheduleHour:\s*schedule\.schedule_hour/);
+  assert.match(jobService, /syncScope:\s*schedule\.sync_scope/);
+  assert.match(jobService, /retryFailedItems:\s*true/);
+  assert.match(jobService, /update shein_platform_product_sync_schedule[\s\S]*last_enqueued_date/);
+  assert.match(jobService, /active_job:\s*activeJob \? snapshot\(activeJob, db\) : null/);
+  assert.match(jobService, /function requeueFailedPlatformProductJobItems/);
+  assert.match(jobService, /failedItemRetryPasses/);
+  assert.match(jobService, /shouldRetryFailedPlatformProductJobItems/);
+  assert.match(jobService, /createPlatformProductJobItems\(job\.id, codes, db\)/);
+  assert.match(jobService, /setInterval\(\(\) => \{/);
+  assert.match(jobService, /schedulePlatformProductJobs\(\)/);
+});
+
+test("SHEIN platform product sync schedule persists custom SPU arrays", async () => {
+  const tempPath = await mkdtemp(path.join(os.tmpdir(), "listingify-shein-sync-schedule-"));
+  const db = new DatabaseSync(path.join(tempPath, "test.sqlite"));
+  try {
+    db.exec(await readFile(JOB_MIGRATION_FILE, "utf8"));
+    db.exec(await readFile(SYNC_SCHEDULE_MIGRATION_FILE, "utf8"));
+    const jobService = await importJobService();
+
+    const saved = jobService.savePlatformProductSyncScheduleConfig({
+      enabled: true,
+      schedule_hour: 22,
+      sync_scope: "spu",
+      spu_names: ["s2409195445", "s2409195445", "c250722589993"],
+    }, db);
+    const reloaded = jobService.getPlatformProductSyncScheduleConfig(db);
+
+    assert.equal(saved.sync_scope, "spu");
+    assert.equal(saved.schedule_hour, 22);
+    assert.deepEqual(reloaded.spu_names, ["s2409195445", "c250722589993"]);
+  } finally {
+    db.close();
+    await rm(tempPath, { recursive: true, force: true });
+  }
 });
 
 test("SHEIN platform product account key resolver keeps historical platform rows visible", async () => {

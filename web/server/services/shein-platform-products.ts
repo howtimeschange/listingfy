@@ -25,6 +25,10 @@ interface ProductListInput {
   includeDetails?: boolean | number | string
 }
 
+interface ProductSpuNameListInput {
+  limit?: number
+}
+
 interface ProductSyncPlan {
   mode: "incremental" | "full"
   pageSize: number
@@ -1739,6 +1743,23 @@ export function listPlatformProducts(input: ProductListInput = {}) {
     },
     operations: safeProductOperations(db, context, undefined, 8),
   }
+}
+
+export function listPlatformProductSpuNames(input: ProductSpuNameListInput = {}, db: SyncPostgresDatabase = getDb()) {
+  const context = platformContext(db)
+  const limit = readPositiveInteger(input.limit, 20_000, 20_000)
+  const rows = db.prepare(`
+    select spu_name
+    from shein_platform_product
+    where platform = ?
+      and platform_account_key = ?
+      and coalesce(spu_name, '') <> ''
+    order by coalesce(last_detail_synced_at, '1970-01-01T00:00:00.000Z') asc,
+      coalesce(last_list_synced_at, updated_at, created_at) asc,
+      id asc
+    limit ?
+  `).all(context.platform, context.platformAccountKey, limit) as JsonRecord[]
+  return rows.map((row) => stringValue(row.spu_name)).filter(Boolean)
 }
 
 function serializeSite(row: JsonRecord) {

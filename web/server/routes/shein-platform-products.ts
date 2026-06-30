@@ -24,9 +24,11 @@ import {
 import {
   enqueuePlatformProductExportJob,
   enqueuePlatformProductSyncJob,
+  getPlatformProductSyncScheduleConfig,
   getPlatformProductExportJob,
   getPlatformProductSyncJob,
   readPlatformProductExportFile,
+  savePlatformProductSyncScheduleConfig,
 } from "../services/shein-platform-product-jobs"
 
 const sheinPlatformProducts = new Hono()
@@ -70,6 +72,16 @@ sheinPlatformProducts.get("/sync-jobs/:jobId", (c) => {
   const job = getPlatformProductSyncJob(c.req.param("jobId"))
   if (!job) throw new HTTPException(404, { message: "平台商品同步任务不存在" })
   return c.json(job)
+})
+
+sheinPlatformProducts.get("/sync-schedule", (c) => {
+  requirePermission(c, "LISTING_READ")
+  return c.json(getPlatformProductSyncScheduleConfig())
+})
+
+sheinPlatformProducts.put("/sync-schedule", async (c) => {
+  requirePermission(c, "SYNC_RUN")
+  return c.json(savePlatformProductSyncScheduleConfig(await jsonBody(c)))
 })
 
 sheinPlatformProducts.post("/export-jobs", async (c) => {
