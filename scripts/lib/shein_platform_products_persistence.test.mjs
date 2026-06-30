@@ -15,6 +15,7 @@ const SERVER_INDEX = path.join(PROJECT_ROOT, "web/server/index.ts");
 const PAGE_FILE = path.join(PROJECT_ROOT, "web/src/pages/shein-platform-products/page.tsx");
 const TASK_CENTER_FILE = path.join(PROJECT_ROOT, "web/src/components/async-task-center.tsx");
 const JOB_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/027_shein_platform_product_jobs.sql");
+const JOB_ITEM_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/034_shein_platform_product_job_items.sql");
 
 async function fileText(file) {
   try {
@@ -122,6 +123,38 @@ test("SHEIN platform product async jobs are durable across API workers", async (
   assert.match(jobService, /getPlatformProductExportJob[\s\S]*loadPlatformProductJob/);
   assert.match(jobService, /readPlatformProductExportFile[\s\S]*loadPlatformProductJob/);
   assert.doesNotMatch(jobService, /exportJobs = new Map/);
+});
+
+test("SHEIN platform product detail sync uses durable shards and summary polling for large jobs", async () => {
+  const [migration, jobService, taskContext, taskCenter] = await Promise.all([
+    fileText(JOB_ITEM_MIGRATION_FILE),
+    fileText(JOB_SERVICE_FILE),
+    fileText(path.join(PROJECT_ROOT, "web/src/lib/async-task-context.ts")),
+    fileText(TASK_CENTER_FILE),
+  ]);
+
+  assert.match(migration, /create table if not exists shein_platform_product_job_item/);
+  assert.match(migration, /job_id text not null/);
+  assert.match(migration, /item_index integer not null/);
+  assert.match(migration, /shard_index integer not null default 0/);
+  assert.match(migration, /unique\(job_id, item_index\)/);
+  assert.match(migration, /idx_shein_platform_product_job_item_status/);
+
+  assert.match(jobService, /MAX_DETAIL_CODES_PER_JOB\s*=\s*20_000/);
+  assert.match(jobService, /DETAIL_SYNC_SHARD_SIZE\s*=\s*2_000/);
+  assert.match(jobService, /parseSpuCodes\([\s\S]*maxCodes: MAX_DETAIL_CODES_PER_JOB[\s\S]*\)/);
+  assert.match(jobService, /createPlatformProductJobItems/);
+  assert.match(jobService, /nextPlatformProductJobItem/);
+  assert.match(jobService, /loadPlatformProductJobSummary/);
+  assert.match(jobService, /current_item/);
+  assert.match(jobService, /failed_items/);
+  assert.doesNotMatch(jobService, /items: codes\.map\(\(code\) => \(\{ spu_code: code/);
+
+  assert.match(taskContext, /current_item\?: AsyncTaskJobItem \| null/);
+  assert.match(taskContext, /failed_items\?: AsyncTaskJobItem\[\]/);
+  assert.match(taskCenter, /task\.job\?\.current_item/);
+  assert.match(taskCenter, /task\.job\?\.failed_items/);
+  assert.doesNotMatch(taskCenter, /task\.job\?\.items\?\.find/);
 });
 
 test("SHEIN platform product jobs start after the enqueue response can flush", async () => {
@@ -668,7 +701,7 @@ test("SHEIN platform product async detail sync throttles requests and cools down
   assert.match(jobService, /DEFAULT_DETAIL_SYNC_INTERVAL_MS\s*=\s*Math\.ceil\(SHEIN_DETAIL_RATE_LIMIT_WINDOW_MS \/ SHEIN_DETAIL_RATE_LIMIT_WINDOW_LIMIT\) \+ 250/);
   assert.match(jobService, /platformProductDetailSyncIntervalMs/);
   assert.match(jobService, /detailIntervalMs/);
-  assert.match(jobService, /if \(index > 0 && detailIntervalMs > 0\)/);
+  assert.match(jobService, /if \(processedInThisRun > 0 && detailIntervalMs > 0\)/);
   assert.match(jobService, /await wait\(detailIntervalMs\)/);
   assert.match(jobService, /isSheinRateLimitMessage/);
   assert.match(jobService, /QPS限流/);

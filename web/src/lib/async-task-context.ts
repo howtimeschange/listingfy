@@ -17,6 +17,12 @@ export interface AsyncTaskJob {
   started_at?: string | null
   finished_at?: string | null
   items?: AsyncTaskJobItem[]
+  current_item?: AsyncTaskJobItem | null
+  failed_items?: AsyncTaskJobItem[]
+  queued_count?: number
+  running_count?: number
+  shard_count?: number
+  shard_size?: number
   downloadUrl?: string
   fileName?: string
 }

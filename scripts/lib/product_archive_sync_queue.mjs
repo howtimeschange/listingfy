@@ -10,7 +10,10 @@ function clampInterval(value) {
   return Math.max(0, Math.min(60000, Math.floor(number)));
 }
 
-export function parseSpuCodes(input) {
+export function parseSpuCodes(input, options = {}) {
+  const maxCodes = Number.isFinite(Number(options.maxCodes))
+    ? Math.max(1, Math.floor(Number(options.maxCodes)))
+    : MAX_CODES_PER_JOB;
   const values = Array.isArray(input) ? input : String(input ?? "").split(/[\s,，;；]+/);
   const seen = new Set();
   const codes = [];
@@ -19,7 +22,7 @@ export function parseSpuCodes(input) {
     if (!code || !PRODUCT_ARCHIVE_CODE_PATTERN.test(code) || seen.has(code)) continue;
     seen.add(code);
     codes.push(code);
-    if (codes.length >= MAX_CODES_PER_JOB) break;
+    if (codes.length >= maxCodes) break;
   }
   return codes;
 }

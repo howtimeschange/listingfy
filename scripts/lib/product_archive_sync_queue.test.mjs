@@ -40,6 +40,13 @@ test("parseSpuCodes keeps a full launch-plan sized batch", () => {
   assert.equal(parseSpuCodes(codes).length, 614);
 });
 
+test("parseSpuCodes supports a larger explicit limit for platform product sync", () => {
+  const codes = Array.from({ length: 20050 }, (_, index) => `SPU${String(index + 1).padStart(6, "0")}`);
+
+  assert.equal(parseSpuCodes(codes).length, 2000);
+  assert.equal(parseSpuCodes(codes, { maxCodes: 20000 }).length, 20000);
+});
+
 test("queue processes product sync jobs serially with a delay between codes", async () => {
   const events = [];
   let now = 1000;

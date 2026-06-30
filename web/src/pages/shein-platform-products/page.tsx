@@ -371,6 +371,7 @@ interface SyncFilters {
 
 type PlatformProductView = "list" | "sites" | "detail"
 const EMPTY_SALE_SITES: SaleSiteDetail[] = []
+const MAX_SPU_NAME_SYNC_COUNT = 20_000
 
 interface SheinPlatformProductsPageProps {
   view?: PlatformProductView
@@ -538,7 +539,7 @@ function parseJsonPayload(text: string) {
   }
 }
 
-function splitSpuNames(text: string) {
+function splitSpuNames(text: string, limit = Number.POSITIVE_INFINITY) {
   return Array.from(
     new Set(
       text
@@ -546,7 +547,7 @@ function splitSpuNames(text: string) {
         .map((entry) => entry.trim())
         .filter(Boolean),
     ),
-  )
+  ).slice(0, limit)
 }
 
 function platformTimeInputValue(value: string) {
@@ -824,7 +825,10 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const costImportProgressValue = costImportProgress?.totalGroups
     ? (costImportProgress.completedGroups / costImportProgress.totalGroups) * 100
     : 0
-  const spuNamesToSync = useMemo(() => splitSpuNames(spuNameSyncText), [spuNameSyncText])
+  const spuNamesToSync = useMemo(
+    () => splitSpuNames(spuNameSyncText, MAX_SPU_NAME_SYNC_COUNT),
+    [spuNameSyncText],
+  )
 
   useEffect(() => {
     for (const task of tasks) {

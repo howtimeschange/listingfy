@@ -88,11 +88,15 @@ function unreadCompletedTaskCount(tasks: AsyncTaskRecord[], lastSeenAt: string) 
 }
 
 function failedItems(task: AsyncTaskRecord) {
-  return task.job?.items?.filter((item) => item.status === "failed") ?? []
+  return task.job?.failed_items ?? task.job?.items?.filter((item) => item.status === "failed") ?? []
+}
+
+function legacyRunningItem(items: AsyncTaskJob["items"]) {
+  return items?.find((item) => item.status === "running") ?? null
 }
 
 function runningTaskItem(task: AsyncTaskRecord) {
-  return task.job?.items?.find((item) => item.status === "running") ?? null
+  return task.job?.current_item ?? legacyRunningItem(task.job?.items)
 }
 
 export function AsyncTaskProvider({ children }: { children: ReactNode }) {

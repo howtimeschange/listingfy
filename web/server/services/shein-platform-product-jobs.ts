@@ -29,6 +29,8 @@ interface LifecycleActor {
 }
 
 interface PlatformProductJobItem {
+  item_index?: number
+  shard_index?: number
   spu_code: string
   status: PlatformProductJobItemStatus
   error?: string | null
@@ -55,9 +57,18 @@ interface PlatformProductJob {
   filePath?: string
   downloadUrl?: string
   error?: string | null
+  current_item?: PlatformProductJobItem | null
+  failed_items?: PlatformProductJobItem[]
+  queued_count?: number
+  running_count?: number
+  shard_count?: number
+  shard_size?: number
 }
 
 const EXPORT_PAGE_SIZE = 200
+const MAX_DETAIL_CODES_PER_JOB = 20_000
+const DETAIL_SYNC_SHARD_SIZE = 2_000
+const JOB_ITEM_FAILURE_SAMPLE_LIMIT = 20
 const SHEET_ROW_LIMIT = 1_000_000
 const SHEET_WRITE_CHUNK = 5_000
 const EXPORT_DIR = path.join(os.tmpdir(), "listingify-platform-product-exports")
@@ -190,6 +201,8 @@ function parseJobItems(value: unknown): PlatformProductJobItem[] {
   return parseJsonArray(value).map((item) => {
     const record = recordValue(item)
     return {
+      item_index: numberValue(record.item_index ?? record.itemIndex, Number.NaN),
+      shard_index: numberValue(record.shard_index ?? record.shardIndex, Number.NaN),
       spu_code: stringValue(record.spu_code ?? record.spuName) || "ITEM",
       status: itemStatus(record.status),
       error: stringValue(record.error) || null,
@@ -222,14 +235,75 @@ function jobFromRow(row: JsonRecord): PlatformProductJob {
   }
 }
 
-function snapshot(job: PlatformProductJob) {
-  const publicJob: Partial<PlatformProductJob> = { ...job }
+function jobItemFromRow(row: JsonRecord): PlatformProductJobItem {
+  return {
+    item_index: numberValue(row.item_index, 0),
+    shard_index: numberValue(row.shard_index, 0),
+    spu_code: stringValue(row.spu_code) || "ITEM",
+    status: itemStatus(row.status),
+    error: stringValue(row.error_message) || null,
+    result: parseJson(row.result_json, null),
+    started_at: stringValue(row.started_at) || null,
+    finished_at: stringValue(row.finished_at) || null,
+  }
+}
+
+function loadPlatformProductJobSummary(job: PlatformProductJob, db: SyncPostgresDatabase = getDb()) {
+  if (job.type !== "sync") return null
+  const counts = db.prepare(`
+    select
+      count(*) as item_count,
+      sum(case when status = 'queued' then 1 else 0 end) as queued_count,
+      sum(case when status = 'running' then 1 else 0 end) as running_count,
+      sum(case when status = 'completed' then 1 else 0 end) as completed_count,
+      sum(case when status = 'failed' then 1 else 0 end) as failed_count,
+      max(shard_index) + 1 as shard_count
+    from shein_platform_product_job_item
+    where job_id = ?
+  `).get(job.id) as JsonRecord | undefined
+  const itemCount = numberValue(counts?.item_count)
+  if (!itemCount) return null
+  const runningRow = db.prepare(`
+    select *
+    from shein_platform_product_job_item
+    where job_id = ?
+      and status = 'running'
+    order by item_index asc
+    limit 1
+  `).get(job.id) as JsonRecord | undefined
+  const failedRows = db.prepare(`
+    select *
+    from shein_platform_product_job_item
+    where job_id = ?
+      and status = 'failed'
+    order by item_index asc
+    limit ?
+  `).all(job.id, JOB_ITEM_FAILURE_SAMPLE_LIMIT) as JsonRecord[]
+
+  return {
+    total_count: itemCount,
+    queued_count: numberValue(counts?.queued_count),
+    running_count: numberValue(counts?.running_count),
+    completed_count: numberValue(counts?.completed_count),
+    failed_count: numberValue(counts?.failed_count),
+    shard_count: numberValue(counts?.shard_count, Math.ceil(itemCount / DETAIL_SYNC_SHARD_SIZE)),
+    shard_size: DETAIL_SYNC_SHARD_SIZE,
+    current_item: runningRow ? jobItemFromRow(runningRow) : null,
+    failed_items: failedRows.map(jobItemFromRow),
+  }
+}
+
+function snapshot(job: PlatformProductJob, db: SyncPostgresDatabase = getDb()) {
+  const summary = loadPlatformProductJobSummary(job, db)
+  const publicJob: Partial<PlatformProductJob> = summary
+    ? { ...job, ...summary, items: [] }
+    : { ...job }
   delete publicJob.filePath
   delete publicJob.payload
   delete publicJob.actor
   return {
     ...publicJob,
-    items: job.items.map((item) => ({ ...item })),
+    items: summary ? [] : job.items.map((item) => ({ ...item })),
   }
 }
 
@@ -339,6 +413,133 @@ export async function savePlatformProductJob(job: PlatformProductJob, db: SyncPo
   return updatePlatformProductJob(job, db)
 }
 
+function platformProductJobItemCount(jobId: string, db: SyncPostgresDatabase = getDb()) {
+  const row = db.prepare(`
+    select count(*) as count
+    from shein_platform_product_job_item
+    where job_id = ?
+  `).get(jobId) as JsonRecord | undefined
+  return numberValue(row?.count)
+}
+
+export function createPlatformProductJobItems(
+  jobId: string,
+  codes: string[],
+  db: SyncPostgresDatabase = getDb(),
+) {
+  const now = nowIso()
+  const statement = db.prepare(`
+    insert into shein_platform_product_job_item (
+      job_id,
+      item_index,
+      shard_index,
+      spu_code,
+      status,
+      error_message,
+      result_json,
+      started_at,
+      finished_at,
+      created_at,
+      updated_at
+    )
+    values (?, ?, ?, ?, 'queued', null, '{}', null, null, ?, ?)
+    on conflict(job_id, item_index) do nothing
+  `)
+  for (const [index, code] of codes.entries()) {
+    statement.run(
+      jobId,
+      index,
+      Math.floor(index / DETAIL_SYNC_SHARD_SIZE),
+      code,
+      now,
+      now,
+    )
+  }
+  return platformProductJobItemCount(jobId, db)
+}
+
+function ensurePlatformProductJobItems(job: PlatformProductJob, codes: string[], db: SyncPostgresDatabase = getDb()) {
+  const existingCount = platformProductJobItemCount(job.id, db)
+  if (existingCount > 0 || codes.length === 0) return existingCount
+  return createPlatformProductJobItems(job.id, codes, db)
+}
+
+function resetRunningPlatformProductJobItems(jobId: string, db: SyncPostgresDatabase = getDb()) {
+  db.prepare(`
+    update shein_platform_product_job_item
+    set status = 'queued',
+      started_at = null,
+      updated_at = ?
+    where job_id = ?
+      and status = 'running'
+      and finished_at is null
+  `).run(nowIso(), jobId)
+}
+
+function nextPlatformProductJobItem(jobId: string, db: SyncPostgresDatabase = getDb()) {
+  const row = db.prepare(`
+    select *
+    from shein_platform_product_job_item
+    where job_id = ?
+      and status = 'queued'
+    order by item_index asc
+    limit 1
+  `).get(jobId) as JsonRecord | undefined
+  return row ? jobItemFromRow(row) : null
+}
+
+function markPlatformProductJobItemRunning(jobId: string, item: PlatformProductJobItem, db: SyncPostgresDatabase = getDb()) {
+  const now = nowIso()
+  db.prepare(`
+    update shein_platform_product_job_item
+    set status = 'running',
+      error_message = null,
+      started_at = ?,
+      finished_at = null,
+      updated_at = ?
+    where job_id = ?
+      and item_index = ?
+  `).run(now, now, jobId, item.item_index ?? 0)
+  return { ...item, status: "running" as const, error: null, started_at: now, finished_at: null }
+}
+
+function markPlatformProductJobItemFinished(
+  jobId: string,
+  item: PlatformProductJobItem,
+  status: "completed" | "failed",
+  result: unknown,
+  error: string | null,
+  db: SyncPostgresDatabase = getDb(),
+) {
+  const now = nowIso()
+  db.prepare(`
+    update shein_platform_product_job_item
+    set status = ?,
+      error_message = ?,
+      result_json = ?,
+      finished_at = ?,
+      updated_at = ?
+    where job_id = ?
+      and item_index = ?
+  `).run(status, error, jsonText(result), now, now, jobId, item.item_index ?? 0)
+  return { ...item, status, result, error, finished_at: now }
+}
+
+function refreshPlatformProductJobCounts(job: PlatformProductJob, db: SyncPostgresDatabase = getDb()) {
+  const summary = loadPlatformProductJobSummary(job, db)
+  if (!summary) return job
+  job.total_count = summary.total_count
+  job.completed_count = summary.completed_count
+  job.failed_count = summary.failed_count
+  job.queued_count = summary.queued_count
+  job.running_count = summary.running_count
+  job.shard_count = summary.shard_count
+  job.shard_size = summary.shard_size
+  job.current_item = summary.current_item
+  job.failed_items = summary.failed_items
+  return job
+}
+
 export function loadPlatformProductJob(type: PlatformProductJobType, id: string, db: SyncPostgresDatabase = getDb()) {
   const row = db.prepare(`
     select *
@@ -433,7 +634,10 @@ function syncInput(payload: unknown) {
 }
 
 function detailSyncCodes(payload: JsonRecord) {
-  return parseSpuCodes(payload.spuNames ?? payload.spu_names ?? payload.codes ?? payload.rawCodes ?? payload.raw_codes ?? "")
+  return parseSpuCodes(
+    payload.spuNames ?? payload.spu_names ?? payload.codes ?? payload.rawCodes ?? payload.raw_codes ?? "",
+    { maxCodes: MAX_DETAIL_CODES_PER_JOB },
+  )
 }
 
 function setJobDone(job: PlatformProductJob) {
@@ -468,48 +672,54 @@ async function markJobFailed(job: PlatformProductJob, error: unknown) {
 
 async function processSyncJob(job: PlatformProductJob) {
   const codes = detailSyncCodes(job.payload)
-  if (codes.length) {
+  const db = getDb()
+  const existingItemCount = codes.length ? 0 : platformProductJobItemCount(job.id, db)
+  if (codes.length || existingItemCount > 0) {
     const detailIntervalMs = platformProductDetailSyncIntervalMs(job.payload)
-    job.total_count = codes.length
-    job.items = codes.map((code) => ({
-      spu_code: code,
-      status: "queued",
-      error: null,
-      result: null,
-      started_at: null,
-      finished_at: null,
-    }))
+    ensurePlatformProductJobItems(job, codes, db)
+    resetRunningPlatformProductJobItems(job.id, db)
+    refreshPlatformProductJobCounts(job, db)
+    job.items = []
     await savePlatformProductJob(job)
-    for (let index = 0; index < job.items.length; index += 1) {
-      if (index > 0 && detailIntervalMs > 0) {
+
+    let processedInThisRun = 0
+    while (true) {
+      const item = nextPlatformProductJobItem(job.id, db)
+      if (!item) break
+      if (processedInThisRun > 0 && detailIntervalMs > 0) {
         await wait(detailIntervalMs)
       }
-      const item = job.items[index]
-      item.status = "running"
-      item.started_at = nowIso()
+      const runningItem = markPlatformProductJobItemRunning(job.id, item, db)
+      job.current_item = runningItem
+      job.running_count = 1
+      job.queued_count = Math.max(0, (job.queued_count ?? 0) - 1)
       await savePlatformProductJob(job)
       try {
         const result = await syncProductDetail(item.spu_code, {}, job.actor)
         if (!responseOk(result.result)) {
           throw new Error(responseMessage(result.result) || "详情同步失败")
         }
-        item.status = "completed"
-        item.result = result.persistence
+        markPlatformProductJobItemFinished(job.id, item, "completed", result.persistence, null, db)
         job.completed_count += 1
       } catch (error) {
         const message = errorMessage(error)
-        item.status = "failed"
-        item.error = message
+        const failedItem = markPlatformProductJobItemFinished(job.id, item, "failed", null, message, db)
         job.failed_count += 1
+        if ((job.failed_items?.length ?? 0) < JOB_ITEM_FAILURE_SAMPLE_LIMIT) {
+          job.failed_items = [...(job.failed_items ?? []), failedItem]
+        }
         const rateLimitCooldownMs = isSheinRateLimitMessage(message) ? platformProductRateLimitCooldownMs(job.payload) : 0
         if (rateLimitCooldownMs > 0) {
           await wait(rateLimitCooldownMs)
         }
       } finally {
-        item.finished_at = nowIso()
+        job.current_item = null
+        job.running_count = 0
+        processedInThisRun += 1
         await savePlatformProductJob(job)
       }
     }
+    refreshPlatformProductJobCounts(job, db)
     setJobDone(job)
     await savePlatformProductJob(job)
     return
@@ -709,6 +919,7 @@ function schedulePlatformProductJobs() {
 export function enqueuePlatformProductSyncJob(payload: unknown = {}, actor?: LifecycleActor | null) {
   const object = syncInput(payload)
   const codes = detailSyncCodes(object)
+  const db = getDb()
   const job = createPlatformProductJob({
     id: randomUUID(),
     type: "sync",
@@ -720,13 +931,14 @@ export function enqueuePlatformProductSyncJob(payload: unknown = {}, actor?: Lif
     created_at: nowIso(),
     started_at: null,
     finished_at: null,
-    items: codes.map((code) => ({ spu_code: code, status: "queued", error: null, result: null })),
+    items: [],
     payload: object,
     actor: actor ?? null,
     error: null,
-  })
+  }, db)
+  if (codes.length) createPlatformProductJobItems(job.id, codes, db)
   schedulePlatformProductJobs()
-  return snapshot(job)
+  return snapshot(job, db)
 }
 
 function getInternalJob(type: PlatformProductJobType, id: string) {

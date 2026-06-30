@@ -165,6 +165,8 @@ test("SHEIN platform products page opens a dedicated sync dialog for time range 
   assert.match(page, /同步结束时间/);
   assert.match(page, /按款号同步/);
   assert.match(page, /spuNameSyncText/);
+  assert.match(page, /MAX_SPU_NAME_SYNC_COUNT\s*=\s*20_000/);
+  assert.match(page, /splitSpuNames\(spuNameSyncText,\s*MAX_SPU_NAME_SYNC_COUNT\)/);
   assert.match(page, /syncSpuProductsMutation/);
   assert.match(page, /productSyncDetailUrl\(spuName\)/);
   assert.match(page, /syncDetails/);
