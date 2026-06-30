@@ -372,6 +372,7 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftDetailPage, /待确认类目/);
   assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/validate`/s);
   assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/ai-fill`/s);
+  assert.match(draftDetailPage, /queryClient\.setQueryData\(\["product-archive-drafts", draftId\], result\.detail\)/);
   assert.match(draftDetailPage, /AI 推荐补齐空字段/);
   assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/submit`/s);
   assert.match(draftDetailPage, /确认发布到深绘/);

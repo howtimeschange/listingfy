@@ -24,8 +24,13 @@ const LAUNCH_PLAN_FIELD_HINTS = new Set([
   "内容上市时间",
   "搜索上市时间",
   "产品季",
+  "吊牌价格",
   "吊牌价",
   "核算吊牌价",
+  "挂牌单价",
+  "颜色",
+  "颜色名称",
+  "对应日期",
 ]);
 
 const COPYWRITING_FIELD_HINTS = new Set([
@@ -39,8 +44,14 @@ const COPYWRITING_FIELD_HINTS = new Set([
   "面料成分",
   "材质成分",
   "面料文案",
+  "面料名称",
+  "面料三个关键词",
   "主图4第1句",
   "主图4第2-3句",
+  "面料名称-面料文案*面料三个关键词",
+  "去掉巴拉巴拉",
+  "厚薄",
+  "弹性",
 ]);
 
 function stringValue(value) {
@@ -81,6 +92,22 @@ function normalizeDeepdrawHeader(value) {
     "备注": "备注",
   };
   return aliases[compact] ?? text;
+}
+
+function sourceReferenceField(value) {
+  const text = stringValue(value)
+    .replace(/^(固定|默认|取|读取|来自)\s*/i, "")
+    .replace(/^mdm\s*/i, "")
+    .trim();
+  return normalizeDeepdrawHeader(text);
+}
+
+function sourceReference(value) {
+  const sourceField = sourceReferenceField(value);
+  if (!sourceField) return null;
+  if (LAUNCH_PLAN_FIELD_HINTS.has(sourceField)) return { sourceType: "launch_plan", sourceField };
+  if (COPYWRITING_FIELD_HINTS.has(sourceField)) return { sourceType: "copywriting", sourceField };
+  return null;
 }
 
 function rowHeaderScore(row) {
@@ -158,8 +185,10 @@ function sourceTypeFromText(value) {
   return "";
 }
 
-function inferSourceType({ fieldSource, mappedField, fieldType, importability }) {
+function inferSourceType({ fieldSource, mappedField, defaultValue, fieldType, importability }) {
   const sourceType = sourceTypeFromText(fieldSource);
+  const reference = sourceReference(mappedField) ?? sourceReference(defaultValue);
+  if (sourceType === "fixed" && reference) return reference.sourceType;
   if (sourceType) return sourceType;
 
   if (/需判断|人为判断|人工判断/.test(fieldType)) return "manual";
@@ -193,14 +222,16 @@ export function parseDeepdrawFieldMappingRows(rows = []) {
       const fieldType = firstValue(row, FIELD_ALIASES.fieldType) || null;
       const importability = firstValue(row, FIELD_ALIASES.importability) || null;
       const notes = firstValue(row, FIELD_ALIASES.notes) || null;
+      const reference = sourceReference(mappedField) ?? sourceReference(defaultValue);
       const sourceType = inferSourceType({
         fieldSource: fieldSource ?? "",
         mappedField: mappedField ?? "",
+        defaultValue,
         fieldType: fieldType ?? "",
         importability: importability ?? "",
       });
       const sourceField = sourceType === "launch_plan" || sourceType === "copywriting"
-        ? mappedField
+        ? reference?.sourceField ?? mappedField
         : sourceType === "mdm"
           ? mappedField || fieldSource
           : null;

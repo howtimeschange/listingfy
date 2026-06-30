@@ -13,8 +13,8 @@ const SPU_KEYS = ["spuCode", "spu_code", "款号", "大货款号", "货号", "�
 const SKC_KEYS = ["skcCode", "skc_code", "款色", "款色号", "款色编码", "颜色编码"];
 const ALLOWED_SOURCE_TYPES = new Set(["mdm", "launch_plan", "copywriting", "fixed", "manual", "skip"]);
 const FIXED_LITERAL_VALUES = new Set(["不设置", "不可定制"]);
-const LAUNCH_PLAN_FIELD_HINTS = new Set(["款号", "大货款号", "货号", "吊牌价", "吊牌价格", "核算吊牌价", "颜色", "颜色名称", "上市时间", "内容上市时间", "搜索上市时间", "产品季", "对应日期"]);
-const COPYWRITING_FIELD_HINTS = new Set(["搜索标题", "商品标题", "标题", "唯品标题", "内容平台标题", "内容标题", "导购标题", "推荐理由", "面料成分", "材质成分", "面料名称", "面料文案", "面料三个关键词", "细节文案", "主图4第1句", "主图4第2-3句", "柔软度", "厚薄", "弹性", "去掉巴拉巴拉"]);
+const LAUNCH_PLAN_FIELD_HINTS = new Set(["款号", "大货款号", "货号", "吊牌价", "吊牌价格", "核算吊牌价", "挂牌单价", "颜色", "颜色名称", "上市时间", "内容上市时间", "搜索上市时间", "产品季", "对应日期", "官方发布类目"]);
+const COPYWRITING_FIELD_HINTS = new Set(["搜索标题", "商品标题", "标题", "唯品标题", "内容平台标题", "内容标题", "导购标题", "推荐理由", "面料成分", "材质成分", "面料名称", "面料文案", "面料三个关键词", "细节文案", "主图4第1句", "主图4第2-3句", "面料名称-面料文案*面料三个关键词", "柔软度", "厚薄", "弹性", "去掉巴拉巴拉"]);
 const HEADER_HINTS = new Set([
   "深绘字段",
   "来源类型",
@@ -101,6 +101,22 @@ function normalizeHeaderName(value) {
   return aliases[compact] ?? text;
 }
 
+function sourceReferenceField(value) {
+  const text = stringValue(value)
+    .replace(/^(固定|默认|取|读取|来自)\s*/i, "")
+    .replace(/^mdm\s*/i, "")
+    .trim();
+  return normalizeHeaderName(text);
+}
+
+function sourceReference(value) {
+  const sourceField = sourceReferenceField(value);
+  if (!sourceField) return null;
+  if (LAUNCH_PLAN_FIELD_HINTS.has(sourceField)) return { sourceType: "launch_plan", sourceField };
+  if (COPYWRITING_FIELD_HINTS.has(sourceField)) return { sourceType: "copywriting", sourceField };
+  return null;
+}
+
 function firstValue(row, keys) {
   for (const key of keys) {
     const value = stringValue(row[key]);
@@ -170,6 +186,8 @@ function inferredSourceType(rawSourceType, rawSourceField, importability) {
   const sourceType = sourceTypeValue(rawSourceType);
   const sourceField = normalizeHeaderName(rawSourceField);
   const mdmFlag = stringValue(importability);
+  const reference = sourceReference(rawSourceField);
+  if (sourceType === "fixed" && reference) return reference.sourceType;
   if (sourceType !== "manual") return sourceType;
   if (FIXED_LITERAL_VALUES.has(stringValue(rawSourceType)) || mdmFlag.includes("固定")) return "fixed";
   if (mdmFlag.includes("本地表格") || mdmFlag.includes("云盘")) {
@@ -256,8 +274,11 @@ export function parseProductArchiveFieldRuleRows(rows = []) {
       const notes = firstValue(row, FIELD_ALIASES.notes) || null;
       const rawSourceField = firstValue(row, FIELD_ALIASES.sourceField);
       const rawDefaultValue = firstValue(row, FIELD_ALIASES.defaultValue);
-      const resolvedSourceType = inferredSourceType(firstValue(row, FIELD_ALIASES.sourceType), rawSourceField, rawImportability);
-      const sourceField = ["fixed", "manual", "skip"].includes(resolvedSourceType) ? null : rawSourceField || null;
+      const reference = sourceReference(rawSourceField) ?? sourceReference(rawDefaultValue);
+      const resolvedSourceType = inferredSourceType(firstValue(row, FIELD_ALIASES.sourceType), rawSourceField || rawDefaultValue, rawImportability);
+      const sourceField = ["fixed", "manual", "skip"].includes(resolvedSourceType)
+        ? null
+        : (reference?.sourceField ?? rawSourceField) || null;
       const defaultValue = resolvedSourceType === "fixed"
         ? rawDefaultValue || rawSourceField || notes || (FIXED_LITERAL_VALUES.has(firstValue(row, FIELD_ALIASES.sourceType)) ? firstValue(row, FIELD_ALIASES.sourceType) : null)
         : rawDefaultValue || null;

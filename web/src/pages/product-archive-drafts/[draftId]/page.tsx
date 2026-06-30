@@ -351,10 +351,15 @@ export default function ProductArchiveDraftDetailPage() {
   })
 
   const aiFill = useMutation({
-    mutationFn: () => api.post<{ saved: Array<{ field_id: number }> }>(`/product-archive-drafts/${draftId}/ai-fill`),
+    mutationFn: () => api.post<{ saved: Array<{ field_id: number }>; detail: DraftDetail }>(`/product-archive-drafts/${draftId}/ai-fill`),
     onSuccess: (result) => {
-      toast.success(`AI 已推荐补齐 ${formatNumber(result.saved.length)} 个字段`)
       setFieldValues({})
+      queryClient.setQueryData(["product-archive-drafts", draftId], result.detail)
+      toast.success(
+        result.saved.length > 0
+          ? `AI 已推荐补齐 ${formatNumber(result.saved.length)} 个字段`
+          : "已刷新字段规则和 AI 推荐结果",
+      )
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
     },
   })

@@ -206,6 +206,55 @@ test("parseProductArchiveFieldRuleRows normalizes manual, skip, fixed, launch pl
   ]);
 });
 
+test("parseProductArchiveFieldRuleRows treats fixed source field names as source references", () => {
+  const rules = parseProductArchiveFieldRuleRows([
+    {
+      "深绘字段": "京东市场价",
+      "对应表格": "固定",
+      "对应字段": "吊牌价格",
+      "字段类型": "可提取字段",
+    },
+    {
+      "深绘字段": "微信视频小店标题",
+      "对应表格": "固定",
+      "对应字段": "内容平台标题",
+      "字段类型": "可提取字段",
+    },
+    {
+      "深绘字段": "适用平台",
+      "对应表格": "固定",
+      "对应字段": "天猫",
+      "字段类型": "可提取字段",
+    },
+  ]);
+
+  assert.deepEqual(rules.map((rule) => ({
+    deepdrawField: rule.deepdrawField,
+    sourceType: rule.sourceType,
+    sourceField: rule.sourceField,
+    defaultValue: rule.defaultValue,
+  })), [
+    {
+      deepdrawField: "京东市场价",
+      sourceType: "launch_plan",
+      sourceField: "吊牌价格",
+      defaultValue: null,
+    },
+    {
+      deepdrawField: "微信视频小店标题",
+      sourceType: "copywriting",
+      sourceField: "内容平台标题",
+      defaultValue: null,
+    },
+    {
+      deepdrawField: "适用平台",
+      sourceType: "fixed",
+      sourceField: null,
+      defaultValue: "天猫",
+    },
+  ]);
+});
+
 test("parseProductArchiveFieldRuleRows infers local workbook and fixed-value rows when table cells are sparse", () => {
   const rules = parseProductArchiveFieldRuleRows([
     {

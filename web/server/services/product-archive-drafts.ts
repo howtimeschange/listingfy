@@ -260,6 +260,90 @@ function compactFieldKey(value: unknown) {
   return stringValue(value).replace(/\s+/g, "").replace(/[()（）]/g, "").toLowerCase()
 }
 
+const LIST_PRICE_REFERENCE_KEYS = new Set([
+  "吊牌价格",
+  "吊牌价",
+  "核算吊牌价",
+  "挂牌价",
+  "挂牌单价",
+  "京东市场价",
+  "市场价",
+])
+
+const LAUNCH_PLAN_REFERENCE_FIELDS = new Set([
+  "款号",
+  "大货款号",
+  "货号",
+  "吊牌价格",
+  "吊牌价",
+  "核算吊牌价",
+  "挂牌单价",
+  "挂牌价",
+  "京东市场价",
+  "市场价",
+  "颜色",
+  "颜色名称",
+  "上市时间",
+  "内容上市时间",
+  "搜索上市时间",
+  "产品季",
+  "对应日期",
+  "官方发布类目",
+])
+
+const COPYWRITING_REFERENCE_FIELDS = new Set([
+  "搜索标题",
+  "商品标题",
+  "标题",
+  "唯品标题",
+  "内容平台标题",
+  "内容标题",
+  "导购标题",
+  "推荐理由",
+  "FAB",
+  "面料成分",
+  "材质成分",
+  "面料名称",
+  "面料文案",
+  "面料三个关键词",
+  "细节文案",
+  "主图4第1句",
+  "主图4第2-3句",
+  "面料名称-面料文案*面料三个关键词",
+  "去掉巴拉巴拉",
+  "柔软度",
+  "厚薄",
+  "弹性",
+])
+
+function listPriceReferenceKey(value: unknown) {
+  return compactFieldKey(sourceReferenceText(value))
+}
+
+function isProductArchiveListPriceReference(value: unknown) {
+  const key = listPriceReferenceKey(value)
+  return LIST_PRICE_REFERENCE_KEYS.has(key)
+}
+
+function sourceReferenceText(value: unknown) {
+  return stringValue(value)
+    .replace(/^(固定|默认|取|读取|来自)\s*/i, "")
+    .replace(/^mdm\s*/i, "")
+    .trim()
+}
+
+function productArchiveSourceReference(value: unknown) {
+  const sourceField = sourceReferenceText(value)
+  if (!sourceField) return null
+  if (LAUNCH_PLAN_REFERENCE_FIELDS.has(sourceField)) return { sourceType: "launch_plan", sourceField }
+  if (COPYWRITING_REFERENCE_FIELDS.has(sourceField)) return { sourceType: "copywriting", sourceField }
+  return null
+}
+
+function productArchiveListPriceText(spu: JsonRecord, sourceRows: JsonRecord[]) {
+  return moneyText(spu.price_tag) || launchValue(sourceRows, "吊牌价格") || launchValue(sourceRows, "吊牌价")
+}
+
 function uniqueTextValues(values: unknown[]) {
   const seen = new Set<string>()
   const output: string[] = []
@@ -355,9 +439,13 @@ function sourceAliases(sourceField: string) {
     吊牌价格: ["吊牌价格", "吊牌价", "核算吊牌价", "挂牌单价"],
     吊牌价: ["吊牌价", "吊牌价格", "核算吊牌价", "挂牌单价"],
     颜色: ["颜色", "颜色名称"],
+    上市时间: ["上市时间", "内容上市时间", "搜索上市时间"],
+    对应日期: ["内容上市时间", "搜索上市时间", "上市时间"],
+    搜索标题: ["搜索标题", "商品标题", "标题"],
     内容平台标题: ["内容平台标题", "内容标题"],
     细节文案: ["细节文案", "细节文案（不限定8个字，细节数量3-4个）"],
     材质成分: ["材质成分", "面料成分"],
+    面料成分: ["面料成分", "材质成分"],
     文案表: ["搜索标题", "唯品标题", "内容平台标题", "内容标题", "导购标题"],
   }
   return uniqueTextValues([field, ...(aliases[field] ?? [])])
@@ -439,8 +527,35 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   const key = compactFieldKey(fieldName)
   const sourceField = stringValue(input.sourceField)
   const sourceRows = input.sourceRows ?? []
+  const sourceReference = productArchiveSourceReference(sourceField)
+  if (isProductArchiveListPriceReference(sourceField) || isProductArchiveListPriceReference(fieldName)) {
+    return productArchiveListPriceText(input.spu, sourceRows)
+  }
+  if (sourceReference) {
+    const referenceField = sourceReference.sourceField
+    if (referenceField === "款号" || referenceField === "大货款号" || referenceField === "货号") {
+      return launchValue(sourceRows, "款号") || stringValue(input.spu.spu_code)
+    }
+    if (referenceField === "颜色" || referenceField === "颜色名称") {
+      return aggregateSourceValues(sourceRows, "launch_plan", ["颜色名称", "颜色"]).join(";")
+    }
+    if (referenceField === "上市时间" || referenceField === "内容上市时间" || referenceField === "搜索上市时间" || referenceField === "对应日期") {
+      return dateFromText(launchValue(sourceRows, referenceField) || launchDateValue(sourceRows))
+    }
+    if (referenceField === "主图4第1句") return firstLines(copywritingValue(sourceRows, "设计师说——主图4"))[0] ?? ""
+    if (referenceField === "主图4第2-3句") return firstLines(copywritingValue(sourceRows, "设计师说——主图4")).slice(1, 3).join("\n")
+    if (referenceField === "面料名称-面料文案*面料三个关键词") {
+      return [
+        copywritingValue(sourceRows, "面料名称"),
+        copywritingValue(sourceRows, "面料文案"),
+        copywritingValue(sourceRows, "面料三个关键词"),
+      ].filter(Boolean).join("\n")
+    }
+    if (referenceField === "去掉巴拉巴拉") return stripBalabalaBrand(copywritingValue(sourceRows, "搜索标题"))
+    if (sourceReference.sourceType === "launch_plan") return launchValue(sourceRows, referenceField)
+    if (sourceReference.sourceType === "copywriting") return copywritingValue(sourceRows, referenceField)
+  }
   if (sourceField === "款号") return launchValue(sourceRows, "款号") || stringValue(input.spu.spu_code)
-  if (sourceField === "吊牌价格" || sourceField === "吊牌价") return launchValue(sourceRows, sourceField) || moneyText(input.spu.price_tag)
   if (sourceField === "颜色") return aggregateSourceValues(sourceRows, "launch_plan", ["颜色名称", "颜色"]).join(";")
   if (sourceField === "内容平台标题") return copywritingValue(sourceRows, "内容平台标题")
   if (sourceField === "细节文案") return copywritingValue(sourceRows, "细节文案")
@@ -884,18 +999,26 @@ function readMdmField(spu: JsonRecord, sourceField: string) {
 
 function readSourceValue(spu: JsonRecord, rule: JsonRecord, sourceRows: JsonRecord[] = [], fieldName = "") {
   const sourceType = stringValue(rule.source_type)
+  const defaultValue = stringValue(rule.default_value)
+  const sourceField = stringValue(rule.source_field)
   const derived = buildProductArchiveSourceDerivedFieldValue(fieldName, {
     spu,
     sourceRows,
-    sourceField: stringValue(rule.source_field),
+    sourceField: sourceField || defaultValue,
   })
-  if (sourceType === "fixed") return stringValue(rule.default_value) || derived
-  if (sourceType === "mdm") return readMdmField(spu, stringValue(rule.source_field))
-  if (sourceType === "launch_plan") return derived || launchValue(sourceRows, stringValue(rule.source_field)) || stringValue(rule.default_value)
-  if (sourceType === "copywriting") return derived || copywritingValue(sourceRows, stringValue(rule.source_field)) || stringValue(rule.default_value)
-  if (sourceType === "manual") return stringValue(rule.default_value) || derived
+  if (sourceType === "fixed") {
+    if (isProductArchiveListPriceReference(defaultValue) || productArchiveSourceReference(defaultValue)) return derived
+    return defaultValue || derived
+  }
+  if (sourceType === "mdm") return readMdmField(spu, sourceField)
+  if (sourceType === "launch_plan") return derived || launchValue(sourceRows, sourceField) || defaultValue
+  if (sourceType === "copywriting") return derived || copywritingValue(sourceRows, sourceField) || defaultValue
+  if (sourceType === "manual") {
+    if (isProductArchiveListPriceReference(defaultValue) || productArchiveSourceReference(defaultValue)) return derived
+    return defaultValue || derived
+  }
   if (sourceType === "skip") return ""
-  return stringValue(rule.default_value) || derived
+  return defaultValue || derived
 }
 
 function sanitizeDeepdrawLogPayload(value: unknown): unknown {
@@ -1382,7 +1505,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     return {
       fieldName,
       fieldId: stringValue(template.field_id) || null,
-      sourceType: existingManual ? "manual" : sourceType,
+      sourceType: existingManual ? (stringValue(existing.source_type) || "manual") : sourceType,
       sourceRef: stringValue(rule.mapped_field || rule.source_field || rule.field_source || rule.source_table) || null,
       valueText: valueText || null,
       valueJson,
@@ -2042,6 +2165,7 @@ export function patchProductArchiveDraftFields(db: SyncPostgresDatabase, draftId
 }
 
 export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDatabase, draftId: number, options: AiFillOptions = {}) {
+  rebuildProductArchiveDraftFields(db, draftId)
   const detail = serializeDraftDetail(db, draftId)
   const draft = detail.draft as JsonRecord
   const fields = detail.fields as JsonRecord[]

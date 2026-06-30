@@ -135,3 +135,42 @@ test("parseDeepdrawFieldMappingRows keeps v2 field source, mapped field, and dom
   assert.equal(rows[4].blocking, false);
   assert.equal(rows[5].blocking, true);
 });
+
+test("parseDeepdrawFieldMappingRows treats fixed source field names as source references", () => {
+  const rows = parseDeepdrawFieldMappingRows([
+    {
+      "Column 2": "深绘字段",
+      "Column 3": "字段来源",
+      "Column 4": "对应字段",
+      "Column 5": "字段类型",
+      "Column 6": "是否能MDM导入",
+    },
+    {
+      "Column 2": "京东市场价",
+      "Column 3": "固定",
+      "Column 4": "固定吊牌价",
+      "Column 5": "可提取字段",
+      "Column 6": "固定",
+    },
+    {
+      "Column 2": "微信视频小店标题",
+      "Column 3": "固定",
+      "Column 4": "内容平台标题",
+      "Column 5": "可提取字段",
+      "Column 6": "固定",
+    },
+    {
+      "Column 2": "适用平台",
+      "Column 3": "固定",
+      "Column 4": "天猫",
+      "Column 5": "可提取字段",
+      "Column 6": "固定",
+    },
+  ]);
+
+  assert.deepEqual(rows.map((row) => [row.deepdrawField, row.sourceType, row.sourceField, row.defaultValue]), [
+    ["京东市场价", "launch_plan", "吊牌价", null],
+    ["微信视频小店标题", "copywriting", "内容平台标题", null],
+    ["适用平台", "fixed", null, "天猫"],
+  ]);
+});

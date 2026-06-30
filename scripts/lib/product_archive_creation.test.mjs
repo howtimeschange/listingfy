@@ -258,6 +258,7 @@ test("product archive AI fill skips fields that already have JSON values", async
   const service = await readFile(files.draftService, "utf8");
 
   assert.match(service, /!hasValue\(recordValue\(field\.value_json\)\)/);
+  assert.match(service, /rebuildProductArchiveDraftFields\(db, draftId\)/);
   assert.match(service, /fillProductArchiveDraftFieldsWithAi/);
 });
 
@@ -564,7 +565,7 @@ test("product archive service derives remaining field values from launch plan an
       source_type: "launch_plan",
       row_json: {
         "大货款号": "208326105214",
-        "吊牌价": "359",
+        "吊牌价": "299",
         "产品季": "326",
         "年龄段": "幼童",
         "性别": "中",
@@ -590,6 +591,12 @@ test("product archive service derives remaining field values from launch plan an
 
   assert.equal(derive("商家编码", "款号"), "208326105214");
   assert.equal(derive("奥莱店折扣价", "吊牌价格"), "359");
+  assert.equal(derive("京东市场价"), "359");
+  assert.equal(derive("京东市场价", "固定吊牌价"), "359");
+  assert.equal(derive("产品标题", "固定搜索标题"), "巴拉巴拉儿童外套男童女童衣服2026新款秋装卡通萌趣满印防护上衣");
+  assert.equal(derive("微信视频小店标题", "固定内容平台标题"), "【balaOne】巴拉巴拉儿童外套男女2026新秋卡通萌趣满印防护上衣");
+  assert.equal(derive("上市时间", "固定上市时间"), "2026-07-08");
+  assert.equal(derive("颜色", "固定颜色"), "蓝色调00388;粉色调01315");
   assert.equal(derive("颜色(文本)", "颜色"), "蓝色调00388;粉色调01315");
   assert.equal(derive("上市时间(文本)"), "2026-07-08");
   assert.equal(derive("选择期数"), "326");
