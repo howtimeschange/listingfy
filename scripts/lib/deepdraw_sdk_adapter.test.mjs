@@ -147,6 +147,34 @@ test("buildDeepdrawSdkProductInput normalizes size table keys to SDK size values
   });
 });
 
+test("buildDeepdrawSdkProductInput omits empty optional fields for blank-value upload probes", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      code: "PROBE-EMPTY-FIELDS",
+      title: "空字段探测",
+      tradeId: "12390",
+      retailPrice: 199,
+      fields: [
+        { name: "商品描述", value: "" },
+        { name: "图案(多选)", value: {} },
+        { name: "商品详情", value: "推荐理由" },
+      ],
+      skus: [],
+    },
+  });
+
+  assert.equal(Object.hasOwn(input.product.fields, "商品描述"), false);
+  assert.equal(Object.hasOwn(input.product.fields, "图案(多选)"), false);
+  assert.equal(input.product.fields["商品详情"], "推荐理由");
+});
+
 test("buildDeepdrawSdkClasspath includes vendored SDK jars and Maven runtime jars", () => {
   const classpath = buildDeepdrawSdkClasspath({ projectRoot: PROJECT_ROOT });
 

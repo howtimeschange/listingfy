@@ -439,6 +439,7 @@ function sourceAliases(sourceField: string) {
     吊牌价格: ["吊牌价格", "吊牌价", "核算吊牌价", "挂牌单价"],
     吊牌价: ["吊牌价", "吊牌价格", "核算吊牌价", "挂牌单价"],
     颜色: ["颜色", "颜色名称"],
+    尺码段: ["尺码段", "尺码范围", "尺码区间", "尺码"],
     上市时间: ["上市时间", "内容上市时间", "搜索上市时间"],
     对应日期: ["内容上市时间", "搜索上市时间", "上市时间"],
     搜索标题: ["搜索标题", "商品标题", "标题"],
@@ -457,6 +458,131 @@ function launchValue(sourceRows: JsonRecord[], sourceField: string) {
 
 function copywritingValue(sourceRows: JsonRecord[], sourceField: string) {
   return sourceFieldValueAny(sourceRows, "copywriting", sourceAliases(sourceField))
+}
+
+function businessRuleFieldKey(value: unknown) {
+  return compactFieldKey(value).replace(/[._\-\u2010-\u2015－]/g, "")
+}
+
+const PRODUCT_ARCHIVE_ALWAYS_BLANK_FIELDS = new Set([
+  "商品描述",
+  "商品短标题",
+  "微信视频小店副标题",
+  "快手商品卖点",
+  "成分含量",
+  "主面料成分含量",
+  "图案",
+  "图案多选",
+])
+
+const PRODUCT_ARCHIVE_SHOE_CONTEXT_FIELDS = new Set([
+  "22q4童鞋卖点",
+  "22q4童鞋卖点解析",
+  "22q4童鞋品名",
+  "22q4童鞋尺码表",
+  "童鞋核心卖点",
+  "品名童鞋",
+  "尺码童鞋",
+  "25鞋子尺码表",
+  "25鞋子模板类型",
+  "鞋子尺码表",
+  "鞋子模板类型",
+])
+
+const PRODUCT_ARCHIVE_BRA_CONTEXT_FIELDS = new Set([
+  "文胸图标",
+])
+
+const PRODUCT_ARCHIVE_CUP_CONTEXT_FIELDS = new Set([
+  "水杯说明",
+])
+
+const PRODUCT_ARCHIVE_ACCESSORY_CONTEXT_FIELDS = new Set([
+  "配饰版默认文案",
+])
+
+function sourceRowsCategoryText(sourceRows: JsonRecord[]) {
+  const values: unknown[] = []
+  for (const row of sourceRows) {
+    const rowJson = recordValue(row.row_json)
+    values.push(
+      rowJson["官方发布类目"],
+      rowJson["发布类目"],
+      rowJson["发布类目 (官方)"],
+      rowJson["发布类目 (唯品)"],
+      rowJson["发布类目 (抖音)"],
+      rowJson["主款式 （唯品四级品类）"],
+      rowJson["产品线"],
+      rowJson["品类"],
+      rowJson["大类"],
+      rowJson["中类"],
+      rowJson["小类"],
+      rowJson["尺码段"],
+    )
+  }
+  return uniqueTextValues(values).join(" ")
+}
+
+function productCategoryText(spu: JsonRecord = {}, sourceRows: JsonRecord[] = []) {
+  return uniqueTextValues([
+    spu.product_line_name,
+    spu.product_line,
+    spu.category_name,
+    spu.category,
+    spu.subclass_name,
+    spu.spu_name,
+    sourceRowsCategoryText(sourceRows),
+  ]).join(" ")
+}
+
+function productTextIncludesAny(text: string, needles: string[]) {
+  return needles.some((needle) => text.includes(needle))
+}
+
+function isShoeProduct(spu: JsonRecord = {}, sourceRows: JsonRecord[] = []) {
+  return productTextIncludesAny(productCategoryText(spu, sourceRows), ["鞋"])
+}
+
+function isCupProduct(spu: JsonRecord = {}, sourceRows: JsonRecord[] = []) {
+  const categoryText = productCategoryText(spu, sourceRows)
+  return productTextIncludesAny(categoryText, ["水杯", "杯子"])
+    || /(?:^|[>\s/／])杯(?:$|[>\s/／])/.test(categoryText)
+}
+
+function isAccessoryProduct(spu: JsonRecord = {}, sourceRows: JsonRecord[] = []) {
+  const categoryText = productCategoryText(spu, sourceRows)
+  return productTextIncludesAny(categoryText, ["配饰", "饰品", "帽子", "帽类"])
+    || /(?:^|[>\s/／])帽(?:$|[>\s/／])/.test(categoryText)
+}
+
+export function isProductArchiveBusinessBlankField(fieldName: string, spu: JsonRecord = {}, sourceRows: JsonRecord[] = []) {
+  const key = businessRuleFieldKey(fieldName)
+  if (PRODUCT_ARCHIVE_ALWAYS_BLANK_FIELDS.has(key)) return true
+  const categoryText = productCategoryText(spu, sourceRows)
+  if (PRODUCT_ARCHIVE_SHOE_CONTEXT_FIELDS.has(key)) return !isShoeProduct(spu, sourceRows)
+  if (PRODUCT_ARCHIVE_BRA_CONTEXT_FIELDS.has(key)) return !productTextIncludesAny(categoryText, ["文胸"])
+  if (PRODUCT_ARCHIVE_CUP_CONTEXT_FIELDS.has(key)) return !isCupProduct(spu, sourceRows)
+  if (PRODUCT_ARCHIVE_ACCESSORY_CONTEXT_FIELDS.has(key)) return !isAccessoryProduct(spu, sourceRows)
+  return false
+}
+
+function isProductArchiveDocumentOptionalField(fieldName: string) {
+  const key = businessRuleFieldKey(fieldName)
+  return PRODUCT_ARCHIVE_ALWAYS_BLANK_FIELDS.has(key)
+    || PRODUCT_ARCHIVE_SHOE_CONTEXT_FIELDS.has(key)
+    || PRODUCT_ARCHIVE_BRA_CONTEXT_FIELDS.has(key)
+    || PRODUCT_ARCHIVE_CUP_CONTEXT_FIELDS.has(key)
+    || PRODUCT_ARCHIVE_ACCESSORY_CONTEXT_FIELDS.has(key)
+}
+
+export function isProductArchiveFieldLocallyRequired(fieldName: string, input: {
+  templateRequired?: unknown
+  ruleBlocking?: unknown
+  sourceType?: unknown
+} = {}) {
+  if (stringValue(input.sourceType) === "skip") return false
+  if (isProductArchiveDocumentOptionalField(fieldName)) return false
+  return Boolean(input.templateRequired) || Boolean(input.ruleBlocking)
 }
 
 function aggregateSourceValues(sourceRows: JsonRecord[], sourceType: string, fields: string[]) {
@@ -519,6 +645,59 @@ function materialPercentText(sourceRows: JsonRecord[]) {
   return match?.[1] ?? (composition.match(/([0-9.]+%)/)?.[1] ?? "")
 }
 
+function sizeSegmentRanges(value: unknown) {
+  const normalized = stringValue(value).replace(/[－—–~～至到]/g, "-")
+  const ranges: Array<[number, number]> = []
+  for (const match of normalized.matchAll(/(\d{1,3})\s*-\s*(\d{1,3})/g)) {
+    const start = Number(match[1])
+    const end = Number(match[2])
+    if (Number.isFinite(start) && Number.isFinite(end)) ranges.push(start <= end ? [start, end] : [end, start])
+  }
+  return ranges
+}
+
+function ageTextForSizeSegment(value: unknown, shoeProduct: boolean) {
+  const ranges = sizeSegmentRanges(value)
+  if (!ranges.length) return ""
+  const exactClothing = new Map<string, string>([
+    ["52-66", "新生儿, 3个月"],
+    ["66-90", "3-18个月"],
+    ["73-100", "6个月-2岁"],
+    ["90-130", "2-7岁"],
+    ["90-140", "2-8岁"],
+    ["130-175", "7-16岁"],
+    ["140-175", "8-16岁"],
+  ])
+  const exactShoe = new Map<string, string>([
+    ["19-24", "4-24个月"],
+    ["25-33", "3-7岁"],
+    ["34-39", "8-14岁"],
+  ])
+  const exactMap = shoeProduct ? exactShoe : exactClothing
+  for (const [start, end] of ranges) {
+    const exact = exactMap.get(`${start}-${end}`)
+    if (exact) return exact
+  }
+  const [start, end] = ranges[0]
+  if (shoeProduct) {
+    if (end <= 24) return "4-24个月"
+    if (end <= 33) return "3-7岁"
+    if (end <= 39) return "8-14岁"
+    return ""
+  }
+  if (end <= 66) return "新生儿, 3个月"
+  if (end <= 90) return "3-18个月"
+  if (end <= 100) return "6个月-2岁"
+  if (end <= 130) return "2-7岁"
+  if (end <= 140) return "2-8岁"
+  if (end <= 175) return start >= 140 ? "8-16岁" : "7-16岁"
+  return ""
+}
+
+function applicableAgeText(spu: JsonRecord, sourceRows: JsonRecord[]) {
+  return ageTextForSizeSegment(launchValue(sourceRows, "尺码段"), isShoeProduct(spu, sourceRows))
+}
+
 export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, input: {
   spu: JsonRecord
   sourceRows: JsonRecord[]
@@ -527,6 +706,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   const key = compactFieldKey(fieldName)
   const sourceField = stringValue(input.sourceField)
   const sourceRows = input.sourceRows ?? []
+  if (isProductArchiveBusinessBlankField(fieldName, input.spu, sourceRows)) return ""
   const sourceReference = productArchiveSourceReference(sourceField)
   if (isProductArchiveListPriceReference(sourceField) || isProductArchiveListPriceReference(fieldName)) {
     return productArchiveListPriceText(input.spu, sourceRows)
@@ -578,7 +758,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (key === "分类" || key === "类型") return "外套"
   if (key === "品牌单选") return stringValue(input.spu.brand_name) || "巴拉巴拉"
   if (key === "功能多选") return copywritingValue(sourceRows, "面料三个关键词") || copywritingValue(sourceRows, "推荐理由")
-  if (key === "安全等级" || key === "安全等级多选") return stringValue(input.spu.article_prop_name) || "C类"
+  if (key === "安全等级" || key === "安全等级多选") return "A类"
   if (key === "尺码表") return ""
   if (key === "性别多选") return launchValue(sourceRows, "性别") || stringValue(input.spu.gender_name)
   if (key === "成分含量") return materialPercentText(sourceRows)
@@ -588,7 +768,8 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (key === "唯品会副标题") return copywritingValue(sourceRows, "唯品标题") || copywritingValue(sourceRows, "搜索标题")
   if (key === "弹力") return copywritingValue(sourceRows, "弹性")
   if (key === "商品短标题") return copywritingValue(sourceRows, "导购标题") || copywritingValue(sourceRows, "搜索标题")
-  if (key === "商品详情" || key === "商品描述") return copyTextBlock(sourceRows)
+  if (key === "商品详情") return copywritingValue(sourceRows, "推荐理由")
+  if (key === "商品描述") return ""
   if (key === "微信视频小店副标题" || key === "快手商品卖点") return copywritingValue(sourceRows, "推荐理由") || copyTextBlock(sourceRows)
   if (key === "微信视频小店标题" || key === "抖音标题") return copywritingValue(sourceRows, "内容平台标题") || copywritingValue(sourceRows, "搜索标题")
   if (key === "快手标题" || key === "拼多多标题") return copywritingValue(sourceRows, "搜索标题")
@@ -608,8 +789,8 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (key === "退款规则") return "支持7天无理由退货"
   if (key === "适用人群多选") return launchValue(sourceRows, "年龄段") || stringValue(input.spu.age_group_name)
   if (key === "适用季节" || key === "适用季节多选") return "秋季"
-  if (key === "适用年龄" || key === "适用年龄多选") return launchValue(sourceRows, "年龄段") || stringValue(input.spu.age_group_name)
-  if (key === "适用年龄文本") return "3周岁以上"
+  if (key === "适用年龄" || key === "适用年龄多选") return applicableAgeText(input.spu, sourceRows) || launchValue(sourceRows, "年龄段") || stringValue(input.spu.age_group_name)
+  if (key === "适用年龄文本") return applicableAgeText(input.spu, sourceRows) || launchValue(sourceRows, "年龄段") || stringValue(input.spu.age_group_name)
   if (key === "面料工艺") return "涂层"
   if (key === "领型") return "连帽"
   if (key === "风格" || key === "风格多选") return "休闲"
@@ -1001,6 +1182,7 @@ function readSourceValue(spu: JsonRecord, rule: JsonRecord, sourceRows: JsonReco
   const sourceType = stringValue(rule.source_type)
   const defaultValue = stringValue(rule.default_value)
   const sourceField = stringValue(rule.source_field)
+  if (isProductArchiveBusinessBlankField(fieldName, spu, sourceRows)) return ""
   const derived = buildProductArchiveSourceDerivedFieldValue(fieldName, {
     spu,
     sourceRows,
@@ -1135,10 +1317,67 @@ function seasonOptionValue(value: string, options: unknown[]) {
   return pickOption(options, candidates.map((candidate) => (option) => option === candidate))
 }
 
+function ageYearRange(value: string) {
+  const match = value.match(/(\d{1,2})\s*-\s*(\d{1,2})\s*岁/)
+  if (!match) return null
+  const start = Number(match[1])
+  const end = Number(match[2])
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null
+  return start <= end ? { start, end } : { start: end, end: start }
+}
+
+function singleAgeOptionValue(text: string, options: unknown[]) {
+  const range = ageYearRange(text)
+  if (!range) return ""
+  if (range.end <= 3) {
+    return pickOption(options, [
+      (option) => option.includes("婴幼童"),
+      (option) => option.includes("0—3") || option.includes("0~3"),
+    ])
+  }
+  if (range.end <= 8) {
+    return pickOption(options, [
+      (option) => option.includes("中小童"),
+      (option) => option.includes("3岁（含）") && option.includes("8岁"),
+      (option) => option.includes("3周岁") && option.includes("6周岁"),
+    ])
+  }
+  return pickOption(options, [
+    (option) => option.includes("中大童"),
+    (option) => option.includes("8岁") && (option.includes("14岁") || option.includes("以上")),
+    (option) => option.includes("8周岁以上"),
+  ])
+}
+
+function multiAgeOptionValue(text: string, options: unknown[]) {
+  const range = ageYearRange(text)
+  if (!range) return ""
+  const values: string[] = []
+  for (let age = range.start; age <= range.end; age += 1) {
+    if (age >= 14 && age < range.end) {
+      const tail = pickOption(options, [
+        (option) => option === `${age}岁以上`,
+        (option) => option === `${age}周岁及以上`,
+        (option) => option.includes(String(age)) && option.includes("以上"),
+      ])
+      if (tail) {
+        values.push(tail)
+        return uniqueTextValues(values).join(";")
+      }
+    }
+    const value = pickOption(options, [(option) => option === `${age}岁`])
+    if (value) values.push(value)
+    else return singleAgeOptionValue(text, options)
+  }
+  return values.length ? values.join(";") : singleAgeOptionValue(text, options)
+}
+
 export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, value: unknown, options: unknown[]) {
   const text = stringValue(value)
   if (!text || !options.length) return text
   const key = compactFieldKey(fieldName)
+  const exact = pickOption(options, [(option) => option === text])
+  if (exact) return exact
   if (key.includes("颜色")) {
     const values = text.split(/[;；]/).map((part) => part.trim()).filter(Boolean)
     const normalized = values.map((item) => {
@@ -1215,7 +1454,9 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
     return pickOption(options, [(option) => option === "秋季", (option) => option === "秋"]) || text
   }
   if (key === "适用年龄多选") {
-    return pickOption(options, [(option) => option === "1-3岁", (option) => option.includes("3岁（含）")]) || text
+    return multiAgeOptionValue(text, options)
+      || pickOption(options, [(option) => option === "1-3岁", (option) => option.includes("3岁（含）")])
+      || text
   }
   if (key === "适用年龄文本") {
     return pickOption(options, [(option) => option === "3周岁以上", (option) => option === "3周岁以下", (option) => option === "通用"]) || text
@@ -1245,6 +1486,8 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
     if (text.includes("女")) return pickOption(options, [(option) => option.includes("女")]) || text
   }
   if (key.includes("适用年龄") || key.includes("年龄")) {
+    const ageOption = singleAgeOptionValue(text, options)
+    if (ageOption) return ageOption
     if (/婴|幼童/.test(text)) {
       return pickOption(options, [
         (option) => option.includes("婴幼童"),
@@ -1499,8 +1742,12 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
       : sourceValueText || mdmDerived.valueText
     const valueText = normalizeProductArchiveDeepdrawFieldValue(fieldName, rawValueText, arrayValue(template.options_json))
     const valueJson = existingManual ? recordValue(existing.value_json) : mdmDerived.valueJson
-    const required = Boolean(template.required) || Boolean(rule.blocking)
-    const blocking = Boolean(rule.blocking) || Boolean(template.required)
+    const required = isProductArchiveFieldLocallyRequired(fieldName, {
+      templateRequired: template.required,
+      ruleBlocking: rule.blocking,
+      sourceType,
+    })
+    const blocking = required
     const missing = blocking && sourceType !== "skip" && !hasValue(valueText) && !hasValue(valueJson)
     return {
       fieldName,
@@ -2275,8 +2522,12 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
     const fieldName = stringValue(field.field_name)
     const value = stringValue(field.value_text) || recordValue(field.value_json)
     const template = templateLookup.get(fieldName)
-    const required = Boolean(field.required) || Boolean(template?.required)
-    const blocking = Boolean(field.blocking) || required
+    const required = isProductArchiveFieldLocallyRequired(fieldName, {
+      templateRequired: template?.required,
+      ruleBlocking: Boolean(field.blocking) || Boolean(field.required),
+      sourceType: field.source_type,
+    })
+    const blocking = required
     const options = template?.options ?? []
     let status: string
     let message = ""
@@ -2375,23 +2626,32 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
   return { status, summary, issues, detail: serializeDraftDetail(db, draftId) }
 }
 
+function productPayloadFieldValue(field: JsonRecord) {
+  const text = stringValue(field.value_text)
+  if (text) return text
+  const jsonValue = recordValue(field.value_json)
+  return hasValue(jsonValue) ? jsonValue : null
+}
+
 function productPayload(db: SyncPostgresDatabase, draftId: number) {
   const detail = serializeDraftDetail(db, draftId)
   const draft = detail.draft as JsonRecord
   const sourceRows = sourceRowsForDraft(db, draft)
+  const fields = (detail.fields as JsonRecord[])
+    .filter((field) => stringValue(field.source_type) !== "skip")
+    .map((field) => ({
+      id: stringValue(field.field_id) || undefined,
+      name: stringValue(field.field_name),
+      value: productPayloadFieldValue(field),
+    }))
+    .filter((field) => hasValue(field.value))
   return {
     code: stringValue(draft.spu_code),
     title: stringValue(draft.title),
     tradeId: stringValue(draft.trade_id),
     retailPrice: numberValue(draft.retail_price),
     date: buildProductArchivePayloadDate(sourceRows),
-    fields: (detail.fields as JsonRecord[])
-      .filter((field) => stringValue(field.source_type) !== "skip")
-      .map((field) => ({
-        id: stringValue(field.field_id) || undefined,
-        name: stringValue(field.field_name),
-        value: stringValue(field.value_text) || recordValue(field.value_json),
-      })),
+    fields,
     skus: (detail.skus as JsonRecord[]).map((sku) => ({
       skuCode: stringValue(sku.sku_code),
       skcCode: stringValue(sku.skc_code),

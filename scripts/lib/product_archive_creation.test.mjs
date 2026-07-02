@@ -607,9 +607,124 @@ test("product archive service derives remaining field values from launch plan an
     "春亚纺贴膜\n防风防泼水透湿，多方面防护，户外出行无忧\n防泼水 防风 透湿",
   );
   assert.equal(derive("小红书标题", "去掉巴拉巴拉"), "儿童外套男童女童衣服2026新款秋装卡通萌趣满印防护上衣");
-  assert.equal(derive("主面料成分含量"), "100%");
+  assert.equal(derive("主面料成分含量"), "");
   assert.equal(derive("微信视频小店标题", "内容平台标题"), "【balaOne】巴拉巴拉儿童外套男女2026新秋卡通萌趣满印防护上衣");
-  assert.match(derive("商品详情"), /精选高弹春亚纺贴膜面料/);
+  assert.equal(derive("商品详情"), "潮流满印外套，防风防泼水透湿");
+});
+
+test("product archive service follows DeepDraw field adjustment doc for optional and default fields", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const spu = {
+    spu_code: "208326105214",
+    price_tag: 359,
+    unit_name: "件",
+    age_group_name: "幼童",
+    article_prop_name: "C类",
+    product_line_name: "童装服饰",
+    subclass_name: "普通外套",
+  };
+  const sourceRows = [
+    {
+      source_type: "copywriting",
+      row_json: {
+        "搜索标题": "巴拉巴拉儿童外套男童女童衣服2026新款秋装卡通萌趣满印防护上衣",
+        "导购标题": "巴拉巴拉balaOne外套防护连帽衣",
+        "推荐理由": "潮流满印外套，防风防泼水透湿",
+        "FAB": "精选高弹春亚纺贴膜面料，糯弹亲肤，抗皱性强。",
+        "面料成分": "面料：100%聚酯纤维",
+      },
+    },
+    {
+      source_type: "launch_plan",
+      row_json: {
+        "尺码段": "90-130",
+        "官方发布类目": "童装/婴儿装/亲子装 > 外套/夹克/大衣 > 普通外套",
+      },
+    },
+  ];
+
+  const derive = (fieldName, sourceField = "") => service.buildProductArchiveSourceDerivedFieldValue(fieldName, {
+    spu,
+    sourceRows,
+    sourceField,
+  });
+
+  assert.equal(derive("商品描述"), "");
+  assert.equal(derive("商品短标题"), "");
+  assert.equal(derive("图案(多选)"), "");
+  assert.equal(derive("微信视频小店副标题"), "");
+  assert.equal(derive("快手商品卖点"), "");
+  assert.equal(derive("成分含量"), "");
+  assert.equal(derive("主面料成分含量"), "");
+  assert.equal(derive("商品详情"), "潮流满印外套，防风防泼水透湿");
+  assert.equal(derive("安全等级"), "A类");
+  assert.equal(derive("适用年龄多选"), "2-7岁");
+  assert.equal(derive("适用年龄文本"), "2-7岁");
+  assert.equal(derive("22Q4-童鞋卖点", "公主鞋"), "");
+  assert.equal(derive("25鞋子模板类型", "运动"), "");
+  assert.equal(derive("文胸图标", "文胸二阶段"), "");
+  assert.equal(derive("水杯说明", "冷水杯"), "");
+  assert.equal(derive("配饰版默认文案", "帽子"), "");
+
+  assert.equal(service.isProductArchiveBusinessBlankField(
+    "配饰版默认文案",
+    { product_line_name: "童装服饰", spu_name: "连帽外套" },
+    [{ source_type: "launch_plan", row_json: { "官方发布类目": "童装/婴儿装/亲子装 > 外套/夹克/大衣 > 普通外套" } }],
+  ), true);
+  assert.equal(service.isProductArchiveBusinessBlankField(
+    "配饰版默认文案",
+    { product_line_name: "配饰", subclass_name: "帽子" },
+    [],
+  ), false);
+  assert.equal(service.isProductArchiveBusinessBlankField(
+    "水杯说明",
+    { product_line_name: "内衣", subclass_name: "文胸罩杯" },
+    [],
+  ), true);
+  assert.equal(service.isProductArchiveBusinessBlankField(
+    "水杯说明",
+    { product_line_name: "生活用品", subclass_name: "水杯" },
+    [],
+  ), false);
+});
+
+test("product archive service maps launch-plan size segments to Balabala age ranges", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const deriveAge = (sizeSegment, spu = {}) => service.buildProductArchiveSourceDerivedFieldValue("适用年龄", {
+    spu,
+    sourceRows: [
+      {
+        source_type: "launch_plan",
+        row_json: { "尺码段": sizeSegment },
+      },
+    ],
+  });
+
+  assert.equal(deriveAge("52-66"), "新生儿, 3个月");
+  assert.equal(deriveAge("66-90"), "3-18个月");
+  assert.equal(deriveAge("73-100"), "6个月-2岁");
+  assert.equal(deriveAge("90-130"), "2-7岁");
+  assert.equal(deriveAge("90-140"), "2-8岁");
+  assert.equal(deriveAge("130-175"), "7-16岁");
+  assert.equal(deriveAge("140-175"), "8-16岁");
+  assert.equal(deriveAge("19-24", { product_line_name: "鞋品" }), "4-24个月");
+  assert.equal(deriveAge("25-33", { product_line_name: "鞋品" }), "3-7岁");
+  assert.equal(deriveAge("34-39", { product_line_name: "鞋品" }), "8-14岁");
+});
+
+test("product archive service does not locally block document-approved empty DeepDraw fields", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  for (const fieldName of ["商品描述", "商品短标题", "图案(多选)", "微信视频小店副标题", "快手商品卖点", "成分含量"]) {
+    assert.equal(
+      service.isProductArchiveFieldLocallyRequired(fieldName, { templateRequired: true, ruleBlocking: true }),
+      false,
+      `${fieldName} should be upload-probed instead of locally blocked`,
+    );
+  }
+  assert.equal(service.isProductArchiveFieldLocallyRequired("商品详情", { templateRequired: true }), true);
+  assert.equal(service.isProductArchiveFieldLocallyRequired("安全等级", { templateRequired: true }), true);
+  assert.equal(service.isProductArchiveFieldLocallyRequired("适用年龄", { templateRequired: true }), true);
 });
 
 test("product archive service normalizes source values into DeepDraw enum options", async () => {
@@ -644,6 +759,46 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "婴幼童(1~3岁，80~100cm)" },
     { value: "中小童(3~8岁，100~140cm)" },
   ]), "婴幼童(1~3岁，80~100cm)");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄多选", "2-7岁", [
+    { value: "1-3岁" },
+    { value: "2-7岁" },
+  ]), "2-7岁");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄", "2-7岁", [
+    { value: "新生儿(0~1岁，80cm及其以下)" },
+    { value: "婴幼童(1~3岁，80~100cm)" },
+    { value: "中小童(3~8岁，100~140cm)" },
+  ]), "中小童(3~8岁，100~140cm)");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄(多选)", "2-7岁", [
+    { value: "1-3岁" },
+    { value: "2岁" },
+    { value: "3岁" },
+    { value: "4岁" },
+    { value: "5岁" },
+    { value: "6岁" },
+    { value: "7岁" },
+    { value: "6-9岁" },
+  ]), "2岁;3岁;4岁;5岁;6岁;7岁");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄(多选)", "7-16岁", [
+    { value: "7岁" },
+    { value: "8岁" },
+    { value: "9岁" },
+    { value: "10岁" },
+    { value: "11岁" },
+    { value: "12岁" },
+    { value: "13岁" },
+    { value: "14岁" },
+    { value: "14岁以上" },
+  ]), "7岁;8岁;9岁;10岁;11岁;12岁;13岁;14岁以上");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄(多选)", "8-14岁", [
+    { value: "8岁" },
+    { value: "9岁" },
+    { value: "10岁" },
+    { value: "11岁" },
+    { value: "12岁" },
+    { value: "13岁" },
+    { value: "14岁" },
+    { value: "14岁以上" },
+  ]), "8岁;9岁;10岁;11岁;12岁;13岁;14岁");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("颜色", "蓝色调00388;粉色调01315", [
     { value: "蓝色" },
     { value: "粉红" },
