@@ -577,11 +577,13 @@ function isProductArchiveDocumentOptionalField(fieldName: string) {
 
 export function isProductArchiveFieldLocallyRequired(fieldName: string, input: {
   templateRequired?: unknown
+  templatePresent?: unknown
   ruleBlocking?: unknown
   sourceType?: unknown
 } = {}) {
   if (stringValue(input.sourceType) === "skip") return false
   if (isProductArchiveDocumentOptionalField(fieldName)) return false
+  if (Object.prototype.hasOwnProperty.call(input, "templatePresent") && !input.templatePresent) return false
   return Boolean(input.templateRequired) || Boolean(input.ruleBlocking)
 }
 
@@ -643,6 +645,31 @@ function materialPercentText(sourceRows: JsonRecord[]) {
   const composition = copywritingValue(sourceRows, "面料成分") || copywritingValue(sourceRows, "材质成分")
   const match = composition.match(/面料[:：]\s*([0-9.]+%)/)
   return match?.[1] ?? (composition.match(/([0-9.]+%)/)?.[1] ?? "")
+}
+
+function materialCompositionInputText(value: unknown) {
+  const text = stringValue(value).replace(/\u00a0/g, " ")
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  if (!lines.length) return text
+  const cleaned = lines
+    .filter((line) => !/^成分[:：]?$/.test(line))
+    .map((line) => line.replace(/^(面料|主面料|材质|成分)\s*[:：]\s*/, "").trim())
+    .filter(Boolean)
+  if (!cleaned.length) return ""
+  const [primary, ...rest] = cleaned
+  if (rest.length > 0 && rest.every((line) => /^[（(].*除外.*[）)]$/.test(line))) {
+    return `${primary}${rest.join("")}`
+  }
+  return cleaned.join("；")
+}
+
+function materialCompositionText(sourceRows: JsonRecord[]) {
+  return materialCompositionInputText(
+    copywritingValue(sourceRows, "面料成分")
+      || copywritingValue(sourceRows, "材质成分")
+      || launchValue(sourceRows, "面料成分")
+      || launchValue(sourceRows, "材质成分"),
+  )
 }
 
 function sizeSegmentRanges(value: unknown) {
@@ -707,6 +734,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   const sourceField = stringValue(input.sourceField)
   const sourceRows = input.sourceRows ?? []
   if (isProductArchiveBusinessBlankField(fieldName, input.spu, sourceRows)) return ""
+  if (key === "材质成分文本" || key === "面料成分文本" || key === "成分含量文本") return materialCompositionText(sourceRows)
   const sourceReference = productArchiveSourceReference(sourceField)
   if (isProductArchiveListPriceReference(sourceField) || isProductArchiveListPriceReference(fieldName)) {
     return productArchiveListPriceText(input.spu, sourceRows)
@@ -1374,8 +1402,9 @@ function multiAgeOptionValue(text: string, options: unknown[]) {
 
 export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, value: unknown, options: unknown[]) {
   const text = stringValue(value)
-  if (!text || !options.length) return text
   const key = compactFieldKey(fieldName)
+  if (key === "材质成分文本" || key === "面料成分文本" || key === "成分含量文本") return text
+  if (!text || !options.length) return text
   const exact = pickOption(options, [(option) => option === text])
   if (exact) return exact
   if (key.includes("颜色")) {
@@ -1498,19 +1527,38 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
       return pickOption(options, [(option) => option.includes("中小童")]) || text
     }
   }
-  if (/材质|面料/.test(fieldName) && /聚酯纤维|涤纶/.test(text)) {
-    return pickOption(options, [
-      (option) => option === "聚酯纤维（涤纶）",
-      (option) => option === "聚酯纤维",
-      (option) => option.includes("聚酯纤维"),
-      (option) => option.includes("涤纶"),
-    ]) || text
+  if (/材质|面料/.test(fieldName)) {
+    if (/棉/.test(text)) {
+      return pickOption(options, [
+        (option) => option === "纯棉(棉含量100%)",
+        (option) => option === "棉100%",
+        (option) => option === "纯棉",
+        (option) => option === "棉",
+        (option) => option.includes("棉100%"),
+        (option) => option.includes("纯棉"),
+        (option) => option.includes("棉"),
+      ]) || text
+    }
+    if (/聚酯纤维|涤纶/.test(text)) {
+      return pickOption(options, [
+        (option) => option === "聚酯纤维（涤纶）",
+        (option) => option === "聚酯纤维",
+        (option) => option.includes("聚酯纤维"),
+        (option) => option.includes("涤纶"),
+      ]) || text
+    }
   }
   if (productArchiveFieldValueMatchesOptions(text, options)) return text
   return text
 }
 
-function heuristicDeepdrawOptionValue(fieldName: string, options: Array<{ value: string; label: string }>, contextText: string) {
+export function chooseProductArchiveAiFallbackOption(
+  fieldName: string,
+  currentValue: unknown,
+  options: Array<{ value: string; label: string }>,
+  contextText = "",
+) {
+  const evidenceText = `${stringValue(currentValue)} ${contextText}`
   const pick = (needles: string[]) => {
     for (const needle of needles) {
       const option = options.find((item) => item.value.includes(needle) || item.label.includes(needle))
@@ -1518,21 +1566,90 @@ function heuristicDeepdrawOptionValue(fieldName: string, options: Array<{ value:
     }
     return ""
   }
+  if (/材质|面料/.test(fieldName)) {
+    if (/棉/.test(evidenceText)) return pick(["纯棉(棉含量100%)", "棉100%", "纯棉", "棉"])
+    if (/聚酯纤维|涤纶/.test(evidenceText)) return pick(["聚酯纤维", "涤纶"])
+  }
+  if (/功能/.test(fieldName)) {
+    const functionNeedles: Array<[RegExp, string[]]> = [
+      [/防风/, ["防风"]],
+      [/防水|防泼水/, ["防水", "防泼水"]],
+      [/透气|透湿/, ["透气"]],
+      [/抗皱/, ["抗皱"]],
+      [/抗起球/, ["抗起球"]],
+      [/凉感/, ["凉感"]],
+      [/保暖/, ["保暖"]],
+      [/速干/, ["速干"]],
+      [/吸汗/, ["吸汗"]],
+      [/抗菌/, ["抗菌"]],
+      [/防晒|防紫外线/, ["防晒", "防紫外线"]],
+    ]
+    for (const [pattern, needles] of functionNeedles) {
+      if (pattern.test(evidenceText)) return pick(needles)
+    }
+    return pick(["其他"])
+  }
   if (/是否|有无|支持|加绒|撞色|透明|防水|防晒/.test(fieldName)) return pick(["否", "不支持", "无"]) || options[0]?.value || ""
   if (/风格|企划/.test(fieldName)) return pick(["休闲", "日常", "基础"]) || options[0]?.value || ""
   if (/年龄|适用人群|人群/.test(fieldName)) return pick(["儿童", "中大童", "婴幼儿", "幼童"]) || options[0]?.value || ""
   if (/季节/.test(fieldName)) {
-    if (/羽绒|棉服|毛衣|加绒/.test(contextText)) return pick(["冬", "秋冬"])
-    if (/短袖|凉感|夏/.test(contextText)) return pick(["夏", "春夏"])
+    if (/羽绒|棉服|毛衣|加绒/.test(evidenceText)) return pick(["冬", "秋冬"])
+    if (/短袖|凉感|夏/.test(evidenceText)) return pick(["夏", "春夏"])
     return pick(["春秋", "四季"]) || options[0]?.value || ""
   }
   if (/单位/.test(fieldName)) return pick(["件", "条", "双", "套"]) || options[0]?.value || ""
   return options[0]?.value || ""
 }
 
+type ProductArchiveAiFillCandidate = {
+  id: number
+  fieldName: string
+  currentValue: string
+  validationStatus: string
+  validationMessage: string
+  options: Array<{ value: string; label: string }>
+}
+
+export function buildProductArchiveAiFillCandidateFields(fields: JsonRecord[]): ProductArchiveAiFillCandidate[] {
+  return fields
+    .map((field) => {
+      const valueText = stringValue(field.value_text)
+      const valueJson = recordValue(field.value_json)
+      const emptyValue = !hasValue(valueText) && !hasValue(recordValue(field.value_json))
+      const validationStatus = stringValue(field.validation_status)
+      const invalidValue = validationStatus === "invalid"
+      const currentValue = valueText || (hasValue(valueJson) ? JSON.stringify(valueJson) : "")
+      return {
+        id: Number(field.id),
+        fieldName: stringValue(field.field_name),
+        currentValue,
+        validationStatus,
+        validationMessage: stringValue(field.validation_message),
+        sourceType: stringValue(field.source_type),
+        needsAiFill: emptyValue || invalidValue,
+        options: fieldOptionsFromTemplate(field.options_json),
+      }
+    })
+    .filter((field) => (
+      Number.isInteger(field.id)
+      && field.fieldName
+      && field.options.length > 0
+      && field.needsAiFill
+      && field.sourceType !== "skip"
+    ))
+    .map((field) => ({
+      id: field.id,
+      fieldName: field.fieldName,
+      currentValue: field.currentValue,
+      validationStatus: field.validationStatus,
+      validationMessage: field.validationMessage,
+      options: field.options,
+    }))
+}
+
 function buildDeepdrawAiFillPrompt(input: {
   draft: JsonRecord
-  fields: Array<{ id: number; fieldName: string; options: Array<{ value: string; label: string }> }>
+  fields: ProductArchiveAiFillCandidate[]
   skus: JsonRecord[]
 }) {
   return JSON.stringify({
@@ -1570,6 +1687,9 @@ function buildDeepdrawAiFillPrompt(input: {
     fields: input.fields.map((field) => ({
       field_id: field.id,
       field_name: field.fieldName,
+      current_value: field.currentValue,
+      validation_status: field.validationStatus,
+      validation_message: field.validationMessage,
       options: field.options.slice(0, 120),
     })),
   }, null, 2)
@@ -1744,6 +1864,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     const valueJson = existingManual ? recordValue(existing.value_json) : mdmDerived.valueJson
     const required = isProductArchiveFieldLocallyRequired(fieldName, {
       templateRequired: template.required,
+      templatePresent: hasValue(template.field_name) || hasValue(template.field_id),
       ruleBlocking: rule.blocking,
       sourceType,
     })
@@ -2413,7 +2534,7 @@ export function patchProductArchiveDraftFields(db: SyncPostgresDatabase, draftId
 
 export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDatabase, draftId: number, options: AiFillOptions = {}) {
   rebuildProductArchiveDraftFields(db, draftId)
-  const detail = serializeDraftDetail(db, draftId)
+  const detail = validateProductArchiveDraft(db, draftId).detail
   const draft = detail.draft as JsonRecord
   const fields = detail.fields as JsonRecord[]
   const skus = detail.skus as JsonRecord[]
@@ -2423,18 +2544,7 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
     draft.source_snapshot_json,
     ...skus.map((sku) => `${stringValue(sku.color_name)} ${stringValue(sku.size_name)}`),
   ].map(stringValue).join(" ")
-  const candidates = fields
-    .filter((field) => (
-      !hasValue(field.value_text)
-      && !hasValue(recordValue(field.value_json))
-      && stringValue(field.source_type) !== "skip"
-    ))
-    .map((field) => ({
-      id: Number(field.id),
-      fieldName: stringValue(field.field_name),
-      options: fieldOptionsFromTemplate(field.options_json),
-    }))
-    .filter((field) => Number.isInteger(field.id) && field.fieldName && field.options.length > 0)
+  const candidates = buildProductArchiveAiFillCandidateFields(fields)
 
   if (candidates.length === 0) {
     return { saved: [], detail }
@@ -2464,7 +2574,7 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
       const allowed = new Set(field.options.map((option) => option.value))
       const fieldValue = aiValue && allowed.has(aiValue)
         ? aiValue
-        : heuristicDeepdrawOptionValue(field.fieldName, field.options, contextText)
+        : chooseProductArchiveAiFallbackOption(field.fieldName, field.currentValue, field.options, contextText)
       if (!fieldValue || !allowed.has(fieldValue)) continue
       const confidence = Number(aiFill?.confidence)
       updateField.run(
@@ -2524,6 +2634,7 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
     const template = templateLookup.get(fieldName)
     const required = isProductArchiveFieldLocallyRequired(fieldName, {
       templateRequired: template?.required,
+      templatePresent: Boolean(template),
       ruleBlocking: Boolean(field.blocking) || Boolean(field.required),
       sourceType: field.source_type,
     })

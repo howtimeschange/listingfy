@@ -612,6 +612,32 @@ test("product archive service derives remaining field values from launch plan an
   assert.equal(derive("商品详情"), "潮流满印外套，防风防泼水透湿");
 });
 
+test("product archive service fills material composition text fields from copywriting", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sourceRows = [
+    {
+      source_type: "copywriting",
+      row_json: {
+        "款号": "201326100101",
+        "面料成分": "成分\n面料：100%棉\n（配料除外）",
+      },
+    },
+  ];
+
+  const materialValue = service.buildProductArchiveSourceDerivedFieldValue("材质成分(文本)", {
+    spu: { spu_code: "201326100101" },
+    sourceRows,
+  });
+  const compositionValue = service.buildProductArchiveSourceDerivedFieldValue("成分含量(文本)", {
+    spu: { spu_code: "201326100101" },
+    sourceRows,
+    sourceField: "面料成分",
+  });
+
+  assert.equal(materialValue, "100%棉（配料除外）");
+  assert.equal(compositionValue, "100%棉（配料除外）");
+});
+
 test("product archive service follows DeepDraw field adjustment doc for optional and default fields", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const spu = {
@@ -725,6 +751,92 @@ test("product archive service does not locally block document-approved empty Dee
   assert.equal(service.isProductArchiveFieldLocallyRequired("商品详情", { templateRequired: true }), true);
   assert.equal(service.isProductArchiveFieldLocallyRequired("安全等级", { templateRequired: true }), true);
   assert.equal(service.isProductArchiveFieldLocallyRequired("适用年龄", { templateRequired: true }), true);
+  assert.equal(
+    service.isProductArchiveFieldLocallyRequired("是否有腰带", { templatePresent: false, templateRequired: false, ruleBlocking: true }),
+    false,
+  );
+  assert.equal(
+    service.isProductArchiveFieldLocallyRequired("是否有腰带", { templatePresent: true, templateRequired: true, ruleBlocking: false }),
+    true,
+  );
+});
+
+test("product archive AI fill considers invalid enum fields and their current values", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  const candidates = service.buildProductArchiveAiFillCandidateFields([
+    {
+      id: 101,
+      field_name: "材质",
+      source_type: "copywriting",
+      value_text: "成分 面料：100%棉（配料除外）",
+      value_json: {},
+      validation_status: "invalid",
+      validation_message: "字段值不在深绘模板选项中",
+      options_json: [{ value: "聚酯纤维" }, { value: "棉" }],
+    },
+    {
+      id: 102,
+      field_name: "版型",
+      source_type: "manual",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [{ value: "宽松型" }],
+    },
+    {
+      id: 103,
+      field_name: "功能",
+      source_type: "ai",
+      value_text: "柔软舒适",
+      value_json: {},
+      validation_status: "valid",
+      options_json: [{ value: "柔软舒适" }],
+    },
+    {
+      id: 104,
+      field_name: "跳过字段",
+      source_type: "skip",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      options_json: [{ value: "否" }],
+    },
+  ]);
+
+  assert.deepEqual(candidates.map((field) => ({
+    id: field.id,
+    fieldName: field.fieldName,
+    currentValue: field.currentValue,
+    validationStatus: field.validationStatus,
+  })), [
+    {
+      id: 101,
+      fieldName: "材质",
+      currentValue: "成分 面料：100%棉（配料除外）",
+      validationStatus: "invalid",
+    },
+    {
+      id: 102,
+      fieldName: "版型",
+      currentValue: "",
+      validationStatus: "missing",
+    },
+  ]);
+});
+
+test("product archive AI fallback chooses semantic template options for invalid values", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(service.chooseProductArchiveAiFallbackOption("材质", "成分 面料：100%棉（配料除外）", [
+    { value: "聚酯纤维", label: "聚酯纤维" },
+    { value: "棉", label: "棉" },
+  ], ""), "棉");
+  assert.equal(service.chooseProductArchiveAiFallbackOption("功能(多选)", "柔和 亲肤 细腻", [
+    { value: "阻燃", label: "阻燃" },
+    { value: "其他", label: "其他" },
+  ], ""), "其他");
 });
 
 test("product archive service normalizes source values into DeepDraw enum options", async () => {
@@ -755,6 +867,14 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "聚酯纤维" },
     { value: "梭织布" },
   ]), "聚酯纤维");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("材质", "成分 面料：100%棉（配料除外）", [
+    { value: "聚酯纤维" },
+    { value: "棉" },
+  ]), "棉");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("材质成分(文本)", "100%棉（配料除外）", [
+    { value: "聚酯纤维" },
+    { value: "棉" },
+  ]), "100%棉（配料除外）");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄", "幼童", [
     { value: "婴幼童(1~3岁，80~100cm)" },
     { value: "中小童(3~8岁，100~140cm)" },
