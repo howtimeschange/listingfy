@@ -9,6 +9,11 @@ const SDK_CREATE_CLASS_NAME = "DeepdrawProductCreateCli";
 const SDK_RESOURCE_SOURCE = path.resolve(import.meta.dirname, "../java/DeepdrawProductResourceCli.java");
 const SDK_RESOURCE_CLASS_NAME = "DeepdrawProductResourceCli";
 const SKU_TITLE = "价格,货号,上市时间,数量,商家编码,条形码,零售价,供货价,唯品会货号,唯品会条形码";
+const JAVA_UTF8_ARGS = [
+  "-Dfile.encoding=UTF-8",
+  "-Dsun.stdout.encoding=UTF-8",
+  "-Dsun.stderr.encoding=UTF-8",
+];
 
 const MAVEN_JAR_CANDIDATES = [
   ["com/alibaba/fastjson/1.2.76/fastjson-1.2.76.jar", "com/alibaba/fastjson/1.2.5/fastjson-1.2.5.jar"],
@@ -357,7 +362,7 @@ export async function runDeepdrawSdkCli(input, {
 } = {}) {
   const classpath = compileDeepdrawSdkCli({ projectRoot, sourceFile, className });
   const java = javaTool("java");
-  return runTool(java, ["-classpath", classpath.value, className], {
+  return runTool(java, [...JAVA_UTF8_ARGS, "-classpath", classpath.value, className], {
     input: JSON.stringify(input),
     timeout: timeoutMs,
   });

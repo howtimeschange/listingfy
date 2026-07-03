@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import {
   createDeepdrawProductWithSdk,
   getDeepdrawProductWithSdk,
   parseDeepdrawSdkOutput,
+  runDeepdrawSdkCli,
 } from "./deepdraw_sdk_adapter.mjs";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
@@ -231,6 +232,59 @@ sdk log line
       body: { productId: 7788 },
     },
   });
+});
+
+test("runDeepdrawSdkCli forces UTF-8 Java stdout so DeepDraw Chinese reasons stay readable", async () => {
+  const previousJava = process.env.DEEPDRAW_JAVA_BIN;
+  const previousArgsFile = process.env.DEEPDRAW_FAKE_JAVA_ARGS;
+  const previousStdinFile = process.env.DEEPDRAW_FAKE_JAVA_STDIN;
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "listingify-deepdraw-java-"));
+  const sourceFile = path.join(tempDir, "FakeDeepdrawCli.java");
+  const classDir = path.join(tempDir, "tmp/deepdraw-sdk-adapter/classes");
+  const classFile = path.join(classDir, "FakeDeepdrawCli.class");
+  const fakeJava = path.join(tempDir, "java");
+  const argsFile = path.join(tempDir, "args.txt");
+  const stdinFile = path.join(tempDir, "stdin.json");
+
+  try {
+    await mkdir(classDir, { recursive: true });
+    await writeFile(sourceFile, "public class FakeDeepdrawCli {}\n");
+    await writeFile(classFile, "");
+    await writeFile(fakeJava, [
+      "#!/usr/bin/env bash",
+      "printf '%s\\n' \"$@\" > \"$DEEPDRAW_FAKE_JAVA_ARGS\"",
+      "cat > \"$DEEPDRAW_FAKE_JAVA_STDIN\"",
+      "printf '%s\\n' '{\"status\":200,\"response\":{\"code\":10200,\"reason\":\"访问成功！\",\"response\":\"success\"}}'",
+      "",
+    ].join("\n"));
+    await chmod(fakeJava, 0o755);
+
+    process.env.DEEPDRAW_JAVA_BIN = fakeJava;
+    process.env.DEEPDRAW_FAKE_JAVA_ARGS = argsFile;
+    process.env.DEEPDRAW_FAKE_JAVA_STDIN = stdinFile;
+
+    const output = await runDeepdrawSdkCli({ hello: "世界" }, {
+      projectRoot: tempDir,
+      sourceFile,
+      className: "FakeDeepdrawCli",
+    });
+    const args = await readFile(argsFile, "utf8");
+    const stdin = await readFile(stdinFile, "utf8");
+
+    assert.match(output, /访问成功/);
+    assert.match(args, /-Dfile\.encoding=UTF-8/);
+    assert.match(args, /-Dsun\.stdout\.encoding=UTF-8/);
+    assert.match(args, /-Dsun\.stderr\.encoding=UTF-8/);
+    assert.match(stdin, /"hello":"世界"/);
+  } finally {
+    if (previousJava === undefined) delete process.env.DEEPDRAW_JAVA_BIN;
+    else process.env.DEEPDRAW_JAVA_BIN = previousJava;
+    if (previousArgsFile === undefined) delete process.env.DEEPDRAW_FAKE_JAVA_ARGS;
+    else process.env.DEEPDRAW_FAKE_JAVA_ARGS = previousArgsFile;
+    if (previousStdinFile === undefined) delete process.env.DEEPDRAW_FAKE_JAVA_STDIN;
+    else process.env.DEEPDRAW_FAKE_JAVA_STDIN = previousStdinFile;
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("createDeepdrawProductWithSdk delegates mapped SDK input to runner", async () => {
