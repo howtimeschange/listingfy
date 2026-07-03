@@ -496,6 +496,33 @@ test("product archive field mapping applies product-line domains only to matchin
   );
 });
 
+test("product archive fixed price defaults derive list-price fields before literal fallback values", async () => {
+  const service = await readFile(files.draftService, "utf8");
+
+  assert.match(service, /"专柜价"/);
+  assert.match(service, /"天猫特卖专柜价"/);
+  assert.match(
+    service,
+    /if \(sourceType === "fixed"\) \{[\s\S]*?if \(isProductArchiveListPriceReference\(fieldName\)\) return derived \|\| defaultValue[\s\S]*?return defaultValue \|\| derived/,
+  );
+});
+
+test("product archive submit routes surface DeepDraw service failures instead of generic 500 errors", async () => {
+  const [service, route] = await Promise.all([
+    readFile(files.draftService, "utf8"),
+    readFile(files.draftRoute, "utf8"),
+  ]);
+
+  assert.match(service, /assertDeepdrawProductArchiveSuccess\(result,\s*"create"\)/);
+  assert.match(service, /if \(createError\) throw createError/);
+  assert.doesNotMatch(service, /if \(!result\.ok\) return \{ ok: false, result \}/);
+  assert.match(route, /function submitOperationException/);
+  assert.match(route, /new HTTPException\(status,\s*\{ message: `\$\{prefix\}：/);
+  assert.match(route, /发布到深绘失败/);
+  assert.match(route, /深绘查重失败/);
+  assert.match(route, /深绘回读失败/);
+});
+
 test("product archive field option validation supports multi-value strings and object SKU payloads", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
@@ -591,6 +618,8 @@ test("product archive service derives remaining field values from launch plan an
 
   assert.equal(derive("商家编码", "款号"), "208326105214");
   assert.equal(derive("奥莱店折扣价", "吊牌价格"), "359");
+  assert.equal(derive("专柜价"), "359");
+  assert.equal(derive("天猫特卖专柜价", "10000"), "359");
   assert.equal(derive("京东市场价"), "359");
   assert.equal(derive("京东市场价", "固定吊牌价"), "359");
   assert.equal(derive("产品标题", "固定搜索标题"), "巴拉巴拉儿童外套男童女童衣服2026新款秋装卡通萌趣满印防护上衣");

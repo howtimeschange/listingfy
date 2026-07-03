@@ -284,7 +284,7 @@ function existingJar(m2Repository, candidates) {
 
 export function buildDeepdrawSdkClasspath({
   projectRoot = path.resolve(import.meta.dirname, "../.."),
-  m2Repository = path.join(os.homedir(), ".m2/repository"),
+  m2Repository = process.env.DEEPDRAW_M2_REPOSITORY || path.join(os.homedir(), ".m2/repository"),
   buildDir = path.join(projectRoot, "tmp/deepdraw-sdk-adapter/classes"),
 } = {}) {
   const entries = [

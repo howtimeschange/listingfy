@@ -89,6 +89,13 @@ async function readJson(c: Context) {
   }
 }
 
+function submitOperationException(error: unknown, prefix: string) {
+  if (error instanceof HTTPException) return error
+  const message = error instanceof Error ? error.message : String(error)
+  const status = /草稿存在阻断|请选择|本地未找到|不存在|缺少|无效/.test(message) ? 400 : 502
+  return new HTTPException(status, { message: `${prefix}：${message || "未知错误"}` })
+}
+
 function stringValue(value: unknown) {
   if (value == null) return ""
   if (typeof value === "string") return value.trim()
@@ -721,7 +728,11 @@ productArchiveDrafts.post("/:draftId/validate", (c) => {
 productArchiveDrafts.post("/:draftId/check-duplicate", async (c) => {
   requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_SUBMIT")
   const db = getDb()
-  return c.json(await checkDuplicateProductArchiveDraft(db, readId(c.req.param("draftId"))))
+  try {
+    return c.json(await checkDuplicateProductArchiveDraft(db, readId(c.req.param("draftId"))))
+  } catch (error) {
+    throw submitOperationException(error, "深绘查重失败")
+  }
 })
 
 productArchiveDrafts.post("/:draftId/ai-fill", async (c) => {
@@ -745,7 +756,12 @@ productArchiveDrafts.post("/:draftId/submit", async (c) => {
   const db = getDb()
   const draftId = readId(c.req.param("draftId"))
   const body = await readJson(c)
-  const result = await submitProductArchiveDraft(db, draftId, { dryRun: Boolean(body.dryRun) })
+  let result: unknown
+  try {
+    result = await submitProductArchiveDraft(db, draftId, { dryRun: Boolean(body.dryRun) })
+  } catch (error) {
+    throw submitOperationException(error, body.dryRun ? "生成深绘提交预览失败" : "发布到深绘失败")
+  }
   auditFromContext(c, {
     action: body.dryRun ? "draft.submit.dry_run" : "draft.submit.create",
     module: "PRODUCT_ARCHIVE_DRAFT",
@@ -759,7 +775,11 @@ productArchiveDrafts.post("/:draftId/submit", async (c) => {
 productArchiveDrafts.post("/:draftId/readback", async (c) => {
   requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_SUBMIT")
   const db = getDb()
-  return c.json(await readbackProductArchiveDraft(db, readId(c.req.param("draftId"))))
+  try {
+    return c.json(await readbackProductArchiveDraft(db, readId(c.req.param("draftId"))))
+  } catch (error) {
+    throw submitOperationException(error, "深绘回读失败")
+  }
 })
 
 productArchiveDrafts.get("/:draftId/logs", (c) => {

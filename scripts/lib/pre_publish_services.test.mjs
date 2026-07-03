@@ -441,6 +441,19 @@ test("deployment preserves runtime listing image uploads outside release sync", 
   assert.match(deployScript, /mkdir -p "\$APP_DIR\/data\/listing-assets"/);
 });
 
+test("deployment prepares the DeepDraw Java SDK runtime for production publishing", async () => {
+  const deployScript = await readFile(path.join(PROJECT_ROOT, "ci/yunxiao-deploy.sh"), "utf8");
+
+  assert.match(deployScript, /DEEPDRAW_M2_DIR/);
+  assert.match(deployScript, /DEEPDRAW_M2_REPOSITORY/);
+  assert.match(deployScript, /scripts\/deepdraw_sdk_prepare\.mjs/);
+  assert.match(deployScript, /openjdk-17-jdk-headless/);
+  assert.match(deployScript, /\bmaven\b/);
+  assert.match(deployScript, /-v "\$DEEPDRAW_M2_DIR:\/app\/\.m2"/);
+  assert.match(deployScript, /java -version/);
+  assert.match(deployScript, /javac -version/);
+});
+
 test("publish precheck treats local uploaded images as pending SHEIN image assets", async () => {
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
 

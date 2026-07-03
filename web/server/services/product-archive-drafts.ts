@@ -266,6 +266,8 @@ const LIST_PRICE_REFERENCE_KEYS = new Set([
   "核算吊牌价",
   "挂牌价",
   "挂牌单价",
+  "专柜价",
+  "天猫特卖专柜价",
   "京东市场价",
   "市场价",
 ])
@@ -1217,6 +1219,7 @@ function readSourceValue(spu: JsonRecord, rule: JsonRecord, sourceRows: JsonReco
     sourceField: sourceField || defaultValue,
   })
   if (sourceType === "fixed") {
+    if (isProductArchiveListPriceReference(fieldName)) return derived || defaultValue
     if (isProductArchiveListPriceReference(defaultValue) || productArchiveSourceReference(defaultValue)) return derived
     return defaultValue || derived
   }
@@ -2942,6 +2945,12 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
   const result = await runCreate(payload)
   const body = deepdrawBusinessResult(result.payload).body
   const productId = stringValue(body.productId ?? body.id)
+  let createError: Error | null = null
+  try {
+    assertDeepdrawProductArchiveSuccess(result, "create")
+  } catch (error) {
+    createError = error instanceof Error ? error : new Error(String(error))
+  }
   db.transaction(() => {
     writeSubmitLog(db, draftId, "create", { ...result, requestSummary: summary, productId })
     db.prepare(`
@@ -2951,9 +2960,9 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
         created_product_code = ?,
         updated_at = ?::timestamptz
       where id = ?
-    `).run(result.ok ? "created" : "failed", productId || null, stringValue(body.code) || stringValue(payload.code), nowIso(), draftId)
+    `).run(createError ? "failed" : "created", productId || null, stringValue(body.code) || stringValue(payload.code), nowIso(), draftId)
   })()
-  if (!result.ok) return { ok: false, result }
+  if (createError) throw createError
   return await readbackProductArchiveDraft(db, draftId, options)
 }
 

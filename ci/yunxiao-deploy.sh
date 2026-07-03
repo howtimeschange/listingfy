@@ -7,6 +7,7 @@ DATABASE_URL_VALUE="${PROD_DATABASE_URL:-${DATABASE_URL:-}}"
 ALLOWED_ORIGINS="${LISTINGIFY_ALLOWED_ORIGINS:-https://listingify.semirapp.com,https://smbd.semirapp.cn,http://10.90.20.221,http://127.0.0.1:3001,http://localhost:3001}"
 PUBLIC_ORIGIN="${LISTINGIFY_PUBLIC_ORIGIN:-https://listingify.semirapp.com}"
 RUN_SEED_IMPORT_VALUE="${RUN_SEED_IMPORT:-0}"
+DEEPDRAW_M2_DIR="${DEEPDRAW_M2_DIR:-$APP_DIR/.m2}"
 
 if [ -z "$DATABASE_URL_VALUE" ]; then
   echo "ERROR: PROD_DATABASE_URL is required. Configure it as a Yunxiao secret variable."
@@ -67,6 +68,7 @@ echo "===== Write production env ====="
   [ -n "${DEEPDRAW_MERCHANT_ID:-}" ] && printf 'DEEPDRAW_MERCHANT_ID=%s\n' "$DEEPDRAW_MERCHANT_ID"
   [ -n "${DEEPDRAW_TENANT_CREDENTIALS_JSON:-}" ] && printf 'DEEPDRAW_TENANT_CREDENTIALS_JSON=%s\n' "$DEEPDRAW_TENANT_CREDENTIALS_JSON"
   [ -n "${DEEPDRAW_TIMEOUT_MS:-}" ] && printf 'DEEPDRAW_TIMEOUT_MS=%s\n' "$DEEPDRAW_TIMEOUT_MS"
+  printf 'DEEPDRAW_M2_REPOSITORY=%s\n' "${DEEPDRAW_M2_REPOSITORY:-$DEEPDRAW_M2_DIR/repository}"
   [ -n "${AI_BASE_URL:-}" ] && printf 'AI_BASE_URL=%s\n' "$AI_BASE_URL"
   [ -n "${AI_MODEL:-}" ] && printf 'AI_MODEL=%s\n' "$AI_MODEL"
   [ -n "${AI_API_KEY:-}" ] && printf 'AI_API_KEY=%s\n' "$AI_API_KEY"
@@ -82,6 +84,10 @@ if command -v node >/dev/null 2>&1; then
 fi
 
 if [ "$HOST_NODE_MAJOR" -ge 24 ]; then
+  export DEEPDRAW_M2_REPOSITORY="${DEEPDRAW_M2_REPOSITORY:-$DEEPDRAW_M2_DIR/repository}"
+  echo "===== Prepare DeepDraw SDK runtime on host ====="
+  node scripts/deepdraw_sdk_prepare.mjs "$APP_DIR"
+
   echo "===== Install dependencies on host ====="
   npm --prefix web ci --include=dev
 
@@ -114,15 +120,30 @@ else
   fi
 
   NODE_IMAGE="${LISTINGIFY_NODE_IMAGE:-node:24-bookworm}"
-  echo "Using Docker image: $NODE_IMAGE"
+  RUNTIME_IMAGE="${LISTINGIFY_RUNTIME_IMAGE:-listingfy-node-java:24-bookworm}"
+  echo "Using Docker base image: $NODE_IMAGE"
+  echo "Preparing Docker runtime image: $RUNTIME_IMAGE"
+  docker build \
+    --build-arg NODE_IMAGE="$NODE_IMAGE" \
+    -t "$RUNTIME_IMAGE" \
+    -f - "$APP_DIR" <<'DOCKERFILE'
+ARG NODE_IMAGE=node:24-bookworm
+FROM ${NODE_IMAGE}
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates openjdk-17-jdk-headless maven \
+  && rm -rf /var/lib/apt/lists/*
+DOCKERFILE
 
+  mkdir -p "$DEEPDRAW_M2_DIR"
   docker run --rm --network host \
     -v "$APP_DIR:/app" \
+    -v "$DEEPDRAW_M2_DIR:/app/.m2" \
     -w /app \
     --env-file "$APP_DIR/.env.local" \
+    -e DEEPDRAW_M2_REPOSITORY=/app/.m2/repository \
     -e RUN_SEED_IMPORT="$RUN_SEED_IMPORT_VALUE" \
-    "$NODE_IMAGE" \
-    bash -lc 'set -e; node -v; npm -v; npm --prefix web ci --include=dev; npm --prefix web run build; npm run db:migrate; if [ "${RUN_SEED_IMPORT:-0}" = "1" ]; then echo "===== Import seed data in Docker ====="; npm run seed:import; else echo "===== Skip seed import; set RUN_SEED_IMPORT=1 to enable ====="; fi'
+    "$RUNTIME_IMAGE" \
+    bash -lc 'set -e; node -v; npm -v; java -version; javac -version; npm --prefix web ci --include=dev; node scripts/deepdraw_sdk_prepare.mjs /app; npm --prefix web run build; npm run db:migrate; if [ "${RUN_SEED_IMPORT:-0}" = "1" ]; then echo "===== Import seed data in Docker ====="; npm run seed:import; else echo "===== Skip seed import; set RUN_SEED_IMPORT=1 to enable ====="; fi'
 
   echo "===== Restart API container ====="
   docker rm -f listingfy-api >/dev/null 2>&1 || true
@@ -131,10 +152,12 @@ else
     --restart unless-stopped \
     --network host \
     -v "$APP_DIR:/app" \
+    -v "$DEEPDRAW_M2_DIR:/app/.m2" \
     -w /app \
     --env-file "$APP_DIR/.env.local" \
-    "$NODE_IMAGE" \
-    bash -lc './web/node_modules/.bin/tsx web/server/index.ts'
+    -e DEEPDRAW_M2_REPOSITORY=/app/.m2/repository \
+    "$RUNTIME_IMAGE" \
+    bash -lc 'java -version >/dev/null && ./web/node_modules/.bin/tsx web/server/index.ts'
 fi
 
 echo "===== Health check ====="

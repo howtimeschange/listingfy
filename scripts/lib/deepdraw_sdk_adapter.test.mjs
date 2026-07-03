@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
@@ -184,6 +186,30 @@ test("buildDeepdrawSdkClasspath includes vendored SDK jars and Maven runtime jar
   assert.ok(classpath.entries.some((entry) => entry.includes("httpclient")));
   assert.ok(classpath.entries.some((entry) => entry.includes("commons-collections/commons-collections")));
   assert.ok(classpath.value.includes(path.delimiter));
+});
+
+test("buildDeepdrawSdkClasspath honors DEEPDRAW_M2_REPOSITORY for Maven runtime jars", async () => {
+  const previous = process.env.DEEPDRAW_M2_REPOSITORY;
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "listingify-deepdraw-m2-"));
+  const jarDir = path.join(tempDir, "com/alibaba/fastjson/1.2.76");
+  const jarPath = path.join(jarDir, "fastjson-1.2.76.jar");
+  await mkdir(jarDir, { recursive: true });
+  await writeFile(jarPath, "");
+
+  try {
+    process.env.DEEPDRAW_M2_REPOSITORY = tempDir;
+    const classpath = buildDeepdrawSdkClasspath({
+      projectRoot: PROJECT_ROOT,
+      buildDir: path.join(tempDir, "classes"),
+    });
+
+    assert.ok(classpath.entries.includes(jarPath));
+    assert.ok(classpath.missing.includes("commons-logging/commons-logging/1.2/commons-logging-1.2.jar"));
+  } finally {
+    if (previous === undefined) delete process.env.DEEPDRAW_M2_REPOSITORY;
+    else process.env.DEEPDRAW_M2_REPOSITORY = previous;
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("parseDeepdrawSdkOutput normalizes Java CLI JSON into DeepDraw result shape", () => {
