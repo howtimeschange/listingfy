@@ -457,6 +457,10 @@ test("deployment prepares the DeepDraw Java SDK runtime for production publishin
   assert.match(deployScript, /-v "\$DEEPDRAW_M2_DIR:\/app\/\.m2"/);
   assert.match(deployScript, /java -version/);
   assert.match(deployScript, /javac -version/);
+  assert.match(deployScript, /bash -c 'set -e; node -v; npm -v; java -version/);
+  assert.match(deployScript, /bash -c 'java -version >\/dev\/null && \.\/web\/node_modules\/\.bin\/tsx/);
+  assert.doesNotMatch(deployScript, /bash -lc 'set -e; node -v; npm -v; java -version/);
+  assert.doesNotMatch(deployScript, /bash -lc 'java -version/);
 });
 
 test("DeepDraw SDK prepare can use a configured Maven mirror for dependency downloads", async () => {

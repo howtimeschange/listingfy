@@ -154,7 +154,7 @@ DOCKERFILE
     -e DEEPDRAW_M2_REPOSITORY=/app/.m2/repository \
     -e RUN_SEED_IMPORT="$RUN_SEED_IMPORT_VALUE" \
     "$RUNTIME_IMAGE" \
-    bash -lc 'set -e; node -v; npm -v; java -version; javac -version; npm --prefix web ci --include=dev; node scripts/deepdraw_sdk_prepare.mjs /app; npm --prefix web run build; npm run db:migrate; if [ "${RUN_SEED_IMPORT:-0}" = "1" ]; then echo "===== Import seed data in Docker ====="; npm run seed:import; else echo "===== Skip seed import; set RUN_SEED_IMPORT=1 to enable ====="; fi'
+    bash -c 'set -e; node -v; npm -v; java -version; javac -version; npm --prefix web ci --include=dev; node scripts/deepdraw_sdk_prepare.mjs /app; npm --prefix web run build; npm run db:migrate; if [ "${RUN_SEED_IMPORT:-0}" = "1" ]; then echo "===== Import seed data in Docker ====="; npm run seed:import; else echo "===== Skip seed import; set RUN_SEED_IMPORT=1 to enable ====="; fi'
 
   echo "===== Restart API container ====="
   docker rm -f listingfy-api >/dev/null 2>&1 || true
@@ -168,7 +168,7 @@ DOCKERFILE
     --env-file "$APP_DIR/.env.local" \
     -e DEEPDRAW_M2_REPOSITORY=/app/.m2/repository \
     "$RUNTIME_IMAGE" \
-    bash -lc 'java -version >/dev/null && ./web/node_modules/.bin/tsx web/server/index.ts'
+    bash -c 'java -version >/dev/null && ./web/node_modules/.bin/tsx web/server/index.ts'
 fi
 
 echo "===== Health check ====="
