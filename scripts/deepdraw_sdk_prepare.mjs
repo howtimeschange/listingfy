@@ -35,7 +35,7 @@ function run(command, args, options = {}) {
 }
 
 function hasCommand(command) {
-  const result = spawnSync("bash", ["-lc", `command -v ${command}`], { encoding: "utf8" });
+  const result = spawnSync("bash", ["-c", `command -v ${command}`], { encoding: "utf8" });
   return result.status === 0;
 }
 

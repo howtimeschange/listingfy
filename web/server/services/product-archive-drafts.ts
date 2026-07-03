@@ -266,8 +266,6 @@ const LIST_PRICE_REFERENCE_KEYS = new Set([
   "核算吊牌价",
   "挂牌价",
   "挂牌单价",
-  "专柜价",
-  "天猫特卖专柜价",
   "京东市场价",
   "市场价",
 ])
@@ -1219,7 +1217,6 @@ function readSourceValue(spu: JsonRecord, rule: JsonRecord, sourceRows: JsonReco
     sourceField: sourceField || defaultValue,
   })
   if (sourceType === "fixed") {
-    if (isProductArchiveListPriceReference(fieldName)) return derived || defaultValue
     if (isProductArchiveListPriceReference(defaultValue) || productArchiveSourceReference(defaultValue)) return derived
     return defaultValue || derived
   }

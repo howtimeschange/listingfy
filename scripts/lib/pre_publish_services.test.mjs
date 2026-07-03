@@ -472,6 +472,14 @@ test("DeepDraw SDK prepare can use a configured Maven mirror for dependency down
   assert.match(prepareScript, /--settings/);
 });
 
+test("DeepDraw SDK prepare checks runtime commands without resetting Docker PATH", async () => {
+  const prepareScript = await readFile(path.join(PROJECT_ROOT, "scripts/deepdraw_sdk_prepare.mjs"), "utf8");
+
+  assert.match(prepareScript, /function hasCommand\(command\)/);
+  assert.doesNotMatch(prepareScript, /spawnSync\("bash", \["-lc"/);
+  assert.match(prepareScript, /spawnSync\("bash", \["-c", `command -v \$\{command\}`\]/);
+});
+
 test("publish precheck treats local uploaded images as pending SHEIN image assets", async () => {
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
 
