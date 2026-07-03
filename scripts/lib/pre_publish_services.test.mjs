@@ -446,12 +446,26 @@ test("deployment prepares the DeepDraw Java SDK runtime for production publishin
 
   assert.match(deployScript, /DEEPDRAW_M2_DIR/);
   assert.match(deployScript, /DEEPDRAW_M2_REPOSITORY/);
+  assert.match(deployScript, /DEEPDRAW_MAVEN_MIRROR_URL/);
   assert.match(deployScript, /scripts\/deepdraw_sdk_prepare\.mjs/);
-  assert.match(deployScript, /openjdk-17-jdk-headless/);
-  assert.match(deployScript, /\bmaven\b/);
+  assert.match(deployScript, /LISTINGIFY_MAVEN_IMAGE/);
+  assert.match(deployScript, /FROM \$\{MAVEN_IMAGE\} AS java_toolchain/);
+  assert.match(deployScript, /COPY --from=java_toolchain \/opt\/java\/openjdk \/opt\/java\/openjdk/);
+  assert.match(deployScript, /COPY --from=java_toolchain \/usr\/share\/maven \/usr\/share\/maven/);
+  assert.doesNotMatch(deployScript, /apt-get install[\s\S]*openjdk-17-jdk-headless/);
+  assert.doesNotMatch(deployScript, /apt-get install[\s\S]*\bmaven\b/);
   assert.match(deployScript, /-v "\$DEEPDRAW_M2_DIR:\/app\/\.m2"/);
   assert.match(deployScript, /java -version/);
   assert.match(deployScript, /javac -version/);
+});
+
+test("DeepDraw SDK prepare can use a configured Maven mirror for dependency downloads", async () => {
+  const prepareScript = await readFile(path.join(PROJECT_ROOT, "scripts/deepdraw_sdk_prepare.mjs"), "utf8");
+
+  assert.match(prepareScript, /DEEPDRAW_MAVEN_MIRROR_URL/);
+  assert.match(prepareScript, /DEEPDRAW_MAVEN_SETTINGS/);
+  assert.match(prepareScript, /<mirrorOf>\*<\/mirrorOf>/);
+  assert.match(prepareScript, /--settings/);
 });
 
 test("publish precheck treats local uploaded images as pending SHEIN image assets", async () => {

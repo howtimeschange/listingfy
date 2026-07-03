@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { buildDeepdrawSdkClasspath } from "./lib/deepdraw_sdk_adapter.mjs";
@@ -44,17 +45,51 @@ function requireCommand(command, hint) {
   }
 }
 
+function xmlEscape(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function mavenSettingsArgs(projectRoot) {
+  if (process.env.DEEPDRAW_MAVEN_SETTINGS) {
+    return ["--settings", path.resolve(process.env.DEEPDRAW_MAVEN_SETTINGS)];
+  }
+  if (!process.env.DEEPDRAW_MAVEN_MIRROR_URL) return [];
+
+  const settingsPath = path.join(projectRoot, "tmp/deepdraw-sdk-adapter/maven-settings.xml");
+  mkdirSync(path.dirname(settingsPath), { recursive: true });
+  writeFileSync(settingsPath, `<?xml version="1.0" encoding="UTF-8"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
+  <mirrors>
+    <mirror>
+      <id>deepdraw-runtime-mirror</id>
+      <mirrorOf>*</mirrorOf>
+      <url>${xmlEscape(process.env.DEEPDRAW_MAVEN_MIRROR_URL)}</url>
+    </mirror>
+  </mirrors>
+</settings>
+`);
+  return ["--settings", settingsPath];
+}
+
 function prepareMavenDependencies(projectRoot) {
   let classpath = buildDeepdrawSdkClasspath({ projectRoot });
   if (classpath.missing.length === 0) return classpath;
 
   requireCommand("mvn", "Install Maven or pre-populate the configured Maven repository.");
+  const settingsArgs = mavenSettingsArgs(projectRoot);
   const localRepo = process.env.DEEPDRAW_M2_REPOSITORY
     ? [`-Dmaven.repo.local=${path.resolve(process.env.DEEPDRAW_M2_REPOSITORY)}`]
     : [];
   for (const dependency of MAVEN_DEPENDENCIES) {
     console.log(`Fetching DeepDraw SDK dependency: ${dependency}`);
-    run("mvn", ["-q", ...localRepo, "dependency:get", `-Dartifact=${dependency}`], { stdio: "inherit" });
+    run("mvn", ["-q", ...settingsArgs, ...localRepo, "dependency:get", `-Dartifact=${dependency}`], { stdio: "inherit" });
   }
 
   classpath = buildDeepdrawSdkClasspath({ projectRoot });

@@ -8,6 +8,7 @@ ALLOWED_ORIGINS="${LISTINGIFY_ALLOWED_ORIGINS:-https://listingify.semirapp.com,h
 PUBLIC_ORIGIN="${LISTINGIFY_PUBLIC_ORIGIN:-https://listingify.semirapp.com}"
 RUN_SEED_IMPORT_VALUE="${RUN_SEED_IMPORT:-0}"
 DEEPDRAW_M2_DIR="${DEEPDRAW_M2_DIR:-$APP_DIR/.m2}"
+DEEPDRAW_MAVEN_MIRROR_URL_VALUE="${DEEPDRAW_MAVEN_MIRROR_URL:-https://maven.aliyun.com/repository/public}"
 
 if [ -z "$DATABASE_URL_VALUE" ]; then
   echo "ERROR: PROD_DATABASE_URL is required. Configure it as a Yunxiao secret variable."
@@ -69,6 +70,7 @@ echo "===== Write production env ====="
   [ -n "${DEEPDRAW_TENANT_CREDENTIALS_JSON:-}" ] && printf 'DEEPDRAW_TENANT_CREDENTIALS_JSON=%s\n' "$DEEPDRAW_TENANT_CREDENTIALS_JSON"
   [ -n "${DEEPDRAW_TIMEOUT_MS:-}" ] && printf 'DEEPDRAW_TIMEOUT_MS=%s\n' "$DEEPDRAW_TIMEOUT_MS"
   printf 'DEEPDRAW_M2_REPOSITORY=%s\n' "${DEEPDRAW_M2_REPOSITORY:-$DEEPDRAW_M2_DIR/repository}"
+  printf 'DEEPDRAW_MAVEN_MIRROR_URL=%s\n' "$DEEPDRAW_MAVEN_MIRROR_URL_VALUE"
   [ -n "${AI_BASE_URL:-}" ] && printf 'AI_BASE_URL=%s\n' "$AI_BASE_URL"
   [ -n "${AI_MODEL:-}" ] && printf 'AI_MODEL=%s\n' "$AI_MODEL"
   [ -n "${AI_API_KEY:-}" ] && printf 'AI_API_KEY=%s\n' "$AI_API_KEY"
@@ -85,6 +87,7 @@ fi
 
 if [ "$HOST_NODE_MAJOR" -ge 24 ]; then
   export DEEPDRAW_M2_REPOSITORY="${DEEPDRAW_M2_REPOSITORY:-$DEEPDRAW_M2_DIR/repository}"
+  export DEEPDRAW_MAVEN_MIRROR_URL="$DEEPDRAW_MAVEN_MIRROR_URL_VALUE"
   echo "===== Prepare DeepDraw SDK runtime on host ====="
   node scripts/deepdraw_sdk_prepare.mjs "$APP_DIR"
 
@@ -120,18 +123,26 @@ else
   fi
 
   NODE_IMAGE="${LISTINGIFY_NODE_IMAGE:-node:24-bookworm}"
+  MAVEN_IMAGE="${LISTINGIFY_MAVEN_IMAGE:-maven:3.9-eclipse-temurin-17}"
   RUNTIME_IMAGE="${LISTINGIFY_RUNTIME_IMAGE:-listingfy-node-java:24-bookworm}"
   echo "Using Docker base image: $NODE_IMAGE"
+  echo "Using Java/Maven toolchain image: $MAVEN_IMAGE"
   echo "Preparing Docker runtime image: $RUNTIME_IMAGE"
   docker build \
     --build-arg NODE_IMAGE="$NODE_IMAGE" \
+    --build-arg MAVEN_IMAGE="$MAVEN_IMAGE" \
     -t "$RUNTIME_IMAGE" \
     -f - "$APP_DIR" <<'DOCKERFILE'
 ARG NODE_IMAGE=node:24-bookworm
+ARG MAVEN_IMAGE=maven:3.9-eclipse-temurin-17
+FROM ${MAVEN_IMAGE} AS java_toolchain
 FROM ${NODE_IMAGE}
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates openjdk-17-jdk-headless maven \
-  && rm -rf /var/lib/apt/lists/*
+COPY --from=java_toolchain /opt/java/openjdk /opt/java/openjdk
+COPY --from=java_toolchain /usr/share/maven /usr/share/maven
+ENV JAVA_HOME=/opt/java/openjdk
+ENV MAVEN_HOME=/usr/share/maven
+ENV PATH="/opt/java/openjdk/bin:/usr/share/maven/bin:${PATH}"
+RUN java -version && javac -version && mvn -version
 DOCKERFILE
 
   mkdir -p "$DEEPDRAW_M2_DIR"
