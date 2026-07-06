@@ -301,6 +301,10 @@ test("product archive size-chart mapping AI routes and review services are wired
   assert.match(service, /export function saveProductArchiveSizeChartMappings/);
   assert.match(service, /resolveAiConfig/);
   assert.match(service, /rule_fallback/);
+  assert.match(service, /sizeChartMappings = sizeChartMappingsForDraft\(db, draft\)\.map\(serializeSizeChartMapping\)/);
+  assert.match(service, /sizeChartMappings,/);
+  assert.match(service, /function buildSizeChartPreviewsForMappings/);
+  assert.match(service, /const previews = buildSizeChartPreviewsForMappings\(db, draft, sourceRows, mappings\)/);
   assert.match(service, /export function saveProductArchiveSizeChartMappings[\s\S]*applyToDraft[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*detail: validated\.detail/);
   assert.match(service, /function sizeChartMappingsForDraft/);
   assert.match(service, /mappings: sizeChartMappings\.filter/);

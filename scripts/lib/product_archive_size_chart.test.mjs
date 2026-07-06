@@ -161,6 +161,22 @@ test("uses reviewed AI mappings to fill unmatched size-chart target fields", () 
   assert.equal(result.unmatchedTargets.includes("领口"), false);
 });
 
+test("keeps the first duplicate PLM value so newer source rows win", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [
+      { "款号": "208326100020", "测量点": "衣长", "尺码": "080", "尺码值": "40" },
+      { "款号": "208326100020", "测量点": "衣长", "尺码": "080", "尺码值": "38" },
+    ],
+    spuCode: "208326100020",
+    template: { fieldName: "尺码表", options: ["衣长"] },
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "衣长",
+    "80cm": "40",
+  });
+});
+
 test("normalizes DeepDraw size labels consistently with SKU values", () => {
   assert.equal(normalizeDeepdrawSize("80/"), "80cm");
   assert.equal(normalizeDeepdrawSize("090"), "90cm");

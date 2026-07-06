@@ -349,7 +349,8 @@ export function buildSizeChartForTemplate({ rows = [], spuCode, template = {}, m
   const sizes = new Set();
   for (const row of normalizedRows) {
     sizes.add(row.size);
-    valueByPointAndSize.set(`${compactKey(row.measurementPoint)}\u0000${row.size}`, row.sizeValue);
+    const key = `${compactKey(row.measurementPoint)}\u0000${row.size}`;
+    if (!valueByPointAndSize.has(key)) valueByPointAndSize.set(key, row.sizeValue);
   }
 
   const valueJson = {};

@@ -940,6 +940,18 @@ function sizeChartMappingsForDraft(db: SyncPostgresDatabase, draft: JsonRecord) 
   }
 }
 
+function serializeSizeChartMapping(row: JsonRecord) {
+  return {
+    fieldName: stringValue(row.fieldName ?? row.field_name),
+    targetField: stringValue(row.targetField ?? row.target_field),
+    sourcePoint: stringValue(row.sourcePoint ?? row.source_point) || null,
+    confidence: stringValue(row.confidence),
+    source: stringValue(row.source),
+    reviewStatus: stringValue(row.reviewStatus ?? row.review_status),
+    reason: stringValue(row.reason ?? recordValue(row.evidence_json).reason),
+  }
+}
+
 export function validateProductArchiveSizeChartValue(input: {
   fieldName: string
   valueJson: unknown
@@ -2081,6 +2093,7 @@ function rebuildProductArchiveDraftFields(
 function serializeDraftDetail(db: SyncPostgresDatabase, draftId: number) {
   const draft = draftById(db, draftId)
   const sourceRows = referenceSourceRowsForDraft(db, draft)
+  const sizeChartMappings = sizeChartMappingsForDraft(db, draft).map(serializeSizeChartMapping)
   const sizeChartSourceRows = sizeChartSourceRowJson(sourceRowsForDraft(db, draft)).map((row) => ({
     spuCode: stringValue(row.款号 ?? row.spuCode ?? row.spu_code),
     measurementPoint: stringValue(row.测量点 ?? row.measurementPoint ?? row.measurement_point),
@@ -2093,6 +2106,7 @@ function serializeDraftDetail(db: SyncPostgresDatabase, draftId: number) {
   return {
     draft,
     launchPlanReference: buildLaunchPlanCategoryReference(sourceRows),
+    sizeChartMappings,
     sizeChartSourceRows,
     fields: db.prepare(`
       select field.*, template.options_json
@@ -2767,17 +2781,25 @@ function sizeChartTemplateFieldsForDraft(db: SyncPostgresDatabase, draft: JsonRe
     .filter((field) => field.fieldName)
 }
 
-function ruleBasedSizeChartRecommendation(db: SyncPostgresDatabase, draft: JsonRecord) {
-  const sourceRows = sourceRowsForDraft(db, draft)
-  const templates = sizeChartTemplateFieldsForDraft(db, draft)
-  const savedMappings = sizeChartMappingsForDraft(db, draft)
-  const previews = templates.map((template) => buildProductArchiveSizeChartFieldValue({
+function buildSizeChartPreviewsForMappings(
+  db: SyncPostgresDatabase,
+  draft: JsonRecord,
+  sourceRows: JsonRecord[],
+  mappings: JsonRecord[],
+) {
+  return sizeChartTemplateFieldsForDraft(db, draft).map((template) => buildProductArchiveSizeChartFieldValue({
     fieldName: template.fieldName,
     spuCode: stringValue(draft.spu_code),
     sourceRows,
     templateOptions: template.options,
-    mappings: savedMappings.filter((mapping) => stringValue(mapping.field_name ?? mapping.fieldName) === template.fieldName),
+    mappings: mappings.filter((mapping) => stringValue(mapping.fieldName ?? mapping.field_name) === template.fieldName),
   }))
+}
+
+function ruleBasedSizeChartRecommendation(db: SyncPostgresDatabase, draft: JsonRecord) {
+  const sourceRows = sourceRowsForDraft(db, draft)
+  const savedMappings = sizeChartMappingsForDraft(db, draft)
+  const previews = buildSizeChartPreviewsForMappings(db, draft, sourceRows, savedMappings)
   return {
     previews,
     mappings: previews.flatMap((preview) => preview.mappings),
@@ -2892,11 +2914,12 @@ export async function recommendProductArchiveSizeChartMappings(
   const mappings = aiMappings.length > 0
     ? aiMappings.map((mapping) => normalizeSizeChartMappingSuggestion({ ...mapping, source: "ai" }, "ai"))
     : ruleMappings.map((mapping) => ({ ...mapping, source: mapping.source === "rule" ? "rule_fallback" : mapping.source }))
+  const previews = buildSizeChartPreviewsForMappings(db, draft, sourceRows, mappings)
   return {
     draftId,
     source: aiMappings.length > 0 ? "ai" : "rule_fallback",
     mappings,
-    previews: ruleRecommendation.previews,
+    previews,
   }
 }
 

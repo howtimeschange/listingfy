@@ -108,6 +108,7 @@ interface DraftLog {
 interface DraftDetail {
   draft: Draft
   launchPlanReference?: LaunchPlanReference
+  sizeChartMappings?: SizeChartMapping[]
   sizeChartSourceRows?: SizeChartSourceRow[]
   fields: DraftField[]
   skus: DraftSku[]
@@ -468,7 +469,7 @@ export default function ProductArchiveDraftDetailPage() {
         }
       })
   }, [detail.data?.fields, sizeChartRecommendation?.previews])
-  const activeSizeChartMappings = sizeChartRecommendation?.mappings ?? []
+  const activeSizeChartMappings = sizeChartRecommendation?.mappings ?? detail.data?.sizeChartMappings ?? []
   const sizeChartImportedMatrix = useMemo(() => (
     sizeChartSourceMatrix(detail.data?.sizeChartSourceRows ?? [])
   ), [detail.data?.sizeChartSourceRows])
