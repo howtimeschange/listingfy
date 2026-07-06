@@ -22,12 +22,15 @@ import {
   missingDraftSpuCodes,
   patchProductArchiveDraftFields,
   readbackProductArchiveDraft,
+  recommendProductArchiveSizeChartMappings,
   refreshProductArchiveDraftsFromSourceBatch,
+  saveProductArchiveSizeChartMappings,
   submitProductArchiveDraft,
   validateProductArchiveDraft,
 } from "../services/product-archive-drafts"
 import { importListingLaunchPlanSheets } from "../services/listing-launch-plans"
 import { readSpreadsheetSheetsFromFile } from "../../../scripts/lib/listing_launch_plan_importer.mjs"
+import { readPlmSizeChartWorkbook } from "../../../scripts/lib/product_archive_size_chart.mjs"
 
 const productArchiveDrafts = new Hono()
 const PROJECT_ROOT =
@@ -192,12 +195,12 @@ function missingDraftCodesForCodes(db: ReturnType<typeof getDb>, spuCodes: strin
 async function importWorkflowSourceFile(
   db: ReturnType<typeof getDb>,
   file: File,
-  sourceType: "copywriting" | "launch_plan",
+  sourceType: "copywriting" | "launch_plan" | "size_chart",
   createdBy?: number | null,
 ) {
   const filePath = await saveFormFile(file)
   try {
-    const sheets = await readSpreadsheetSheetsFromFile(filePath, { fileName: file.name })
+    const sheets = await readProductArchiveSourceSheets(filePath, file.name, sourceType)
     const sourceBatchIds: number[] = []
     const refreshSummaries = []
     let inputRowCount = 0
@@ -240,6 +243,17 @@ async function importWorkflowSourceFile(
   } finally {
     await rm(filePath, { force: true })
   }
+}
+
+async function readProductArchiveSourceSheets(filePath: string, fileName: string, sourceType: string) {
+  if (sourceType === "size_chart") {
+    const rows = await readPlmSizeChartWorkbook(filePath, { fileName })
+    return [{
+      name: "PLM尺码表",
+      rows: rows.map((row) => row.rowJson ?? row),
+    }]
+  }
+  return readSpreadsheetSheetsFromFile(filePath, { fileName })
 }
 
 productArchiveDrafts.get("/", (c) => {
@@ -443,7 +457,7 @@ productArchiveDrafts.post("/source-imports/upload", async (c) => {
     if (autoSyncMissingMdm) {
       requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
     }
-    const sheets = await readSpreadsheetSheetsFromFile(filePath, { fileName: file.name })
+    const sheets = await readProductArchiveSourceSheets(filePath, file.name, sourceType)
     const sourceBatchIds: number[] = []
     const refreshSummaries = []
     const missingMdmSpuCodes: string[] = []
@@ -549,6 +563,46 @@ productArchiveDrafts.post("/source-imports/upload", async (c) => {
   }
 })
 
+productArchiveDrafts.post("/size-chart/import", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  requirePermission(c, "PRODUCT_ARCHIVE_RULE_MANAGE")
+  const db = getDb()
+  const { file, filePath } = await saveUploadedSpreadsheet(c)
+  try {
+    const rows = await readPlmSizeChartWorkbook(filePath, { fileName: file.name })
+    const result = importProductArchiveSourceRows(db, {
+      sourceType: "size_chart",
+      fileName: file.name,
+      sheetName: "PLM尺码表",
+      rows: rows.map((row) => row.rowJson ?? row),
+    })
+    const sourceBatchId = Number(result.batch.id)
+    const refreshSummary = refreshProductArchiveDraftsFromSourceBatch(db, {
+      sourceBatchId,
+      sourceType: result.sourceType,
+    })
+    auditFromContext(c, {
+      action: "size_chart.imported",
+      module: "PRODUCT_ARCHIVE_DRAFT",
+      entityType: "product_archive_source_batch",
+      entityId: result.batch.id,
+      summary: "导入 PLM 尺码表并刷新深绘建档草稿",
+      metadata: {
+        sourceType: result.sourceType,
+        fileName: file.name,
+        inputRowCount: result.inputRowCount,
+        insertedRowCount: result.insertedRowCount,
+        sourceBatchId,
+        refreshSummary,
+        userId: user.id,
+      },
+    })
+    return c.json({ ...result, sourceBatchIds: [sourceBatchId], refreshSummary })
+  } finally {
+    await rm(filePath, { force: true })
+  }
+})
+
 productArchiveDrafts.post("/workflow/start", async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   requirePermission(c, "PRODUCT_ARCHIVE_RULE_MANAGE")
@@ -556,11 +610,13 @@ productArchiveDrafts.post("/workflow/start", async (c) => {
   const form = await c.req.formData()
   const copywritingFile = form.get("copywritingFile")
   const launchPlanFile = form.get("launchPlanFile")
+  const sizeChartFile = form.get("sizeChartFile")
   const skipLaunchPlan = booleanFormValue(form.get("skipLaunchPlan"))
   const sourceBatchIdsByType: Record<string, number[]> = {}
   const refreshSummaries = []
   let copywritingImport = null
   let launchPlanImport = null
+  let sizeChartImport = null
 
   if (copywritingFile instanceof File && copywritingFile.size > 0) {
     copywritingImport = await importWorkflowSourceFile(db, copywritingFile, "copywriting", user.id)
@@ -572,6 +628,12 @@ productArchiveDrafts.post("/workflow/start", async (c) => {
     launchPlanImport = await importWorkflowSourceFile(db, launchPlanFile, "launch_plan", user.id)
     sourceBatchIdsByType.launch_plan = launchPlanImport.sourceBatchIds
     refreshSummaries.push(...launchPlanImport.refreshSummaries)
+  }
+
+  if (sizeChartFile instanceof File && sizeChartFile.size > 0) {
+    sizeChartImport = await importWorkflowSourceFile(db, sizeChartFile, "size_chart", user.id)
+    sourceBatchIdsByType.size_chart = sizeChartImport.sourceBatchIds
+    refreshSummaries.push(...sizeChartImport.refreshSummaries)
   }
 
   const candidateCodes = uniqueStrings([
@@ -644,6 +706,7 @@ productArchiveDrafts.post("/workflow/start", async (c) => {
       skippedExistingDraftCount: candidateCodes.length - draftCodes.length,
       copywritingSourceBatchIds: sourceBatchIdsByType.copywriting ?? [],
       launchPlanSourceBatchIds: sourceBatchIdsByType.launch_plan ?? [],
+      sizeChartSourceBatchIds: sourceBatchIdsByType.size_chart ?? [],
       syncJobId: syncJob?.id ?? null,
       userId: user.id,
     },
@@ -657,6 +720,7 @@ productArchiveDrafts.post("/workflow/start", async (c) => {
     skippedExistingDraftCount: candidateCodes.length - draftCodes.length,
     copywritingImport,
     launchPlanImport,
+    sizeChartImport,
     sourceBatchIdsByType,
     refreshSummaries,
     syncJob,
@@ -746,6 +810,38 @@ productArchiveDrafts.post("/:draftId/ai-fill", async (c) => {
     entityType: "product_archive_draft",
     entityId: draftId,
     summary: `AI 推荐补齐深绘建档草稿字段 ${draftId}`,
+    metadata: { savedCount: result.saved.length },
+  })
+  return c.json(result)
+})
+
+productArchiveDrafts.post("/:draftId/size-chart/ai-recommend", async (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const db = getDb()
+  const draftId = readId(c.req.param("draftId"))
+  const result = await recommendProductArchiveSizeChartMappings(db, draftId)
+  auditFromContext(c, {
+    action: "draft.size_chart.ai_recommend",
+    module: "PRODUCT_ARCHIVE_DRAFT",
+    entityType: "product_archive_draft",
+    entityId: draftId,
+    summary: `AI 推荐尺码表映射 ${draftId}`,
+    metadata: { source: result.source, mappingCount: result.mappings.length },
+  })
+  return c.json(result)
+})
+
+productArchiveDrafts.post("/:draftId/size-chart/mappings", async (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const db = getDb()
+  const draftId = readId(c.req.param("draftId"))
+  const result = saveProductArchiveSizeChartMappings(db, draftId, await readJson(c))
+  auditFromContext(c, {
+    action: "draft.size_chart.mapping_saved",
+    module: "PRODUCT_ARCHIVE_DRAFT",
+    entityType: "product_archive_draft",
+    entityId: draftId,
+    summary: `保存尺码表字段映射 ${draftId}`,
     metadata: { savedCount: result.saved.length },
   })
   return c.json(result)

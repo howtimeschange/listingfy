@@ -104,6 +104,7 @@ interface ProductArchiveWorkflowResponse {
   syncJob?: DraftBatchJob | null
   copywritingImport?: WorkflowImportSummary | null
   launchPlanImport?: WorkflowImportSummary | null
+  sizeChartImport?: WorkflowImportSummary | null
   refreshSummaries?: Array<{
     scannedDraftCount: number
     refreshedDraftCount: number
@@ -165,6 +166,8 @@ interface StartProductArchiveDialogProps {
   onCopywritingFileChange: (file: File | null) => void
   launchPlanFile: File | null
   onLaunchPlanFileChange: (file: File | null) => void
+  sizeChartFile: File | null
+  onSizeChartFileChange: (file: File | null) => void
   skipLaunchPlan: boolean
   onSkipLaunchPlanChange: (checked: boolean) => void
   workflowResult: ProductArchiveWorkflowResponse | null
@@ -179,6 +182,8 @@ function StartProductArchiveDialog({
   onCopywritingFileChange,
   launchPlanFile,
   onLaunchPlanFileChange,
+  sizeChartFile,
+  onSizeChartFileChange,
   skipLaunchPlan,
   onSkipLaunchPlanChange,
   workflowResult,
@@ -270,6 +275,27 @@ function StartProductArchiveDialog({
               </div>
             ) : null}
           </section>
+
+          <section className="rounded-lg border p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary">3. 导入尺码表模板</Badge>
+                <span className="text-sm text-muted-foreground">支持 PLM 导出的宽表/长表，按款号自动补齐深绘尺码表。</span>
+              </div>
+            </div>
+            <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-dashed px-3 py-3 text-sm hover:bg-muted/40">
+              <span className="flex min-w-0 items-center gap-2">
+                <FileSpreadsheet className="size-4 text-muted-foreground" />
+                <span className="truncate">{sizeChartFile?.name ?? "选择 PLM 尺码表 .xlsx / .csv"}</span>
+              </span>
+              <Input
+                type="file"
+                accept=".xlsx,.csv"
+                className="hidden"
+                onChange={(event) => onSizeChartFileChange(event.target.files?.[0] ?? null)}
+              />
+            </label>
+          </section>
         </div>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
@@ -303,6 +329,7 @@ export default function ProductArchiveDraftsPage() {
   const [workflowProgressDialogOpen, setWorkflowProgressDialogOpen] = useState(false)
   const [copywritingFile, setCopywritingFile] = useState<File | null>(null)
   const [launchPlanFile, setLaunchPlanFile] = useState<File | null>(null)
+  const [sizeChartFile, setSizeChartFile] = useState<File | null>(null)
   const [skipLaunchPlan, setSkipLaunchPlan] = useState(false)
   const [workflowResult, setWorkflowResult] = useState<ProductArchiveWorkflowResponse | null>(null)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
@@ -401,12 +428,29 @@ export default function ProductArchiveDraftsPage() {
     },
   })
 
+  const importSizeChart = useMutation({
+    mutationFn: async (file: File) => {
+      const form = new FormData()
+      form.append("file", file)
+      form.append("sourceType", "size_chart")
+      return api.postForm<SourceImportUploadResponse>("/product-archive-drafts/size-chart/import", form)
+    },
+    onSuccess: (result) => {
+      toast.success(`导入尺码表完成：${formatNumber(result.insertedRowCount)} / ${formatNumber(result.inputRowCount)} 行，已刷新对应草稿`)
+      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "导入尺码表失败")
+    },
+  })
+
   const startProductArchiveWorkflow = useMutation({
     mutationFn: async () => {
       const form = new FormData()
       form.append("skipLaunchPlan", skipLaunchPlan ? "true" : "false")
       if (copywritingFile) form.append("copywritingFile", copywritingFile)
       if (launchPlanFile) form.append("launchPlanFile", launchPlanFile)
+      if (sizeChartFile) form.append("sizeChartFile", sizeChartFile)
       return api.postForm<ProductArchiveWorkflowResponse>("/product-archive-drafts/workflow/start", form)
     },
     onSuccess: (result) => {
@@ -431,6 +475,7 @@ export default function ProductArchiveDraftsPage() {
       setWorkflowDialogOpen(false)
       setCopywritingFile(null)
       setLaunchPlanFile(null)
+      setSizeChartFile(null)
       setSkipLaunchPlan(false)
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
     },
@@ -714,6 +759,19 @@ export default function ProductArchiveDraftsPage() {
                   await importCopywriting.mutateAsync(file)
                 }}
               />
+              <ImportDialog
+                title="导入尺码表"
+                description="导入 PLM 导出的宽表/长表模板后，会按款号刷新已有深绘建档草稿的尺码表字段。"
+                trigger={
+                  <Button type="button" variant="outline" size="sm" disabled={importSizeChart.isPending}>
+                    {importSizeChart.isPending ? <Loader2 className="size-4 animate-spin" /> : <FileSpreadsheet className="size-4" />}
+                    导入尺码表
+                  </Button>
+                }
+                onImport={async (file) => {
+                  await importSizeChart.mutateAsync(file)
+                }}
+              />
               <StartProductArchiveDialog
                 open={workflowDialogOpen}
                 onOpenChange={(open) => {
@@ -724,6 +782,8 @@ export default function ProductArchiveDraftsPage() {
                 onCopywritingFileChange={setCopywritingFile}
                 launchPlanFile={launchPlanFile}
                 onLaunchPlanFileChange={setLaunchPlanFile}
+                sizeChartFile={sizeChartFile}
+                onSizeChartFileChange={setSizeChartFile}
                 skipLaunchPlan={skipLaunchPlan}
                 onSkipLaunchPlanChange={setSkipLaunchPlan}
                 workflowResult={workflowResult}

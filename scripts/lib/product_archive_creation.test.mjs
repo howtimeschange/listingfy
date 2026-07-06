@@ -6,6 +6,7 @@ import test from "node:test";
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const files = {
   migration: path.join(PROJECT_ROOT, "db/migrations/024_deepdraw_product_archive_creation.sql"),
+  sizeChartMigration: path.join(PROJECT_ROOT, "db/migrations/036_product_archive_size_chart_source.sql"),
   sqliteDb: path.join(PROJECT_ROOT, "scripts/lib/sqlite_db.mjs"),
   metadataService: path.join(PROJECT_ROOT, "web/server/services/deepdraw-metadata.ts"),
   draftService: path.join(PROJECT_ROOT, "web/server/services/product-archive-drafts.ts"),
@@ -13,6 +14,15 @@ const files = {
   metadataRoute: path.join(PROJECT_ROOT, "web/server/routes/deepdraw-metadata.ts"),
   deepdrawClient: path.join(PROJECT_ROOT, "scripts/lib/deepdraw_client.mjs"),
 };
+
+async function readText(file) {
+  try {
+    return await readFile(file, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return "";
+    throw error;
+  }
+}
 
 test("new deepdraw archive schema is a PostgreSQL-only schema revision, not a SQLite compatibility layer", async () => {
   const [migration, sqliteDb] = await Promise.all([
@@ -91,6 +101,25 @@ test("product archive draft source rows stay scoped to the import batch when pre
   assert.match(service, /source\.source_batch_id = \?/);
   assert.match(service, /sourceRowsForSpu\(db, input\.spuCode, input\.sourceBatchId/);
   assert.match(service, /sourceRowsForDraft\(db, draft\)/);
+});
+
+test("product archive source imports support PLM size-chart batches", async () => {
+  const [migration, service, route] = await Promise.all([
+    readText(files.sizeChartMigration),
+    readFile(files.draftService, "utf8"),
+    readFile(files.draftRoute, "utf8"),
+  ]);
+
+  assert.match(migration, /source_type in \('field_mapping', 'launch_plan', 'copywriting', 'size_chart'\)/);
+  assert.match(migration, /source_type in \('launch_plan', 'copywriting', 'size_chart'\)/);
+  assert.match(migration, /create table if not exists product_archive_size_chart_mapping/);
+  assert.match(service, /sourceImportType\(input\.sourceType\)/);
+  assert.match(service, /normalizePlmSizeChartRows/);
+  assert.match(service, /sourceType === "size_chart"/);
+  assert.match(service, /function sizeChartTemplateOptionsForField/);
+  assert.match(service, /sizeChartTitleOptions\(existingValueJson\)/);
+  assert.match(service, /templateOptions: sizeChartTemplateOptionsForField\(template\.options_json, existing\.value_json, fieldName\)/);
+  assert.match(route, /sourceType:\s*"size_chart"/);
 });
 
 test("product archive trade matching accepts duplicate source rows that point to the same DeepDraw trade", async () => {
@@ -260,6 +289,23 @@ test("product archive AI fill skips fields that already have JSON values", async
   assert.match(service, /!hasValue\(recordValue\(field\.value_json\)\)/);
   assert.match(service, /rebuildProductArchiveDraftFields\(db, draftId\)/);
   assert.match(service, /fillProductArchiveDraftFieldsWithAi/);
+});
+
+test("product archive size-chart mapping AI routes and review services are wired", async () => {
+  const [service, route] = await Promise.all([
+    readFile(files.draftService, "utf8"),
+    readFile(files.draftRoute, "utf8"),
+  ]);
+
+  assert.match(service, /export async function recommendProductArchiveSizeChartMappings/);
+  assert.match(service, /export function saveProductArchiveSizeChartMappings/);
+  assert.match(service, /resolveAiConfig/);
+  assert.match(service, /rule_fallback/);
+  assert.match(service, /export function saveProductArchiveSizeChartMappings[\s\S]*applyToDraft[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*detail: validated\.detail/);
+  assert.match(service, /function sizeChartMappingsForDraft/);
+  assert.match(service, /mappings: sizeChartMappings\.filter/);
+  assert.match(route, /productArchiveDrafts\.post\("\/:draftId\/size-chart\/ai-recommend"/);
+  assert.match(route, /productArchiveDrafts\.post\("\/:draftId\/size-chart\/mappings"/);
 });
 
 test("product archive duplicate check rejects DeepDraw business failures", async () => {
@@ -459,6 +505,65 @@ test("product archive service derives core sales fields from MDM master data", a
     merchantSku.valueJson["蓝色调00388"]["80cm"],
     "359,208326105214,2026-07-08,0,6942749195637,6942749195637,359,359,20832610521400388080,6942749195637",
   );
+});
+
+test("product archive service derives DeepDraw size-chart fields from PLM source rows", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const value = service.buildProductArchiveSizeChartFieldValue({
+    fieldName: "尺码表",
+    spuCode: "208326100020",
+    sourceRows: [
+      { source_type: "launch_plan", row_json: { 款号: "208326100020", 测量点: "衣长", 尺码: "80", 尺码值: "0" } },
+      { source_type: "size_chart", row_json: { 款号: "208326100020", 测量点: "衣长", 尺码: "80/", 尺码值: "38.0" } },
+      { source_type: "size_chart", row_json: { 款号: "208326100020", 测量点: "肩宽", 尺码: "80/", 尺码值: "26.5" } },
+      { source_type: "size_chart", row_json: { 款号: "208326100020", 测量点: "胸围", 尺码: "80/", 尺码值: "66.0" } },
+      { source_type: "size_chart", row_json: { 款号: "208326100020", 测量点: "里：袖长", 尺码: "80/", 尺码值: "24.5" } },
+    ],
+    templateOptions: ["领口", "肩宽", "袖长", "胸围", "衣长"],
+  });
+
+  assert.deepEqual(value.valueJson, {
+    title: "领口,肩宽,袖长,胸围,衣长",
+    "80cm": "0,26.5,24.5,66,38",
+  });
+  assert.equal(value.sourceType, "size_chart");
+  assert.equal(value.mappings.find((item) => item.targetField === "袖长")?.confidence, "medium");
+  assert.equal(value.unmatchedTargets.includes("领口"), true);
+
+  const genericValue = service.buildProductArchiveSizeChartFieldValue({
+    fieldName: "尺码表",
+    spuCode: "208326104204",
+    sourceRows: [
+      { source_type: "size_chart", row_json: { 款号: "208326104204", 测量点: "衣长", 尺码: "80/", 尺码值: "33.0" } },
+      { source_type: "size_chart", row_json: { 款号: "208326104204", 测量点: "胸围", 尺码: "80/", 尺码值: "64.0" } },
+      { source_type: "size_chart", row_json: { 款号: "208326104204", 测量点: "里：袖长", 尺码: "80/", 尺码值: "26.0" } },
+    ],
+    templateOptions: ["身高", "衣长", "胸围", "袖长"],
+  });
+
+  assert.deepEqual(genericValue.valueJson, {
+    title: "身高,衣长,胸围,袖长",
+    "80cm": "80,33,64,26",
+  });
+  assert.equal(genericValue.sourceType, "size_chart");
+});
+
+test("product archive size-chart validation checks size keys and column counts", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const issues = service.validateProductArchiveSizeChartValue({
+    fieldName: "尺码表",
+    valueJson: {
+      title: "衣长,胸围",
+      "80cm": "38",
+      "90cm": "39,70",
+    },
+    allowedSizes: ["80cm"],
+  });
+
+  assert.deepEqual(issues.map((issue) => issue.issueType), [
+    "size_chart_column_count_mismatch",
+    "size_chart_size_not_in_sku",
+  ]);
 });
 
 test("product archive field mapping applies product-line domains only to matching MDM goods", async () => {

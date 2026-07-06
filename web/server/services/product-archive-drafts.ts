@@ -4,6 +4,11 @@ import {
   parseProductArchiveFieldRuleRows,
 } from "../../../scripts/lib/product_archive_source_importer.mjs"
 import {
+  buildSizeChartForTemplate,
+  normalizeDeepdrawSize,
+  normalizePlmSizeChartRows,
+} from "../../../scripts/lib/product_archive_size_chart.mjs"
+import {
   createDeepdrawProduct,
   getDeepdrawProduct,
   resolveDeepdrawConfig,
@@ -219,8 +224,8 @@ function sourceBatchNo(sourceType: string) {
 
 function sourceImportType(value: unknown) {
   const sourceType = stringValue(value)
-  if (["field_mapping", "launch_plan", "copywriting"].includes(sourceType)) return sourceType
-  throw new Error("sourceType must be field_mapping, launch_plan, or copywriting")
+  if (["field_mapping", "launch_plan", "copywriting", "size_chart"].includes(sourceType)) return sourceType
+  throw new Error("sourceType must be field_mapping, launch_plan, copywriting, or size_chart")
 }
 
 function hasValue(value: unknown) {
@@ -858,6 +863,123 @@ export function buildProductArchiveMdmDerivedFieldValue(fieldName: string, input
     }
   }
   return { valueText: "", valueJson: {} }
+}
+
+function sizeChartSourceRowJson(sourceRows: JsonRecord[]) {
+  return sourceRows
+    .filter((row) => stringValue(row.source_type) === "size_chart")
+    .map((row) => recordValue(row.row_json))
+    .filter((row) => hasValue(row))
+}
+
+function sizeChartTitleOptions(valueJson: unknown) {
+  return stringValue(recordValue(valueJson).title)
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function sizeChartTemplateOptionsForField(templateOptions: unknown, existingValueJson: unknown, fieldName: string) {
+  const options = arrayValue(templateOptions)
+  if (options.length > 0) return options
+  const existingTitles = sizeChartTitleOptions(existingValueJson)
+  if (existingTitles.length > 0) return existingTitles
+  return compactFieldKey(fieldName) === compactFieldKey("尺码表") ? ["身高", "衣长", "胸围", "袖长"] : []
+}
+
+export function buildProductArchiveSizeChartFieldValue(input: {
+  fieldName: string
+  spuCode: string
+  sourceRows: JsonRecord[]
+  templateOptions: unknown[]
+  mappings?: JsonRecord[]
+}) {
+  const result = buildSizeChartForTemplate({
+    rows: sizeChartSourceRowJson(input.sourceRows),
+    spuCode: input.spuCode,
+    template: {
+      fieldName: input.fieldName,
+      options: input.templateOptions,
+    },
+    mappings: input.mappings ?? [],
+  })
+  return {
+    valueText: "",
+    valueJson: recordValue(result.valueJson),
+    sourceType: hasValue(recordValue(result.valueJson)) ? "size_chart" : "",
+    mappings: result.mappings.map((mapping: JsonRecord) => ({ fieldName: input.fieldName, ...mapping })),
+    unmatchedTargets: result.unmatchedTargets,
+  }
+}
+
+function sizeChartMappingsForDraft(db: SyncPostgresDatabase, draft: JsonRecord) {
+  try {
+    return db.prepare(`
+      select
+        field_name,
+        target_field,
+        source_point,
+        confidence,
+        source,
+        review_status,
+        evidence_json
+      from product_archive_size_chart_mapping
+      where tenant_name = ?
+        and merchant_id = ?
+        and trade_id = ?
+        and review_status = 'approved'
+        and coalesce(source_point, '') <> ''
+      order by
+        field_name,
+        case confidence when 'high' then 0 when 'medium' then 1 when 'low' then 2 else 3 end,
+        target_field
+    `).all(draft.tenant_name, draft.merchant_id, draft.trade_id) as JsonRecord[]
+  } catch (error) {
+    if (/product_archive_size_chart_mapping/i.test(error instanceof Error ? error.message : String(error))) return []
+    throw error
+  }
+}
+
+export function validateProductArchiveSizeChartValue(input: {
+  fieldName: string
+  valueJson: unknown
+  allowedSizes: unknown[]
+}) {
+  const valueJson = recordValue(input.valueJson)
+  if (!hasValue(valueJson)) return []
+  const titles = stringValue(valueJson.title).split(",").map((item) => item.trim()).filter(Boolean)
+  if (titles.length === 0) {
+    return [{
+      severity: "blocker",
+      issueType: "size_chart_title_missing",
+      fieldName: input.fieldName,
+      message: "尺码表缺少表头",
+    }]
+  }
+  const allowedSizes = new Set(uniqueTextValues(input.allowedSizes.map((size) => deepdrawSizeValue(size))))
+  const issues: Array<{ severity: string; issueType: string; fieldName?: string | null; skuCode?: string | null; message: string }> = []
+  for (const [rawSize, rawValues] of Object.entries(valueJson)) {
+    if (rawSize === "title") continue
+    const size = deepdrawSizeValue(rawSize)
+    const values = stringValue(rawValues).split(",")
+    if (values.length !== titles.length) {
+      issues.push({
+        severity: "blocker",
+        issueType: "size_chart_column_count_mismatch",
+        fieldName: input.fieldName,
+        message: `尺码表 ${size} 行的值数量与表头不一致`,
+      })
+    }
+    if (allowedSizes.size > 0 && !allowedSizes.has(size)) {
+      issues.push({
+        severity: "blocker",
+        issueType: "size_chart_size_not_in_sku",
+        fieldName: input.fieldName,
+        message: `尺码表 ${size} 不在草稿 SKU 尺码中`,
+      })
+    }
+  }
+  return issues
 }
 
 function mdmSkuRowsForSpu(db: SyncPostgresDatabase, spuCode: string) {
@@ -1836,6 +1958,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
   if (!spu) throw new Error(`MDM 款号不存在：${draft.spu_code}`)
   const rules = fieldMappingRulesForDraft(db, draft)
   const sourceRows = sourceRowsForDraft(db, draft)
+  const sizeChartMappings = sizeChartMappingsForDraft(db, draft)
   const mdmSkus = mdmSkuRowsForSpu(db, stringValue(draft.spu_code))
   const dateText = sourceFieldValue(sourceRows, "launch_plan", "内容上市时间")
     || sourceFieldValue(sourceRows, "launch_plan", "搜索上市时间")
@@ -1851,36 +1974,55 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     const rule = ruleByName.get(fieldName) ?? {}
     const template = fieldTemplateByName.get(fieldName) ?? {}
     const existing = existingByName.get(fieldName) ?? {}
-    const sourceType = stringValue(rule.source_type) || "manual"
+    const ruleSourceType = stringValue(rule.source_type) || "manual"
     const existingManual = Boolean(existing.manual_override)
     const sourceValueText = readSourceValue(spu, rule, sourceRows, fieldName)
+    const sizeChartDerived = !existingManual && compactFieldKey(fieldName).includes("尺码表")
+      ? buildProductArchiveSizeChartFieldValue({
+          fieldName,
+          spuCode: stringValue(draft.spu_code),
+          sourceRows,
+          templateOptions: sizeChartTemplateOptionsForField(template.options_json, existing.value_json, fieldName),
+          mappings: sizeChartMappings.filter((mapping) => stringValue(mapping.field_name ?? mapping.fieldName) === fieldName),
+        })
+      : { valueText: "", valueJson: {}, sourceType: "" }
+    const hasSizeChartValue = hasValue(recordValue(sizeChartDerived.valueJson))
     const mdmDerived = existingManual
       ? { valueText: "", valueJson: {} }
-      : buildProductArchiveMdmDerivedFieldValue(fieldName, { spu, skus: mdmSkus, dateText })
+      : hasSizeChartValue
+        ? { valueText: "", valueJson: sizeChartDerived.valueJson }
+        : buildProductArchiveMdmDerivedFieldValue(fieldName, { spu, skus: mdmSkus, dateText })
     const rawValueText = existingManual
       ? stringValue(existing.value_text)
       : sourceValueText || mdmDerived.valueText
     const valueText = normalizeProductArchiveDeepdrawFieldValue(fieldName, rawValueText, arrayValue(template.options_json))
     const valueJson = existingManual ? recordValue(existing.value_json) : mdmDerived.valueJson
+    const fieldSourceType = existingManual
+      ? (stringValue(existing.source_type) || "manual")
+      : hasSizeChartValue
+        ? "size_chart"
+        : ruleSourceType
     const required = isProductArchiveFieldLocallyRequired(fieldName, {
       templateRequired: template.required,
       templatePresent: hasValue(template.field_name) || hasValue(template.field_id),
       ruleBlocking: rule.blocking,
-      sourceType,
+      sourceType: fieldSourceType,
     })
     const blocking = required
-    const missing = blocking && sourceType !== "skip" && !hasValue(valueText) && !hasValue(valueJson)
+    const missing = blocking && fieldSourceType !== "skip" && !hasValue(valueText) && !hasValue(valueJson)
     return {
       fieldName,
       fieldId: stringValue(template.field_id) || null,
-      sourceType: existingManual ? (stringValue(existing.source_type) || "manual") : sourceType,
-      sourceRef: stringValue(rule.mapped_field || rule.source_field || rule.field_source || rule.source_table) || null,
+      sourceType: fieldSourceType,
+      sourceRef: hasSizeChartValue
+        ? "PLM尺码表"
+        : stringValue(rule.mapped_field || rule.source_field || rule.field_source || rule.source_table) || null,
       valueText: valueText || null,
       valueJson,
       required,
       blocking,
       manualOverride: existingManual,
-      validationStatus: sourceType === "skip" ? "skipped" : missing ? "missing" : "valid",
+      validationStatus: fieldSourceType === "skip" ? "skipped" : missing ? "missing" : "valid",
       validationMessage: missing ? "必填字段缺失" : null,
     }
   })
@@ -1939,9 +2081,19 @@ function rebuildProductArchiveDraftFields(
 function serializeDraftDetail(db: SyncPostgresDatabase, draftId: number) {
   const draft = draftById(db, draftId)
   const sourceRows = referenceSourceRowsForDraft(db, draft)
+  const sizeChartSourceRows = sizeChartSourceRowJson(sourceRowsForDraft(db, draft)).map((row) => ({
+    spuCode: stringValue(row.款号 ?? row.spuCode ?? row.spu_code),
+    measurementPoint: stringValue(row.测量点 ?? row.measurementPoint ?? row.measurement_point),
+    size: normalizeDeepdrawSize(row.size ?? row.尺码),
+    sizeValue: stringValue(row.尺码值 ?? row.sizeValue ?? row.size_value),
+    sheetName: stringValue(row.sheetName),
+    rowNumber: numberValue(row.rowNumber),
+    rowJson: row,
+  }))
   return {
     draft,
     launchPlanReference: buildLaunchPlanCategoryReference(sourceRows),
+    sizeChartSourceRows,
     fields: db.prepare(`
       select field.*, template.options_json
       from product_archive_draft_field field
@@ -2028,7 +2180,9 @@ export function importProductArchiveSourceRows(db: SyncPostgresDatabase, input: 
   const rows = Array.isArray(input.rows) ? input.rows : []
   const normalizedRows = sourceType === "field_mapping"
     ? parseProductArchiveFieldRuleRows(rows)
-    : normalizeProductArchiveSourceRows(sourceType, rows)
+    : sourceType === "size_chart"
+      ? normalizePlmSizeChartRows(rows, { sheetName: input.sheetName ?? undefined })
+      : normalizeProductArchiveSourceRows(sourceType, rows)
   const now = nowIso()
 
   const batchId = db.transaction(() => {
@@ -2124,7 +2278,7 @@ export function importProductArchiveSourceRows(db: SyncPostgresDatabase, input: 
 
 export function refreshProductArchiveDraftsFromSourceBatch(db: SyncPostgresDatabase, input: RefreshSourceBatchInput) {
   const sourceType = sourceImportType(input.sourceType)
-  if (!["launch_plan", "copywriting"].includes(sourceType)) {
+  if (!["launch_plan", "copywriting", "size_chart"].includes(sourceType)) {
     return { scannedDraftCount: 0, refreshedDraftCount: 0, autoAppliedTradeCount: 0, skippedNoTradeMatchCount: 0, failedDrafts: [] }
   }
   const sourceBatchId = numberValue(input.sourceBatchId)
@@ -2208,7 +2362,7 @@ export async function refreshProductArchiveDraftsFromSourceBatchInChunks(
   options: RefreshSourceBatchChunkOptions = {},
 ) {
   const sourceType = sourceImportType(input.sourceType)
-  if (!["launch_plan", "copywriting"].includes(sourceType)) {
+  if (!["launch_plan", "copywriting", "size_chart"].includes(sourceType)) {
     return { scannedDraftCount: 0, refreshedDraftCount: 0, autoAppliedTradeCount: 0, skippedNoTradeMatchCount: 0, failedDrafts: [] }
   }
   const sourceBatchId = numberValue(input.sourceBatchId)
@@ -2603,6 +2757,228 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
   return { saved, detail: validated.detail }
 }
 
+function sizeChartTemplateFieldsForDraft(db: SyncPostgresDatabase, draft: JsonRecord) {
+  return tradeFieldsForDraft(db, draft)
+    .filter((field) => compactFieldKey(field.field_name).includes("尺码表"))
+    .map((field) => ({
+      fieldName: stringValue(field.field_name),
+      options: arrayValue(field.options_json),
+    }))
+    .filter((field) => field.fieldName)
+}
+
+function ruleBasedSizeChartRecommendation(db: SyncPostgresDatabase, draft: JsonRecord) {
+  const sourceRows = sourceRowsForDraft(db, draft)
+  const templates = sizeChartTemplateFieldsForDraft(db, draft)
+  const savedMappings = sizeChartMappingsForDraft(db, draft)
+  const previews = templates.map((template) => buildProductArchiveSizeChartFieldValue({
+    fieldName: template.fieldName,
+    spuCode: stringValue(draft.spu_code),
+    sourceRows,
+    templateOptions: template.options,
+    mappings: savedMappings.filter((mapping) => stringValue(mapping.field_name ?? mapping.fieldName) === template.fieldName),
+  }))
+  return {
+    previews,
+    mappings: previews.flatMap((preview) => preview.mappings),
+  }
+}
+
+function buildSizeChartAiRecommendationPrompt(input: {
+  draft: JsonRecord
+  ruleMappings: JsonRecord[]
+  previews: JsonRecord[]
+  sourceRows: JsonRecord[]
+}) {
+  return JSON.stringify({
+    task: "为深绘尺码表字段推荐 PLM 测量点映射。高置信规则可以保留，中低置信或未命中字段需要给出保守建议，供人工审核。",
+    output_schema: {
+      mappings: [
+        {
+          fieldName: "深绘尺码表字段名，例如 尺码表/上衣尺码表/裤子尺码表",
+          targetField: "深绘尺码表内字段，例如 袖口",
+          sourcePoint: "PLM 测量点名称",
+          confidence: "high/medium/low/manual/unmatched",
+          reason: "一句中文理由",
+        },
+      ],
+    },
+    rules: [
+      "只返回 JSON，不要 Markdown。",
+      "不能编造 PLM 测量点，只能从输入 measurement_points 中选择。",
+      "领口/领围类字段证据不足时不要自动高置信匹配。",
+      "低置信结果只作为人工审核建议。",
+    ],
+    product: {
+      spu_code: input.draft.spu_code,
+      trade_id: input.draft.trade_id,
+      trade_path: input.draft.trade_path,
+    },
+    measurement_points: uniqueTextValues(input.sourceRows
+      .filter((row) => stringValue(row.source_type) === "size_chart")
+      .map((row) => recordValue(row.row_json).测量点)),
+    rule_mappings: input.ruleMappings,
+    generated_previews: input.previews.map((preview) => ({
+      fieldName: preview.fieldName,
+      valueJson: preview.valueJson,
+      unmatchedTargets: preview.unmatchedTargets,
+    })),
+  }, null, 2)
+}
+
+async function callDeepdrawSizeChartAiRecommendation(prompt: string, options: AiFillOptions = {}) {
+  const config = resolveAiConfig()
+  if (!config.apiKey) return []
+  const fetchImpl = options.fetchImpl ?? fetch
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), config.timeoutMs)
+  try {
+    const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: config.model,
+        temperature: 0.1,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: "你是深绘商品尺码表字段映射专家，负责保守推荐 PLM 测量点到深绘尺码表字段的关系。" },
+          { role: "user", content: prompt },
+        ],
+      }),
+      signal: controller.signal,
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) throw new Error(`DeepDraw size-chart AI recommendation failed: HTTP ${response.status}`)
+    const text = responseMessageContent(payload)
+    const json = JSON.parse(extractJsonText(text))
+    return Array.isArray(json.mappings) ? json.mappings as JsonRecord[] : []
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+function normalizeSizeChartMappingSuggestion(mapping: JsonRecord, fallbackSource = "rule_fallback") {
+  const confidence = stringValue(mapping.confidence) || "manual"
+  const source = stringValue(mapping.source) || fallbackSource
+  return {
+    fieldName: stringValue(mapping.fieldName ?? mapping.field_name),
+    targetField: stringValue(mapping.targetField ?? mapping.target_field),
+    sourcePoint: stringValue(mapping.sourcePoint ?? mapping.source_point) || null,
+    confidence: ["high", "medium", "low", "manual", "unmatched"].includes(confidence) ? confidence : "manual",
+    source: ["rule", "ai", "rule_fallback", "manual"].includes(source) ? source : fallbackSource,
+    reason: stringValue(mapping.reason),
+  }
+}
+
+export async function recommendProductArchiveSizeChartMappings(
+  db: SyncPostgresDatabase,
+  draftId: number,
+  options: AiFillOptions = {},
+) {
+  const draft = draftById(db, draftId)
+  const sourceRows = sourceRowsForDraft(db, draft)
+  const ruleRecommendation = ruleBasedSizeChartRecommendation(db, draft)
+  const ruleMappings = ruleRecommendation.mappings.map((mapping) => normalizeSizeChartMappingSuggestion(mapping, "rule"))
+  const prompt = buildSizeChartAiRecommendationPrompt({
+    draft,
+    ruleMappings,
+    previews: ruleRecommendation.previews,
+    sourceRows,
+  })
+  const aiMappings = await callDeepdrawSizeChartAiRecommendation(prompt, options).catch(() => [] as JsonRecord[])
+  const mappings = aiMappings.length > 0
+    ? aiMappings.map((mapping) => normalizeSizeChartMappingSuggestion({ ...mapping, source: "ai" }, "ai"))
+    : ruleMappings.map((mapping) => ({ ...mapping, source: mapping.source === "rule" ? "rule_fallback" : mapping.source }))
+  return {
+    draftId,
+    source: aiMappings.length > 0 ? "ai" : "rule_fallback",
+    mappings,
+    previews: ruleRecommendation.previews,
+  }
+}
+
+export function saveProductArchiveSizeChartMappings(db: SyncPostgresDatabase, draftId: number, input: {
+  mappings?: JsonRecord[]
+  applyToDraft?: boolean
+}) {
+  const draft = draftById(db, draftId)
+  const mappings = Array.isArray(input.mappings) ? input.mappings : []
+  const now = nowIso()
+  const saved: JsonRecord[] = []
+  db.transaction(() => {
+    const saveMapping = db.prepare(`
+      insert into product_archive_size_chart_mapping (
+        tenant_name,
+        merchant_id,
+        trade_id,
+        field_name,
+        target_field,
+        source_point,
+        confidence,
+        source,
+        review_status,
+        evidence_json,
+        updated_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::timestamptz)
+      on conflict (tenant_name, merchant_id, trade_id, field_name, target_field)
+      do update set
+        source_point = excluded.source_point,
+        confidence = excluded.confidence,
+        source = excluded.source,
+        review_status = excluded.review_status,
+        evidence_json = excluded.evidence_json,
+        updated_at = excluded.updated_at
+    `)
+    for (const rawMapping of mappings) {
+      const mapping = normalizeSizeChartMappingSuggestion(rawMapping, "manual")
+      if (!mapping.fieldName || !mapping.targetField) continue
+      const reviewStatus = ["pending", "approved", "rejected"].includes(stringValue(rawMapping.reviewStatus ?? rawMapping.review_status))
+        ? stringValue(rawMapping.reviewStatus ?? rawMapping.review_status)
+        : "approved"
+      saveMapping.run(
+        draft.tenant_name,
+        draft.merchant_id,
+        draft.trade_id,
+        mapping.fieldName,
+        mapping.targetField,
+        mapping.sourcePoint,
+        mapping.confidence,
+        mapping.source,
+        reviewStatus,
+        jsonText({
+          reason: mapping.reason,
+          saved_at: now,
+        }),
+        now,
+      )
+      saved.push({ ...mapping, reviewStatus })
+    }
+  })()
+  if (input.applyToDraft) {
+    rebuildProductArchiveDraftFields(db, draftId)
+    const validated = validateProductArchiveDraft(db, draftId)
+    return { draftId, saved, detail: validated.detail }
+  }
+  return { draftId, saved }
+}
+
+function sizeChartAllowedSizes(fields: JsonRecord[], skus: JsonRecord[]) {
+  const fieldSizes = fields
+    .filter((field) => ["尺码", "尺寸"].includes(compactFieldKey(field.field_name)))
+    .flatMap((field) => stringValue(field.value_text).split(/[;；,，]/))
+    .map((size) => deepdrawSizeValue(size))
+    .filter(Boolean)
+  if (fieldSizes.length > 0) return uniqueTextValues(fieldSizes)
+  return uniqueTextValues(skus.flatMap((sku) => [
+    deepdrawSizeValue(sku.size_name),
+    deepdrawSizeValue(sku.size_code),
+  ]))
+}
+
 export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: number) {
   const draft = draftById(db, draftId)
   const fields = db.prepare("select * from product_archive_draft_field where draft_id = ?").all(draftId) as JsonRecord[]
@@ -2670,6 +3046,17 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
     .flatMap(([, template]) => template.options.map(optionText).filter(Boolean))
   const allowedColors = new Set(colorOptions)
   const allowedSizes = new Set(sizeOptions)
+  const allowedSizeChartSizes = sizeChartAllowedSizes(fields, skus)
+
+  for (const field of fields) {
+    const fieldName = stringValue(field.field_name)
+    if (!compactFieldKey(fieldName).includes("尺码表")) continue
+    issues.push(...validateProductArchiveSizeChartValue({
+      fieldName,
+      valueJson: field.value_json,
+      allowedSizes: allowedSizeChartSizes,
+    }))
+  }
 
   for (const sku of skus) {
     if (!stringValue(sku.color_name)) {

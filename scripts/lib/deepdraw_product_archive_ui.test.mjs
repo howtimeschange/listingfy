@@ -339,10 +339,14 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.doesNotMatch(draftListPage, /1\.\s*同步 MDM/);
   assert.match(draftListPage, /1\.\s*导入标准文案表/);
   assert.match(draftListPage, /2\.\s*匹配\/导入上市计划/);
+  assert.match(draftListPage, /3\.\s*导入尺码表模板/);
   assert.match(draftListPage, /api\.postForm<.*>\("\/product-archive-drafts\/workflow\/start"/s);
   assert.doesNotMatch(draftListPage, /form\.append\("mdmCodes"/);
   assert.match(draftListPage, /copywritingFile/);
   assert.match(draftListPage, /launchPlanFile/);
+  assert.match(draftListPage, /sizeChartFile/);
+  assert.match(draftListPage, /sourceType.*size_chart/s);
+  assert.match(draftListPage, /导入尺码表/);
   assert.match(draftListPage, /result\.syncJob/);
   assert.match(draftListPage, /useAsyncTasks/);
   assert.match(draftListPage, /addTask/);
@@ -372,6 +376,37 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftDetailPage, /待确认类目/);
   assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/validate`/s);
   assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/ai-fill`/s);
+  assert.match(draftDetailPage, /尺码表配置/);
+  assert.match(draftDetailPage, /AI 推荐尺码映射/);
+  assert.match(draftDetailPage, /mapping\.confidence/);
+  assert.match(draftDetailPage, /sizeChartPreview/);
+  assert.match(draftDetailPage, /sizeChartCellValues/);
+  assert.match(draftDetailPage, /保存尺码表数值/);
+  assert.match(draftDetailPage, /mappingForSizeChartColumn/);
+  assert.match(draftDetailPage, /字段映射审核弹窗/);
+  assert.match(draftDetailPage, /查看全部映射/);
+  assert.match(draftDetailPage, /PLM 导入字段对照/);
+  assert.match(draftDetailPage, /sizeChartSourceMatrix/);
+  assert.match(draftDetailPage, /const \[sizeChartSourceOpen, setSizeChartSourceOpen\] = useState\(false\)/);
+  assert.match(draftDetailPage, /const \[sizeChartSourcePinned, setSizeChartSourcePinned\] = useState\(false\)/);
+  assert.match(draftDetailPage, /固定在顶部/);
+  assert.match(draftDetailPage, /setSizeChartSourceOpen\(true\)/);
+  assert.match(draftDetailPage, /sticky top-\[-1\.5rem\] z-20 md:top-\[-2rem\]/);
+  assert.match(draftDetailPage, /CollapsibleTrigger/);
+  assert.match(draftDetailPage, /TabsContent value="size-chart" className="min-w-0"/);
+  assert.match(draftDetailPage, /<TabsContent value="size-chart" className="min-w-0">[\s\S]*?<Card className="min-w-0 overflow-visible">/);
+  assert.match(draftDetailPage, /CardContent className="grid min-w-0 gap-5 overflow-visible"/);
+  assert.match(draftDetailPage, /Table className="w-max min-w-full"/);
+  assert.match(draftDetailPage, /min-w-0 overflow-hidden rounded-md border/);
+  assert.ok(
+    draftDetailPage.indexOf("PLM 导入字段对照") < draftDetailPage.indexOf("sizeChartPreview.length > 0 ?"),
+    "expected PLM import field comparison to render before generated DeepDraw size charts",
+  );
+  assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/size-chart\/ai-recommend`/s);
+  assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/size-chart\/mappings`/s);
+  assert.match(draftDetailPage, /const applySizeChartMappings = useMutation/);
+  assert.match(draftDetailPage, /applyToDraft:\s*true/);
+  assert.match(draftDetailPage, /applySizeChartMappings\.mutate[\s\S]*应用到草稿/);
   assert.match(draftDetailPage, /queryClient\.setQueryData\(\["product-archive-drafts", draftId\], result\.detail\)/);
   assert.match(draftDetailPage, /AI 推荐补齐空字段/);
   assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/submit`/s);

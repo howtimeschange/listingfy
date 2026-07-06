@@ -14,11 +14,11 @@ function Table({ className, containerClassName, containerOnScroll, containerRef,
       data-slot="table-container"
       ref={containerRef}
       onScroll={containerOnScroll}
-      className={cn("relative w-full overflow-x-auto", containerClassName)}
+      className={cn("relative min-w-0 max-w-full overflow-x-auto", containerClassName)}
     >
       <table
         data-slot="table"
-        className={cn("w-full caption-bottom text-sm", className)}
+        className={cn("min-w-full caption-bottom text-sm", className)}
         {...props}
       />
     </div>

@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useRef, useState } from "react"
 import { Link, useParams } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, ClipboardCheck, ListTree, Loader2, RefreshCw, Save, Search, Send, Sparkles } from "lucide-react"
+import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, ClipboardCheck, ListTree, Loader2, Pin, PinOff, RefreshCw, Save, Search, Send, Sparkles } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
@@ -12,6 +12,7 @@ import { PageHeader } from "@/components/layout/page-header"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   Dialog,
   DialogContent,
@@ -63,6 +64,7 @@ interface DraftField {
   field_name: string
   source_type: string
   value_text: string | null
+  value_json?: unknown
   required: boolean
   blocking: boolean
   manual_override: boolean
@@ -106,6 +108,7 @@ interface DraftLog {
 interface DraftDetail {
   draft: Draft
   launchPlanReference?: LaunchPlanReference
+  sizeChartSourceRows?: SizeChartSourceRow[]
   fields: DraftField[]
   skus: DraftSku[]
   issues: DraftIssue[]
@@ -136,6 +139,57 @@ interface TradeListResponse {
 interface FieldOption {
   label: string
   value: string
+}
+
+interface SizeChartSourceRow {
+  spuCode: string
+  measurementPoint: string
+  size: string
+  sizeValue: string
+  sheetName?: string
+  rowNumber?: number | null
+  rowJson?: Record<string, unknown>
+}
+
+interface SizeChartMapping {
+  fieldName: string
+  targetField: string
+  sourcePoint: string | null
+  confidence: string
+  source: string
+  reason?: string
+}
+
+interface SizeChartPreviewItem {
+  fieldId: number
+  fieldName: string
+  valueJson: Record<string, unknown>
+  rows: Array<{ size: string; values: string[] }>
+  titles: string[]
+}
+
+interface SizeChartSourceMatrix {
+  titles: string[]
+  rows: Array<{ size: string; values: string[] }>
+  rowCount: number
+}
+
+interface SizeChartRecommendationResponse {
+  draftId: number
+  source: string
+  mappings: SizeChartMapping[]
+  previews?: Array<{
+    fieldName: string
+    valueJson: Record<string, unknown>
+    mappings: SizeChartMapping[]
+    unmatchedTargets: string[]
+  }>
+}
+
+interface SizeChartMappingSaveResponse {
+  draftId: number
+  saved: SizeChartMapping[]
+  detail?: DraftDetail
 }
 
 function useDraftDetail(draftId: string | undefined) {
@@ -205,6 +259,108 @@ function fieldOptions(field: DraftField): FieldOption[] {
   return deduped
 }
 
+function recordValue(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
+    } catch {
+      return {}
+    }
+  }
+  return {}
+}
+
+function compactFieldKey(value: string) {
+  return value.replace(/\s+/g, "").replace(/[()（）]/g, "").toLowerCase()
+}
+
+function sizeChartRows(valueJson: unknown) {
+  const record = recordValue(valueJson)
+  const titles = String(record.title ?? "").split(",").map((item) => item.trim()).filter(Boolean)
+  const rows = Object.entries(record)
+    .filter(([key]) => key !== "title")
+    .map(([size, value]) => ({ size, values: String(value ?? "").split(",").map((item) => item.trim()) }))
+  return { titles, rows }
+}
+
+function sizeChartCellKey(fieldName: string, size: string, title: string) {
+  return [fieldName, size, title].join("\u0000")
+}
+
+function sizeChartCellValue(preview: SizeChartPreviewItem, size: string, title: string, index: number, edits: Record<string, string>) {
+  const key = sizeChartCellKey(preview.fieldName, size, title)
+  return edits[key] ?? preview.rows.find((row) => row.size === size)?.values[index] ?? "0"
+}
+
+function sizeChartValueJson(preview: SizeChartPreviewItem, edits: Record<string, string>) {
+  const output: Record<string, string> = {
+    title: preview.titles.join(","),
+  }
+  for (const row of preview.rows) {
+    output[row.size] = preview.titles
+      .map((title, index) => sizeChartCellValue(preview, row.size, title, index, edits) || "0")
+      .join(",")
+  }
+  return output
+}
+
+function normalizedSizeChartValueJson(preview: SizeChartPreviewItem) {
+  return sizeChartValueJson(preview, {})
+}
+
+function sortSizeLabels(values: string[]) {
+  return [...values].sort((left, right) => {
+    const leftNumber = Number(left.match(/\d+/)?.[0] ?? NaN)
+    const rightNumber = Number(right.match(/\d+/)?.[0] ?? NaN)
+    if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && leftNumber !== rightNumber) {
+      return leftNumber - rightNumber
+    }
+    return left.localeCompare(right, "zh-Hans-CN")
+  })
+}
+
+function normalizeSizeLabel(value: string) {
+  const text = String(value ?? "").trim().replace(/\/+$/, "")
+  if (!text) return ""
+  const match = text.match(/^0*(\d{2,3})(?:cm)?$/i)
+  return match ? `${Number(match[1])}cm` : text
+}
+
+function sizeChartSourceMatrix(rows: SizeChartSourceRow[]): SizeChartSourceMatrix {
+  const titles: string[] = []
+  const sizes = new Set<string>()
+  const valueLookup = new Map<string, string>()
+  for (const row of rows) {
+    const measurementPoint = row.measurementPoint.trim()
+    const size = normalizeSizeLabel(row.size)
+    const sizeValue = String(row.sizeValue ?? "").trim()
+    if (!measurementPoint || !size) continue
+    if (!titles.includes(measurementPoint)) titles.push(measurementPoint)
+    sizes.add(size)
+    const key = `${measurementPoint}\u0000${size}`
+    if (!valueLookup.has(key) || (!valueLookup.get(key) && sizeValue)) {
+      valueLookup.set(key, sizeValue)
+    }
+  }
+  return {
+    titles,
+    rowCount: rows.length,
+    rows: sortSizeLabels(Array.from(sizes)).map((size) => ({
+      size,
+      values: titles.map((title) => valueLookup.get(`${title}\u0000${size}`) ?? "-"),
+    })),
+  }
+}
+
+function mappingForSizeChartColumn(mappings: SizeChartMapping[], fieldName: string, targetField: string) {
+  return mappings.find((mapping) => (
+    mapping.fieldName === fieldName
+    && compactFieldKey(mapping.targetField) === compactFieldKey(targetField)
+  ))
+}
+
 function issueSummaryText(issues: DraftIssue[]) {
   return Array.from(new Set(issues.map((issue) => issue.message).filter(Boolean))).join("；")
 }
@@ -231,6 +387,11 @@ export default function ProductArchiveDraftDetailPage() {
   const [fieldValues, setFieldValues] = useState<Record<number, string>>({})
   const [tradeDialogOpen, setTradeDialogOpen] = useState(false)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
+  const [sizeChartMappingDialogOpen, setSizeChartMappingDialogOpen] = useState(false)
+  const [sizeChartSourceOpen, setSizeChartSourceOpen] = useState(false)
+  const [sizeChartSourcePinned, setSizeChartSourcePinned] = useState(false)
+  const [sizeChartRecommendation, setSizeChartRecommendation] = useState<SizeChartRecommendationResponse | null>(null)
+  const [sizeChartCellValues, setSizeChartCellValues] = useState<Record<string, string>>({})
   const [tradeSearch, setTradeSearch] = useState("")
   const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null)
   const [activeIssueIndex, setActiveIssueIndex] = useState(0)
@@ -288,6 +449,43 @@ export default function ProductArchiveDraftDetailPage() {
   const hasValidationIssues = fieldIssueNames.length > 0
   const blockerIssueCount = unresolvedFieldIssues.filter((issue) => issue.severity === "blocker").length
   const warningIssueCount = unresolvedFieldIssues.filter((issue) => issue.severity === "warning").length
+  const sizeChartPreview = useMemo<SizeChartPreviewItem[]>(() => {
+    const recommendationPreviews = new Map((sizeChartRecommendation?.previews ?? []).map((preview) => [
+      preview.fieldName,
+      recordValue(preview.valueJson),
+    ]))
+    return (detail.data?.fields ?? [])
+      .filter((field) => compactFieldKey(field.field_name).includes("尺码表"))
+      .map((field) => {
+        const valueJson = recommendationPreviews.get(field.field_name) ?? recordValue(field.value_json)
+        const parsed = sizeChartRows(valueJson)
+        return {
+          fieldId: field.id,
+          fieldName: field.field_name,
+          valueJson,
+          rows: parsed.rows,
+          titles: parsed.titles,
+        }
+      })
+  }, [detail.data?.fields, sizeChartRecommendation?.previews])
+  const activeSizeChartMappings = sizeChartRecommendation?.mappings ?? []
+  const sizeChartImportedMatrix = useMemo(() => (
+    sizeChartSourceMatrix(detail.data?.sizeChartSourceRows ?? [])
+  ), [detail.data?.sizeChartSourceRows])
+  const sizeChartChangedFields = useMemo(() => {
+    return sizeChartPreview
+      .map((preview) => {
+        const nextValueJson = sizeChartValueJson(preview, sizeChartCellValues)
+        const currentValueJson = normalizedSizeChartValueJson(preview)
+        if (JSON.stringify(nextValueJson) === JSON.stringify(currentValueJson)) return null
+        return {
+          id: preview.fieldId,
+          valueText: "",
+          valueJson: nextValueJson,
+        }
+      })
+      .filter(Boolean) as Array<{ id: number; valueText: string; valueJson: Record<string, string> }>
+  }, [sizeChartCellValues, sizeChartPreview])
   const scrollToFieldIssue = (nextIndex: number) => {
     if (fieldIssueNames.length === 0) return
     const normalizedIndex = ((nextIndex % fieldIssueNames.length) + fieldIssueNames.length) % fieldIssueNames.length
@@ -319,6 +517,20 @@ export default function ProductArchiveDraftDetailPage() {
       toast.success("字段已保存")
       setFieldValues({})
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+    },
+  })
+
+  const saveSizeChartValues = useMutation({
+    mutationFn: () =>
+      api.patch<DraftDetail>(`/product-archive-drafts/${draftId}/fields`, { fields: sizeChartChangedFields }),
+    onSuccess: (result) => {
+      toast.success("尺码表数值已保存")
+      setSizeChartCellValues({})
+      queryClient.setQueryData(["product-archive-drafts", draftId], result)
+      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "保存尺码表数值失败")
     },
   })
 
@@ -361,6 +573,51 @@ export default function ProductArchiveDraftDetailPage() {
           : "已刷新字段规则和 AI 推荐结果",
       )
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+    },
+  })
+
+  const recommendSizeChartMappings = useMutation({
+    mutationFn: () => api.post<SizeChartRecommendationResponse>(`/product-archive-drafts/${draftId}/size-chart/ai-recommend`),
+    onSuccess: (result) => {
+      setSizeChartRecommendation(result)
+      toast.success(
+        result.source === "ai"
+          ? `AI 已推荐 ${formatNumber(result.mappings.length)} 条尺码映射`
+          : "已生成规则兜底尺码映射建议",
+      )
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "AI 推荐尺码映射失败")
+    },
+  })
+
+  const saveSizeChartMappings = useMutation({
+    mutationFn: () => api.post<SizeChartMappingSaveResponse>(`/product-archive-drafts/${draftId}/size-chart/mappings`, {
+      mappings: sizeChartRecommendation?.mappings ?? [],
+      applyToDraft: false,
+    }),
+    onSuccess: () => {
+      toast.success("尺码表映射审核已保存")
+      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "保存尺码表映射失败")
+    },
+  })
+
+  const applySizeChartMappings = useMutation({
+    mutationFn: () => api.post<SizeChartMappingSaveResponse>(`/product-archive-drafts/${draftId}/size-chart/mappings`, {
+      mappings: sizeChartRecommendation?.mappings ?? [],
+      applyToDraft: true,
+    }),
+    onSuccess: (result) => {
+      if (result.detail) queryClient.setQueryData(["product-archive-drafts", draftId], result.detail)
+      setSizeChartCellValues({})
+      toast.success("尺码表映射已应用到草稿")
+      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "应用尺码表映射失败")
     },
   })
 
@@ -572,7 +829,7 @@ export default function ProductArchiveDraftDetailPage() {
         </dl>
       </section>
 
-      <Tabs defaultValue="fields" className="min-h-0">
+      <Tabs defaultValue="fields" className="min-h-0 min-w-0">
         <TabsList>
           <TabsTrigger value="fields" className={cn(fieldIssueNames.length > 0 && "pr-5")}>
             字段填充
@@ -585,14 +842,15 @@ export default function ProductArchiveDraftDetailPage() {
               </span>
             ) : null}
           </TabsTrigger>
+          <TabsTrigger value="size-chart">尺码表配置</TabsTrigger>
           <TabsTrigger value="skus">SKU/颜色尺码</TabsTrigger>
           <TabsTrigger value="issues">校验问题</TabsTrigger>
           <TabsTrigger value="logs">提交记录</TabsTrigger>
           <TabsTrigger value="source">来源快照</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="fields">
-          <Card>
+        <TabsContent value="fields" className="min-w-0">
+              <Card className="min-w-0 overflow-hidden">
             <CardHeader>
               <div>
                 <CardTitle>字段填充</CardTitle>
@@ -700,7 +958,7 @@ export default function ProductArchiveDraftDetailPage() {
                   </Button>
                 </div>
               ) : (
-                <Table containerClassName="px-6 pt-4">
+                <Table className="w-max min-w-full" containerClassName="px-6 pt-4">
                   <TableHeader>
                     <TableRow>
                       <TableHead>字段名</TableHead>
@@ -815,15 +1073,268 @@ export default function ProductArchiveDraftDetailPage() {
               )}
             </CardContent>
           </Card>
-        </TabsContent>
+          </TabsContent>
 
-        <TabsContent value="skus">
-          <Card>
+          <TabsContent value="size-chart" className="min-w-0">
+            <Card className="min-w-0 overflow-visible">
+              <CardHeader className="flex-row flex-wrap items-start justify-between gap-4">
+                <div>
+                  <CardTitle>尺码表配置</CardTitle>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    根据 PLM 尺码表模板生成深绘尺码表字段，数值可人工修正，映射关系可审核保存。
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={recommendSizeChartMappings.isPending}
+                    onClick={() => recommendSizeChartMappings.mutate()}
+                  >
+                    {recommendSizeChartMappings.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+                    AI 推荐尺码映射
+                  </Button>
+                  <Dialog open={sizeChartMappingDialogOpen} onOpenChange={setSizeChartMappingDialogOpen}>
+                    <DialogTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={!activeSizeChartMappings.length}
+                      >
+                        <ClipboardCheck className="size-4" />
+                        查看全部映射
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent className="grid max-h-[82vh] grid-rows-[auto_minmax(0,1fr)_auto] sm:max-w-5xl">
+                      <DialogHeader>
+                        <DialogTitle>字段映射审核弹窗</DialogTitle>
+                        <DialogDescription>
+                          {activeSizeChartMappings.length > 0
+                            ? `当前 ${formatNumber(activeSizeChartMappings.length)} 条映射建议`
+                            : "暂无映射建议"}
+                        </DialogDescription>
+                      </DialogHeader>
+                      <ScrollArea className="min-h-0 rounded-md border">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>尺码表</TableHead>
+                              <TableHead>深绘字段</TableHead>
+                              <TableHead>PLM 测量点</TableHead>
+                              <TableHead>置信度</TableHead>
+                              <TableHead>来源</TableHead>
+                              <TableHead>理由</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {activeSizeChartMappings.map((mapping, index) => (
+                              <TableRow key={`${mapping.fieldName}-${mapping.targetField}-${index}`}>
+                                <TableCell>{mapping.fieldName}</TableCell>
+                                <TableCell>{mapping.targetField}</TableCell>
+                                <TableCell>{mapping.sourcePoint || "待人工判断"}</TableCell>
+                                <TableCell>
+                                  <Badge variant="outline">{mapping.confidence}</Badge>
+                                </TableCell>
+                                <TableCell>{mapping.source}</TableCell>
+                                <TableCell className="max-w-[360px] whitespace-normal">{mapping.reason || "-"}</TableCell>
+                              </TableRow>
+                            ))}
+                            {!activeSizeChartMappings.length ? (
+                              <TableRow>
+                                <TableCell colSpan={6} className="py-6 text-center text-sm text-muted-foreground">
+                                  点击 AI 推荐尺码映射后查看待审核关系。
+                                </TableCell>
+                              </TableRow>
+                            ) : null}
+                          </TableBody>
+                        </Table>
+                      </ScrollArea>
+                      <DialogFooter>
+                        <Button type="button" variant="outline" onClick={() => setSizeChartMappingDialogOpen(false)}>
+                          关闭
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!sizeChartRecommendation?.mappings.length || applySizeChartMappings.isPending || saveSizeChartMappings.isPending}
+                    onClick={() => applySizeChartMappings.mutate()}
+                  >
+                    {applySizeChartMappings.isPending ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />}
+                    应用到草稿
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={sizeChartChangedFields.length === 0 || saveSizeChartValues.isPending}
+                    onClick={() => saveSizeChartValues.mutate()}
+                  >
+                    {saveSizeChartValues.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+                    保存尺码表数值
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={!sizeChartRecommendation?.mappings.length || applySizeChartMappings.isPending || saveSizeChartMappings.isPending}
+                    onClick={() => saveSizeChartMappings.mutate()}
+                  >
+                    {saveSizeChartMappings.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+                    保存人工审核
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent className="grid min-w-0 gap-5 overflow-visible">
+                <Collapsible
+                  open={sizeChartSourceOpen}
+                  onOpenChange={setSizeChartSourceOpen}
+                  className={cn(
+                    "min-w-0 overflow-hidden rounded-md border bg-card",
+                    sizeChartSourcePinned && "sticky top-[-1.5rem] z-20 md:top-[-2rem] shadow-[0_8px_18px_rgba(15,23,42,0.08)]",
+                  )}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+                    <div>
+                      <div className="text-sm font-medium">PLM 导入字段对照</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        测量点 {formatNumber(sizeChartImportedMatrix.titles.length)} 项，尺码 {formatNumber(sizeChartImportedMatrix.rows.length)} 行，来源行 {formatNumber(sizeChartImportedMatrix.rowCount)} 条
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Button
+                        type="button"
+                        variant={sizeChartSourcePinned ? "secondary" : "outline"}
+                        size="sm"
+                        onClick={() => setSizeChartSourcePinned((current) => {
+                          const next = !current
+                          if (next) setSizeChartSourceOpen(true)
+                          return next
+                        })}
+                      >
+                        {sizeChartSourcePinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}
+                        {sizeChartSourcePinned ? "取消固定" : "固定在顶部"}
+                      </Button>
+                      <CollapsibleTrigger asChild>
+                        <Button type="button" variant="outline" size="sm">
+                          {sizeChartSourceOpen ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+                          {sizeChartSourceOpen ? "收起" : "展开"}
+                        </Button>
+                      </CollapsibleTrigger>
+                    </div>
+                  </div>
+                  <CollapsibleContent>
+                    {sizeChartImportedMatrix.rows.length > 0 ? (
+                      <Table className="w-max min-w-full">
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="w-24">尺码</TableHead>
+                            {sizeChartImportedMatrix.titles.map((title) => (
+                              <TableHead key={title} className="min-w-[150px] normal-case tracking-normal">{title}</TableHead>
+                            ))}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {sizeChartImportedMatrix.rows.map((row) => (
+                            <TableRow key={row.size}>
+                              <TableCell className="font-mono">{row.size}</TableCell>
+                              {sizeChartImportedMatrix.titles.map((title, index) => (
+                                <TableCell key={`${row.size}-${title}`} className="font-mono">{row.values[index]}</TableCell>
+                              ))}
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    ) : (
+                      <div className="px-4 py-6 text-sm text-muted-foreground">当前草稿未关联 PLM 尺码表导入字段。</div>
+                    )}
+                  </CollapsibleContent>
+                </Collapsible>
+
+                {sizeChartPreview.length > 0 ? (
+                  sizeChartPreview.map((preview) => (
+                    <div key={preview.fieldName} className="min-w-0 overflow-hidden rounded-md border">
+                      <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+                        <div>
+                          <div className="text-sm font-medium">{preview.fieldName}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            表头 {formatNumber(preview.titles.length)} 项，尺码 {formatNumber(preview.rows.length)} 行
+                          </div>
+                        </div>
+                        <Badge variant="outline">{Object.keys(preview.valueJson).length > 0 ? "已生成" : "未生成"}</Badge>
+                      </div>
+                      {preview.rows.length > 0 ? (
+                            <Table className="w-max min-w-full">
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="w-24 align-top">尺码</TableHead>
+                              {preview.titles.map((title) => {
+                                const mapping = mappingForSizeChartColumn(activeSizeChartMappings, preview.fieldName, title)
+                                return (
+                                  <TableHead key={title} className="min-w-[150px] align-top normal-case tracking-normal">
+                                    <div className="text-xs font-semibold text-foreground">{title}</div>
+                                    <div className="mt-1 flex min-h-8 flex-wrap items-center gap-1 text-[11px] leading-4 text-muted-foreground">
+                                      <span className="max-w-[118px] truncate">
+                                        {mapping?.sourcePoint || (mapping ? "待人工判断" : "未推荐")}
+                                      </span>
+                                      {mapping ? <Badge variant="outline" className="px-1.5 py-0 text-[10px]">{mapping.confidence}</Badge> : null}
+                                    </div>
+                                  </TableHead>
+                                )
+                              })}
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {preview.rows.map((row) => (
+                              <TableRow key={row.size}>
+                                <TableCell className="font-mono">{row.size}</TableCell>
+                                {preview.titles.map((title, index) => {
+                                  const key = sizeChartCellKey(preview.fieldName, row.size, title)
+                                  const value = sizeChartCellValue(preview, row.size, title, index, sizeChartCellValues)
+                                  return (
+                                    <TableCell key={`${row.size}-${title}`} className="min-w-[150px]">
+                                      <Input
+                                        value={value}
+                                        onChange={(event) => setSizeChartCellValues((current) => ({
+                                          ...current,
+                                          [key]: event.target.value,
+                                        }))}
+                                        className="h-8 w-28 font-mono"
+                                        inputMode="decimal"
+                                      />
+                                    </TableCell>
+                                  )
+                                })}
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      ) : (
+                        <div className="px-4 py-6 text-sm text-muted-foreground">当前字段还没有生成尺码表数据。</div>
+                      )}
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+                    当前深绘类目没有尺码表字段，或还未同步该类目的字段模板。
+                  </div>
+                )}
+
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="skus" className="min-w-0">
+            <Card className="min-w-0 overflow-hidden">
             <CardHeader>
               <CardTitle>SKU/颜色尺码</CardTitle>
             </CardHeader>
             <CardContent>
-              <Table>
+                  <Table className="w-max min-w-full">
                 <TableHeader>
                   <TableRow>
                     <TableHead>SKC</TableHead>
@@ -851,13 +1362,13 @@ export default function ProductArchiveDraftDetailPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="issues">
-          <Card>
+        <TabsContent value="issues" className="min-w-0">
+          <Card className="min-w-0 overflow-hidden">
             <CardHeader>
               <CardTitle>校验问题</CardTitle>
             </CardHeader>
             <CardContent>
-              <Table>
+              <Table className="w-max min-w-full">
                 <TableHeader>
                   <TableRow>
                     <TableHead>级别</TableHead>
@@ -883,13 +1394,13 @@ export default function ProductArchiveDraftDetailPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="logs">
-          <Card>
+        <TabsContent value="logs" className="min-w-0">
+          <Card className="min-w-0 overflow-hidden">
             <CardHeader>
               <CardTitle>提交记录</CardTitle>
             </CardHeader>
             <CardContent>
-              <Table>
+              <Table className="w-max min-w-full">
                 <TableHeader>
                   <TableRow>
                     <TableHead>操作</TableHead>
@@ -917,8 +1428,8 @@ export default function ProductArchiveDraftDetailPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="source">
-          <Card>
+        <TabsContent value="source" className="min-w-0">
+          <Card className="min-w-0 overflow-hidden">
             <CardHeader className="flex-row items-center justify-between">
               <CardTitle>来源快照</CardTitle>
               <RefreshCw className="size-4 text-muted-foreground" />
