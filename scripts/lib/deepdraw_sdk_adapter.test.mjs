@@ -245,6 +245,32 @@ test("buildDeepdrawSdkProductInput omits empty optional fields for blank-value u
   assert.equal(input.product.fields["商品详情"], "推荐理由");
 });
 
+test("buildDeepdrawSdkProductInput omits unsupported scalar multi-platform size fields", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      code: "208326105206",
+      title: "儿童外套",
+      tradeId: "12390",
+      retailPrice: 299,
+      fields: [
+        { name: "多平台尺码", value: "得物" },
+        { name: "适用季节", value: "春秋" },
+      ],
+      skus: [],
+    },
+  });
+
+  assert.equal(Object.hasOwn(input.product.fields, "多平台尺码"), false);
+  assert.equal(input.product.fields["适用季节"], "春秋");
+});
+
 test("buildDeepdrawSdkClasspath includes vendored SDK jars and Maven runtime jars", () => {
   const classpath = buildDeepdrawSdkClasspath({ projectRoot: PROJECT_ROOT });
 

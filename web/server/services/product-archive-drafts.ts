@@ -1693,6 +1693,7 @@ export function chooseProductArchiveAiFallbackOption(
   options: Array<{ value: string; label: string }>,
   contextText = "",
 ) {
+  if (isUnsupportedScalarProductPayloadField(fieldName)) return ""
   if (compactFieldKey(fieldName).includes("颜色")) return ""
   const evidenceText = `${stringValue(currentValue)} ${contextText}`
   const pick = (needles: string[]) => {
@@ -1841,6 +1842,7 @@ export function buildProductArchiveAiFillCandidateFields(
 ): ProductArchiveAiFillCandidate[] {
   const colorIssueValues = skuColorIssueValues(issues, skus)
   return fields
+    .filter((field) => !isUnsupportedScalarProductPayloadField(field.field_name))
     .map((field) => {
       const valueText = stringValue(field.value_text)
       const valueJson = recordValue(field.value_json)
@@ -2208,10 +2210,10 @@ function serializeDraftDetail(db: SyncPostgresDatabase, draftId: number) {
     sizeChartMappings,
     sizeChartSourceRows,
     fields: db.prepare(`
-      select field.*, template.options_json
+      select field.*, template.options_json, template.field_type
       from product_archive_draft_field field
       left join lateral (
-        select options_json
+        select options_json, field_type
         from deepdraw_trade_field_cache template
         where template.tenant_name = ?
           and template.merchant_id = ?
@@ -3240,7 +3242,12 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
   return { status, summary, issues, detail: serializeDraftDetail(db, draftId) }
 }
 
+function isUnsupportedScalarProductPayloadField(fieldName: unknown) {
+  return compactFieldKey(fieldName) === "多平台尺码"
+}
+
 function productPayloadFieldValue(field: JsonRecord) {
+  if (isUnsupportedScalarProductPayloadField(field.field_name)) return null
   const text = stringValue(field.value_text)
   if (text) return text
   const jsonValue = recordValue(field.value_json)

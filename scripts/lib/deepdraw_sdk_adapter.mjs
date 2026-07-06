@@ -71,6 +71,10 @@ function normalizeSdkFieldName(name) {
   return compactKey(name) === "商家sku" ? "商家SKU" : stringValue(name);
 }
 
+function isUnsupportedScalarSdkField(name, value) {
+  return compactKey(name) === "多平台尺码" && (!value || typeof value !== "object" || Array.isArray(value));
+}
+
 function fieldValue(field) {
   if (!field || typeof field !== "object") return field;
   return field.value ?? field.valueText ?? field.value_text ?? field.valueJson ?? field.value_json;
@@ -223,6 +227,7 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
     const name = normalizeSdkFieldName(fieldName(field));
     const value = fieldValue(field);
     if (!name || !hasValue(value)) continue;
+    if (isUnsupportedScalarSdkField(name, value)) continue;
     const key = compactKey(name);
     fields[name] = key === "商家sku"
       ? normalizeMerchantSkuField(value)

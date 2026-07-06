@@ -1009,6 +1009,38 @@ test("product archive AI fill includes color fields when SKU colors need templat
   ]);
 });
 
+test("product archive AI fill skips structural multi-platform size fields", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  const candidates = service.buildProductArchiveAiFillCandidateFields([
+    {
+      id: 301,
+      field_name: "多平台尺码",
+      source_type: "manual",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [{ value: "得物" }, { value: "京东" }],
+    },
+    {
+      id: 302,
+      field_name: "适用季节",
+      source_type: "manual",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [{ value: "春秋" }],
+    },
+  ], [], []);
+
+  assert.deepEqual(candidates.map((field) => field.fieldName), ["适用季节"]);
+  assert.equal(service.chooseProductArchiveAiFallbackOption("多平台尺码", "", [
+    { value: "得物", label: "得物" },
+  ]), "");
+});
+
 test("product archive AI fill normalizes color choices back to DeepDraw alias values", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
