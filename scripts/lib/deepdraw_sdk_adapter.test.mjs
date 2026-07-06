@@ -114,6 +114,73 @@ test("buildDeepdrawSdkProductInput keeps color aliases and SKU bucket keys align
   });
 });
 
+test("buildDeepdrawSdkProductInput maps khaki business color names to DeepDraw standard color aliases", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      code: "208326105206",
+      title: "儿童外套",
+      tradeId: "12390",
+      retailPrice: 299,
+      date: "2026-07-15",
+      fields: [],
+      skus: [
+        {
+          skuCode: "20832610520650230080",
+          color: "贝壳卡50230",
+          size: "080",
+          barcode: "6942749195392",
+          sellerCode: "6942749195392",
+          price: 299,
+        },
+      ],
+    },
+  });
+
+  assert.equal(input.product.fields["颜色"], "卡其,贝壳卡50230");
+  assert.equal(input.product.fields["商家SKU"]["贝壳卡50230"]["80cm"], "299,208326105206,2026-07-15,0,6942749195392,6942749195392,299,299,20832610520650230080,6942749195392");
+});
+
+test("buildDeepdrawSdkProductInput merges SKU color aliases into existing draft color fields", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      code: "208326105206",
+      title: "儿童外套",
+      tradeId: "12390",
+      retailPrice: 299,
+      date: "2026-07-15",
+      fields: [
+        { name: "颜色", value: "粉红,梦幻粉60335" },
+      ],
+      skus: [
+        {
+          skuCode: "20832610520650230080",
+          color: "贝壳卡50230",
+          size: "080",
+          barcode: "6942749195392",
+          sellerCode: "6942749195392",
+          price: 299,
+        },
+      ],
+    },
+  });
+
+  assert.equal(input.product.fields["颜色"], "粉红,梦幻粉60335;卡其,贝壳卡50230");
+});
+
 test("buildDeepdrawSdkProductInput normalizes size table keys to SDK size values", () => {
   const input = buildDeepdrawSdkProductInput({
     config: {

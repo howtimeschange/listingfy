@@ -414,6 +414,7 @@ function sizeTableValue(skus: JsonRecord[]) {
 
 function baseColorName(value: unknown) {
   const text = stringValue(value)
+  if (/卡其|贝壳卡|卡色/.test(text)) return "卡其"
   if (text.includes("粉")) return "粉红"
   const colors = ["黑色", "白色", "红色", "蓝色", "绿色", "黄色", "紫色", "灰色", "棕色", "橙色"]
   for (const color of colors) {
@@ -1692,6 +1693,7 @@ export function chooseProductArchiveAiFallbackOption(
   options: Array<{ value: string; label: string }>,
   contextText = "",
 ) {
+  if (compactFieldKey(fieldName).includes("颜色")) return ""
   const evidenceText = `${stringValue(currentValue)} ${contextText}`
   const pick = (needles: string[]) => {
     for (const needle of needles) {
@@ -1735,6 +1737,79 @@ export function chooseProductArchiveAiFallbackOption(
   return options[0]?.value || ""
 }
 
+function semicolonTextValues(value: unknown) {
+  return stringValue(value).split(/[;；]/).map((part) => part.trim()).filter(Boolean)
+}
+
+function optionValueForAiChoice(options: Array<{ value: string; label: string }>, value: unknown) {
+  const text = stringValue(value)
+  if (!text) return ""
+  const option = options.find((item) => item.value === text || item.label === text)
+  return option?.value ?? ""
+}
+
+function normalizeProductArchiveAiColorFillValue(
+  currentValue: unknown,
+  aiValue: unknown,
+  options: Array<{ value: string; label: string }>,
+) {
+  const currentColors = semicolonTextValues(currentValue)
+  const aiColors = semicolonTextValues(aiValue)
+  if (!currentColors.length || !aiColors.length || currentColors.length !== aiColors.length) return ""
+  const values: string[] = []
+  for (let index = 0; index < currentColors.length; index += 1) {
+    const currentParts = currentColors[index].split(/[,，]/).map((part) => part.trim()).filter(Boolean)
+    const aiParts = aiColors[index].split(/[,，]/).map((part) => part.trim()).filter(Boolean)
+    const standardColor = optionValueForAiChoice(options, aiParts[0])
+    if (!standardColor) return ""
+    const alias = aiParts[1] || currentParts[1] || currentParts[0] || ""
+    values.push(alias && alias !== standardColor ? `${standardColor},${alias}` : standardColor)
+  }
+  return uniqueTextValues(values).join(";")
+}
+
+export function normalizeProductArchiveAiFillValue(
+  fieldName: string,
+  currentValue: unknown,
+  aiValue: unknown,
+  options: Array<{ value: string; label: string }>,
+) {
+  if (compactFieldKey(fieldName).includes("颜色")) {
+    return normalizeProductArchiveAiColorFillValue(currentValue, aiValue, options)
+  }
+  return optionValueForAiChoice(options, aiValue)
+}
+
+export function productArchiveSkuColorMatchesOptions(
+  sku: JsonRecord,
+  allowedColorValues: Iterable<string>,
+  fields: JsonRecord[] = [],
+) {
+  const allowedColors = new Set(Array.from(allowedColorValues).map(stringValue).filter(Boolean))
+  if (!allowedColors.size) return true
+  const colorCandidates = uniqueTextValues([
+    sku.color_name,
+    sku.color_code,
+    ...deepdrawColorValue(sku.color_name).split(/[,，]/).map((part) => part.trim()).filter(Boolean),
+  ])
+  if (colorCandidates.some((color) => allowedColors.has(color))) return true
+
+  for (const field of fields) {
+    const fieldName = stringValue(field.field_name)
+    if (!/颜色|色$|color/i.test(fieldName)) continue
+    for (const value of semicolonTextValues(field.value_text)) {
+      const parts = value.split(/[,，]/).map((part) => part.trim()).filter(Boolean)
+      const standardColor = parts[0] ?? ""
+      const alias = parts[1] ?? ""
+      if (!standardColor || !alias || !allowedColors.has(standardColor)) continue
+      if (colorCandidates.some((color) => color === alias || alias.includes(color) || color.includes(alias))) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
 type ProductArchiveAiFillCandidate = {
   id: number
   fieldName: string
@@ -1744,7 +1819,27 @@ type ProductArchiveAiFillCandidate = {
   options: Array<{ value: string; label: string }>
 }
 
-export function buildProductArchiveAiFillCandidateFields(fields: JsonRecord[]): ProductArchiveAiFillCandidate[] {
+function skuColorIssueValues(issues: JsonRecord[], skus: JsonRecord[]) {
+  const issueSkuCodes = new Set(
+    issues
+      .filter((issue) => stringValue(issue.issue_type) === "sku_color_not_in_template")
+      .map((issue) => stringValue(issue.sku_code))
+      .filter(Boolean),
+  )
+  if (!issueSkuCodes.size) return []
+  return uniqueTextValues(
+    skus
+      .filter((sku) => issueSkuCodes.has(stringValue(sku.sku_code)))
+      .map((sku) => sku.color_name),
+  )
+}
+
+export function buildProductArchiveAiFillCandidateFields(
+  fields: JsonRecord[],
+  issues: JsonRecord[] = [],
+  skus: JsonRecord[] = [],
+): ProductArchiveAiFillCandidate[] {
+  const colorIssueValues = skuColorIssueValues(issues, skus)
   return fields
     .map((field) => {
       const valueText = stringValue(field.value_text)
@@ -1752,7 +1847,10 @@ export function buildProductArchiveAiFillCandidateFields(fields: JsonRecord[]): 
       const emptyValue = !hasValue(valueText) && !hasValue(recordValue(field.value_json))
       const validationStatus = stringValue(field.validation_status)
       const invalidValue = validationStatus === "invalid"
-      const currentValue = valueText || (hasValue(valueJson) ? JSON.stringify(valueJson) : "")
+      const colorNeedsAiFill = compactFieldKey(field.field_name).includes("颜色") && colorIssueValues.length > 0
+      const currentValue = colorNeedsAiFill
+        ? colorIssueValues.join(";")
+        : valueText || (hasValue(valueJson) ? JSON.stringify(valueJson) : "")
       return {
         id: Number(field.id),
         fieldName: stringValue(field.field_name),
@@ -1760,7 +1858,7 @@ export function buildProductArchiveAiFillCandidateFields(fields: JsonRecord[]): 
         validationStatus,
         validationMessage: stringValue(field.validation_message),
         sourceType: stringValue(field.source_type),
-        needsAiFill: emptyValue || invalidValue,
+        needsAiFill: emptyValue || invalidValue || colorNeedsAiFill,
         options: fieldOptionsFromTemplate(field.options_json),
       }
     })
@@ -1804,6 +1902,7 @@ function buildDeepdrawAiFillPrompt(input: {
       "不能编造选项，只能从对应字段 options[].value 中选择。",
       "证据不足时选择保守通用值，并降低 confidence。",
       "是否类字段没有明确证据时优先选择否/无。",
+      "颜色字段如果 current_value 有多个用分号分隔的原颜色名，field_value 返回同数量标准色，按顺序用分号分隔；每个标准色都必须来自 options[].value，系统会自动保留原颜色别名。",
     ],
     product: {
       spu_code: input.draft.spu_code,
@@ -1824,7 +1923,7 @@ function buildDeepdrawAiFillPrompt(input: {
       current_value: field.currentValue,
       validation_status: field.validationStatus,
       validation_message: field.validationMessage,
-      options: field.options.slice(0, 120),
+      options: compactFieldKey(field.fieldName).includes("颜色") ? field.options : field.options.slice(0, 120),
     })),
   }, null, 2)
 }
@@ -2706,13 +2805,14 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
   const draft = detail.draft as JsonRecord
   const fields = detail.fields as JsonRecord[]
   const skus = detail.skus as JsonRecord[]
+  const issues = detail.issues as JsonRecord[]
   const contextText = [
     draft.title,
     draft.trade_path,
     draft.source_snapshot_json,
     ...skus.map((sku) => `${stringValue(sku.color_name)} ${stringValue(sku.size_name)}`),
   ].map(stringValue).join(" ")
-  const candidates = buildProductArchiveAiFillCandidateFields(fields)
+  const candidates = buildProductArchiveAiFillCandidateFields(fields, issues, skus)
 
   if (candidates.length === 0) {
     return { saved: [], detail }
@@ -2739,11 +2839,9 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
     for (const field of candidates) {
       const aiFill = aiById.get(field.id)
       const aiValue = stringValue(aiFill?.field_value)
-      const allowed = new Set(field.options.map((option) => option.value))
-      const fieldValue = aiValue && allowed.has(aiValue)
-        ? aiValue
-        : chooseProductArchiveAiFallbackOption(field.fieldName, field.currentValue, field.options, contextText)
-      if (!fieldValue || !allowed.has(fieldValue)) continue
+      const fieldValue = normalizeProductArchiveAiFillValue(field.fieldName, field.currentValue, aiValue, field.options)
+        || chooseProductArchiveAiFallbackOption(field.fieldName, field.currentValue, field.options, contextText)
+      if (!fieldValue || !productArchiveFieldValueMatchesOptions(fieldValue, field.options)) continue
       const confidence = Number(aiFill?.confidence)
       updateField.run(
         fieldValue,
@@ -3085,12 +3183,7 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
     if (!stringValue(sku.color_name)) {
       issues.push({ severity: "blocker", issueType: "sku_color_missing", skuCode: stringValue(sku.sku_code), message: "SKU 缺少颜色" })
     } else if (allowedColors.size) {
-      const colorCandidates = [
-        stringValue(sku.color_name),
-        stringValue(sku.color_code),
-        ...deepdrawColorValue(sku.color_name).split(/[,，]/).map((part) => part.trim()).filter(Boolean),
-      ]
-      if (!colorCandidates.some((color) => allowedColors.has(color))) {
+      if (!productArchiveSkuColorMatchesOptions(sku, allowedColors, fields)) {
         issues.push({ severity: "blocker", issueType: "sku_color_not_in_template", skuCode: stringValue(sku.sku_code), message: "SKU 颜色不在深绘字段模板选项中" })
       }
     }

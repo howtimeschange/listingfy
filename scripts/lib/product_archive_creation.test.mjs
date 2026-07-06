@@ -941,7 +941,7 @@ test("product archive AI fill considers invalid enum fields and their current va
       validation_status: "missing",
       options_json: [{ value: "否" }],
     },
-  ]);
+  ], [], []);
 
   assert.deepEqual(candidates.map((field) => ({
     id: field.id,
@@ -962,6 +962,86 @@ test("product archive AI fill considers invalid enum fields and their current va
       validationStatus: "missing",
     },
   ]);
+});
+
+test("product archive AI fill includes color fields when SKU colors need template matching", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  const candidates = service.buildProductArchiveAiFillCandidateFields([
+    {
+      id: 201,
+      field_name: "颜色",
+      source_type: "mdm",
+      value_text: "粉红,梦幻粉60335",
+      value_json: {},
+      validation_status: "valid",
+      validation_message: null,
+      options_json: [{ value: "卡其" }, { value: "粉红" }],
+    },
+  ], [
+    {
+      issue_type: "sku_color_not_in_template",
+      sku_code: "20832610520650230080",
+    },
+  ], [
+    {
+      sku_code: "20832610520650230080",
+      color_name: "贝壳卡50230",
+    },
+    {
+      sku_code: "20832610520660335080",
+      color_name: "梦幻粉60335",
+    },
+  ]);
+
+  assert.deepEqual(candidates.map((field) => ({
+    id: field.id,
+    fieldName: field.fieldName,
+    currentValue: field.currentValue,
+    validationStatus: field.validationStatus,
+  })), [
+    {
+      id: 201,
+      fieldName: "颜色",
+      currentValue: "贝壳卡50230",
+      validationStatus: "valid",
+    },
+  ]);
+});
+
+test("product archive AI fill normalizes color choices back to DeepDraw alias values", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(service.normalizeProductArchiveAiFillValue("颜色", "贝壳卡50230", "卡其", [
+    { value: "卡其", label: "卡其" },
+    { value: "粉红", label: "粉红" },
+  ]), "卡其,贝壳卡50230");
+
+  assert.equal(service.normalizeProductArchiveAiFillValue("颜色", "贝壳卡50230;梦幻粉60335", "卡其;粉红", [
+    { value: "卡其", label: "卡其" },
+    { value: "粉红", label: "粉红" },
+  ]), "卡其,贝壳卡50230;粉红,梦幻粉60335");
+
+  assert.equal(service.normalizeProductArchiveAiFillValue("颜色", "贝壳卡50230;梦幻粉60335", "卡其", [
+    { value: "卡其", label: "卡其" },
+    { value: "粉红", label: "粉红" },
+  ]), "");
+});
+
+test("product archive SKU color validation accepts AI-filled DeepDraw color aliases", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(service.productArchiveSkuColorMatchesOptions(
+    { color_name: "松石青70500", color_code: "70500" },
+    ["青绿", "粉红"],
+    [{ field_name: "颜色", value_text: "青绿,松石青70500" }],
+  ), true);
+
+  assert.equal(service.productArchiveSkuColorMatchesOptions(
+    { color_name: "松石青70500", color_code: "70500" },
+    ["青绿", "粉红"],
+    [{ field_name: "颜色", value_text: "扩展选项,松石青70500" }],
+  ), false);
 });
 
 test("product archive AI fallback chooses semantic template options for invalid values", async () => {
@@ -1061,6 +1141,9 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "蓝色" },
     { value: "粉红" },
   ]), "蓝色,蓝色调00388;粉红,粉色调01315");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("颜色", "贝壳卡50230", [
+    { value: "卡其" },
+  ]), "卡其,贝壳卡50230");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("分类", "外套", [
     { value: "风衣" },
     { value: "普通外套" },

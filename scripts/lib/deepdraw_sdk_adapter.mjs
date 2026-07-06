@@ -94,6 +94,7 @@ function findPayloadFieldValue(fields, names) {
 
 function baseColorName(value) {
   const text = stringValue(value);
+  if (/卡其|贝壳卡|卡色/.test(text)) return "卡其";
   if (text.includes("粉")) return "粉红";
   const colors = ["黑色", "白色", "红色", "蓝色", "绿色", "黄色", "紫色", "灰色", "棕色", "橙色"];
   for (const color of colors) {
@@ -207,6 +208,10 @@ function buildMerchantSkuField(payload, skus, dateText) {
   return output;
 }
 
+function semicolonValues(value) {
+  return stringValue(value).split(/[;；]/).map((part) => part.trim()).filter(Boolean);
+}
+
 function hostValue(baseUrl) {
   return stringValue(baseUrl) || "http://open.deepdraw.cn";
 }
@@ -232,8 +237,15 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
       || stringValue(findPayloadFieldValue(payloadFields, ["内容上市时间", "搜索上市时间", "上市时间"])),
   );
   if (skus.length > 0) {
-    if (!fieldKey(fields, ["颜色"])) {
-      fields["颜色"] = uniqueValues(skus.map((sku) => sdkColorValue(sku.color ?? sku.colorName ?? sku.color_name))).join(";");
+    const skuColorValues = uniqueValues(skus.map((sku) => sdkColorValue(sku.color ?? sku.colorName ?? sku.color_name)).filter(Boolean));
+    const colorFieldKey = fieldKey(fields, ["颜色"]);
+    if (colorFieldKey) {
+      fields[colorFieldKey] = uniqueValues([
+        ...semicolonValues(fields[colorFieldKey]),
+        ...skuColorValues,
+      ]).join(";");
+    } else if (skuColorValues.length > 0) {
+      fields["颜色"] = skuColorValues.join(";");
     }
     if (!fieldKey(fields, ["尺码", "尺寸"])) {
       fields["尺码"] = uniqueValues(skus.map((sku) => sdkSizeValue(sku.size ?? sku.sizeName ?? sku.size_name))).join(";");
