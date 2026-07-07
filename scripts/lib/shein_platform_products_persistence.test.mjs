@@ -716,6 +716,53 @@ test("SHEIN platform product async detail sync throttles requests and cools down
   assert.match(jobService, /await wait\(rateLimitCooldownMs\)/);
 });
 
+test("SHEIN platform product queue prioritizes lightweight work before scheduled full sync", async () => {
+  const jobService = await importJobService();
+  const priority = jobService.platformProductJobQueuePriority;
+
+  assert.equal(typeof priority, "function");
+
+  const exportPriority = priority({ job_type: "export", payload_json: "{}" });
+  const manualDetailPriority = priority({
+    job_type: "sync",
+    payload_json: JSON.stringify({ spuNames: ["SPU001"] }),
+  });
+  const listSyncPriority = priority({
+    job_type: "sync",
+    payload_json: JSON.stringify({ mode: "incremental", syncDetails: true }),
+  });
+  const scheduledFullPriority = priority({
+    job_type: "sync",
+    payload_json: JSON.stringify({
+      source: "scheduled_platform_product_sync",
+      spuNames: ["SPU001"],
+    }),
+  });
+
+  assert.ok(exportPriority < manualDetailPriority);
+  assert.ok(manualDetailPriority < listSyncPriority);
+  assert.ok(listSyncPriority < scheduledFullPriority);
+});
+
+test("SHEIN platform product detail sync slices yield so later priority work can run", async () => {
+  const [jobService, jobServiceText] = await Promise.all([
+    importJobService(),
+    fileText(JOB_SERVICE_FILE),
+  ]);
+  const shouldYield = jobService.shouldYieldPlatformProductDetailSyncSlice;
+
+  assert.equal(typeof shouldYield, "function");
+  assert.equal(shouldYield({ processedInSlice: 9, queuedCount: 1 }), false);
+  assert.equal(shouldYield({ processedInSlice: 10, queuedCount: 1 }), true);
+  assert.equal(shouldYield({ processedInSlice: 10, queuedCount: 0 }), false);
+
+  assert.match(jobServiceText, /PLATFORM_PRODUCT_JOB_WORKER_TYPES\s*=\s*\["sync", "export"\]/);
+  assert.match(jobServiceText, /processLoop\("sync"\)/);
+  assert.match(jobServiceText, /processLoop\("export"\)/);
+  assert.match(jobServiceText, /claimNextPlatformProductJob\(type\)/);
+  assert.match(jobServiceText, /yieldPlatformProductDetailSyncJob/);
+});
+
 test("SHEIN platform product scheduled detail sync is configurable and reuses resumable job items", async () => {
   const [server, service, jobService, scheduleMigration, route] = await Promise.all([
     fileText(SERVER_INDEX),

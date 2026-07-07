@@ -91,6 +91,7 @@ const SHEIN_DETAIL_RATE_LIMIT_WINDOW_LIMIT = 800
 const SHEIN_DETAIL_RATE_LIMIT_WINDOW_MS = 1800 * 1000
 const DEFAULT_DETAIL_SYNC_INTERVAL_MS = Math.ceil(SHEIN_DETAIL_RATE_LIMIT_WINDOW_MS / SHEIN_DETAIL_RATE_LIMIT_WINDOW_LIMIT) + 250
 const MAX_DETAIL_SYNC_INTERVAL_MS = 60_000
+const DETAIL_SYNC_YIELD_ITEM_COUNT = 10
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 60_000
 const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60_000
 const JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
@@ -101,8 +102,9 @@ const DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_HOUR = 23
 const PLATFORM_PRODUCT_SYNC_SCHEDULE_POLL_MS = 60 * 1000
 const SCHEDULED_PLATFORM_PRODUCT_SYNC_SOURCE = "scheduled_platform_product_sync"
 const SCHEDULED_PLATFORM_PRODUCT_SYNC_ACTOR = "system:scheduled-shein-platform-product-sync"
+export const PLATFORM_PRODUCT_JOB_WORKER_TYPES = ["sync", "export"] as const
 
-let running = false
+const runningByType: Record<PlatformProductJobType, boolean> = { sync: false, export: false }
 let nightlyFullSyncSchedulerStarted = false
 
 function nowIso() {
@@ -147,6 +149,28 @@ function parseJsonObject(value: unknown): JsonRecord {
 function parseJsonArray(value: unknown): unknown[] {
   const parsed = parseJson(value, [])
   return Array.isArray(parsed) ? parsed : []
+}
+
+function hasSpecificDetailSyncCodes(payload: JsonRecord) {
+  return detailSyncCodes(payload).length > 0
+}
+
+export function platformProductJobQueuePriority(jobLike: unknown) {
+  const record = recordValue(jobLike)
+  const type = jobType(record.job_type ?? record.type)
+  const payload = record.payload
+    ? parseJsonObject(record.payload)
+    : parseJsonObject(record.payload_json)
+  if (type === "export") return 0
+  if (stringValue(payload.source) === SCHEDULED_PLATFORM_PRODUCT_SYNC_SOURCE) return 30
+  if (hasSpecificDetailSyncCodes(payload)) return 10
+  return 20
+}
+
+export function shouldYieldPlatformProductDetailSyncSlice(input: unknown = {}) {
+  const record = recordValue(input)
+  return numberValue(record.processedInSlice) >= DETAIL_SYNC_YIELD_ITEM_COUNT
+    && numberValue(record.queuedCount) > 0
 }
 
 function jsonText(value: unknown, fallback: unknown = {}) {
@@ -465,6 +489,16 @@ function platformProductJobItemCount(jobId: string, db: SyncPostgresDatabase = g
   return numberValue(row?.count)
 }
 
+function queuedPlatformProductJobItemCount(jobId: string, db: SyncPostgresDatabase = getDb()) {
+  const row = db.prepare(`
+    select count(*) as count
+    from shein_platform_product_job_item
+    where job_id = ?
+      and status = 'queued'
+  `).get(jobId) as JsonRecord | undefined
+  return numberValue(row?.count)
+}
+
 export function createPlatformProductJobItems(
   jobId: string,
   codes: string[],
@@ -583,6 +617,21 @@ function refreshPlatformProductJobCounts(job: PlatformProductJob, db: SyncPostgr
   return job
 }
 
+async function yieldPlatformProductDetailSyncJob(
+  job: PlatformProductJob,
+  processedInSlice: number,
+  db: SyncPostgresDatabase = getDb(),
+) {
+  refreshPlatformProductJobCounts(job, db)
+  const queuedCount = job.queued_count ?? queuedPlatformProductJobItemCount(job.id, db)
+  if (!shouldYieldPlatformProductDetailSyncSlice({ processedInSlice, queuedCount })) return false
+  job.status = "queued"
+  job.current_item = null
+  job.running_count = 0
+  await savePlatformProductJob(job, db)
+  return true
+}
+
 export function loadPlatformProductJob(type: PlatformProductJobType, id: string, db: SyncPostgresDatabase = getDb()) {
   const row = db.prepare(`
     select *
@@ -593,20 +642,43 @@ export function loadPlatformProductJob(type: PlatformProductJobType, id: string,
   return row ? jobFromRow(row) : null
 }
 
-function claimNextPlatformProductJob(db: SyncPostgresDatabase = getDb()) {
+function platformProductJobPrioritySql(alias: string) {
+  return `
+    case
+      when ${alias}.job_type = 'export' then 0
+      when ${alias}.job_type = 'sync'
+        and ${alias}.payload_json like '%"source":"${SCHEDULED_PLATFORM_PRODUCT_SYNC_SOURCE}"%' then 30
+      when ${alias}.job_type = 'sync'
+        and (
+          ${alias}.payload_json like '%"spuNames"%'
+          or ${alias}.payload_json like '%"spu_names"%'
+          or ${alias}.payload_json like '%"codes"%'
+          or ${alias}.payload_json like '%"rawCodes"%'
+          or ${alias}.payload_json like '%"raw_codes"%'
+        ) then 10
+      else 20
+    end
+  `
+}
+
+function claimNextPlatformProductJob(type: PlatformProductJobType, db: SyncPostgresDatabase = getDb()) {
   const now = nowIso()
   const staleBefore = new Date(Date.now() - RUNNING_JOB_STALE_MS).toISOString()
   const row = db.prepare(`
     with next_job as (
-      select id
-      from shein_platform_product_job
-      where status = 'queued'
+      select candidate.id
+      from shein_platform_product_job candidate
+      where candidate.job_type = ?
+        and (
+          candidate.status = 'queued'
         or (
-          status = 'running'
-          and finished_at is null
-          and updated_at < ?
+            candidate.status = 'running'
+            and candidate.finished_at is null
+            and candidate.updated_at < ?
+          )
         )
-      order by created_at asc
+      order by ${platformProductJobPrioritySql("candidate")},
+        candidate.created_at asc
       limit 1
       for update skip locked
     )
@@ -617,7 +689,7 @@ function claimNextPlatformProductJob(db: SyncPostgresDatabase = getDb()) {
     from next_job
     where job.id = next_job.id
     returning job.*
-  `).get(staleBefore, now, now) as JsonRecord | undefined
+  `).get(type, staleBefore, now, now) as JsonRecord | undefined
   return row ? jobFromRow(row) : null
 }
 
@@ -801,6 +873,7 @@ async function processSyncJob(job: PlatformProductJob) {
         processedInThisRun += 1
         await savePlatformProductJob(job)
       }
+      if (await yieldPlatformProductDetailSyncJob(job, processedInThisRun, db)) return
     }
     refreshPlatformProductJobCounts(job, db)
     setJobDone(job)
@@ -965,12 +1038,12 @@ async function processExportJob(job: PlatformProductJob) {
   await savePlatformProductJob(job)
 }
 
-async function processLoop() {
-  if (running) return
-  running = true
+async function processLoop(type: PlatformProductJobType) {
+  if (runningByType[type]) return
+  runningByType[type] = true
   try {
     while (true) {
-      const job = claimNextPlatformProductJob()
+      const job = claimNextPlatformProductJob(type)
       if (!job) break
       try {
         if (job.type === "sync") {
@@ -984,19 +1057,24 @@ async function processLoop() {
       await wait(0)
     }
   } finally {
-    running = false
+    runningByType[type] = false
   }
 }
 
 function schedulePlatformProductJobs() {
-  const run = () => {
-    void processLoop()
+  const runSync = () => {
+    void processLoop("sync")
+  }
+  const runExport = () => {
+    void processLoop("export")
   }
   if (typeof setImmediate === "function") {
-    setImmediate(run)
+    setImmediate(runSync)
+    setImmediate(runExport)
     return
   }
-  setTimeout(run, 0)
+  setTimeout(runSync, 0)
+  setTimeout(runExport, 0)
 }
 
 export function enqueuePlatformProductSyncJob(payload: unknown = {}, actor?: LifecycleActor | null) {
