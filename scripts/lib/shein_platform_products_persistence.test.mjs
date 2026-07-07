@@ -17,6 +17,7 @@ const TASK_CENTER_FILE = path.join(PROJECT_ROOT, "web/src/components/async-task-
 const JOB_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/027_shein_platform_product_jobs.sql");
 const JOB_ITEM_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/034_shein_platform_product_job_items.sql");
 const SYNC_SCHEDULE_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/035_shein_platform_product_sync_schedule.sql");
+const SALE_SITE_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/037_shein_platform_product_sale_sites.sql");
 
 async function fileText(file) {
   try {
@@ -39,6 +40,26 @@ async function createTempDb() {
     );
   `);
   db.exec(await readFile(MIGRATION_FILE, "utf8"));
+  db.exec(`
+    create table shein_platform_product_sale_site (
+      id integer primary key autoincrement,
+      platform text not null default 'SHEIN',
+      platform_account_key text not null default 'default',
+      product_id integer not null references shein_platform_product(id) on delete cascade,
+      skc_id integer references shein_platform_skc(id) on delete cascade,
+      spu_name text not null,
+      skc_name text,
+      skc_supplier_code text,
+      site_abbr text not null,
+      site_name text,
+      shelf_status integer,
+      first_shelf_time text,
+      last_shelf_time text,
+      link text,
+      source text not null default 'SPU',
+      updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+  `);
   return {
     db,
     async cleanup() {
@@ -103,6 +124,26 @@ test("SHEIN platform products have persistent product, variant, site, and operat
   assert.match(migration, /operation_type text not null/);
   assert.match(migration, /request_payload_json text not null default '\{\}'/);
   assert.match(migration, /response_payload_json text not null default '\{\}'/);
+});
+
+test("SHEIN platform products normalize sale sites for indexed list filtering", async () => {
+  const [migration, service] = await Promise.all([
+    fileText(SALE_SITE_MIGRATION_FILE),
+    fileText(SERVICE_FILE),
+  ]);
+
+  assert.match(migration, /create table if not exists shein_platform_product_sale_site/);
+  assert.match(migration, /site_abbr text not null/);
+  assert.match(migration, /shelf_status integer/);
+  assert.match(migration, /idx_shein_platform_sale_site_lookup/);
+  assert.doesNotMatch(migration, /::jsonb/);
+  assert.doesNotMatch(migration, /jsonb_array_elements/);
+
+  assert.match(service, /persistProductSaleSites/);
+  assert.match(service, /ensureProductSaleSitesIndexed/);
+  assert.match(service, /insert into shein_platform_product_sale_site/);
+  assert.match(service, /from shein_platform_product_sale_site sale_site/);
+  assert.match(service, /count\(distinct product_id\) as count/);
 });
 
 test("SHEIN platform product async jobs are durable across API workers", async () => {
@@ -348,8 +389,9 @@ test("SHEIN platform product list stays read-only and avoids full-table sale sit
   assert.doesNotMatch(service, /function saleSiteFilterOptions[\s\S]*from shein_platform_product product[\s\S]*function safeProductFilterOptions/);
   assert.doesNotMatch(service, /function productIdsForSaleSite/);
   assert.match(service, /appendSaleSiteFilter/);
-  assert.match(service, /jsonb_array_elements/);
-  assert.match(service, /cross join lateral/);
+  assert.match(service, /from shein_platform_product_sale_site sale_site/);
+  assert.doesNotMatch(service, /function appendSaleSiteFilter[\s\S]*jsonb_array_elements[\s\S]*function productFilterOptions/);
+  assert.doesNotMatch(service, /function appendSaleSiteFilter[\s\S]*cross join lateral[\s\S]*function productFilterOptions/);
 });
 
 test("SHEIN platform products derive sale site details from synced SPU detail payloads", async () => {
@@ -677,6 +719,17 @@ test("SHEIN platform product persistence stores list rows and SPU detail variant
     assert.equal(sku.supplier_sku, "SUP-SKU-1");
     assert.equal(sku.cost_price, 10.55);
     assert.equal(sku.currency, "EUR");
+
+    const saleSite = db.prepare(`
+      select *
+      from shein_platform_product_sale_site
+      where product_id = ?
+        and skc_name = 'SKC001'
+        and site_abbr = 'DE'
+    `).get(product.id);
+    assert.equal(saleSite.spu_name, "SPU001");
+    assert.equal(saleSite.skc_supplier_code, "SUP-SKC");
+    assert.equal(saleSite.shelf_status, 1);
   } finally {
     await cleanup();
   }

@@ -440,6 +440,10 @@ function saleSiteStatusText(shelfStatus: number | null) {
   return `状态 ${shelfStatus}`
 }
 
+function saleSiteStatusValue(site: SaleSiteDetail) {
+  return site.shelfStatus
+}
+
 function mergeSaleSiteSources(existing: string, source: string) {
   const sources = new Set(
     [existing, source]
@@ -588,6 +592,147 @@ function saleSiteSummary(saleSites: SaleSiteDetail[]) {
   const activeSites = activeSaleSiteAbbrs(saleSites)
   if (!activeSites.length) return "未上架"
   return `上架 ${activeSites.length} 站：${activeSites.slice(0, 4).join("、")}${activeSites.length > 4 ? "..." : ""}`
+}
+
+function insertProductSaleSite(
+  db: SyncPostgresDatabase,
+  context: SheinPlatformContext,
+  productId: number,
+  spuName: string,
+  site: SaleSiteDetail,
+  skc?: { id: number; skcName: string; supplierCode: string },
+) {
+  if (!site.siteAbbr) return
+  db.prepare(`
+    insert into shein_platform_product_sale_site (
+      platform,
+      platform_account_key,
+      product_id,
+      skc_id,
+      spu_name,
+      skc_name,
+      skc_supplier_code,
+      site_abbr,
+      site_name,
+      shelf_status,
+      first_shelf_time,
+      last_shelf_time,
+      link,
+      source,
+      updated_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    context.platform,
+    context.platformAccountKey,
+    productId,
+    skc?.id ?? null,
+    spuName,
+    skc?.skcName ?? null,
+    skc?.supplierCode ?? null,
+    site.siteAbbr,
+    site.siteName,
+    saleSiteStatusValue(site),
+    site.firstShelfTime,
+    site.lastShelfTime,
+    site.link,
+    site.source,
+    nowIso(),
+  )
+}
+
+function persistProductSaleSites(
+  db: SyncPostgresDatabase,
+  context: SheinPlatformContext,
+  productId: number,
+  spuName: string,
+  rawInfo: JsonRecord,
+  skcs: Array<{ id: number; skcName: string; supplierCode: string; raw: JsonRecord }>,
+  siteNames: Map<string, string> = safeSiteNameLookup(db, context),
+) {
+  db.prepare("delete from shein_platform_product_sale_site where product_id = ?").run(productId)
+
+  for (const site of arrayRecords(rawInfo.shelfStatusInfoList ?? rawInfo.shelf_status_info_list)
+    .map((item) => normalizeSaleSite(item, "SPU", siteNames))
+    .filter((site): site is SaleSiteDetail => Boolean(site))) {
+    insertProductSaleSite(db, context, productId, spuName, site)
+  }
+
+  for (const skc of skcs) {
+    for (const site of arrayRecords(skc.raw.shelfStatusInfoList ?? skc.raw.shelf_status_info_list)
+      .map((item) => normalizeSaleSite(item, skc.skcName || "SKC", siteNames))
+      .filter((site): site is SaleSiteDetail => Boolean(site))) {
+      insertProductSaleSite(db, context, productId, spuName, site, skc)
+    }
+  }
+}
+
+function ensureProductSaleSitesIndexed(db: SyncPostgresDatabase, context: SheinPlatformContext, siteNames: Map<string, string>) {
+  const cacheKey = productFilterCacheKey(context)
+  if (productSaleSiteBackfillAttempted.has(cacheKey)) return
+
+  try {
+    const detailRow = db.prepare(`
+      select count(*) as count
+      from shein_platform_product
+      where platform = ?
+        and platform_account_key = ?
+        and coalesce(raw_detail_payload_json, '{}') <> '{}'
+    `).get(context.platform, context.platformAccountKey) as { count: number } | undefined
+    const indexedRow = db.prepare(`
+      select count(distinct product_id) as count
+      from shein_platform_product_sale_site
+      where platform = ?
+        and platform_account_key = ?
+    `).get(context.platform, context.platformAccountKey) as { count: number } | undefined
+    const detailCount = Number(detailRow?.count ?? 0)
+    const indexedCount = Number(indexedRow?.count ?? 0)
+    if (detailCount === 0 || indexedCount >= detailCount) {
+      productSaleSiteBackfillAttempted.add(cacheKey)
+      return
+    }
+
+    const products = db.prepare(`
+      select id, spu_name, raw_detail_payload_json
+      from shein_platform_product
+      where platform = ?
+        and platform_account_key = ?
+        and coalesce(raw_detail_payload_json, '{}') <> '{}'
+      order by id asc
+    `).all(context.platform, context.platformAccountKey) as JsonRecord[]
+    const skcs = db.prepare(`
+      select skc.*, product.id as product_id
+      from shein_platform_skc skc
+      join shein_platform_product product on product.id = skc.product_id
+      where product.platform = ?
+        and product.platform_account_key = ?
+      order by product.id asc, skc.id asc
+    `).all(context.platform, context.platformAccountKey) as JsonRecord[]
+    const skcsByProductId = groupRowsByNumber(skcs, "product_id")
+    for (const product of products) {
+      const productId = Number(product.id)
+      if (!Number.isFinite(productId)) continue
+      const productSkcs = (skcsByProductId.get(productId) ?? []).map((skc) => ({
+        id: Number(skc.id),
+        skcName: stringValue(skc.skc_name),
+        supplierCode: stringValue(skc.supplier_code),
+        raw: parseJsonText(skc.raw_payload_json),
+      })).filter((skc) => Number.isFinite(skc.id))
+      persistProductSaleSites(
+        db,
+        context,
+        productId,
+        stringValue(product.spu_name),
+        rawInfoFromDetailPayload(parseJsonText(product.raw_detail_payload_json)),
+        productSkcs,
+        siteNames,
+      )
+    }
+    productSaleSiteBackfillAttempted.add(cacheKey)
+    clearProductFilterCache()
+  } catch (error) {
+    warnAuxiliaryQuery("sale site index backfill", error)
+  }
 }
 
 function productListData(info: JsonRecord) {
@@ -951,8 +1096,10 @@ export function persistProductDetailResult(
     productId,
   )
 
+  db.prepare("delete from shein_platform_product_sale_site where product_id = ?").run(productId)
   db.prepare("delete from shein_platform_skc where product_id = ?").run(productId)
   let skuCount = 0
+  const persistedSkcs: Array<{ id: number; skcName: string; supplierCode: string; raw: JsonRecord }> = []
   for (const skc of detail.skcs) {
     const skcResult = db.prepare(`
       insert into shein_platform_skc (
@@ -977,6 +1124,12 @@ export function persistProductDetailResult(
       nowIso(),
     )
     const skcId = Number(skcResult.lastInsertRowid)
+    persistedSkcs.push({
+      id: skcId,
+      skcName: skc.skcName,
+      supplierCode: skc.supplierCode,
+      raw: skc.raw,
+    })
     for (const sku of skc.skus) {
       db.prepare(`
         insert into shein_platform_sku (
@@ -1019,6 +1172,7 @@ export function persistProductDetailResult(
       skuCount += 1
     }
   }
+  persistProductSaleSites(db, context, productId, detail.spuName, detail.rawInfo, persistedSkcs)
   refreshProductCounts(db, productId)
   clearProductFilterCache()
   return { persisted: true, skcCount: detail.skcs.length, skuCount }
@@ -1188,6 +1342,7 @@ function productWhereForContext(context: SheinPlatformContext) {
 const PRODUCT_FILTER_CACHE_TTL_MS = 30_000
 
 const productFilterCache = new Map<string, { expiresAt: number; filters: ProductFilterOptions }>()
+const productSaleSiteBackfillAttempted = new Set<string>()
 
 function productFilterCacheKey(context: SheinPlatformContext) {
   return `${context.platform}\u0001${context.platformAccountKey}`
@@ -1455,24 +1610,51 @@ function prefetchProductSummaryRows(db: SyncPostgresDatabase, rows: JsonRecord[]
 }
 
 function saleSiteFilterOptions(db: SyncPostgresDatabase, context: SheinPlatformContext, siteNames: Map<string, string>) {
-  const rows = db.prepare(`
+  const catalogRows = db.prepare(`
     select site_abbr, site_name, site_status
     from shein_platform_site
     where platform = ?
       and platform_account_key = ?
     order by site_name asc, site_abbr asc
   `).all(context.platform, context.platformAccountKey) as JsonRecord[]
-  return rows
+  const countRows = db.prepare(`
+    select
+      site_abbr,
+      max(nullif(site_name, '')) as site_name,
+      count(distinct product_id) as count
+    from shein_platform_product_sale_site
+    where platform = ?
+      and platform_account_key = ?
+      and shelf_status = 1
+    group by site_abbr
+  `).all(context.platform, context.platformAccountKey) as JsonRecord[]
+  const counts = new Map(countRows
+    .map((row) => [stringValue(row.site_abbr), {
+      siteName: stringValue(row.site_name),
+      count: Number(row.count ?? 0),
+    }] as const)
+    .filter(([siteAbbr]) => siteAbbr))
+  const options = catalogRows
     .filter((row) => numberValue(row.site_status) === 1)
     .map((row) => {
       const siteAbbr = stringValue(row.site_abbr)
+      const counted = counts.get(siteAbbr)
+      counts.delete(siteAbbr)
       return {
         value: siteAbbr,
-        label: firstString(row.site_name, siteNames.get(siteAbbr), siteAbbr),
-        count: 0,
+        label: firstString(row.site_name, counted?.siteName, siteNames.get(siteAbbr), siteAbbr),
+        count: counted?.count ?? 0,
       }
     })
     .filter((row) => row.value)
+  for (const [siteAbbr, counted] of counts.entries()) {
+    options.push({
+      value: siteAbbr,
+      label: firstString(counted.siteName, siteNames.get(siteAbbr), siteAbbr),
+      count: counted.count,
+    })
+  }
+  return options.sort((left, right) => left.label.localeCompare(right.label) || left.value.localeCompare(right.value))
 }
 
 function safeProductFilterOptions(db: SyncPostgresDatabase, context: SheinPlatformContext, siteNames: Map<string, string>) {
@@ -1510,43 +1692,6 @@ function saleSiteFilterTerms(
   return Array.from(terms)
 }
 
-function saleSiteJsonArraySql(expression: string) {
-  return `case
-    when jsonb_typeof(${expression}) = 'array' then ${expression}
-    else '[]'::jsonb
-  end`
-}
-
-const productSaleSiteJsonSql = `coalesce(
-  product.raw_detail_payload_json::jsonb #> '{info,shelfStatusInfoList}',
-  product.raw_detail_payload_json::jsonb #> '{info,shelf_status_info_list}',
-  product.raw_detail_payload_json::jsonb -> 'shelfStatusInfoList',
-  product.raw_detail_payload_json::jsonb -> 'shelf_status_info_list',
-  '[]'::jsonb
-)`
-
-const skcSaleSiteJsonSql = `coalesce(
-  skc.raw_payload_json::jsonb -> 'shelfStatusInfoList',
-  skc.raw_payload_json::jsonb -> 'shelf_status_info_list',
-  '[]'::jsonb
-)`
-
-function saleSiteActiveSql(alias: string) {
-  return `coalesce(${alias}->>'shelfStatus', ${alias}->>'shelf_status') = '1'`
-}
-
-function saleSiteCodeSql(alias: string, placeholders: string) {
-  return `coalesce(
-    ${alias}->>'siteAbbr',
-    ${alias}->>'site_abbr',
-    ${alias}->>'site',
-    ${alias}->>'siteCode',
-    ${alias}->>'site_code',
-    ${alias}->>'siteName',
-    ${alias}->>'site_name'
-  ) in (${placeholders})`
-}
-
 function appendSaleSiteFilter(
   where: string[],
   params: unknown[],
@@ -1559,17 +1704,15 @@ function appendSaleSiteFilter(
   where.push(`(
     exists (
       select 1
-      from jsonb_array_elements(${saleSiteJsonArraySql(productSaleSiteJsonSql)}) as sale_site(value)
-      where ${saleSiteActiveSql("sale_site.value")}
-        and ${saleSiteCodeSql("sale_site.value", placeholders)}
-    )
-    or exists (
-      select 1
-      from shein_platform_skc skc
-      cross join lateral jsonb_array_elements(${saleSiteJsonArraySql(skcSaleSiteJsonSql)}) as sale_site(value)
-      where skc.product_id = product.id
-        and ${saleSiteActiveSql("sale_site.value")}
-        and ${saleSiteCodeSql("sale_site.value", placeholders)}
+      from shein_platform_product_sale_site sale_site
+      where sale_site.product_id = product.id
+        and sale_site.platform = product.platform
+        and sale_site.platform_account_key = product.platform_account_key
+        and sale_site.shelf_status = 1
+        and (
+          sale_site.site_abbr in (${placeholders})
+          or sale_site.site_name in (${placeholders})
+        )
     )
   )`)
   params.push(...terms, ...terms)
@@ -1640,6 +1783,7 @@ export function listPlatformProducts(input: ProductListInput = {}) {
   const site = normalizeText(input.site)
   const includeDetails = readListIncludeDetails(input.includeDetails)
   const siteNames = safeSiteNameLookup(db, context)
+  ensureProductSaleSitesIndexed(db, context, siteNames)
   const params: unknown[] = [context.platform, context.platformAccountKey]
   const where = [
     "product.platform = ?",
