@@ -99,13 +99,24 @@ const JOB_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
 const RUNNING_JOB_STALE_MS = 15 * 60 * 1000
 const DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_ID = "default"
 const DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_HOUR = 23
+const PLATFORM_PRODUCT_SYNC_SCHEDULE_TIME_ZONE = "Asia/Shanghai"
 const PLATFORM_PRODUCT_SYNC_SCHEDULE_POLL_MS = 60 * 1000
 const SCHEDULED_PLATFORM_PRODUCT_SYNC_SOURCE = "scheduled_platform_product_sync"
-const SCHEDULED_PLATFORM_PRODUCT_SYNC_ACTOR = "system:scheduled-shein-platform-product-sync"
+const LEGACY_SCHEDULED_PLATFORM_PRODUCT_SYNC_ACTOR = "system:scheduled-shein-platform-product-sync"
+const SCHEDULED_PLATFORM_PRODUCT_SYNC_ACTOR_ID = 1
+const SCHEDULED_PLATFORM_PRODUCT_SYNC_ACTOR_USERNAME = "admin"
 export const PLATFORM_PRODUCT_JOB_WORKER_TYPES = ["sync", "export"] as const
 
 const runningByType: Record<PlatformProductJobType, boolean> = { sync: false, export: false }
 let nightlyFullSyncSchedulerStarted = false
+const shanghaiScheduleFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: PLATFORM_PRODUCT_SYNC_SCHEDULE_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  hourCycle: "h23",
+})
 
 function nowIso() {
   return new Date().toISOString()
@@ -202,11 +213,27 @@ function booleanEnv(value: unknown, fallback = true) {
   return fallback
 }
 
+function shanghaiScheduleParts(date = new Date()) {
+  const parts = Object.fromEntries(
+    shanghaiScheduleFormatter
+      .formatToParts(date)
+      .map((part) => [part.type, part.value]),
+  )
+  return {
+    year: parts.year || "1970",
+    month: parts.month || "01",
+    day: parts.day || "01",
+    hour: parts.hour || "00",
+  }
+}
+
 function localNightlySyncDateKey(date = new Date()) {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, "0")
-  const day = String(date.getDate()).padStart(2, "0")
+  const { year, month, day } = shanghaiScheduleParts(date)
   return `${year}-${month}-${day}`
+}
+
+export function platformProductSyncScheduleHour(date = new Date()) {
+  return boundedHour(shanghaiScheduleParts(date).hour, DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_HOUR)
 }
 
 export function platformProductDetailSyncIntervalMs(payload: unknown = {}) {
@@ -255,12 +282,20 @@ function jobType(value: unknown): PlatformProductJobType {
 
 function parseActor(value: unknown): LifecycleActor | null {
   const actor = parseJsonObject(value)
-  const id = numberValue(actor.id, Number.NaN)
   const username = stringValue(actor.username)
+  if (username === LEGACY_SCHEDULED_PLATFORM_PRODUCT_SYNC_ACTOR) return scheduledPlatformProductSyncActor()
+  const id = actor.id == null || actor.id === "" ? Number.NaN : numberValue(actor.id, Number.NaN)
   if (!Number.isFinite(id) && !username) return null
   return {
-    id: Number.isFinite(id) ? id : null,
+    id: Number.isFinite(id) && id > 0 ? id : null,
     username: username || null,
+  }
+}
+
+export function scheduledPlatformProductSyncActor(): LifecycleActor {
+  return {
+    id: SCHEDULED_PLATFORM_PRODUCT_SYNC_ACTOR_ID,
+    username: SCHEDULED_PLATFORM_PRODUCT_SYNC_ACTOR_USERNAME,
   }
 }
 
@@ -1224,6 +1259,7 @@ export function enqueueScheduledPlatformProductSyncJob(options: {
   now?: Date
   db?: SyncPostgresDatabase
   schedule?: PlatformProductSyncScheduleConfig
+  scheduleJobs?: boolean
 } = {}) {
   const db = options.db ?? getDb()
   const now = options.now ?? new Date()
@@ -1260,7 +1296,7 @@ export function enqueueScheduledPlatformProductSyncJob(options: {
       retryFailedItems: true,
       detailIntervalMs: DEFAULT_DETAIL_SYNC_INTERVAL_MS,
     },
-    actor: { id: null, username: SCHEDULED_PLATFORM_PRODUCT_SYNC_ACTOR },
+    actor: scheduledPlatformProductSyncActor(),
     error: null,
   }, db)
   createPlatformProductJobItems(job.id, codes, db)
@@ -1271,20 +1307,37 @@ export function enqueueScheduledPlatformProductSyncJob(options: {
       updated_at = ?
     where id = ?
   `).run(scheduleDate, job.id, nowIso(), DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_ID)
-  schedulePlatformProductJobs()
+  if (options.scheduleJobs !== false) schedulePlatformProductJobs()
   return snapshot(job, db)
 }
 
-export function enqueueNightlyPlatformProductFullSyncJob(options: { now?: Date; db?: SyncPostgresDatabase } = {}) {
+export function enqueueNightlyPlatformProductFullSyncJob(options: {
+  now?: Date
+  db?: SyncPostgresDatabase
+  scheduleJobs?: boolean
+} = {}) {
   return enqueueScheduledPlatformProductSyncJob(options)
 }
 
-export function runPlatformProductNightlyFullSyncOnce(now = new Date()) {
-  schedulePlatformProductJobs()
-  const schedule = getPlatformProductSyncScheduleConfig()
+export function runPlatformProductNightlyFullSyncOnce(input: Date | {
+  now?: Date
+  db?: SyncPostgresDatabase
+  schedule?: PlatformProductSyncScheduleConfig
+  scheduleJobs?: boolean
+} = {}) {
+  const options = input instanceof Date ? { now: input } : input
+  const now = options.now ?? new Date()
+  const db = options.db ?? getDb()
+  if (options.scheduleJobs !== false) schedulePlatformProductJobs()
+  const schedule = options.schedule ?? getPlatformProductSyncScheduleConfig(db)
   if (!schedule.enabled) return null
-  if (now.getHours() !== schedule.schedule_hour) return null
-  return enqueueScheduledPlatformProductSyncJob({ now, schedule })
+  if (platformProductSyncScheduleHour(now) !== schedule.schedule_hour) return null
+  return enqueueScheduledPlatformProductSyncJob({
+    now,
+    db,
+    schedule,
+    scheduleJobs: options.scheduleJobs,
+  })
 }
 
 export function startPlatformProductNightlyFullSyncScheduler() {

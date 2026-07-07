@@ -69,6 +69,57 @@ async function createTempDb() {
   };
 }
 
+async function createTempScheduledSyncDb() {
+  const tempPath = await mkdtemp(path.join(os.tmpdir(), "listingify-shein-scheduled-sync-"));
+  const db = new DatabaseSync(path.join(tempPath, "test.sqlite"));
+  db.exec("pragma foreign_keys = on");
+  db.exec(`
+    create table platform_integration (
+      id integer primary key autoincrement,
+      platform text,
+      status text,
+      open_key_id text,
+      secret_key text,
+      is_default integer,
+      base_url text,
+      language text
+    );
+    create table app_user (
+      id integer primary key autoincrement,
+      username text,
+      display_name text,
+      status text
+    );
+  `);
+  db.exec(await readFile(MIGRATION_FILE, "utf8"));
+  db.exec(await readFile(JOB_MIGRATION_FILE, "utf8"));
+  db.exec(await readFile(JOB_ITEM_MIGRATION_FILE, "utf8"));
+  db.exec(await readFile(SYNC_SCHEDULE_MIGRATION_FILE, "utf8"));
+  db.prepare(`
+    insert into app_user (id, username, display_name, status)
+    values (1, 'admin', '系统管理员', 'ACTIVE')
+  `).run();
+  db.prepare(`
+    insert into shein_platform_product (
+      platform,
+      platform_account_key,
+      spu_name,
+      product_name,
+      last_list_synced_at,
+      updated_at,
+      created_at
+    )
+    values ('SHEIN', 'env:default', ?, ?, ?, ?, ?)
+  `).run("SPU-SCHEDULE-001", "定时同步测试商品", "2026-07-07T00:00:00.000Z", "2026-07-07T00:00:00.000Z", "2026-07-07T00:00:00.000Z");
+  return {
+    db,
+    async cleanup() {
+      db.close();
+      await rm(tempPath, { recursive: true, force: true });
+    },
+  };
+}
+
 async function importService() {
   process.env.DATABASE_URL ||= "postgresql://user:pass@localhost:5432/listingify_test";
   return await import("../../web/server/services/shein-platform-products.ts");
@@ -861,7 +912,7 @@ test("SHEIN platform product scheduled detail sync is configurable and reuses re
   assert.match(jobService, /export function runPlatformProductNightlyFullSyncOnce/);
   assert.match(jobService, /export function startPlatformProductNightlyFullSyncScheduler/);
   assert.match(jobService, /schedule\.enabled/);
-  assert.match(jobService, /now\.getHours\(\) !== schedule\.schedule_hour/);
+  assert.match(jobService, /platformProductSyncScheduleHour\(now\) !== schedule\.schedule_hour/);
   assert.match(jobService, /listPlatformProductSpuNames\(\{[\s\S]*limit: MAX_DETAIL_CODES_PER_JOB/);
   assert.match(jobService, /schedule\.sync_scope === "spu"/);
   assert.match(jobService, /title:\s*schedule\.sync_scope === "spu"[\s\S]*定时按款号同步 SHEIN 平台商品详情[\s\S]*定时全量同步 SHEIN 平台商品详情/);
@@ -902,6 +953,91 @@ test("SHEIN platform product sync schedule persists custom SPU arrays", async ()
   } finally {
     db.close();
     await rm(tempPath, { recursive: true, force: true });
+  }
+});
+
+test("SHEIN platform product scheduled sync evaluates schedule hours in Asia Shanghai time", async () => {
+  const jobService = await importJobService();
+
+  assert.equal(typeof jobService.platformProductSyncScheduleHour, "function");
+  assert.equal(jobService.platformProductSyncScheduleHour(new Date("2026-07-07T14:59:59.000Z")), 22);
+  assert.equal(jobService.platformProductSyncScheduleHour(new Date("2026-07-07T15:00:00.000Z")), 23);
+});
+
+test("SHEIN platform product scheduled sync uses admin actor and normalizes legacy system actor rows", async () => {
+  const { db, cleanup } = await createTempScheduledSyncDb();
+  try {
+    const jobService = await importJobService();
+
+    assert.equal(typeof jobService.scheduledPlatformProductSyncActor, "function");
+    assert.deepEqual(jobService.scheduledPlatformProductSyncActor(), { id: 1, username: "admin" });
+
+    const job = jobService.createPlatformProductJob({
+      id: "scheduled-legacy-actor",
+      type: "sync",
+      status: "queued",
+      title: "定时全量同步 SHEIN 平台商品详情",
+      total_count: 1,
+      completed_count: 0,
+      failed_count: 0,
+      created_at: "2026-07-07T15:00:00.000Z",
+      started_at: null,
+      finished_at: null,
+      items: [],
+      payload: { source: "scheduled_platform_product_sync", scheduleDate: "2026-07-07" },
+      actor: jobService.scheduledPlatformProductSyncActor(),
+      error: null,
+    }, db);
+
+    const stored = db.prepare("select * from shein_platform_product_job where id = ?").get(job.id);
+    assert.deepEqual(JSON.parse(stored.actor_json), { id: 1, username: "admin" });
+
+    jobService.createPlatformProductJob({
+      id: "scheduled-legacy-actor-zero",
+      type: "sync",
+      status: "queued",
+      title: "定时全量同步 SHEIN 平台商品详情",
+      total_count: 1,
+      completed_count: 0,
+      failed_count: 0,
+      created_at: "2026-07-07T15:00:00.000Z",
+      started_at: null,
+      finished_at: null,
+      items: [],
+      payload: { source: "scheduled_platform_product_sync", scheduleDate: "2026-07-07" },
+      actor: { id: 0, username: "system:scheduled-shein-platform-product-sync" },
+      error: null,
+    }, db);
+
+    const reloaded = jobService.loadPlatformProductJob("sync", "scheduled-legacy-actor-zero", db);
+    assert.deepEqual(reloaded.actor, { id: 1, username: "admin" });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("SHEIN platform product scheduled sync enqueues at the configured Asia Shanghai hour", async () => {
+  const { db, cleanup } = await createTempScheduledSyncDb();
+  try {
+    const jobService = await importJobService();
+
+    assert.equal(jobService.runPlatformProductNightlyFullSyncOnce({
+      now: new Date("2026-07-07T14:00:00.000Z"),
+      db,
+      scheduleJobs: false,
+    }), null);
+
+    const job = jobService.runPlatformProductNightlyFullSyncOnce({
+      now: new Date("2026-07-07T15:00:00.000Z"),
+      db,
+      scheduleJobs: false,
+    });
+    assert.ok(job);
+    const stored = db.prepare("select actor_json, payload_json from shein_platform_product_job where id = ?").get(job.id);
+    assert.equal(JSON.parse(stored.payload_json).scheduleDate, "2026-07-07");
+    assert.deepEqual(JSON.parse(stored.actor_json), { id: 1, username: "admin" });
+  } finally {
+    await cleanup();
   }
 });
 
