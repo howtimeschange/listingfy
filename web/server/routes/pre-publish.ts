@@ -5,9 +5,12 @@ import { HTTPException } from "hono/http-exception"
 import { DATA_DIR, getDb } from "../db"
 import { callAiCategoryMatcher, resolveAiConfig } from "../../../scripts/lib/ai_category_matcher.mjs"
 import { refreshBucketProduct } from "./shein-products"
+import { requirePermission } from "../lib/auth"
+import { assertLocalImageFile } from "../lib/local-path-guard"
 import { resolveSheinCredentials } from "../lib/platform-config"
 import { getSheinPriceConfig } from "../lib/price-config"
 import { resolvePackageRule } from "../lib/rule-resolver"
+import { detectImageUploadType, maxUploadBytes, readValidatedUploadBuffer, safeUploadFileName } from "../lib/upload-guard"
 import { platformAdapterFor } from "../platform-adapters"
 import {
   ensurePublishTask,
@@ -5018,6 +5021,7 @@ function buildBatchPublishCheckResponse(db: ReturnType<typeof getDb>, listingIds
 }
 
 prePublish.get("/platforms", (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   const sheinAccount = getDefaultChannelAccount(db, "SHEIN")
   return c.json({
@@ -5034,9 +5038,13 @@ prePublish.get("/platforms", (c) => {
   })
 })
 
-prePublish.get("/readiness", (c) => c.json(buildReadiness(c)))
+prePublish.get("/readiness", (c) => {
+  requirePermission(c, "LISTING_READ")
+  return c.json(buildReadiness(c))
+})
 
 prePublish.get("/draft-categories", (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   const platform = normalizeText(c.req.query("platform") ?? "SHEIN") || "SHEIN"
   const rows = db.prepare(`
@@ -5057,6 +5065,7 @@ prePublish.get("/draft-categories", (c) => {
 })
 
 prePublish.get("/category-tree", (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   const platform = normalizeText(c.req.query("platform") ?? "SHEIN") || "SHEIN"
   const q = normalizeText(c.req.query("q"))
@@ -5125,6 +5134,7 @@ prePublish.get("/category-tree", (c) => {
 })
 
 prePublish.get("/drafts", (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   const platform = normalizeText(c.req.query("platform") ?? "SHEIN") || "SHEIN"
   const terms = batchTerms(c.req.query("batch_search"))
@@ -5177,6 +5187,7 @@ prePublish.get("/drafts", (c) => {
 })
 
 prePublish.post("/drafts", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const body = await c.req.json().catch(() => ({})) as {
     platform?: string
@@ -5252,6 +5263,7 @@ prePublish.post("/drafts", async (c) => {
 })
 
 prePublish.get("/drafts/:id", (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   if (!Number.isFinite(listingId)) {
@@ -5265,6 +5277,7 @@ prePublish.get("/drafts/:id", (c) => {
 })
 
 prePublish.post("/drafts/:id/duplicate", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
@@ -5291,6 +5304,7 @@ prePublish.post("/drafts/:id/duplicate", async (c) => {
 })
 
 prePublish.patch("/drafts/:id/status", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
@@ -5317,6 +5331,7 @@ prePublish.patch("/drafts/:id/status", async (c) => {
 })
 
 prePublish.delete("/drafts/:id", (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
@@ -5350,6 +5365,7 @@ prePublish.delete("/drafts/:id", (c) => {
 })
 
 prePublish.patch("/drafts/:id/category", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
@@ -5381,6 +5397,7 @@ prePublish.patch("/drafts/:id/category", async (c) => {
 })
 
 prePublish.post("/drafts/:id/convert-openapi-single-item", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
@@ -5487,6 +5504,7 @@ prePublish.post("/drafts/:id/convert-openapi-single-item", async (c) => {
 })
 
 prePublish.patch("/drafts/:id/fields", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
@@ -5520,6 +5538,7 @@ prePublish.patch("/drafts/:id/fields", async (c) => {
 })
 
 prePublish.post("/drafts/:id/save", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
@@ -5623,6 +5642,7 @@ prePublish.post("/drafts/:id/save", async (c) => {
 })
 
 prePublish.post("/drafts/:id/ai-enrich", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
@@ -5776,6 +5796,7 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
 })
 
 prePublish.post("/drafts/:id/ai-field", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
@@ -5827,11 +5848,76 @@ function uploadsRoot() {
   return path.join(DATA_DIR, "listing-assets")
 }
 
-function imageContentType(fileName: string) {
-  const ext = path.extname(fileName).toLowerCase()
-  if (ext === ".png") return "image/png"
-  if (ext === ".webp") return "image/webp"
-  return "image/jpeg"
+const MAX_FOLDER_IMPORT_FILES = 200
+const MAX_FOLDER_IMPORT_BYTES = 500 * 1024 * 1024
+
+function safeAssetFileName(fileName: string, extension: string) {
+  return safeUploadFileName(fileName, { fallbackName: "image", extension })
+}
+
+function isPathInside(root: string, candidate: string) {
+  const relative = path.relative(root, candidate)
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+}
+
+function resolveImportFolderPath(folderPath: string) {
+  try {
+    const folderRealPath = fs.realpathSync(folderPath)
+    if (!fs.statSync(folderRealPath).isDirectory()) return null
+    return folderRealPath
+  } catch {
+    return null
+  }
+}
+
+function resolveImportImageSource(folderRealPath: string, filePath: string) {
+  let linkStat: fs.Stats
+  let sourceRealPath: string
+  try {
+    linkStat = fs.lstatSync(filePath)
+    if (linkStat.isSymbolicLink()) {
+      return { skipped: true, reason: "不支持符号链接图片" }
+    }
+    if (!linkStat.isFile()) {
+      return { skipped: true, reason: "图片文件不可用" }
+    }
+    sourceRealPath = fs.realpathSync(filePath)
+  } catch {
+    return { skipped: true, reason: "图片文件不可用" }
+  }
+  if (!isPathInside(folderRealPath, sourceRealPath)) {
+    return { skipped: true, reason: "图片文件不在导入目录内" }
+  }
+  const stat = fs.statSync(sourceRealPath)
+  if (!stat.isFile()) {
+    return { skipped: true, reason: "图片文件不可用" }
+  }
+  return { realPath: sourceRealPath, size: stat.size }
+}
+
+function copyImportedImageToAssetRoot(input: {
+  listingId: number
+  skcCode?: unknown
+  sourcePath: string
+  fileName: string
+}) {
+  const stat = fs.statSync(input.sourcePath)
+  if (!stat.isFile()) return null
+  if (stat.size > maxUploadBytes("image")) {
+    return { skipped: true, reason: "图片文件过大" }
+  }
+  const bytes = fs.readFileSync(input.sourcePath)
+  let detected: ReturnType<typeof detectImageUploadType>
+  try {
+    detected = detectImageUploadType(bytes)
+  } catch {
+    return { skipped: true, reason: "不是支持的图片文件" }
+  }
+  const dir = path.join(uploadsRoot(), String(input.listingId), skcFingerprint(input.skcCode || "spu"))
+  fs.mkdirSync(dir, { recursive: true })
+  const localPath = path.join(dir, safeAssetFileName(input.fileName, detected.extension))
+  fs.writeFileSync(localPath, bytes)
+  return { localPath, bytes, detected }
 }
 
 function importListingImagesFromFolder(db: ReturnType<typeof getDb>, listingId: number, folderPath: string) {
@@ -5839,7 +5925,8 @@ function importListingImagesFromFolder(db: ReturnType<typeof getDb>, listingId: 
   if (!listing) {
     throw new HTTPException(404, { message: "草稿不存在" })
   }
-  if (!folderPath || !fs.existsSync(folderPath) || !fs.statSync(folderPath).isDirectory()) {
+  const folderRealPath = resolveImportFolderPath(folderPath)
+  if (!folderRealPath) {
     throw new HTTPException(400, { message: "本地图片目录不存在" })
   }
 
@@ -5853,9 +5940,14 @@ function importListingImagesFromFolder(db: ReturnType<typeof getDb>, listingId: 
   const fallbackSkc = listingSkcs.find((skc) => folderFinger.includes(skcFingerprint(skc.skc_code)))
     ?? listingSkcs.find((skc) => folderFinger.includes(skcFingerprint(String(skc.skc_code).split(":").pop())))
     ?? listingSkcs[0]
-  const files = fs.readdirSync(folderPath)
+  const warnings: Array<{ file_name: string; reason: string }> = []
+  const matchedFiles = fs.readdirSync(folderRealPath)
     .filter((fileName) => /\.(jpe?g|png|webp)$/i.test(fileName))
     .sort((a, b) => a.localeCompare(b, "zh-Hans-CN", { numeric: true }))
+  const files = matchedFiles.slice(0, MAX_FOLDER_IMPORT_FILES)
+  if (matchedFiles.length > MAX_FOLDER_IMPORT_FILES) {
+    warnings.push({ file_name: "*", reason: `本次最多导入 ${MAX_FOLDER_IMPORT_FILES} 张图片` })
+  }
   const insert = db.prepare(`
     insert into listing_asset (
       listing_id,
@@ -5875,29 +5967,50 @@ function importListingImagesFromFolder(db: ReturnType<typeof getDb>, listingId: 
     values (?, ?, ?, 'MANUAL_FOLDER_IMPORT', ?, ?, ?, ?, 'PENDING_CONFIRM', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   `)
   const saved: SourceRow[] = []
+  let importedBytes = 0
   const transaction = db.transaction(() => {
     for (const fileName of files) {
-      const filePath = path.join(folderPath, fileName)
+      const filePath = path.join(folderRealPath, fileName)
       const fileFinger = skcFingerprint(fileName)
       const matchedSkc = listingSkcs.find((skc) => fileFinger.includes(skcFingerprint(skc.skc_code)))
         ?? listingSkcs.find((skc) => fileFinger.includes(skcFingerprint(String(skc.skc_code).split(":").pop())))
         ?? fallbackSkc
       if (!matchedSkc) continue
       const classified = classifyImportedImage(fileName)
-      const fileSize = fs.statSync(filePath).size
+      const sourceFile = resolveImportImageSource(folderRealPath, filePath)
+      if ("skipped" in sourceFile) {
+        warnings.push({ file_name: fileName, reason: sourceFile.reason })
+        continue
+      }
+      if (importedBytes + sourceFile.size > MAX_FOLDER_IMPORT_BYTES) {
+        warnings.push({ file_name: fileName, reason: "本次导入图片总大小超过限制" })
+        continue
+      }
+      const copied = copyImportedImageToAssetRoot({
+        listingId,
+        skcCode: matchedSkc.skc_code,
+        sourcePath: sourceFile.realPath,
+        fileName,
+      })
+      if (!copied || "skipped" in copied) {
+        warnings.push({ file_name: fileName, reason: copied?.reason ?? "图片文件不可用" })
+        continue
+      }
+      importedBytes += copied.bytes.length
       const result = insert.run(
         listingId,
         matchedSkc.id,
         matchedSkc.skc_code,
         classified.assetType,
         classified.sort,
-        filePath,
-        fileSize,
+        copied.localPath,
+        copied.bytes.length,
         classified.note,
         JSON.stringify({
           file_name: fileName,
-          folder_path: folderPath,
-          file_size: fileSize,
+          source_folder: path.basename(folderPath),
+          file_size: copied.bytes.length,
+          content_type: copied.detected.contentType,
           requirement_key: classified.requirementKey,
           classification_rule: "filename_index",
         }),
@@ -5906,10 +6019,11 @@ function importListingImagesFromFolder(db: ReturnType<typeof getDb>, listingId: 
     }
   })
   transaction()
-  return { listing, assets: saved }
+  return { listing, assets: saved, warnings }
 }
 
 prePublish.post("/drafts/batch-import-folders", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const body = await c.req.json().catch(() => ({})) as { listing_ids?: unknown[]; folder_path?: string }
   const listingIds = Array.from(new Set((Array.isArray(body.listing_ids) ? body.listing_ids : []).map(Number).filter((id) => Number.isFinite(id) && id > 0)))
@@ -5918,7 +6032,7 @@ prePublish.post("/drafts/batch-import-folders", async (c) => {
   const items = listingIds.map((listingId) => {
     try {
       const result = importListingImagesFromFolder(db, listingId, folderPath)
-      return { listing_id: listingId, ok: true, imported_count: result.assets.length }
+      return { listing_id: listingId, ok: true, imported_count: result.assets.length, warnings: result.warnings }
     } catch (error) {
       const message = error instanceof Error ? error.message : "图片目录导入失败"
       return { listing_id: listingId, ok: false, imported_count: 0, message }
@@ -5932,6 +6046,7 @@ prePublish.post("/drafts/batch-import-folders", async (c) => {
 })
 
 prePublish.post("/drafts/:id/images/import-folder", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const body = await c.req.json().catch(() => ({})) as { folder_path?: string }
@@ -5941,11 +6056,13 @@ prePublish.post("/drafts/:id/images/import-folder", async (c) => {
     ok: true,
     imported_count: result.assets.length,
     assets: result.assets,
+    warnings: result.warnings,
     detail: getListingDetail(db, listingId),
   })
 })
 
 prePublish.get("/drafts/:id/image-candidates", (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
@@ -6089,6 +6206,7 @@ prePublish.get("/drafts/:id/image-candidates", (c) => {
 })
 
 prePublish.post("/drafts/:id/images/from-library", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
@@ -6180,6 +6298,7 @@ prePublish.post("/drafts/:id/images/from-library", async (c) => {
 })
 
 prePublish.post("/drafts/:id/images/upload", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
@@ -6205,11 +6324,12 @@ prePublish.post("/drafts/:id/images/upload", async (c) => {
       and asset_type = ?
   `).get(listingId, skcCode || null, assetType) as SourceRow | undefined
   const imageSort = Number(sortRow?.next_sort ?? 1)
-  const safeName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_") || "upload.jpg"}`
+  const bytes = await readValidatedUploadBuffer(file, "image")
+  const detected = detectImageUploadType(bytes)
+  const safeName = safeAssetFileName(file.name, detected.extension)
   const dir = path.join(uploadsRoot(), String(listingId), skcFingerprint(skcCode || "spu"))
   fs.mkdirSync(dir, { recursive: true })
   const localPath = path.join(dir, safeName)
-  const bytes = Buffer.from(await file.arrayBuffer())
   fs.writeFileSync(localPath, bytes)
   const result = db.prepare(`
     insert into listing_asset (
@@ -6240,7 +6360,7 @@ prePublish.post("/drafts/:id/images/upload", async (c) => {
     JSON.stringify({
       file_name: file.name,
       requirement_key: requirementKey || null,
-      content_type: imageContentType(file.name),
+      content_type: detected.contentType,
       size: bytes.length,
     }),
   )
@@ -6252,6 +6372,7 @@ prePublish.post("/drafts/:id/images/upload", async (c) => {
 })
 
 prePublish.patch("/drafts/:id/images/:assetId", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const assetId = Number(c.req.param("assetId"))
@@ -6288,6 +6409,7 @@ prePublish.patch("/drafts/:id/images/:assetId", async (c) => {
 })
 
 prePublish.delete("/drafts/:id/images/:assetId", (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const assetId = Number(c.req.param("assetId"))
@@ -6302,7 +6424,8 @@ prePublish.delete("/drafts/:id/images/:assetId", (c) => {
   })
 })
 
-prePublish.get("/assets/:id/file", (c) => {
+prePublish.get("/assets/:id/file", async (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   const id = Number(c.req.param("id"))
   const asset = db.prepare("select * from listing_asset where id = ?").get(id) as SourceRow | undefined
@@ -6310,14 +6433,14 @@ prePublish.get("/assets/:id/file", (c) => {
   if (!asset || !localPath || !fs.existsSync(localPath)) {
     throw new HTTPException(404, { message: "图片不存在" })
   }
-  const ext = path.extname(localPath).toLowerCase()
-  const contentType = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : "image/jpeg"
-  return new Response(fs.readFileSync(localPath), {
-    headers: { "Content-Type": contentType },
+  const file = await assertLocalImageFile({ rootDir: uploadsRoot(), filePath: localPath })
+  return new Response(fs.readFileSync(file.realPath), {
+    headers: { "Content-Type": file.contentType },
   })
 })
 
 prePublish.post("/drafts/:id/versions", (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
@@ -6339,6 +6462,7 @@ prePublish.post("/drafts/:id/versions", (c) => {
 })
 
 prePublish.get("/drafts/:id/publish-payload", async (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const skcCodes = csvTerms(c.req.query("skc_codes"))
@@ -6358,6 +6482,7 @@ prePublish.get("/drafts/:id/publish-payload", async (c) => {
 })
 
 prePublish.post("/drafts/batch-publish-check", async (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   const body = await c.req.json().catch(() => ({})) as {
     listing_ids?: unknown[]
@@ -6377,6 +6502,7 @@ prePublish.post("/drafts/batch-publish-check", async (c) => {
 })
 
 prePublish.post("/drafts/batch-quick-fix", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const body = await c.req.json().catch(() => ({})) as {
     listing_fixes?: Array<{
@@ -6492,6 +6618,7 @@ prePublish.post("/drafts/batch-quick-fix", async (c) => {
 })
 
 prePublish.post("/drafts/:id/publish", async (c) => {
+  requirePermission(c, "PUBLISH_RUN")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
@@ -6736,6 +6863,7 @@ prePublish.post("/drafts/:id/publish", async (c) => {
 })
 
 prePublish.post("/field-fills", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const body = await c.req.json() as {
     spu_code?: string
@@ -6799,6 +6927,7 @@ prePublish.post("/field-fills", async (c) => {
 })
 
 prePublish.post("/ai-fill", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const body = await c.req.json().catch(() => ({})) as {
     spu_codes?: string[]

@@ -1,6 +1,7 @@
 import { Hono } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
+import { requirePermission } from "../lib/auth"
 import { getSheinPriceConfig } from "../lib/price-config"
 import { resolvePackageRule } from "../lib/rule-resolver"
 import { resolveSheinKidsCategoryFallback } from "../services/pre-publish/category-fallback"
@@ -793,6 +794,7 @@ function ensureBucketHasRows(db: ReturnType<typeof getDb>) {
 }
 
 sheinProducts.get("/", (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   ensureBucketHasRows(db)
   const limit = readLimit(c.req.query("limit"))
@@ -847,6 +849,7 @@ sheinProducts.get("/", (c) => {
 })
 
 sheinProducts.get("/filters", (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   ensureBucketHasRows(db)
   const categories = db.prepare(`
@@ -885,6 +888,7 @@ sheinProducts.get("/filters", (c) => {
 })
 
 sheinProducts.post("/import", async (c) => {
+  requirePermission(c, "SYNC_RUN")
   const db = getDb()
   const body = await c.req.json().catch(() => ({})) as {
     spu_codes?: unknown
@@ -921,6 +925,7 @@ sheinProducts.post("/import", async (c) => {
 })
 
 sheinProducts.post("/:spuCode/refresh", (c) => {
+  requirePermission(c, "SYNC_RUN")
   const db = getDb()
   const bucket = refreshBucketProduct(db, c.req.param("spuCode"))
   if (!bucket) {
@@ -930,6 +935,7 @@ sheinProducts.post("/:spuCode/refresh", (c) => {
 })
 
 sheinProducts.delete("/:spuCode", (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const result = db.prepare(`
     update shein_product_bucket

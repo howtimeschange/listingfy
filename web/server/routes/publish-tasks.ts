@@ -2,6 +2,7 @@ import { Hono } from "hono"
 import type { Context } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
+import { requirePermission } from "../lib/auth"
 import { requestSheinWithRetry } from "../../../scripts/lib/shein_client.mjs"
 import {
   markPublishTaskFailed,
@@ -259,6 +260,7 @@ function buildListWhere(c: Context) {
 }
 
 publishTasks.get("/", (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   const limit = readLimit(c.req.query("limit"))
   const offset = readOffset(c.req.query("offset"))
@@ -315,6 +317,7 @@ publishTasks.get("/", (c) => {
 })
 
 publishTasks.get("/filters", (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   const platforms = db.prepare(`
     select platform, count(*) as count
@@ -340,6 +343,7 @@ publishTasks.get("/filters", (c) => {
 })
 
 publishTasks.post("/audit-status/sync", async (c) => {
+  requirePermission(c, "PUBLISH_RUN")
   const db = getDb()
   const body = await c.req.json().catch(() => ({})) as SourceRow
   const taskIds = parseJsonArray(body.taskIds ?? body.task_ids)
@@ -419,6 +423,7 @@ publishTasks.post("/audit-status/sync", async (c) => {
 })
 
 publishTasks.get("/:id", (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   const taskId = Number(c.req.param("id"))
   if (!Number.isFinite(taskId)) {
@@ -475,6 +480,7 @@ publishTasks.get("/:id", (c) => {
 })
 
 publishTasks.post("/:id/retry", (c) => {
+  requirePermission(c, "PUBLISH_RUN")
   const db = getDb()
   const taskId = Number(c.req.param("id"))
   const task = db.prepare(`
@@ -546,6 +552,7 @@ publishTasks.post("/:id/retry", (c) => {
 })
 
 publishTasks.post("/:id/sync-status", async (c) => {
+  requirePermission(c, "PUBLISH_RUN")
   const db = getDb()
   const taskId = Number(c.req.param("id"))
   const task = db.prepare(`

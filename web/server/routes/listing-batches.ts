@@ -1,6 +1,7 @@
 import { Hono } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
+import { requirePermission } from "../lib/auth"
 import {
   ensureBatchPublishTasks,
   publishSummaryForBatch,
@@ -193,6 +194,7 @@ function batchSyncTaskRows(db: ReturnType<typeof getDb>, input: {
 }
 
 listingBatches.get("/", (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   const platform = normalizeText(c.req.query("platform") ?? "SHEIN") || "SHEIN"
   const q = normalizeText(c.req.query("q"))
@@ -231,6 +233,7 @@ listingBatches.get("/", (c) => {
 })
 
 listingBatches.post("/", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const body = await c.req.json().catch(() => ({})) as {
     batch_name?: unknown
@@ -289,6 +292,7 @@ listingBatches.post("/", async (c) => {
 })
 
 listingBatches.post("/:id/publish-tasks", async (c) => {
+  requirePermission(c, "PUBLISH_RUN")
   const db = getDb()
   const body = await c.req.json().catch(() => ({})) as {
     listing_ids?: unknown
@@ -306,6 +310,7 @@ listingBatches.post("/:id/publish-tasks", async (c) => {
 })
 
 listingBatches.get("/:id/publish-summary", (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   const ref = resolveBatch(db, c.req.param("id"), c.req.query("platform"))
   const summary = c.req.query("persist") === "0"
@@ -315,6 +320,7 @@ listingBatches.get("/:id/publish-summary", (c) => {
 })
 
 listingBatches.post("/:id/sync-status", async (c) => {
+  requirePermission(c, "PUBLISH_RUN")
   const db = getDb()
   const body = await c.req.json().catch(() => ({})) as {
     platform?: unknown
@@ -350,6 +356,7 @@ listingBatches.post("/:id/sync-status", async (c) => {
 })
 
 listingBatches.post("/:id/retry-failed", async (c) => {
+  requirePermission(c, "PUBLISH_RUN")
   const db = getDb()
   const body = await c.req.json().catch(() => ({})) as {
     platform?: unknown
@@ -365,6 +372,7 @@ listingBatches.post("/:id/retry-failed", async (c) => {
 })
 
 listingBatches.get("/:id", (c) => {
+  requirePermission(c, "LISTING_READ")
   const db = getDb()
   const id = c.req.param("id")
   const batch = /^\d+$/.test(id)

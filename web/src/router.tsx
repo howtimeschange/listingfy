@@ -1,48 +1,51 @@
 import { createBrowserRouter, Navigate } from "react-router"
 import { ProtectedLayout } from "@/components/layout/protected-layout"
+import {
+  BatchDetailPage,
+  BrandRulesPage,
+  CategoryMappingPage,
+  DeepDrawContentPage,
+  DeepdrawContentDetailPage,
+  DeepdrawFieldMappingsPage,
+  DeepdrawMetadataPage,
+  ImageLibraryDetailPage,
+  ImageLibraryPage,
+  ImageManagementPage,
+  ListingBatchesPage,
+  ListingLaunchPlansPage,
+  MdmProductDetailPage,
+  MdmProductsPage,
+  OperationLogsPage,
+  PackageRulesPage,
+  PlatformIntegrationsPage,
+  PrePublishDraftDetailPage,
+  PrePublishValidationPage,
+  PriceRulesPage,
+  ProductArchiveDetailPage,
+  ProductArchiveDraftDetailPage,
+  ProductArchiveDraftsPage,
+  ProductArchivesPage,
+  PublishTaskDetailPage,
+  PublishTasksPage,
+  RouteSuspense,
+  SheinAuditStatusPage,
+  SheinBarcodeSizePage,
+  SheinCompliancePage,
+  SheinFinancePage,
+  SheinInventoryPage,
+  SheinMetadataPage,
+  SheinPlatformIdentitiesPage,
+  SheinPlatformProductsPage,
+  SheinProcurementPage,
+  SheinProductsPage,
+  SizeConversionPage,
+  SyncTasksPage,
+  UsersPage,
+} from "./router-lazy-pages"
 
 import LandingPage from "@/pages/landing/page"
 import LoginPage from "@/pages/login/page"
 import DashboardPage from "@/pages/dashboard/page"
-import ListingBatchesPage from "@/pages/listing-batches/page"
-import BatchDetailPage from "@/pages/listing-batches/[id]/page"
-import ImageManagementPage from "@/pages/image-management/page"
-import SheinProductsPage from "@/pages/shein-products/page"
-import SheinPlatformProductsPage from "@/pages/shein-platform-products/page"
-import SheinBarcodeSizePage from "@/pages/shein-operations/barcode-size/page"
-import SheinPlatformIdentitiesPage from "@/pages/shein-operations/platform-identities/page"
-import SheinAuditStatusPage from "@/pages/shein-operations/audit-status/page"
-import SheinCompliancePage from "@/pages/shein-operations/compliance/page"
-import SheinProcurementPage from "@/pages/shein-operations/procurement/page"
-import SheinInventoryPage from "@/pages/shein-operations/inventory/page"
-import SheinFinancePage from "@/pages/shein-operations/finance/page"
-import PrePublishValidationPage from "@/pages/pre-publish-validation/page"
-import PrePublishDraftDetailPage from "@/pages/pre-publish-validation/[listingId]/page"
-import PublishTasksPage from "@/pages/publish-tasks/page"
-import PublishTaskDetailPage from "@/pages/publish-tasks/[id]/page"
-import CategoryMappingPage from "@/pages/category-mapping/page"
-import SizeConversionPage from "@/pages/size-conversion/page"
-import PackageRulesPage from "@/pages/package-rules/page"
-import PriceRulesPage from "@/pages/price-rules/page"
-import BrandRulesPage from "@/pages/brand-rules/page"
-import SheinMetadataPage from "@/pages/shein-metadata/page"
-import ProductArchivesPage from "@/pages/product-archives/page"
-import ProductArchiveDetailPage from "@/pages/product-archives/[spuCode]/page"
-import ProductArchiveDraftsPage from "@/pages/product-archive-drafts/page"
-import ProductArchiveDraftDetailPage from "@/pages/product-archive-drafts/[draftId]/page"
-import ListingLaunchPlansPage from "@/pages/listing-launch-plans/page"
-import DeepdrawFieldMappingsPage from "@/pages/deepdraw-field-mappings/page"
-import MdmProductsPage from "@/pages/mdm-products/page"
-import MdmProductDetailPage from "@/pages/mdm-products/[spuCode]/page"
-import DeepDrawContentPage from "@/pages/deepdraw-content/page"
-import DeepdrawContentDetailPage from "@/pages/deepdraw-content/[spuCode]/page"
-import DeepdrawMetadataPage from "@/pages/deepdraw-metadata/page"
-import ImageLibraryPage from "@/pages/image-library/page"
-import ImageLibraryDetailPage from "@/pages/image-library/[assetId]/page"
-import PlatformIntegrationsPage from "@/pages/platform-integrations/page"
-import UsersPage from "@/pages/users/page"
-import SyncTasksPage from "@/pages/sync-tasks/page"
-import OperationLogsPage from "@/pages/operation-logs/page"
 
 export const router = createBrowserRouter([
   { index: true, element: <LandingPage /> },
@@ -51,52 +54,52 @@ export const router = createBrowserRouter([
     element: <ProtectedLayout />,
     children: [
       { path: "dashboard", element: <DashboardPage /> },
-      { path: "listing-batches", element: <ListingBatchesPage /> },
-      { path: "listing-batches/:id", element: <BatchDetailPage /> },
+      { path: "listing-batches", element: <RouteSuspense><ListingBatchesPage /></RouteSuspense> },
+      { path: "listing-batches/:id", element: <RouteSuspense><BatchDetailPage /></RouteSuspense> },
       { path: "draft-workbench", element: <Navigate to="/pre-publish-validation" replace /> },
       { path: "draft-workbench/:batchId", element: <Navigate to="/pre-publish-validation" replace /> },
-      { path: "image-management", element: <ImageManagementPage /> },
-      { path: "shein-products", element: <SheinProductsPage /> },
-      { path: "shein-platform-products", element: <SheinPlatformProductsPage view="list" /> },
-      { path: "shein-platform-products/sites", element: <SheinPlatformProductsPage view="sites" /> },
-      { path: "shein-platform-products/:spuName", element: <SheinPlatformProductsPage view="detail" /> },
-      { path: "shein-operations/barcode-size", element: <SheinBarcodeSizePage /> },
-      { path: "shein-operations/platform-identities", element: <SheinPlatformIdentitiesPage /> },
-      { path: "shein-operations/audit-status", element: <SheinAuditStatusPage /> },
-      { path: "shein-operations/compliance", element: <SheinCompliancePage /> },
-      { path: "shein-operations/procurement", element: <SheinProcurementPage /> },
-      { path: "shein-operations/inventory", element: <SheinInventoryPage /> },
-      { path: "shein-operations/finance", element: <SheinFinancePage /> },
-      { path: "pre-publish-validation", element: <PrePublishValidationPage /> },
-      { path: "pre-publish-validation/:listingId", element: <PrePublishDraftDetailPage /> },
-      { path: "publish-tasks", element: <PublishTasksPage /> },
-      { path: "publish-tasks/:id", element: <PublishTaskDetailPage /> },
-      { path: "category-mapping", element: <CategoryMappingPage /> },
+      { path: "image-management", element: <RouteSuspense><ImageManagementPage /></RouteSuspense> },
+      { path: "shein-products", element: <RouteSuspense><SheinProductsPage /></RouteSuspense> },
+      { path: "shein-platform-products", element: <RouteSuspense><SheinPlatformProductsPage view="list" /></RouteSuspense> },
+      { path: "shein-platform-products/sites", element: <RouteSuspense><SheinPlatformProductsPage view="sites" /></RouteSuspense> },
+      { path: "shein-platform-products/:spuName", element: <RouteSuspense><SheinPlatformProductsPage view="detail" /></RouteSuspense> },
+      { path: "shein-operations/barcode-size", element: <RouteSuspense><SheinBarcodeSizePage /></RouteSuspense> },
+      { path: "shein-operations/platform-identities", element: <RouteSuspense><SheinPlatformIdentitiesPage /></RouteSuspense> },
+      { path: "shein-operations/audit-status", element: <RouteSuspense><SheinAuditStatusPage /></RouteSuspense> },
+      { path: "shein-operations/compliance", element: <RouteSuspense><SheinCompliancePage /></RouteSuspense> },
+      { path: "shein-operations/procurement", element: <RouteSuspense><SheinProcurementPage /></RouteSuspense> },
+      { path: "shein-operations/inventory", element: <RouteSuspense><SheinInventoryPage /></RouteSuspense> },
+      { path: "shein-operations/finance", element: <RouteSuspense><SheinFinancePage /></RouteSuspense> },
+      { path: "pre-publish-validation", element: <RouteSuspense><PrePublishValidationPage /></RouteSuspense> },
+      { path: "pre-publish-validation/:listingId", element: <RouteSuspense><PrePublishDraftDetailPage /></RouteSuspense> },
+      { path: "publish-tasks", element: <RouteSuspense><PublishTasksPage /></RouteSuspense> },
+      { path: "publish-tasks/:id", element: <RouteSuspense><PublishTaskDetailPage /></RouteSuspense> },
+      { path: "category-mapping", element: <RouteSuspense><CategoryMappingPage /></RouteSuspense> },
       { path: "attribute-mapping", element: <Navigate to="/pre-publish-validation" replace /> },
-      { path: "size-conversion", element: <SizeConversionPage /> },
-      { path: "package-rules", element: <PackageRulesPage /> },
-      { path: "price-rules", element: <PriceRulesPage /> },
-      { path: "brand-rules", element: <BrandRulesPage /> },
+      { path: "size-conversion", element: <RouteSuspense><SizeConversionPage /></RouteSuspense> },
+      { path: "package-rules", element: <RouteSuspense><PackageRulesPage /></RouteSuspense> },
+      { path: "price-rules", element: <RouteSuspense><PriceRulesPage /></RouteSuspense> },
+      { path: "brand-rules", element: <RouteSuspense><BrandRulesPage /></RouteSuspense> },
       { path: "low-rate-list", element: <Navigate to="/price-rules" replace /> },
-      { path: "shein-metadata", element: <SheinMetadataPage /> },
-      { path: "product-archives", element: <ProductArchivesPage /> },
-      { path: "product-archives/:spuCode", element: <ProductArchiveDetailPage /> },
-      { path: "product-archive-drafts", element: <ProductArchiveDraftsPage /> },
-      { path: "product-archive-drafts/:draftId", element: <ProductArchiveDraftDetailPage /> },
-      { path: "listing-launch-plans", element: <ListingLaunchPlansPage /> },
-      { path: "deepdraw-field-mappings", element: <DeepdrawFieldMappingsPage /> },
-      { path: "mdm-products", element: <MdmProductsPage /> },
-      { path: "mdm-products/:spuCode", element: <MdmProductDetailPage /> },
-      { path: "deepdraw-content", element: <DeepDrawContentPage /> },
-      { path: "deepdraw-content/:spuCode", element: <DeepdrawContentDetailPage /> },
-      { path: "deepdraw-metadata", element: <DeepdrawMetadataPage /> },
-      { path: "image-library", element: <ImageLibraryPage /> },
-      { path: "image-library/:assetId", element: <ImageLibraryDetailPage /> },
+      { path: "shein-metadata", element: <RouteSuspense><SheinMetadataPage /></RouteSuspense> },
+      { path: "product-archives", element: <RouteSuspense><ProductArchivesPage /></RouteSuspense> },
+      { path: "product-archives/:spuCode", element: <RouteSuspense><ProductArchiveDetailPage /></RouteSuspense> },
+      { path: "product-archive-drafts", element: <RouteSuspense><ProductArchiveDraftsPage /></RouteSuspense> },
+      { path: "product-archive-drafts/:draftId", element: <RouteSuspense><ProductArchiveDraftDetailPage /></RouteSuspense> },
+      { path: "listing-launch-plans", element: <RouteSuspense><ListingLaunchPlansPage /></RouteSuspense> },
+      { path: "deepdraw-field-mappings", element: <RouteSuspense><DeepdrawFieldMappingsPage /></RouteSuspense> },
+      { path: "mdm-products", element: <RouteSuspense><MdmProductsPage /></RouteSuspense> },
+      { path: "mdm-products/:spuCode", element: <RouteSuspense><MdmProductDetailPage /></RouteSuspense> },
+      { path: "deepdraw-content", element: <RouteSuspense><DeepDrawContentPage /></RouteSuspense> },
+      { path: "deepdraw-content/:spuCode", element: <RouteSuspense><DeepdrawContentDetailPage /></RouteSuspense> },
+      { path: "deepdraw-metadata", element: <RouteSuspense><DeepdrawMetadataPage /></RouteSuspense> },
+      { path: "image-library", element: <RouteSuspense><ImageLibraryPage /></RouteSuspense> },
+      { path: "image-library/:assetId", element: <RouteSuspense><ImageLibraryDetailPage /></RouteSuspense> },
       { path: "shein-accounts", element: <Navigate to="/platform-integrations" replace /> },
-      { path: "platform-integrations", element: <PlatformIntegrationsPage /> },
-      { path: "users", element: <UsersPage /> },
-      { path: "sync-tasks", element: <SyncTasksPage /> },
-      { path: "operation-logs", element: <OperationLogsPage /> },
+      { path: "platform-integrations", element: <RouteSuspense><PlatformIntegrationsPage /></RouteSuspense> },
+      { path: "users", element: <RouteSuspense><UsersPage /></RouteSuspense> },
+      { path: "sync-tasks", element: <RouteSuspense><SyncTasksPage /></RouteSuspense> },
+      { path: "operation-logs", element: <RouteSuspense><OperationLogsPage /></RouteSuspense> },
     ],
   },
 ])

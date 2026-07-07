@@ -9,6 +9,7 @@ node_modules/
 dist/
 .vite/
 tmp/
+outputs/
 package.tgz
 .yunxiao-package/
 docs/reference/integration-handoffs/private/

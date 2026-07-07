@@ -1,10 +1,11 @@
 import path from "node:path"
 import os from "node:os"
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm } from "node:fs/promises"
 import { Hono, type Context } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
 import { requirePermission } from "../lib/auth"
+import { safeUploadFileName, writeValidatedUploadFile } from "../lib/upload-guard"
 import { auditFromContext } from "../lib/audit"
 import { assertSafeProductArchiveCode } from "../lib/product-archive-security"
 import { createProductArchiveSyncQueue } from "../../../scripts/lib/product_archive_sync_queue.mjs"
@@ -112,8 +113,7 @@ function booleanFormValue(value: unknown) {
 }
 
 function safeUploadName(fileName: string) {
-  const base = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, "_")
-  return `${Date.now()}-${base || "upload.xlsx"}`
+  return safeUploadFileName(fileName, { fallbackName: "upload.xlsx" })
 }
 
 async function saveUploadedSpreadsheet(c: Context) {
@@ -129,7 +129,7 @@ async function saveUploadedSpreadsheet(c: Context) {
 async function saveFormFile(file: File) {
   await mkdir(UPLOAD_DIR, { recursive: true })
   const filePath = path.join(UPLOAD_DIR, safeUploadName(file.name))
-  await writeFile(filePath, Buffer.from(await file.arrayBuffer()))
+  await writeValidatedUploadFile(file, "spreadsheet", filePath)
   return filePath
 }
 

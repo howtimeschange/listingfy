@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from "node:fs/promises"
+import { mkdir, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { Hono, type Context } from "hono"
@@ -6,6 +6,7 @@ import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
 import { auditFromContext } from "../lib/audit"
 import { requirePermission } from "../lib/auth"
+import { safeUploadFileName, writeValidatedUploadFile } from "../lib/upload-guard"
 import { parseDeepdrawFieldMappingRows } from "../../../scripts/lib/deepdraw_field_mapping_importer.mjs"
 import { readSpreadsheetSheetsFromFile } from "../../../scripts/lib/listing_launch_plan_importer.mjs"
 import {
@@ -43,8 +44,7 @@ async function readJson(c: Context) {
 }
 
 function safeUploadName(fileName: string) {
-  const base = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, "_")
-  return `${Date.now()}-${base || "field-mapping.xlsx"}`
+  return safeUploadFileName(fileName, { fallbackName: "field-mapping.xlsx" })
 }
 
 async function saveUploadedSpreadsheet(c: Context) {
@@ -55,7 +55,7 @@ async function saveUploadedSpreadsheet(c: Context) {
   }
   await mkdir(UPLOAD_DIR, { recursive: true })
   const filePath = path.join(UPLOAD_DIR, safeUploadName(file.name))
-  await writeFile(filePath, Buffer.from(await file.arrayBuffer()))
+  await writeValidatedUploadFile(file, "spreadsheet", filePath)
   return { form, file, filePath }
 }
 

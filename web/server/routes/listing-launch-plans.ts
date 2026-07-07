@@ -1,14 +1,12 @@
-import { createWriteStream } from "node:fs"
 import { mkdir, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { Readable } from "node:stream"
-import { pipeline } from "node:stream/promises"
 import { Hono, type Context } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
 import { auditFromContext } from "../lib/audit"
 import { requirePermission } from "../lib/auth"
+import { safeUploadFileName, writeValidatedUploadFile } from "../lib/upload-guard"
 import {
   listListingLaunchPlanImports,
   listListingLaunchPlanRows,
@@ -29,8 +27,7 @@ function stringValue(value: unknown) {
 }
 
 function safeUploadName(fileName: string) {
-  const base = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, "_")
-  return `${Date.now()}-${base || "upload.xlsx"}`
+  return safeUploadFileName(fileName, { fallbackName: "upload.xlsx" })
 }
 
 async function saveUploadedSpreadsheet(c: Context) {
@@ -41,7 +38,7 @@ async function saveUploadedSpreadsheet(c: Context) {
   }
   await mkdir(UPLOAD_DIR, { recursive: true })
   const filePath = path.join(UPLOAD_DIR, safeUploadName(file.name))
-  await pipeline(Readable.fromWeb(file.stream()), createWriteStream(filePath))
+  await writeValidatedUploadFile(file, "spreadsheet", filePath)
   return { file, filePath }
 }
 
