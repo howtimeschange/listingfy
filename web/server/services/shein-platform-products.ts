@@ -667,74 +667,6 @@ function persistProductSaleSites(
   }
 }
 
-function ensureProductSaleSitesIndexed(db: SyncPostgresDatabase, context: SheinPlatformContext, siteNames: Map<string, string>) {
-  const cacheKey = productFilterCacheKey(context)
-  if (productSaleSiteBackfillAttempted.has(cacheKey)) return
-
-  try {
-    const detailRow = db.prepare(`
-      select count(*) as count
-      from shein_platform_product
-      where platform = ?
-        and platform_account_key = ?
-        and coalesce(raw_detail_payload_json, '{}') <> '{}'
-    `).get(context.platform, context.platformAccountKey) as { count: number } | undefined
-    const indexedRow = db.prepare(`
-      select count(distinct product_id) as count
-      from shein_platform_product_sale_site
-      where platform = ?
-        and platform_account_key = ?
-    `).get(context.platform, context.platformAccountKey) as { count: number } | undefined
-    const detailCount = Number(detailRow?.count ?? 0)
-    const indexedCount = Number(indexedRow?.count ?? 0)
-    if (detailCount === 0 || indexedCount >= detailCount) {
-      productSaleSiteBackfillAttempted.add(cacheKey)
-      return
-    }
-
-    const products = db.prepare(`
-      select id, spu_name, raw_detail_payload_json
-      from shein_platform_product
-      where platform = ?
-        and platform_account_key = ?
-        and coalesce(raw_detail_payload_json, '{}') <> '{}'
-      order by id asc
-    `).all(context.platform, context.platformAccountKey) as JsonRecord[]
-    const skcs = db.prepare(`
-      select skc.*, product.id as product_id
-      from shein_platform_skc skc
-      join shein_platform_product product on product.id = skc.product_id
-      where product.platform = ?
-        and product.platform_account_key = ?
-      order by product.id asc, skc.id asc
-    `).all(context.platform, context.platformAccountKey) as JsonRecord[]
-    const skcsByProductId = groupRowsByNumber(skcs, "product_id")
-    for (const product of products) {
-      const productId = Number(product.id)
-      if (!Number.isFinite(productId)) continue
-      const productSkcs = (skcsByProductId.get(productId) ?? []).map((skc) => ({
-        id: Number(skc.id),
-        skcName: stringValue(skc.skc_name),
-        supplierCode: stringValue(skc.supplier_code),
-        raw: parseJsonText(skc.raw_payload_json),
-      })).filter((skc) => Number.isFinite(skc.id))
-      persistProductSaleSites(
-        db,
-        context,
-        productId,
-        stringValue(product.spu_name),
-        rawInfoFromDetailPayload(parseJsonText(product.raw_detail_payload_json)),
-        productSkcs,
-        siteNames,
-      )
-    }
-    productSaleSiteBackfillAttempted.add(cacheKey)
-    clearProductFilterCache()
-  } catch (error) {
-    warnAuxiliaryQuery("sale site index backfill", error)
-  }
-}
-
 function productListData(info: JsonRecord) {
   return arrayRecords(info.data ?? info.list ?? info.records ?? info.items)
 }
@@ -1342,7 +1274,6 @@ function productWhereForContext(context: SheinPlatformContext) {
 const PRODUCT_FILTER_CACHE_TTL_MS = 30_000
 
 const productFilterCache = new Map<string, { expiresAt: number; filters: ProductFilterOptions }>()
-const productSaleSiteBackfillAttempted = new Set<string>()
 
 function productFilterCacheKey(context: SheinPlatformContext) {
   return `${context.platform}\u0001${context.platformAccountKey}`
@@ -1783,7 +1714,6 @@ export function listPlatformProducts(input: ProductListInput = {}) {
   const site = normalizeText(input.site)
   const includeDetails = readListIncludeDetails(input.includeDetails)
   const siteNames = safeSiteNameLookup(db, context)
-  ensureProductSaleSitesIndexed(db, context, siteNames)
   const params: unknown[] = [context.platform, context.platformAccountKey]
   const where = [
     "product.platform = ?",

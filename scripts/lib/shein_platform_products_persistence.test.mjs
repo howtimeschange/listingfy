@@ -191,7 +191,6 @@ test("SHEIN platform products normalize sale sites for indexed list filtering", 
   assert.doesNotMatch(migration, /jsonb_array_elements/);
 
   assert.match(service, /persistProductSaleSites/);
-  assert.match(service, /ensureProductSaleSitesIndexed/);
   assert.match(service, /insert into shein_platform_product_sale_site/);
   assert.match(service, /from shein_platform_product_sale_site sale_site/);
   assert.match(service, /count\(distinct product_id\) as count/);
@@ -436,6 +435,7 @@ test("SHEIN platform product list stays read-only and avoids full-table sale sit
   assert.doesNotMatch(service, /ensurePlatformProductNameColumns/);
   assert.doesNotMatch(service, /alter table shein_platform_product add column if not exists/);
   assert.doesNotMatch(service, /create index if not exists idx_shein_platform_product_brand_category/);
+  assert.doesNotMatch(service, /export function listPlatformProducts[\s\S]*ensureProductSaleSitesIndexed[\s\S]*const params/);
   assert.match(service, /from shein_platform_site/);
   assert.doesNotMatch(service, /function saleSiteFilterOptions[\s\S]*from shein_platform_product product[\s\S]*function safeProductFilterOptions/);
   assert.doesNotMatch(service, /function productIdsForSaleSite/);
