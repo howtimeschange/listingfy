@@ -51,6 +51,12 @@ function credentialSecret() {
   return env("LISTINGIFY_CREDENTIAL_SECRET")
 }
 
+export function assertCredentialEncryptionConfigured() {
+  if (process.env.NODE_ENV === "production" && !credentialSecret()) {
+    throw new Error("LISTINGIFY_CREDENTIAL_SECRET is required in production")
+  }
+}
+
 function encryptionKey(secret: string) {
   return crypto.createHash("sha256").update(secret, "utf8").digest()
 }
@@ -63,7 +69,9 @@ export function encryptCredential(value: string | null | undefined) {
   if (!value) return value ?? null
   if (credentialIsEncrypted(value)) return value
   const secret = credentialSecret()
-  if (!secret) return value
+  if (!secret) {
+    throw new Error("LISTINGIFY_CREDENTIAL_SECRET is required to store platform credentials")
+  }
 
   const iv = crypto.randomBytes(12)
   const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(secret), iv)

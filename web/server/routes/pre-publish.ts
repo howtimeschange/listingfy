@@ -3,7 +3,8 @@ import path from "node:path"
 import { Hono } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { DATA_DIR, getDb } from "../db"
-import { callAiCategoryMatcher, resolveAiConfig } from "../../../scripts/lib/ai_category_matcher.mjs"
+import { callAiCategoryMatcher } from "../../../scripts/lib/ai_category_matcher.mjs"
+import { callAiChatJson, resolveAiConfig } from "../../../scripts/lib/ai_chat_client.mjs"
 import { refreshBucketProduct } from "./shein-products"
 import { requirePermission } from "../lib/auth"
 import { assertLocalImageFile } from "../lib/local-path-guard"
@@ -14,7 +15,9 @@ import { detectImageUploadType, maxUploadBytes, readValidatedUploadBuffer, safeU
 import { platformAdapterFor } from "../platform-adapters"
 import {
   ensurePublishTask,
+  findUnresolvedPublishTask,
   markPublishTaskFailed,
+  markPublishTransportUnknown,
   updatePublishTaskRequestPayload,
 } from "../services/publish/publish-job-service"
 import { canTransitionDraftStatus } from "../services/pre-publish/drafts"
@@ -2998,10 +3001,9 @@ function heuristicEnglishTitle(row: ReadinessRow) {
 async function callAiTranslateTitle(row: ReadinessRow) {
   const config = resolveAiConfig()
   if (!config.apiKey) return heuristicEnglishTitle(row)
-  const requestBody = JSON.stringify({
-    model: config.model,
-    temperature: 0.1,
-    response_format: { type: "json_object" },
+  const response = await callAiChatJson({
+    config,
+    errorLabel: "AI translate",
     messages: [
       {
         role: "system",
@@ -3023,44 +3025,8 @@ async function callAiTranslateTitle(row: ReadinessRow) {
       },
     ],
   })
-
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), config.timeoutMs)
-    try {
-      const response = await fetch(`${config.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${config.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: requestBody,
-        signal: controller.signal,
-      })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok) {
-        if (attempt === 0 && (response.status === 429 || response.status >= 500)) {
-          await sleep(800)
-          continue
-        }
-        throw new Error(`AI translate failed: HTTP ${response.status}`)
-      }
-      const content = responseMessageContent(payload)
-      const parsed = JSON.parse(extractJsonText(content)) as { title_en?: string }
-      return normalizeText(parsed.title_en) || heuristicEnglishTitle(row)
-    }
-    catch (error) {
-      if (attempt === 0 && retryableAiError(error)) {
-        await sleep(800)
-        continue
-      }
-      throw error
-    }
-    finally {
-      clearTimeout(timeout)
-    }
-  }
-  return heuristicEnglishTitle(row)
+  const parsed = response.json as { title_en?: string }
+  return normalizeText(parsed.title_en) || heuristicEnglishTitle(row)
 }
 
 async function safeAiTranslateTitle(row: ReadinessRow) {
@@ -3355,60 +3321,12 @@ function aiPrompt(row: ReadinessRow) {
   }, null, 2)
 }
 
-function extractJsonText(text: string) {
-  const trimmed = text.trim()
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
-  if (fenced) return fenced[1].trim()
-  const firstBrace = trimmed.indexOf("{")
-  const lastBrace = trimmed.lastIndexOf("}")
-  if (firstBrace >= 0 && lastBrace > firstBrace) return trimmed.slice(firstBrace, lastBrace + 1)
-  return trimmed
-}
-
-function responseMessageContent(body: unknown) {
-  const message = (body as { choices?: Array<{ message?: Record<string, unknown> }> })?.choices?.[0]?.message
-  const values = [
-    message?.content,
-    message?.reasoning_content,
-    message?.reasoning,
-  ]
-  for (const value of values) {
-    if (Array.isArray(value)) {
-      const text = value
-        .map((part) => typeof part === "string" ? part : normalizeText((part as { text?: unknown; content?: unknown })?.text ?? (part as { text?: unknown; content?: unknown })?.content))
-        .join("\n")
-        .trim()
-      if (text) return text
-    }
-    else if (typeof value === "string" && value.trim()) {
-      return value
-    }
-  }
-  return ""
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function retryableAiError(error: unknown) {
-  const typed = error as { name?: string; message?: string; code?: string; cause?: { code?: string } }
-  const message = String(typed?.message ?? "")
-  const code = typed?.cause?.code ?? typed?.code
-  return typed?.name === "AbortError"
-    || message === "fetch failed"
-    || code === "UND_ERR_SOCKET"
-    || code === "ECONNRESET"
-    || code === "ETIMEDOUT"
-}
-
 async function callAiFill(row: ReadinessRow) {
   const config = resolveAiConfig()
   if (!config.apiKey || row.manual_fields.length === 0) return []
-  const requestBody = JSON.stringify({
-    model: config.model,
-    temperature: 0.1,
-    response_format: { type: "json_object" },
+  const response = await callAiChatJson({
+    config,
+    errorLabel: "AI fill",
     messages: [
       {
         role: "system",
@@ -3420,44 +3338,8 @@ async function callAiFill(row: ReadinessRow) {
       },
     ],
   })
-
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), config.timeoutMs)
-    try {
-      const response = await fetch(`${config.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${config.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: requestBody,
-        signal: controller.signal,
-      })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok) {
-        if (attempt === 0 && (response.status === 429 || response.status >= 500)) {
-          await sleep(800)
-          continue
-        }
-        throw new Error(`AI fill failed: HTTP ${response.status}`)
-      }
-      const text = responseMessageContent(payload)
-      const json = JSON.parse(extractJsonText(text))
-      return Array.isArray(json.fills) ? json.fills : []
-    }
-    catch (error) {
-      if (attempt === 0 && retryableAiError(error)) {
-        await sleep(800)
-        continue
-      }
-      throw error
-    }
-    finally {
-      clearTimeout(timeout)
-    }
-  }
-  return []
+  const json = response.json as { fills?: unknown }
+  return Array.isArray(json.fills) ? json.fills : []
 }
 
 async function generateSingleAiField(readiness: ReadinessRow, fieldKey: string) {
@@ -6644,6 +6526,21 @@ prePublish.post("/drafts/:id/publish", async (c) => {
     })
   }
 
+  const unresolvedTask = findUnresolvedPublishTask(db, listingId)
+  if (unresolvedTask) {
+    return c.json({
+      ok: unresolvedTask.status === "PUBLISH_SUBMITTED",
+      deduplicated: true,
+      task_id: unresolvedTask.id,
+      version_id: unresolvedTask.publish_version_id,
+      status: unresolvedTask.status,
+      message: unresolvedTask.status === "PUBLISH_RESULT_UNKNOWN"
+        ? "上一次发布请求结果未知，请先同步平台状态，系统不会自动重复发布。"
+        : "该草稿已有发布请求，已返回原任务。",
+      detail: getListingDetail(db, listingId),
+    }, unresolvedTask.status === "PUBLISH_SUBMITTED" ? 200 : 202)
+  }
+
   const readiness = getReadinessForListing(db, listing)
   if (!readiness) {
     throw new HTTPException(404, { message: "商品档案不存在" })
@@ -6680,7 +6577,7 @@ prePublish.post("/drafts/:id/publish", async (c) => {
       request_payload_json = ?
     where id = ?
   `).run(JSON.stringify(preview.payload), version.id)
-  const { task } = ensurePublishTask(db, {
+  const ensuredTask = ensurePublishTask(db, {
     listingId: listing.id,
     publishVersionId: Number(version.id),
     platform: normalizeText(listing.platform) || "SHEIN",
@@ -6689,6 +6586,28 @@ prePublish.post("/drafts/:id/publish", async (c) => {
     attemptCount: 1,
     requestPayload: preview.payload,
   })
+  const task = ensuredTask.task
+  if (!ensuredTask.created) {
+    const errorMessage = "该草稿已有未解决的发布任务，本次重复发布已取消。"
+    db.prepare(`
+      update listing_publish_version
+      set status = 'FAILED',
+        request_payload_json = ?,
+        error_code = 'DUPLICATE_ACTIVE_TASK',
+        error_message = ?
+      where id = ?
+    `).run(JSON.stringify(preview.payload), errorMessage, version.id)
+    return c.json({
+      ok: task.status === "PUBLISH_SUBMITTED",
+      deduplicated: true,
+      task_id: task.id,
+      version_id: task.publish_version_id,
+      cancelled_version_id: version.id,
+      status: task.status,
+      message: errorMessage,
+      detail: getListingDetail(db, listingId),
+    }, task.status === "PUBLISH_SUBMITTED" ? 200 : 202)
+  }
   const taskId = Number(task.id)
   db.prepare(`
     update listing
@@ -6738,10 +6657,28 @@ prePublish.post("/drafts/:id/publish", async (c) => {
   })()
 
   const platformAdapter = platformAdapterFor(normalizeText(listing.platform) || "SHEIN")
-  const result = await platformAdapter.publishListing({
-    credentials: resolveSheinCredentials(db),
-    payload: built.payload,
-  })
+  let result
+  try {
+    result = await platformAdapter.publishListing({
+      credentials: resolveSheinCredentials(db),
+      payload: built.payload,
+    })
+  } catch (error) {
+    const errorCode = normalizeText((error as { code?: unknown })?.code) || "PUBLISH_TRANSPORT_ERROR"
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    markPublishTransportUnknown(db, {
+      taskId,
+      versionId: Number(version.id),
+      listingId: listing.id,
+      spuCode: normalizeText(listing.spu_code),
+      versionNo: Number(version.version_no),
+      errorCode,
+      errorMessage,
+    })
+    throw new HTTPException(502, {
+      message: `SHEIN 发布请求结果未知，请先同步平台状态后再处理：${errorMessage}`,
+    })
+  }
   const code = responseCode(result.payload)
   const message = responseMessage(result.payload)
   const info = publishInfo(result.payload)

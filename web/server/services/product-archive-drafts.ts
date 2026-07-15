@@ -3400,39 +3400,41 @@ export function applyProductArchiveDraftTrade(
     ...recordValue(draft.source_snapshot_json),
     tradeSelection: decision,
   }
-  const updateResult = db.prepare(`
-    update product_archive_draft
-    set trade_id = ?,
-      trade_path = ?,
-      source_snapshot_json = ?::jsonb,
-      updated_at = ?::timestamptz
-    where id = ?
-      and trade_id is not distinct from ?
-      and source_snapshot_json is not distinct from ?::jsonb
-  `).run(
-    tradeId,
-    tradePath,
-    jsonText(snapshot),
-    now,
-    draftId,
-    draft.trade_id ?? null,
-    jsonText(recordValue(draft.source_snapshot_json)),
-  )
-  if (Number(updateResult.changes ?? 0) === 0) {
-    const currentDraft = draftById(db, draftId)
-    if (options.automaticDecision && hasHumanTradeSelection(currentDraft.source_snapshot_json)) {
-      return {
-        ...validateProductArchiveDraft(db, draftId),
-        tradeSelectionAutoApplied: false,
+  return db.transaction(() => {
+    const updateResult = db.prepare(`
+      update product_archive_draft
+      set trade_id = ?,
+        trade_path = ?,
+        source_snapshot_json = ?::jsonb,
+        updated_at = ?::timestamptz
+      where id = ?
+        and trade_id is not distinct from ?
+        and source_snapshot_json is not distinct from ?::jsonb
+    `).run(
+      tradeId,
+      tradePath,
+      jsonText(snapshot),
+      now,
+      draftId,
+      draft.trade_id ?? null,
+      jsonText(recordValue(draft.source_snapshot_json)),
+    )
+    if (Number(updateResult.changes ?? 0) === 0) {
+      const currentDraft = draftById(db, draftId)
+      if (options.automaticDecision && hasHumanTradeSelection(currentDraft.source_snapshot_json)) {
+        return {
+          ...validateProductArchiveDraft(db, draftId),
+          tradeSelectionAutoApplied: false,
+        }
       }
+      throw new Error("草稿数据已更新，请刷新后重试")
     }
-    throw new Error("草稿数据已更新，请刷新后重试")
-  }
-  rebuildProductArchiveDraftFields(db, draftId)
-  const result = validateProductArchiveDraft(db, draftId)
-  return options.automaticDecision
-    ? { ...result, tradeSelectionAutoApplied: true }
-    : result
+    rebuildProductArchiveDraftFields(db, draftId)
+    const result = validateProductArchiveDraft(db, draftId)
+    return options.automaticDecision
+      ? { ...result, tradeSelectionAutoApplied: true }
+      : result
+  })()
 }
 
 export function confirmProductArchiveDraftRecommendedTrade(
@@ -4147,7 +4149,25 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
     }) as DeepdrawResult
   })
   db.prepare("update product_archive_draft set status = 'submitting', updated_at = ?::timestamptz where id = ?").run(nowIso(), draftId)
-  const result = await runCreate(payload)
+  let result: DeepdrawResult
+  try {
+    result = await runCreate(payload)
+  } catch (error) {
+    const createError = error instanceof Error ? error : new Error(String(error))
+    db.transaction(() => {
+      writeSubmitLog(db, draftId, "create", {
+        requestSummary: summary,
+        responseReason: createError.message,
+      })
+      db.prepare(`
+        update product_archive_draft
+        set status = 'failed',
+          updated_at = ?::timestamptz
+        where id = ?
+      `).run(nowIso(), draftId)
+    })()
+    throw createError
+  }
   const body = deepdrawBusinessResult(result.payload).body
   const productId = stringValue(body.productId ?? body.id)
   let createError: Error | null = null

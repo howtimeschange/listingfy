@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { Hono } from "hono"
 import { getDb } from "../db"
+import { routePermissionGuard } from "../lib/auth"
 import { uniqueStrings } from "../services/pre-publish/shared"
 import { resolveSheinKidsCategoryFallback } from "../services/pre-publish/category-fallback"
 import { refreshBucketProduct } from "./shein-products"
@@ -10,6 +11,7 @@ import {
 } from "../../../scripts/lib/ai_category_matcher.mjs"
 
 const categoryMapping = new Hono()
+categoryMapping.use("*", routePermissionGuard("RULE_READ", "RULE_WRITE"))
 const AI_CATEGORY_CANDIDATE_LIMIT = 20
 
 type MappingRuleBody = {

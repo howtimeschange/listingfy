@@ -380,6 +380,43 @@ test("runDeepdrawSdkCli forces UTF-8 Java stdout so DeepDraw Chinese reasons sta
   }
 });
 
+test("runDeepdrawSdkCli returns control without blocking the Node event loop", async () => {
+  const previousJava = process.env.DEEPDRAW_JAVA_BIN;
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "listingify-deepdraw-async-"));
+  const sourceFile = path.join(tempDir, "FakeAsyncCli.java");
+  const classDir = path.join(tempDir, "tmp/deepdraw-sdk-adapter/classes");
+  const classFile = path.join(classDir, "FakeAsyncCli.class");
+  const fakeJava = path.join(tempDir, "java");
+
+  try {
+    await mkdir(classDir, { recursive: true });
+    await writeFile(sourceFile, "public class FakeAsyncCli {}\n");
+    await writeFile(classFile, "");
+    await writeFile(fakeJava, [
+      "#!/usr/bin/env bash",
+      "sleep 0.2",
+      "printf '%s\\n' '{\"status\":200,\"response\":{\"code\":10200,\"response\":\"success\"}}'",
+      "",
+    ].join("\n"));
+    await chmod(fakeJava, 0o755);
+    process.env.DEEPDRAW_JAVA_BIN = fakeJava;
+
+    const startedAt = Date.now();
+    const operation = runDeepdrawSdkCli({ hello: "async" }, {
+      projectRoot: tempDir,
+      sourceFile,
+      className: "FakeAsyncCli",
+      timeoutMs: 1000,
+    });
+    assert.ok(Date.now() - startedAt < 80, "Java process launch must not block the calling thread");
+    assert.match(await operation, /\"status\":200/);
+  } finally {
+    if (previousJava === undefined) delete process.env.DEEPDRAW_JAVA_BIN;
+    else process.env.DEEPDRAW_JAVA_BIN = previousJava;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("createDeepdrawProductWithSdk delegates mapped SDK input to runner", async () => {
   const seen = [];
   const result = await createDeepdrawProductWithSdk({

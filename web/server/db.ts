@@ -3,6 +3,7 @@ import path from "node:path"
 import { getDatabaseConfig } from "../../scripts/lib/database_config.mjs"
 import { loadLocalEnv } from "../../scripts/lib/local_env.mjs"
 import { SyncPostgresDatabase } from "../../scripts/lib/postgres_db.mjs"
+import { listMigrationFiles } from "../../scripts/lib/migration_files.mjs"
 
 const localEnv = loadLocalEnv()
 const projectRoot = localEnv.filePath
@@ -45,9 +46,7 @@ export function applyPendingMigrations(db = getDb()): string[] {
     (db.prepare("select version from schema_migration").all() as Array<{ version: string }>)
       .map((row) => row.version),
   )
-  const migrations = fs.readdirSync(migrationsDir)
-    .filter((file) => file.endsWith(".sql"))
-    .sort()
+  const migrations = listMigrationFiles(migrationsDir)
   const appliedNow: string[] = []
   for (const file of migrations) {
     if (applied.has(file)) continue

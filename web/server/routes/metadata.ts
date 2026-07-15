@@ -4,8 +4,10 @@ import path from "node:path"
 import { Hono } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { DB_DSN_SAFE, getDb } from "../db"
+import { routePermissionGuard } from "../lib/auth"
 
 const metadata = new Hono()
+metadata.use("*", routePermissionGuard("LISTING_READ", "SYNC_RUN"))
 
 const PROJECT_ROOT =
   path.basename(process.cwd()) === "web"

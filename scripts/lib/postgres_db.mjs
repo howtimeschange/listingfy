@@ -3,10 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
+import { listMigrationFiles } from "./migration_files.mjs";
 
 const requireFromWeb = createRequire(new URL("../../web/package.json", import.meta.url));
 const { Pool, types } = requireFromWeb("pg");
-const deasync = requireFromWeb("deasync");
 
 const NOW_SQL = "to_char((clock_timestamp() at time zone 'UTC'), 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')";
 const POSTGRES_WORKER_URL = new URL("./postgres_worker.mjs", import.meta.url);
@@ -677,13 +677,6 @@ export function toPostgresQuery(sql) {
   return text;
 }
 
-export function syncAwait(promise) {
-  return syncWithTimeout(
-    (callback) => promise.then((result) => callback(null, result), (error) => callback(error)),
-    "PostgreSQL synchronous operation",
-  );
-}
-
 export function identitySequenceSetvalSql(qualifiedTable, columnName) {
   const maxValue = `(select max(${columnName}) from ${qualifiedTable})`;
   return `
@@ -693,57 +686,6 @@ export function identitySequenceSetvalSql(qualifiedTable, columnName) {
       case when ${maxValue} is null then false else true end
     )
   `;
-}
-
-function syncWithTimeout(register, label) {
-  const startedAt = Date.now();
-  const timeoutMs = Number(process.env.DATABASE_SYNC_TIMEOUT_MS ?? process.env.DATABASE_CONNECT_TIMEOUT_MS ?? 3000);
-  const wait = deasync((callback) => {
-    let settled = false;
-    const finish = (error, result) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      callback(error, result);
-    };
-    const timer = Number.isFinite(timeoutMs) && timeoutMs > 0
-      ? setTimeout(() => {
-          finish(new Error(`${label} timed out after ${timeoutMs}ms`));
-        }, timeoutMs)
-      : null;
-
-    try {
-      register(finish);
-    } catch (error) {
-      finish(error);
-    }
-  });
-  const result = wait();
-  if (Number.isFinite(timeoutMs) && timeoutMs > 0 && Date.now() - startedAt > timeoutMs) {
-    throw new Error(`${label} timed out after ${timeoutMs}ms`);
-  }
-  return result;
-}
-
-function querySync(executor, sql, params = []) {
-  return syncWithTimeout(
-    (callback) => executor.query(sql, params, callback),
-    "PostgreSQL synchronous query",
-  );
-}
-
-function connectSync(pool) {
-  return syncWithTimeout(
-    (callback) => pool.connect(callback),
-    "PostgreSQL synchronous connect",
-  );
-}
-
-function endPoolSync(pool) {
-  return syncWithTimeout(
-    (callback) => pool.end(callback),
-    "PostgreSQL synchronous close",
-  );
 }
 
 class PostgresStatement {
@@ -783,6 +725,10 @@ class SyncPostgresWorker {
   constructor(databaseUrl, options = {}) {
     this.databaseUrl = databaseUrl;
     this.options = options;
+    this.startWorker();
+  }
+
+  startWorker() {
     this.sharedBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
     this.state = new Int32Array(this.sharedBuffer);
     this.dir = fs.mkdtempSync(path.join(os.tmpdir(), `listingify-pg-${process.pid}-${++workerCounter}-`));
@@ -793,10 +739,34 @@ class SyncPostgresWorker {
         sharedBuffer: this.sharedBuffer,
         requestPath: this.requestPath,
         responsePath: this.responsePath,
-        databaseUrl,
-        connectionTimeoutMillis: options.connectionTimeoutMillis ?? process.env.DATABASE_CONNECT_TIMEOUT_MS ?? 3000,
+        databaseUrl: this.databaseUrl,
+        connectionTimeoutMillis: this.options.connectionTimeoutMillis ?? process.env.DATABASE_CONNECT_TIMEOUT_MS ?? 3000,
       },
     });
+  }
+
+  discardWorker({ removeFilesImmediately = false } = {}) {
+    const worker = this.worker;
+    const state = this.state;
+    const dir = this.dir;
+    if (!worker) return;
+
+    Atomics.store(state, 0, 3);
+    Atomics.notify(state, 0);
+    this.worker = null;
+    const removeFiles = () => fs.rmSync(dir, { recursive: true, force: true });
+    const termination = worker.terminate();
+    if (removeFilesImmediately) {
+      removeFiles();
+      void termination.catch(() => undefined);
+    } else {
+      void termination.then(removeFiles, removeFiles);
+    }
+  }
+
+  restartWorkerAfterTimeout() {
+    this.discardWorker();
+    this.startWorker();
   }
 
   request(payload) {
@@ -811,6 +781,7 @@ class SyncPostgresWorker {
     Atomics.notify(this.state, 0);
     const waitResult = Atomics.wait(this.state, 0, 1, timeoutMs);
     if (waitResult === "timed-out") {
+      this.restartWorkerAfterTimeout();
       throw new Error(`PostgreSQL synchronous query timed out after ${timeoutMs}ms`);
     }
 
@@ -830,13 +801,11 @@ class SyncPostgresWorker {
   }
 
   close() {
+    if (!this.worker) return;
     try {
       this.request({ action: "close" });
     } finally {
-      Atomics.store(this.state, 0, 3);
-      Atomics.notify(this.state, 0);
-      this.worker.terminate();
-      fs.rmSync(this.dir, { recursive: true, force: true });
+      this.discardWorker({ removeFilesImmediately: true });
     }
   }
 }
@@ -884,14 +853,28 @@ export class SyncPostgresDatabase {
 
   transaction(fn) {
     return (...args) => {
+      const parentDepth = this.transactionDepth ?? 0;
+      const savepoint = `listingify_nested_${parentDepth + 1}`;
+      this.transactionDepth = parentDepth + 1;
       try {
-        this.queryResult("begin");
+        this.queryResult(parentDepth === 0 ? "begin" : `savepoint ${savepoint}`);
         const result = fn(...args);
-        this.queryResult("commit");
+        this.queryResult(parentDepth === 0 ? "commit" : `release savepoint ${savepoint}`);
         return result;
       } catch (error) {
-        this.queryResult("rollback");
+        try {
+          if (parentDepth === 0) {
+            this.queryResult("rollback");
+          } else {
+            this.queryResult(`rollback to savepoint ${savepoint}`);
+            this.queryResult(`release savepoint ${savepoint}`);
+          }
+        } catch (rollbackError) {
+          if (error && typeof error === "object" && !error.cause) error.cause = rollbackError;
+        }
         throw error;
+      } finally {
+        this.transactionDepth = parentDepth;
       }
     };
   }
@@ -1025,9 +1008,7 @@ export async function applyPostgresMigrations(pool, migrationsDir = path.resolve
 
   const appliedRows = await pool.query("select version from schema_migration");
   const applied = new Set(appliedRows.rows.map((row) => row.version));
-  const migrations = fs.readdirSync(migrationsDir)
-    .filter((file) => file.endsWith(".sql"))
-    .sort();
+  const migrations = listMigrationFiles(migrationsDir);
 
   const appliedNow = [];
   for (const file of migrations) {

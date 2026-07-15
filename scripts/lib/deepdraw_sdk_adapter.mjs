@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -340,23 +340,84 @@ function javaTool(tool) {
 }
 
 function runTool(command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    encoding: "utf8",
-    ...options,
+  const {
+    input = "",
+    timeout = 30000,
+    maxBuffer = 10 * 1024 * 1024,
+    ...spawnOptions
+  } = options;
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      ...spawnOptions,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timedOut = false;
+    let outputExceeded = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const enforceOutputLimit = () => {
+      if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) <= maxBuffer) return;
+      outputExceeded = true;
+      child.kill("SIGKILL");
+    };
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      enforceOutputLimit();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+      enforceOutputLimit();
+    });
+    child.once("error", (error) => finish(error));
+    child.once("close", (status) => {
+      if (outputExceeded) {
+        const error = new Error(`${path.basename(command)} exceeded ${maxBuffer} bytes of output`);
+        error.code = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+        finish(error);
+        return;
+      }
+      if (timedOut) {
+        const error = new Error(`${path.basename(command)} timed out after ${timeout}ms`);
+        error.code = "ETIMEDOUT";
+        finish(error);
+        return;
+      }
+      if (status !== 0) {
+        finish(new Error(`${path.basename(command)} failed: ${stringValue(stderr) || stringValue(stdout) || status}`));
+        return;
+      }
+      finish(null, stdout);
+    });
+    child.stdin.on("error", () => {
+      // Process startup/exit errors are reported through the child error/close events.
+    });
+    child.stdin.end(input == null ? "" : String(input));
+
+    const timer = Number.isFinite(timeout) && timeout > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          child.kill("SIGKILL");
+        }, timeout)
+      : null;
   });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    const stderr = stringValue(result.stderr);
-    const stdout = stringValue(result.stdout);
-    throw new Error(`${path.basename(command)} failed: ${stderr || stdout || result.status}`);
-  }
-  return result.stdout ?? "";
 }
 
-export function compileDeepdrawSdkCli({
+export async function compileDeepdrawSdkCli({
   projectRoot = path.resolve(import.meta.dirname, "../.."),
   sourceFile = SDK_CREATE_SOURCE,
   className = SDK_CREATE_CLASS_NAME,
+  timeoutMs = Number(process.env.DEEPDRAW_COMPILE_TIMEOUT_MS ?? 30000),
 } = {}) {
   const classpath = buildDeepdrawSdkClasspath({ projectRoot });
   const classFile = path.join(classpath.buildDir, `${className}.class`);
@@ -367,7 +428,9 @@ export function compileDeepdrawSdkCli({
   fs.mkdirSync(classpath.buildDir, { recursive: true });
   const javac = javaTool("javac");
   const compileClasspath = classpath.entries.filter((entry) => entry !== classpath.buildDir).join(path.delimiter);
-  runTool(javac, ["-encoding", "UTF-8", "-classpath", compileClasspath, "-d", classpath.buildDir, sourceFile]);
+  await runTool(javac, ["-encoding", "UTF-8", "-classpath", compileClasspath, "-d", classpath.buildDir, sourceFile], {
+    timeout: timeoutMs,
+  });
   return { ...classpath, classFile };
 }
 
@@ -377,7 +440,7 @@ export async function runDeepdrawSdkCli(input, {
   sourceFile = SDK_CREATE_SOURCE,
   className = SDK_CREATE_CLASS_NAME,
 } = {}) {
-  const classpath = compileDeepdrawSdkCli({ projectRoot, sourceFile, className });
+  const classpath = await compileDeepdrawSdkCli({ projectRoot, sourceFile, className, timeoutMs });
   const java = javaTool("java");
   return runTool(java, [...JAVA_UTF8_ARGS, "-classpath", classpath.value, className], {
     input: JSON.stringify(input),

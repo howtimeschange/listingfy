@@ -65,8 +65,8 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
     readFile(files.metadataService, "utf8"),
   ]);
 
-  assert.match(server, /import productArchiveDrafts from "\.\/routes\/product-archive-drafts"/);
-  assert.match(server, /import deepdrawMetadata from "\.\/routes\/deepdraw-metadata"/);
+  assert.match(server, /import productArchiveDrafts(?:, \{[^}]+\})? from "\.\/routes\/product-archive-drafts"/);
+  assert.match(server, /import deepdrawMetadata(?:, \{[^}]+\})? from "\.\/routes\/deepdraw-metadata"/);
   assert.match(server, /app\.route\("\/api\/product-archive-drafts", productArchiveDrafts\)/);
   assert.match(server, /app\.route\("\/api\/deepdraw-metadata", deepdrawMetadata\)/);
 

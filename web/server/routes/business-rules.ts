@@ -2,8 +2,10 @@ import { Hono } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
 import { getSheinPriceConfig, updateSheinPriceConfig } from "../lib/price-config"
+import { routePermissionGuard } from "../lib/auth"
 
 const businessRules = new Hono()
+businessRules.use("*", routePermissionGuard("RULE_READ", "RULE_WRITE"))
 
 type ImportBody = {
   file_name?: string

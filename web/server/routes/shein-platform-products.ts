@@ -1,5 +1,7 @@
 import { Hono, type Context } from "hono"
 import { HTTPException } from "hono/http-exception"
+import { createReadStream } from "node:fs"
+import { Readable } from "node:stream"
 import { requirePermission } from "../lib/auth"
 import {
   addVariantsToProduct,
@@ -103,9 +105,13 @@ sheinPlatformProducts.get("/export-jobs/:jobId/download", async (c) => {
   if (!result) throw new HTTPException(404, { message: "平台商品导出任务不存在" })
   if (result.pending) throw new HTTPException(409, { message: "导出任务尚未完成" })
   const encodedName = encodeURIComponent(result.fileName)
-  return c.body(result.buffer, 200, {
-    "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "content-disposition": `attachment; filename*=UTF-8''${encodedName}`,
+  const body = Readable.toWeb(createReadStream(result.filePath)) as ReadableStream
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "content-disposition": `attachment; filename*=UTF-8''${encodedName}`,
+    },
   })
 })
 

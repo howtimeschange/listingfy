@@ -51,6 +51,58 @@ const MAX_FIELD_CONCURRENCY = 12
 const DEFAULT_FIELD_RETRY_COUNT = 2
 const MAX_FIELD_RETRY_COUNT = 4
 
+export function createMetadataSyncScheduler(drain: () => Promise<void>) {
+  let requested = false
+  let activeRun: Promise<void> | null = null
+
+  function schedule(): Promise<void> {
+    requested = true
+    if (!activeRun) {
+      activeRun = Promise.resolve()
+        .then(async () => {
+          while (requested) {
+            requested = false
+            await drain()
+          }
+        })
+        .finally(() => {
+          activeRun = null
+          if (requested) return schedule()
+        })
+    }
+    return activeRun
+  }
+
+  return schedule
+}
+
+export async function drainMetadataSyncJobs<T>(input: {
+  claimNext: () => T | null
+  processJob: (job: T) => Promise<void>
+  markFailed: (job: T, error: unknown) => void | Promise<void>
+  heartbeat?: (job: T) => void | Promise<void>
+  heartbeatIntervalMs?: number
+}) {
+  while (true) {
+    const job = input.claimNext()
+    if (!job) return
+    const heartbeatIntervalMs = Math.max(1, Number(input.heartbeatIntervalMs ?? 30_000))
+    const heartbeatTimer = input.heartbeat
+      ? setInterval(() => {
+          void Promise.resolve(input.heartbeat?.(job)).catch(() => undefined)
+        }, heartbeatIntervalMs)
+      : null
+    heartbeatTimer?.unref?.()
+    try {
+      await input.processJob(job)
+    } catch (error) {
+      await input.markFailed(job, error)
+    } finally {
+      if (heartbeatTimer) clearInterval(heartbeatTimer)
+    }
+  }
+}
+
 function nowIso() {
   return new Date().toISOString()
 }
@@ -213,14 +265,40 @@ export function getMetadataSyncJob(db: SyncPostgresDatabase, id: string) {
   return row ? serializeMetadataSyncJob(row) : null
 }
 
-export function getNextQueuedMetadataSyncJob(db: SyncPostgresDatabase) {
+export function claimNextMetadataSyncJob(db: SyncPostgresDatabase, input: {
+  workerId: string
+  now?: Date
+  staleAfterMs?: number
+}) {
+  const now = input.now ?? new Date()
+  const staleAfterMs = Math.max(1_000, Number(input.staleAfterMs ?? 120_000))
+  const nowText = now.toISOString()
+  const staleBefore = new Date(now.getTime() - staleAfterMs).toISOString()
   const row = db.prepare(`
-    select *
-    from deepdraw_metadata_sync_job
-    where status = 'queued'
-    order by created_at
-    limit 1
-  `).get() as JsonRecord | undefined
+    with candidate as (
+      select id
+      from deepdraw_metadata_sync_job
+      where status = 'queued'
+        or (
+          status = 'running'
+          and coalesce(heartbeat_at, updated_at) < ?::timestamptz
+        )
+      order by case when status = 'queued' then 0 else 1 end, created_at, id
+      for update skip locked
+      limit 1
+    )
+    update deepdraw_metadata_sync_job job
+    set status = 'running',
+      worker_id = ?,
+      heartbeat_at = ?::timestamptz,
+      started_at = coalesce(job.started_at, ?::timestamptz),
+      finished_at = null,
+      error_message = null,
+      updated_at = ?::timestamptz
+    from candidate
+    where job.id = candidate.id
+    returning job.*
+  `).get(staleBefore, input.workerId, nowText, nowText, nowText) as JsonRecord | undefined
   return row ? serializeMetadataSyncJob(row) : null
 }
 
@@ -235,6 +313,7 @@ export function updateMetadataSyncJobProgress(db: SyncPostgresDatabase, id: stri
   errorMessage?: string | null
   startedAt?: string | null
   finishedAt?: string | null
+  heartbeatAt?: string | null
 }) {
   const now = nowIso()
   const summaryJson = input.summary === undefined ? null : jsonText(input.summary)
@@ -250,6 +329,7 @@ export function updateMetadataSyncJobProgress(db: SyncPostgresDatabase, id: stri
       error_message = coalesce(?, error_message),
       started_at = coalesce(?::timestamptz, started_at),
       finished_at = coalesce(?::timestamptz, finished_at),
+      heartbeat_at = coalesce(?::timestamptz, heartbeat_at),
       updated_at = ?::timestamptz
     where id = ?
     returning *
@@ -264,6 +344,7 @@ export function updateMetadataSyncJobProgress(db: SyncPostgresDatabase, id: stri
     input.errorMessage ?? null,
     input.startedAt ?? null,
     input.finishedAt ?? null,
+    input.heartbeatAt ?? null,
     now,
     id,
   ) as JsonRecord | undefined

@@ -41,6 +41,17 @@ export type MarkPublishTaskStatusSyncedInput = {
   now?: Date
 }
 
+export type MarkPublishTransportUnknownInput = {
+  taskId: number
+  versionId: number
+  listingId: number
+  spuCode: string
+  versionNo: number
+  errorCode?: string | null
+  errorMessage?: string | null
+  now?: Date
+}
+
 export type BatchPublishInput = {
   platform?: string
   batchNo: string
@@ -89,6 +100,12 @@ function taskById(db: SyncPostgresDatabase, taskId: number) {
 
 function platformOf(value: unknown) {
   return normalizeText(value || "SHEIN").toUpperCase()
+}
+
+function isUniqueConstraintViolation(error: unknown) {
+  const typed = error as { code?: unknown; message?: unknown }
+  return normalizeText(typed?.code) === "23505"
+    || /unique constraint failed|duplicate key value violates unique constraint/i.test(normalizeText(typed?.message))
 }
 
 export function buildPublishTaskIdempotencyKey(input: EnsurePublishTaskInput) {
@@ -149,7 +166,7 @@ export function ensurePublishTask(db: SyncPostgresDatabase, input: EnsurePublish
   `).get(platform, idempotencyKey) as PublishTaskRow | undefined
   if (existing) return { created: false, task: existing }
 
-  const result = db.prepare(`
+  const insertTask = () => db.prepare(`
     insert into listing_publish_task (
       listing_id,
       publish_version_id,
@@ -175,7 +192,99 @@ export function ensurePublishTask(db: SyncPostgresDatabase, input: EnsurePublish
     json(input.requestPayload),
     idempotencyKey,
   )
+  let result
+  try {
+    const transaction = (db as unknown as {
+      transaction?: (operation: () => ReturnType<typeof insertTask>) => () => ReturnType<typeof insertTask>
+    }).transaction
+    const supportsSavepoints = typeof (db as unknown as { queryResult?: unknown }).queryResult === "function"
+    result = supportsSavepoints && typeof transaction === "function"
+      ? transaction.call(db, insertTask)()
+      : insertTask()
+  } catch (error) {
+    if (!isUniqueConstraintViolation(error)) throw error
+
+    const racedTask = db.prepare(`
+      select *
+      from listing_publish_task
+      where platform = ?
+        and (
+          idempotency_key = ?
+          or (
+            listing_id = ?
+            and task_type = ?
+            and status in ('PUBLISHING', 'PUBLISH_SUBMITTED', 'PUBLISH_RESULT_UNKNOWN')
+          )
+        )
+      order by case when idempotency_key = ? then 0 else 1 end, id desc
+      limit 1
+    `).get(
+      platform,
+      idempotencyKey,
+      input.listingId,
+      taskType,
+      idempotencyKey,
+    ) as PublishTaskRow | undefined
+    if (racedTask) return { created: false, task: racedTask }
+    throw error
+  }
   return { created: true, task: taskById(db, Number(result.lastInsertRowid)) }
+}
+
+export function findUnresolvedPublishTask(db: SyncPostgresDatabase, listingId: number) {
+  return (db.prepare(`
+    select *
+    from listing_publish_task
+    where listing_id = ?
+      and task_type = 'PUBLISH_LISTING'
+      and status in ('PUBLISHING', 'PUBLISH_SUBMITTED', 'PUBLISH_RESULT_UNKNOWN')
+    order by id desc
+    limit 1
+  `).get(listingId) as PublishTaskRow | undefined) ?? null
+}
+
+export function markPublishTransportUnknown(
+  db: SyncPostgresDatabase,
+  input: MarkPublishTransportUnknownInput,
+) {
+  const finishedAt = nowIso(input.now)
+  const errorCode = normalizeText(input.errorCode) || "PUBLISH_TRANSPORT_ERROR"
+  const errorMessage = normalizeText(input.errorMessage) || "发布请求结果未知，请先向平台核实后再处理"
+  db.transaction(() => {
+    db.prepare(`
+      update listing_publish_task
+      set status = 'PUBLISH_RESULT_UNKNOWN',
+        error_code = ?,
+        error_message = ?,
+        failure_category = 'NETWORK',
+        failure_fingerprint = ?,
+        retryable = 0,
+        finished_at = ?,
+        updated_at = ?
+      where id = ?
+    `).run(errorCode, errorMessage, `NETWORK:${errorCode.toLowerCase()}`, finishedAt, finishedAt, input.taskId)
+    db.prepare(`
+      update listing_publish_version
+      set status = 'RESULT_UNKNOWN',
+        error_code = ?,
+        error_message = ?
+      where id = ?
+    `).run(errorCode, errorMessage, input.versionId)
+    db.prepare(`
+      update listing
+      set status = 'PUBLISH_RESULT_UNKNOWN',
+        updated_at = ?
+      where id = ?
+    `).run(finishedAt, input.listingId)
+    db.prepare(`
+      update shein_product_bucket
+      set latest_listing_id = ?,
+        latest_version_no = ?,
+        latest_publish_status = 'PUBLISH_RESULT_UNKNOWN',
+        updated_at = ?
+      where spu_code = ?
+    `).run(input.listingId, input.versionNo, finishedAt, input.spuCode)
+  })()
 }
 
 function latestPublishableVersion(db: SyncPostgresDatabase, listingId: number) {

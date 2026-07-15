@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 SRC_DIR="${1:?missing source dir}"
 APP_DIR="${APP_DIR:-/opt/listingfy}"
@@ -13,6 +14,11 @@ DEEPDRAW_MAVEN_MIRROR_URL_VALUE="${DEEPDRAW_MAVEN_MIRROR_URL:-https://maven.aliy
 if [ -z "$DATABASE_URL_VALUE" ]; then
   echo "ERROR: PROD_DATABASE_URL is required. Configure it as a Yunxiao secret variable."
   exit 10
+fi
+
+if [ -z "${LISTINGIFY_CREDENTIAL_SECRET:-}" ]; then
+  echo "ERROR: LISTINGIFY_CREDENTIAL_SECRET is required. Configure it as a Yunxiao secret variable."
+  exit 11
 fi
 
 echo "===== Listingify Yunxiao deploy ====="
@@ -50,7 +56,7 @@ echo "===== Write production env ====="
   [ -n "${LISTINGIFY_ADMIN_USERNAME:-}" ] && printf 'LISTINGIFY_ADMIN_USERNAME=%s\n' "$LISTINGIFY_ADMIN_USERNAME"
   [ -n "${LISTINGIFY_ADMIN_PASSWORD:-}" ] && printf 'LISTINGIFY_ADMIN_PASSWORD=%s\n' "$LISTINGIFY_ADMIN_PASSWORD"
   [ -n "${LISTINGIFY_ADMIN_DISPLAY_NAME:-}" ] && printf 'LISTINGIFY_ADMIN_DISPLAY_NAME=%s\n' "$LISTINGIFY_ADMIN_DISPLAY_NAME"
-  [ -n "${LISTINGIFY_CREDENTIAL_SECRET:-}" ] && printf 'LISTINGIFY_CREDENTIAL_SECRET=%s\n' "$LISTINGIFY_CREDENTIAL_SECRET"
+  printf 'LISTINGIFY_CREDENTIAL_SECRET=%s\n' "$LISTINGIFY_CREDENTIAL_SECRET"
   [ -n "${LISTINGIFY_LOGIN_MAX_FAILURES:-}" ] && printf 'LISTINGIFY_LOGIN_MAX_FAILURES=%s\n' "$LISTINGIFY_LOGIN_MAX_FAILURES"
   [ -n "${LISTINGIFY_LOGIN_LOCK_MINUTES:-}" ] && printf 'LISTINGIFY_LOGIN_LOCK_MINUTES=%s\n' "$LISTINGIFY_LOGIN_LOCK_MINUTES"
   [ -n "${PRODUCT_ARCHIVE_SYNC_INTERVAL_MS:-}" ] && printf 'PRODUCT_ARCHIVE_SYNC_INTERVAL_MS=%s\n' "$PRODUCT_ARCHIVE_SYNC_INTERVAL_MS"
@@ -76,6 +82,7 @@ echo "===== Write production env ====="
   [ -n "${AI_API_KEY:-}" ] && printf 'AI_API_KEY=%s\n' "$AI_API_KEY"
   [ -n "${AI_TIMEOUT_MS:-}" ] && printf 'AI_TIMEOUT_MS=%s\n' "$AI_TIMEOUT_MS"
 } > .env.local
+chmod 600 .env.local
 
 echo "===== Check runtime ====="
 HOST_NODE_MAJOR=0

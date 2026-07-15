@@ -8,7 +8,10 @@ import { requirePermission } from "../lib/auth"
 import { safeUploadFileName, writeValidatedUploadFile } from "../lib/upload-guard"
 import { auditFromContext } from "../lib/audit"
 import { assertSafeProductArchiveCode } from "../lib/product-archive-security"
-import { createProductArchiveSyncQueue } from "../../../scripts/lib/product_archive_sync_queue.mjs"
+import {
+  createPostgresProductArchiveSyncJobStore,
+  createProductArchiveSyncQueue,
+} from "../../../scripts/lib/product_archive_sync_queue.mjs"
 import { resolveDeepdrawConfig } from "../../../scripts/lib/deepdraw_client.mjs"
 import { syncMdmProduct } from "../services/product-archive-sync"
 import {
@@ -53,6 +56,11 @@ const PRODUCT_ARCHIVE_TEMPLATES = {
 } as const
 
 const draftQueue = createProductArchiveSyncQueue({
+  autoRecover: false,
+  store: createPostgresProductArchiveSyncJobStore({
+    getDb,
+    queueName: "product_archive_drafts",
+  }),
   allowedSources: ["draft", "mdm_draft"],
   syncOne: async ({ source, spuCode, options }) => {
     const db = getDb()
@@ -77,6 +85,10 @@ const draftQueue = createProductArchiveSyncQueue({
     }
   },
 })
+
+export function resumeProductArchiveDraftQueue() {
+  draftQueue.resume()
+}
 
 function readId(value: string) {
   const id = Number(value)

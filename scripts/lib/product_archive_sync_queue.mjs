@@ -30,6 +30,8 @@ export function parseSpuCodes(input, options = {}) {
 export function createProductArchiveSyncQueue({
   syncOne,
   allowedSources = ["mdm", "deepdraw", "mdm_deepdraw"],
+  store = null,
+  autoRecover = true,
   wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now = () => Date.now(),
 } = {}) {
@@ -54,7 +56,13 @@ export function createProductArchiveSyncQueue({
 
   function getJob(id) {
     const job = jobs.get(id);
-    return job ? snapshot(job) : null;
+    if (job) return snapshot(job);
+    const stored = store?.get?.(id);
+    return stored ? snapshot(stored) : null;
+  }
+
+  function persist(job) {
+    store?.save?.(snapshot(job));
   }
 
   function resolveIdleIfNeeded() {
@@ -72,15 +80,20 @@ export function createProductArchiveSyncQueue({
       const job = pending.shift();
       job.status = "running";
       job.started_at = new Date(now()).toISOString();
+      persist(job);
 
+      let processedCount = 0;
       for (let index = 0; index < job.items.length; index += 1) {
         const item = job.items[index];
-        if (index > 0 && job.interval_ms > 0) {
+        if (["completed", "failed"].includes(item.status)) continue;
+        if (processedCount > 0 && job.interval_ms > 0) {
           await wait(job.interval_ms);
         }
+        processedCount += 1;
 
         item.status = "running";
         item.started_at = new Date(now()).toISOString();
+        persist(job);
         try {
           const result = await syncOne({
             source: job.source,
@@ -98,10 +111,12 @@ export function createProductArchiveSyncQueue({
           item.finished_at = new Date(now()).toISOString();
           job.failed_count += 1;
         }
+        persist(job);
       }
 
       job.status = "completed";
       job.finished_at = new Date(now()).toISOString();
+      persist(job);
     }
     running = false;
     resolveIdleIfNeeded();
@@ -146,6 +161,7 @@ export function createProductArchiveSyncQueue({
     };
 
     jobs.set(job.id, job);
+    persist(job);
     pending.push(job);
     if (!processScheduled) {
       processScheduled = true;
@@ -161,9 +177,105 @@ export function createProductArchiveSyncQueue({
     return new Promise((resolve) => idleResolvers.push(resolve));
   }
 
+  let recoveryStarted = false;
+  function resume() {
+    if (recoveryStarted) return;
+    recoveryStarted = true;
+    const recovered = store?.recover?.() ?? [];
+    for (const storedJob of recovered) {
+      const job = snapshot(storedJob);
+      if (!["queued", "running"].includes(job.status)) continue;
+      job.status = "queued";
+      job.started_at = null;
+      job.finished_at = null;
+      for (const item of job.items) {
+        if (item.status !== "running") continue;
+        item.status = "queued";
+        item.started_at = null;
+        item.finished_at = null;
+        item.error = null;
+      }
+      job.completed_count = job.items.filter((item) => item.status === "completed").length;
+      job.failed_count = job.items.filter((item) => item.status === "failed").length;
+      jobs.set(job.id, job);
+      pending.push(job);
+      persist(job);
+    }
+    if (pending.length > 0 && !processScheduled) {
+      processScheduled = true;
+      queueMicrotask(() => {
+        void processLoop();
+      });
+    }
+  }
+  if (autoRecover) resume();
+
   return {
     enqueue,
     getJob,
+    resume,
     waitForIdle,
+  };
+}
+
+function parseStoredJob(value) {
+  if (value && typeof value === "object") return value;
+  if (typeof value !== "string" || !value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function createPostgresProductArchiveSyncJobStore({ getDb, queueName } = {}) {
+  if (typeof getDb !== "function") throw new Error("getDb is required");
+  const normalizedQueueName = String(queueName ?? "").trim();
+  if (!normalizedQueueName) throw new Error("queueName is required");
+
+  return {
+    save(job) {
+      const now = new Date().toISOString();
+      getDb().prepare(`
+        insert into product_archive_sync_job (
+          id, queue_name, source, status, payload_json, created_at, updated_at
+        )
+        values (?, ?, ?, ?, ?::jsonb, ?::timestamptz, ?::timestamptz)
+        on conflict (id) do update set
+          queue_name = excluded.queue_name,
+          source = excluded.source,
+          status = excluded.status,
+          payload_json = excluded.payload_json,
+          updated_at = excluded.updated_at
+      `).run(
+        job.id,
+        normalizedQueueName,
+        job.source,
+        job.status,
+        JSON.stringify(job),
+        job.created_at ?? now,
+        now,
+      );
+    },
+    get(id) {
+      const row = getDb().prepare(`
+        select payload_json
+        from product_archive_sync_job
+        where id = ? and queue_name = ?
+      `).get(id, normalizedQueueName);
+      return parseStoredJob(row?.payload_json);
+    },
+    recover() {
+      return getDb().prepare(`
+        select payload_json
+        from product_archive_sync_job
+        where queue_name = ?
+          and status in ('queued', 'running')
+        order by created_at, id
+      `).all(normalizedQueueName)
+        .map((row) => parseStoredJob(row.payload_json))
+        .filter(Boolean);
+    },
   };
 }

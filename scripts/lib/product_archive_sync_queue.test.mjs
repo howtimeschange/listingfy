@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 import {
   createProductArchiveSyncQueue,
@@ -185,4 +187,83 @@ test("queue accepts custom draft creation jobs when allowed by the caller", asyn
   assert.equal(finished.status, "completed");
   assert.deepEqual(events, [["draft", "208226102001", "电商巴拉巴拉", 7]]);
   assert.deepEqual(finished.items[0].result, { draftId: 101 });
+});
+
+test("queue recovers persisted running jobs and keeps completed jobs readable after restart", async () => {
+  let persisted = {
+    id: "persisted-job-1",
+    source: "mdm",
+    status: "running",
+    interval_ms: 0,
+    options: { deepdrawTenantName: null },
+    codes: ["208226102001"],
+    total_count: 1,
+    completed_count: 0,
+    failed_count: 0,
+    created_at: "2026-07-15T00:00:00.000Z",
+    started_at: "2026-07-15T00:00:01.000Z",
+    finished_at: null,
+    items: [{
+      spu_code: "208226102001",
+      status: "running",
+      started_at: "2026-07-15T00:00:01.000Z",
+      finished_at: null,
+      result: null,
+      error: null,
+    }],
+  };
+  const store = {
+    recover() {
+      return [structuredClone(persisted)];
+    },
+    save(job) {
+      persisted = structuredClone(job);
+    },
+    get(id) {
+      return id === persisted.id ? structuredClone(persisted) : null;
+    },
+  };
+  const seen = [];
+  const queue = createProductArchiveSyncQueue({
+    store,
+    wait: async () => {},
+    syncOne: async ({ spuCode }) => {
+      seen.push(spuCode);
+      return { recovered: true };
+    },
+  });
+
+  await queue.waitForIdle();
+  assert.deepEqual(seen, ["208226102001"]);
+  assert.equal(persisted.status, "completed");
+  assert.equal(persisted.items[0].status, "completed");
+
+  const readOnlyStore = {
+    recover: () => [],
+    save: store.save,
+    get: store.get,
+  };
+  const restarted = createProductArchiveSyncQueue({
+    store: readOnlyStore,
+    syncOne: async () => {
+      throw new Error("completed work must not rerun");
+    },
+  });
+  assert.equal(restarted.getJob(persisted.id).status, "completed");
+});
+
+test("product archive and draft routes use separate PostgreSQL-backed queue stores", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const [archiveRoute, draftRoute, migration] = await Promise.all([
+    readFile(path.join(root, "web/server/routes/product-archives.ts"), "utf8"),
+    readFile(path.join(root, "web/server/routes/product-archive-drafts.ts"), "utf8"),
+    readFile(path.join(root, "db/migrations/039_product_archive_sync_jobs.sql"), "utf8"),
+  ]);
+
+  assert.match(archiveRoute, /createPostgresProductArchiveSyncJobStore/);
+  assert.match(archiveRoute, /queueName:\s*"product_archives"/);
+  assert.match(draftRoute, /createPostgresProductArchiveSyncJobStore/);
+  assert.match(draftRoute, /queueName:\s*"product_archive_drafts"/);
+  assert.match(migration, /create table if not exists product_archive_sync_job/i);
+  assert.match(migration, /payload_json jsonb/i);
 });

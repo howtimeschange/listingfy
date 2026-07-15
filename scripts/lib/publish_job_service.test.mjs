@@ -5,6 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { SyncPostgresDatabase } from "./postgres_db.mjs";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 
@@ -121,6 +122,88 @@ test("ensurePublishTask creates exactly one task for the same platform idempoten
     assert.equal(count, 1);
   } finally {
     await cleanup();
+  }
+});
+
+test("ensurePublishTask returns the unresolved task when the active-listing guard wins a race", async () => {
+  const { db, cleanup } = await createTempDb();
+  try {
+    db.exec(`
+      create unique index ux_listing_publish_task_active_listing
+        on listing_publish_task(platform, listing_id, task_type)
+        where status in ('PUBLISHING', 'PUBLISH_SUBMITTED', 'PUBLISH_RESULT_UNKNOWN')
+    `);
+    const existing = service.ensurePublishTask(db, {
+      listingId: 101,
+      publishVersionId: 201,
+      platform: "SHEIN",
+      status: "PUBLISHING",
+    });
+
+    const raced = service.ensurePublishTask(db, {
+      listingId: 101,
+      publishVersionId: 202,
+      platform: "SHEIN",
+      status: "PUBLISHING",
+    });
+
+    assert.equal(existing.created, true);
+    assert.equal(raced.created, false);
+    assert.equal(raced.task.id, existing.task.id);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("ensurePublishTask keeps an outer PostgreSQL transaction usable after an active-task race", () => {
+  const databaseUrl = process.env.DATABASE_URL
+    ?? "postgres://listingify:listingify@localhost:5432/listingify";
+  const db = new SyncPostgresDatabase(databaseUrl, { connectionTimeoutMillis: 1000 });
+  try {
+    db.exec(`
+      create temporary table listing_publish_task (
+        id bigint generated always as identity primary key,
+        listing_id bigint not null,
+        publish_version_id bigint,
+        platform text not null,
+        task_type text not null,
+        status text not null,
+        attempt_count integer not null,
+        max_attempts integer not null,
+        request_payload_json text not null,
+        idempotency_key text,
+        started_at text,
+        updated_at text
+      );
+      create unique index ux_test_publish_task_idempotency
+        on listing_publish_task(platform, idempotency_key)
+        where idempotency_key is not null;
+      create unique index ux_test_publish_task_active_listing
+        on listing_publish_task(platform, listing_id, task_type)
+        where status in ('PUBLISHING', 'PUBLISH_SUBMITTED', 'PUBLISH_RESULT_UNKNOWN');
+    `);
+    const existing = service.ensurePublishTask(db, {
+      listingId: 101,
+      publishVersionId: 201,
+      platform: "SHEIN",
+      status: "PUBLISHING",
+    });
+
+    const raced = db.transaction(() => {
+      const result = service.ensurePublishTask(db, {
+        listingId: 101,
+        publishVersionId: 202,
+        platform: "SHEIN",
+        status: "PUBLISHING",
+      });
+      assert.equal(db.prepare("select count(*) as count from listing_publish_task").get().count, 1);
+      return result;
+    })();
+
+    assert.equal(raced.created, false);
+    assert.equal(raced.task.id, existing.task.id);
+  } finally {
+    db.close();
   }
 });
 

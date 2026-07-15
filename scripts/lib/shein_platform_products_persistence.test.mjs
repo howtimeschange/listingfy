@@ -17,6 +17,7 @@ const TASK_CENTER_FILE = path.join(PROJECT_ROOT, "web/src/components/async-task-
 const JOB_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/027_shein_platform_product_jobs.sql");
 const JOB_ITEM_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/034_shein_platform_product_job_items.sql");
 const SYNC_SCHEDULE_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/035_shein_platform_product_sync_schedule.sql");
+const SYNC_SCHEDULE_OPT_IN_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/041_shein_sync_schedule_opt_in.sql");
 const SALE_SITE_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/037_shein_platform_product_sale_sites.sql");
 
 async function fileText(file) {
@@ -265,15 +266,23 @@ test("SHEIN platform product jobs start after the enqueue response can flush", a
 });
 
 test("SHEIN platform product export streams workbook files with progress heartbeats", async () => {
-  const jobService = await fileText(JOB_SERVICE_FILE);
+  const [jobService, route] = await Promise.all([
+    fileText(JOB_SERVICE_FILE),
+    fileText(ROUTE_FILE),
+  ]);
 
-  assert.match(jobService, /async function writeWorkbookFile/);
+  assert.match(jobService, /async function writePlatformProductWorkbookFromPages/);
   assert.match(jobService, /ExcelJS\.stream\.xlsx\.WorkbookWriter/);
-  assert.match(jobService, /headerRow\.commit\(\)/);
-  assert.match(jobService, /outputRow\.commit\(\)/);
+  assert.match(jobService, /addRow\(\[\.\.\.columns\]\)\.commit\(\)/);
+  assert.match(jobService, /addRow\(columns\.map[\s\S]*\.commit\(\)/);
   assert.match(jobService, /await workbook\.commit\(\)/);
-  assert.match(jobService, /writeWorkbookFile[\s\S]*await savePlatformProductJob\(job\)/);
-  assert.match(jobService, /processExportJob[\s\S]*await writeWorkbookFile\(platformProductWorkbookSheets\(rows\), filePath, job\)/);
+  assert.match(jobService, /writePlatformProductWorkbookFromPages[\s\S]*await savePlatformProductJob\(job\)/);
+  assert.match(jobService, /processExportJob[\s\S]*await writePlatformProductWorkbookFromPages\(filePath, job\)/);
+  assert.doesNotMatch(jobService, /rows\.push\(\.\.\.response\.items/);
+  assert.doesNotMatch(jobService, /readFile\(job\.filePath\)/);
+  assert.match(route, /createReadStream/);
+  assert.match(route, /Readable\.toWeb/);
+  assert.doesNotMatch(route, /c\.body\(result\.buffer/);
   assert.doesNotMatch(jobService, /workbook\.xlsx\.writeBuffer\(\)/);
   assert.doesNotMatch(jobService, /Buffer\.from\(buffer\)/);
   assert.doesNotMatch(jobService, /writeFile\(filePath/);
@@ -290,7 +299,7 @@ test("SHEIN platform product export keeps final workbook generation visible and 
   assert.match(jobService, /job\.status !== "completed"[\s\S]*schedulePlatformProductJobs\(\)/);
   assert.match(jobService, /spu_code: "读取平台商品数据"/);
   assert.match(jobService, /job\.items\[0\]\.spu_code = "生成 Excel 文件"/);
-  assert.match(jobService, /job\.completed_count = rows\.length/);
+  assert.match(jobService, /job\.completed_count = rowCount/);
   assert.match(taskCenter, /if \(job\.status !== "completed"\) return Math\.min\(99, progress\)/);
   assert.match(taskCenter, /当前：\{runningItem\.spu_code\}/);
 });
@@ -796,7 +805,7 @@ test("SHEIN platform product list summary includes every SKC with nested SKU row
   assert.match(service, /skus:\s*includeDetails \?/);
   assert.doesNotMatch(service, /from shein_platform_skc[\s\S]{0,120}limit 8/);
 
-  assert.match(jobService, /platformProductWorkbookSheets/);
+  assert.match(jobService, /platformProductWorkbookRows/);
   assert.match(jobService, /includeDetails:\s*true/);
   assert.match(page, /SKC供方/);
   assert.match(page, /详情同步后显示 SKC/);
@@ -867,12 +876,13 @@ test("SHEIN platform product detail sync slices yield so later priority work can
   assert.match(jobServiceText, /yieldPlatformProductDetailSyncJob/);
 });
 
-test("SHEIN platform product scheduled detail sync is configurable and reuses resumable job items", async () => {
-  const [server, service, jobService, scheduleMigration, route] = await Promise.all([
+test("SHEIN platform product scheduled detail sync is configurable, opt-in, and reuses resumable job items", async () => {
+  const [server, service, jobService, scheduleMigration, optInMigration, route] = await Promise.all([
     fileText(SERVER_INDEX),
     fileText(SERVICE_FILE),
     fileText(JOB_SERVICE_FILE),
     fileText(SYNC_SCHEDULE_MIGRATION_FILE),
+    fileText(SYNC_SCHEDULE_OPT_IN_MIGRATION_FILE),
     fileText(ROUTE_FILE),
   ]);
 
@@ -893,6 +903,10 @@ test("SHEIN platform product scheduled detail sync is configurable and reuses re
   assert.match(scheduleMigration, /check\(schedule_hour >= 0 and schedule_hour <= 23\)/);
   assert.match(scheduleMigration, /check\(sync_scope in \('full', 'spu'\)\)/);
   assert.match(scheduleMigration, /values \('default', 1, 23, 'full', '\[\]'\)/);
+  assert.match(optInMigration, /alter column enabled set default 0/i);
+  assert.match(optInMigration, /set enabled = 0/i);
+  assert.match(jobService, /values \(\?, 0, \?, 'full', '\[\]'\)/);
+  assert.match(jobService, /enabled:\s*booleanEnv\(row\?\.enabled, false\)/);
 
   assert.match(route, /get\("\/sync-schedule"/);
   assert.match(route, /put\("\/sync-schedule"/);

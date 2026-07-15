@@ -57,12 +57,14 @@ export const sheinAdapter: PlatformAdapter = {
     return requestSheinWithCredentialsAndRetry("/open-api/goods/product/publishOrEdit", {
       credentials: input.credentials,
       body: input.payload,
+      retries: 0,
     })
   },
   addVariantsToListing(input: PublishListingInput) {
     return requestSheinWithCredentialsAndRetry("/open-api/goods/product/publishOrEdit", {
       credentials: input.credentials,
       body: input.payload,
+      retries: 0,
     })
   },
   checkEditPermission(input: PlatformPayloadInput) {

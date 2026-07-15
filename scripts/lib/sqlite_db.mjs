@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { listMigrationFiles } from "./migration_files.mjs";
 
 export const DEFAULT_DB_PATH = path.resolve("data", "app.sqlite");
 
@@ -55,9 +56,7 @@ export function applyMigrations(db, migrationsDir = path.resolve("db", "migratio
     db.prepare("select version from schema_migration").all().map((row) => row.version),
   );
 
-  const migrations = fs.readdirSync(migrationsDir)
-    .filter((file) => file.endsWith(".sql"))
-    .sort();
+  const migrations = listMigrationFiles(migrationsDir);
 
   const appliedNow = [];
   for (const file of migrations) {

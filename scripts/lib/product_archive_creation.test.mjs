@@ -799,6 +799,16 @@ test("product archive draft service blocks ready status when required template a
   assert.match(service, /sku_size_not_in_template/);
 });
 
+test("applying a DeepDraw trade updates the draft fields and validation in one transaction", async () => {
+  const source = await readFile(files.draftService, "utf8");
+  const start = source.indexOf("export function applyProductArchiveDraftTrade");
+  const end = source.indexOf("export function confirmProductArchiveDraftRecommendedTrade", start);
+  const implementation = source.slice(start, end);
+
+  assert.match(implementation, /return db\.transaction\(\(\) => \{/);
+  assert.match(implementation, /update product_archive_draft[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)/);
+});
+
 test("product archive draft detail picks one matching template per field", async () => {
   const service = await readFile(files.draftService, "utf8");
 
@@ -1807,4 +1817,15 @@ test("product archive submit route allows real DeepDraw creates through the SDK 
   assert.match(deepdrawClient, /deepdraw_sdk_adapter\.mjs/);
   assert.match(deepdrawClient, /createDeepdrawProductWithSdk/);
   assert.doesNotMatch(deepdrawClient, /product create adapter is not configured/);
+});
+
+test("DeepDraw create transport failures persist a failed draft and submission log", async () => {
+  const source = await readFile(files.draftService, "utf8");
+  const start = source.indexOf("export async function submitProductArchiveDraft");
+  const end = source.indexOf("export async function readbackProductArchiveDraft", start);
+  const implementation = source.slice(start, end);
+
+  assert.match(implementation, /try\s*\{[\s\S]*await runCreate\(payload\)[\s\S]*catch/);
+  assert.match(implementation, /writeSubmitLog\(db, draftId, "create"/);
+  assert.match(implementation, /set status = 'failed'/);
 });

@@ -1,29 +1,15 @@
-export const DEFAULT_AI_BASE_URL = "https://api.1xm.ai/v1";
-export const DEFAULT_AI_MODEL = "gemini-3-flash-preview";
-export const DEFAULT_AI_TIMEOUT_MS = 120000;
+import {
+  callAiChatCompletion,
+  extractAiJsonText,
+  resolveAiConfig,
+} from "./ai_chat_client.mjs";
 
-function readEnv(name, fallback = undefined) {
-  const value = process.env[name];
-  return value == null || value === "" ? fallback : value;
-}
-
-function normalizeBaseUrl(baseUrl) {
-  return String(baseUrl || DEFAULT_AI_BASE_URL).replace(/\/+$/, "");
-}
-
-export function resolveAiConfig({
-  baseUrl = readEnv("AI_BASE_URL", DEFAULT_AI_BASE_URL),
-  model = readEnv("AI_MODEL", DEFAULT_AI_MODEL),
-  apiKey = readEnv("AI_API_KEY"),
-  timeoutMs = Number(readEnv("AI_TIMEOUT_MS", DEFAULT_AI_TIMEOUT_MS)),
-} = {}) {
-  return {
-    baseUrl: normalizeBaseUrl(baseUrl),
-    model,
-    apiKey,
-    timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : DEFAULT_AI_TIMEOUT_MS,
-  };
-}
+export {
+  DEFAULT_AI_BASE_URL,
+  DEFAULT_AI_MODEL,
+  DEFAULT_AI_TIMEOUT_MS,
+  resolveAiConfig,
+} from "./ai_chat_client.mjs";
 
 function compactText(value, maxLength = 180) {
   if (value == null) return null;
@@ -186,19 +172,6 @@ export function buildCategoryMatchMessages({ groups, candidates }) {
   ];
 }
 
-function extractJsonText(text) {
-  const trimmed = String(text ?? "").trim();
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced) return fenced[1].trim();
-
-  const firstBrace = trimmed.indexOf("{");
-  const lastBrace = trimmed.lastIndexOf("}");
-  if (firstBrace >= 0 && lastBrace > firstBrace) {
-    return trimmed.slice(firstBrace, lastBrace + 1);
-  }
-  return trimmed;
-}
-
 function normalizeCandidate(value) {
   if (!value || typeof value !== "object") return null;
   const categoryId = Number(value.category_id);
@@ -306,47 +279,12 @@ function extractSuggestions(json) {
 }
 
 export function parseAiCategoryMatchResponse(text) {
-  const json = JSON.parse(extractJsonText(text));
+  const json = JSON.parse(extractAiJsonText(text));
   const suggestions = extractSuggestions(json);
   if (!Array.isArray(suggestions)) {
     throw new Error("Invalid AI category matcher response: missing suggestions array");
   }
   return suggestions.map(normalizeSuggestion);
-}
-
-function responseMessageContent(body) {
-  const message = body?.choices?.[0]?.message;
-  const values = [
-    message?.content,
-    message?.reasoning_content,
-    message?.reasoning,
-  ];
-  for (const value of values) {
-    if (Array.isArray(value)) {
-      const text = value
-        .map((part) => typeof part === "string" ? part : part?.text ?? part?.content ?? "")
-        .join("\n")
-        .trim();
-      if (text) return text;
-    } else if (typeof value === "string" && value.trim()) {
-      return value;
-    }
-  }
-  return "";
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function retryableAiError(error) {
-  const message = String(error?.message ?? "");
-  const code = error?.cause?.code ?? error?.code;
-  return error?.name === "AbortError"
-    || message === "fetch failed"
-    || code === "UND_ERR_SOCKET"
-    || code === "ECONNRESET"
-    || code === "ETIMEDOUT";
 }
 
 export async function callAiCategoryMatcher({
@@ -361,10 +299,10 @@ export async function callAiCategoryMatcher({
   const prompt = buildCategoryMatchPrompt({ groups, candidates });
   const userMessages = buildCategoryMatchMessages({ groups, candidates });
 
-  const requestBody = JSON.stringify({
-    model: config.model,
-    temperature: 0.1,
-    response_format: { type: "json_object" },
+  const response = await callAiChatCompletion({
+    config,
+    fetchImpl,
+    errorLabel: "AI category matcher",
     messages: [
       {
         role: "system",
@@ -373,55 +311,10 @@ export async function callAiCategoryMatcher({
       ...userMessages,
     ],
   });
-
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
-    try {
-      const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${config.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: requestBody,
-        signal: controller.signal,
-      });
-
-      const body = await response.json().catch(() => null);
-      if (!response.ok) {
-        const message = body?.error?.message ?? body?.message ?? `AI request failed with HTTP ${response.status}`;
-        if (attempt === 0 && (response.status === 429 || response.status >= 500)) {
-          await sleep(800);
-          continue;
-        }
-        throw new Error(message);
-      }
-
-      const content = responseMessageContent(body);
-      if (!content) {
-        throw new Error("AI response did not include message content");
-      }
-
-      return {
-        suggestions: parseAiCategoryMatchResponse(content),
-        raw: body,
-        prompt,
-        provider: {
-          baseUrl: config.baseUrl,
-          model: config.model,
-        },
-      };
-    } catch (error) {
-      if (attempt === 0 && retryableAiError(error)) {
-        await sleep(800);
-        continue;
-      }
-      throw error;
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  throw new Error("AI request failed after retry");
+  return {
+    suggestions: parseAiCategoryMatchResponse(response.content),
+    raw: response.raw,
+    prompt,
+    provider: response.provider,
+  };
 }

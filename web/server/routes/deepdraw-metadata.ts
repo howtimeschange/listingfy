@@ -1,12 +1,15 @@
 import { Hono, type Context } from "hono"
 import { HTTPException } from "hono/http-exception"
+import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { getDb } from "../db"
 import { requirePermission } from "../lib/auth"
 import {
   createMetadataSyncJob,
+  claimNextMetadataSyncJob,
+  createMetadataSyncScheduler,
+  drainMetadataSyncJobs,
   getMetadataSyncJob,
-  getNextQueuedMetadataSyncJob,
   listDeepdrawTradeFields,
   listDeepdrawTrades,
   syncDeepdrawTradeFields,
@@ -21,8 +24,7 @@ const PROJECT_ROOT =
     ? path.resolve(process.cwd(), "..")
     : process.cwd()
 
-let metadataSyncRunning = false
-let metadataSyncScheduled = false
+const metadataSyncWorkerId = `deepdraw-metadata-${process.pid}-${randomUUID()}`
 
 function readTradeId(value: string) {
   const tradeId = String(value ?? "").trim()
@@ -50,21 +52,10 @@ function readFieldRetryCount(value: unknown) {
   return Number.isFinite(number) && number >= 0 ? number : 2
 }
 
-async function processSyncJobs() {
-  metadataSyncScheduled = false
-  if (metadataSyncRunning) return
-  metadataSyncRunning = true
-  try {
-    while (true) {
-      const db = getDb()
-      const job = getNextQueuedMetadataSyncJob(db)
-      if (!job) break
-      updateMetadataSyncJobProgress(db, job.id, {
-        status: "running",
-        startedAt: new Date().toISOString(),
-        totalCount: 0,
-        completedCount: 0,
-      })
+async function drainSyncJobs() {
+  await drainMetadataSyncJobs({
+    claimNext: () => claimNextMetadataSyncJob(getDb(), { workerId: metadataSyncWorkerId }),
+    processJob: async (job) => {
       let lastPersisted = 0
       const summary = await syncDeepdrawTenantMetadata(getDb(), {
         projectRoot: PROJECT_ROOT,
@@ -79,6 +70,7 @@ async function processSyncJobs() {
             updateMetadataSyncJobProgress(getDb(), job.id, {
               totalCount: progress.total,
               completedCount: progress.completed,
+              heartbeatAt: new Date().toISOString(),
             })
           }
         },
@@ -93,35 +85,23 @@ async function processSyncJobs() {
         summary,
         finishedAt: new Date().toISOString(),
       })
-    }
-  } catch (error) {
-    const runningJob = (getDb().prepare(`
-      select id
-      from deepdraw_metadata_sync_job
-      where status = 'running'
-      order by updated_at desc
-      limit 1
-    `).get() as { id?: string } | undefined)
-    if (runningJob?.id) {
-      updateMetadataSyncJobProgress(getDb(), runningJob.id, {
+    },
+    markFailed: (job, error) => {
+      updateMetadataSyncJobProgress(getDb(), job.id, {
         status: "failed",
         errorMessage: error instanceof Error ? error.message : String(error),
         finishedAt: new Date().toISOString(),
       })
-    }
-  } finally {
-    metadataSyncRunning = false
-  }
+    },
+    heartbeat: (job) => {
+      updateMetadataSyncJobProgress(getDb(), job.id, {
+        heartbeatAt: new Date().toISOString(),
+      })
+    },
+  })
 }
 
-function scheduleSyncJobs() {
-  if (!metadataSyncScheduled) {
-    metadataSyncScheduled = true
-    queueMicrotask(() => {
-      void processSyncJobs()
-    })
-  }
-}
+const scheduleSyncJobs = createMetadataSyncScheduler(drainSyncJobs)
 
 deepdrawMetadata.get("/trades", async (c) => {
   const refresh = c.req.query("refresh") === "1" || c.req.query("refresh") === "true"
@@ -175,7 +155,12 @@ deepdrawMetadata.get("/sync-jobs/:jobId", (c) => {
   if (!job) {
     throw new HTTPException(404, { message: "DeepDraw metadata sync job not found" })
   }
+  if (job.status === "queued" || job.status === "running") scheduleSyncJobs()
   return c.json(job)
 })
+
+export function resumeDeepdrawMetadataSyncJobs() {
+  scheduleSyncJobs()
+}
 
 export default deepdrawMetadata

@@ -155,6 +155,14 @@ export function requirePermission(c: Context, permission: string) {
   return user
 }
 
+export function routePermissionGuard(readPermission: string, writePermission = readPermission) {
+  return async (c: Context, next: Next) => {
+    const method = c.req.method.toUpperCase()
+    requirePermission(c, method === "GET" || method === "HEAD" ? readPermission : writePermission)
+    await next()
+  }
+}
+
 export function isLoginLocked(user: Pick<UserRow, "locked_until"> | Record<string, unknown>, now = new Date()) {
   const lockedUntil = typeof user.locked_until === "string" ? user.locked_until : null
   if (!lockedUntil) return false

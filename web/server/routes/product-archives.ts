@@ -2,6 +2,7 @@ import path from "node:path"
 import { Hono } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
+import { routePermissionGuard } from "../lib/auth"
 import {
   getDeepdrawProduct,
   resolveDeepdrawConfig,
@@ -11,7 +12,10 @@ import {
   BRAND_MAPPINGS,
   DEEPDRAW_TENANT_OPTIONS,
 } from "../../../scripts/lib/brand_mapping.mjs"
-import { createProductArchiveSyncQueue } from "../../../scripts/lib/product_archive_sync_queue.mjs"
+import {
+  createPostgresProductArchiveSyncJobStore,
+  createProductArchiveSyncQueue,
+} from "../../../scripts/lib/product_archive_sync_queue.mjs"
 import {
   assertAllowedProductArchiveQuery,
   assertSafeProductArchiveCode,
@@ -19,6 +23,7 @@ import {
 import { syncMdmProduct } from "../services/product-archive-sync"
 
 const productArchives = new Hono()
+productArchives.use("*", routePermissionGuard("DATA_READ", "SYNC_RUN"))
 
 const PROJECT_ROOT =
   path.basename(process.cwd()) === "web"
@@ -171,6 +176,11 @@ async function syncDeepdrawProduct(
 }
 
 const syncQueue = createProductArchiveSyncQueue({
+  autoRecover: false,
+  store: createPostgresProductArchiveSyncJobStore({
+    getDb,
+    queueName: "product_archives",
+  }),
   syncOne: async ({ source, spuCode, options }) => {
     const db = getDb()
     if (source === "mdm") return syncMdmProduct(db, spuCode)
@@ -181,6 +191,10 @@ const syncQueue = createProductArchiveSyncQueue({
     }
   },
 })
+
+export function resumeProductArchiveSyncQueue() {
+  syncQueue.resume()
+}
 
 const codesCte = `
   with product_codes as (

@@ -1,6 +1,6 @@
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import { randomUUID } from "node:crypto"
-import { mkdir, readFile, unlink } from "node:fs/promises"
+import { mkdir, unlink } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import ExcelJS from "exceljs"
@@ -13,7 +13,8 @@ import {
 } from "./shein-platform-products"
 import { parseSpuCodes } from "../../../scripts/lib/product_archive_sync_queue.mjs"
 import {
-  platformProductWorkbookSheets,
+  PLATFORM_PRODUCT_WORKBOOK_COLUMNS,
+  platformProductWorkbookRows,
   type PlatformProductExportRow,
 } from "../../src/lib/shein-platform-product-export"
 
@@ -22,7 +23,6 @@ type PlatformProductJobType = "sync" | "export"
 type PlatformProductJobStatus = "queued" | "running" | "completed"
 type PlatformProductJobItemStatus = "queued" | "running" | "completed" | "failed"
 type SpreadsheetRow = Record<string, string | number | boolean | null>
-type SpreadsheetSheet = { name: string; rows: SpreadsheetRow[] }
 
 interface LifecycleActor {
   id: number | null
@@ -85,7 +85,6 @@ const MAX_DETAIL_CODES_PER_JOB = 20_000
 const DETAIL_SYNC_SHARD_SIZE = 2_000
 const JOB_ITEM_FAILURE_SAMPLE_LIMIT = 20
 const SHEET_ROW_LIMIT = 1_000_000
-const SHEET_WRITE_CHUNK = 5_000
 const EXPORT_DIR = path.join(os.tmpdir(), "listingify-platform-product-exports")
 const SHEIN_DETAIL_RATE_LIMIT_WINDOW_LIMIT = 800
 const SHEIN_DETAIL_RATE_LIMIT_WINDOW_MS = 1800 * 1000
@@ -938,21 +937,8 @@ async function processSyncJob(job: PlatformProductJob) {
   }
 }
 
-function rowColumns(rows: SpreadsheetRow[]) {
-  const columns: string[] = []
-  const seen = new Set<string>()
-  for (const row of rows) {
-    for (const key of Object.keys(row)) {
-      if (seen.has(key)) continue
-      seen.add(key)
-      columns.push(key)
-    }
-  }
-  return columns
-}
-
-function sheetNameWithIndex(baseName: string, index: number, total: number) {
-  const suffix = total > 1 ? `-${index + 1}` : ""
+function sheetNameWithIndex(baseName: string, index: number) {
+  const suffix = index > 0 ? `-${index + 1}` : ""
   const maxBaseLength = 31 - suffix.length
   const safeBase = baseName.replace(/[:\\/?*[\]]/g, " ").trim() || "Sheet"
   return `${safeBase.slice(0, Math.max(1, maxBaseLength))}${suffix}`
@@ -963,82 +949,107 @@ type WorksheetWriter = {
   commit: () => void
 }
 
-async function appendRowsToWorksheet(
-  worksheet: WorksheetWriter,
-  columns: string[],
-  rows: SpreadsheetRow[],
-  job: PlatformProductJob,
-  sheetName: string,
-  start = 0,
-  end = rows.length,
-) {
-  const headerRow = worksheet.addRow(columns)
-  headerRow.commit()
-  for (let index = start; index < end; index += SHEET_WRITE_CHUNK) {
-    const chunkEnd = Math.min(index + SHEET_WRITE_CHUNK, end)
-    for (let rowIndex = index; rowIndex < chunkEnd; rowIndex += 1) {
-      const row = rows[rowIndex]
-      const outputRow = worksheet.addRow(columns.map((column) => row[column] ?? ""))
-      outputRow.commit()
-    }
-    job.items[0].result = {
-      stage: "generating_workbook",
-      sheetName,
-      writtenRows: chunkEnd,
-      totalRows: end,
-    }
-    await savePlatformProductJob(job)
-    await wait(0)
-  }
+type WorkbookWriter = {
+  addWorksheet(name: string): WorksheetWriter
+  commit(): Promise<void>
 }
 
-async function writeWorkbookFile(sheets: SpreadsheetSheet[], filePath: string, job: PlatformProductJob) {
+function createStreamingSheetAppender(
+  workbook: WorkbookWriter,
+  name: string,
+  columns: readonly string[],
+) {
+  let worksheet: WorksheetWriter | null = null
+  let sheetIndex = 0
+  let currentRowCount = 0
+  let totalRowCount = 0
+
+  function openWorksheet() {
+    worksheet = workbook.addWorksheet(sheetNameWithIndex(name, sheetIndex))
+    worksheet.addRow([...columns]).commit()
+    currentRowCount = 0
+  }
+
+  function append(rows: SpreadsheetRow[]) {
+    for (const row of rows) {
+      if (!worksheet) openWorksheet()
+      if (currentRowCount >= SHEET_ROW_LIMIT) {
+        worksheet?.commit()
+        sheetIndex += 1
+        openWorksheet()
+      }
+      worksheet?.addRow(columns.map((column) => row[column] ?? "")).commit()
+      currentRowCount += 1
+      totalRowCount += 1
+    }
+  }
+
+  function ensurePlaceholder() {
+    if (totalRowCount === 0) append([Object.fromEntries(columns.map((column) => [column, ""]))])
+  }
+
+  function commit() {
+    worksheet?.commit()
+  }
+
+  return { append, commit, ensurePlaceholder, get totalRowCount() { return totalRowCount } }
+}
+
+async function writePlatformProductWorkbookFromPages(filePath: string, job: PlatformProductJob) {
   const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
     filename: filePath,
     useStyles: false,
     useSharedStrings: false,
-  })
-  for (const sheet of sheets) {
-    const rows = sheet.rows
-    if (!rows.length) continue
-    const columns = rowColumns(rows)
-    const chunkCount = Math.max(1, Math.ceil(rows.length / SHEET_ROW_LIMIT))
-    for (let index = 0; index < chunkCount; index += 1) {
-      const start = index * SHEET_ROW_LIMIT
-      const end = Math.min(start + SHEET_ROW_LIMIT, rows.length)
-      const worksheet = workbook.addWorksheet(sheetNameWithIndex(sheet.name, index, chunkCount))
-      await appendRowsToWorksheet(worksheet, columns, rows, job, sheet.name, start, end)
-      worksheet.commit()
-    }
-    await savePlatformProductJob(job)
-    await wait(0)
-  }
-  await workbook.commit()
-}
-
-async function fetchExportRows(job: PlatformProductJob) {
+  }) as WorkbookWriter
+  const overview = createStreamingSheetAppender(workbook, "平台商品列表", PLATFORM_PRODUCT_WORKBOOK_COLUMNS.overview)
+  const skcSku = createStreamingSheetAppender(workbook, "SKC-SKU明细", PLATFORM_PRODUCT_WORKBOOK_COLUMNS.skcSku)
+  const saleSite = createStreamingSheetAppender(workbook, "销售站点明细", PLATFORM_PRODUCT_WORKBOOK_COLUMNS.saleSite)
   const input = exportInput(job.payload)
-  const rows: PlatformProductExportRow[] = []
   let offset = 0
-  while (true) {
-    const response = listPlatformProducts({
-      ...input,
-      limit: EXPORT_PAGE_SIZE,
-      offset,
-    })
-    const total = Number(response.pagination.total ?? 0)
-    if (offset === 0) {
-      job.total_count = total
+  let writtenProducts = 0
+  try {
+    while (true) {
+      const response = listPlatformProducts({
+        ...input,
+        limit: EXPORT_PAGE_SIZE,
+        offset,
+      })
+      const total = Number(response.pagination.total ?? 0)
+      const pageRows = response.items as PlatformProductExportRow[]
+      if (offset === 0) job.total_count = total
+      for (const row of pageRows) {
+        const transformed = platformProductWorkbookRows(row)
+        overview.append([transformed.overview])
+        skcSku.append(transformed.skcSku)
+        saleSite.append(transformed.saleSite)
+      }
+      writtenProducts += pageRows.length
+      job.completed_count = writtenProducts
+      job.items[0].result = {
+        stage: "streaming_workbook",
+        writtenProducts,
+        totalProducts: total,
+        detailRows: skcSku.totalRowCount,
+        saleSiteRows: saleSite.totalRowCount,
+      }
+      await savePlatformProductJob(job)
+      await wait(0)
+      if (total <= 0 || writtenProducts >= total || pageRows.length === 0) break
+      offset += pageRows.length
     }
-    rows.push(...response.items as PlatformProductExportRow[])
-    job.completed_count = rows.length
-    await savePlatformProductJob(job)
-    await wait(0)
-    if (total <= 0 || rows.length >= total) break
-    if (response.items.length === 0) break
-    offset += EXPORT_PAGE_SIZE
+    if (writtenProducts === 0) throw new Error("当前筛选条件下没有可导出的平台商品")
+    skcSku.ensurePlaceholder()
+    saleSite.ensurePlaceholder()
+    overview.commit()
+    skcSku.commit()
+    saleSite.commit()
+    await workbook.commit()
+    return writtenProducts
+  } catch (error) {
+    await workbook.commit().catch(() => undefined)
+    await unlink(filePath).catch(() => undefined)
+    throw error
   }
-  return rows
 }
 
 async function processExportJob(job: PlatformProductJob) {
@@ -1050,25 +1061,21 @@ async function processExportJob(job: PlatformProductJob) {
   job.error = null
   job.items = [{ spu_code: "读取平台商品数据", status: "running", error: null, result: null, started_at: nowIso(), finished_at: null }]
   await savePlatformProductJob(job)
-  const rows = await fetchExportRows(job)
-  if (!rows.length) {
-    throw new Error("当前筛选条件下没有可导出的平台商品")
-  }
   const fileName = `SHEIN平台商品列表-${fileSafeTimestamp()}.xlsx`
   const filePath = path.join(EXPORT_DIR, `${job.id}.xlsx`)
   await mkdir(EXPORT_DIR, { recursive: true })
   job.items[0].spu_code = "生成 Excel 文件"
-  job.items[0].result = { stage: "generating_workbook", rowCount: rows.length, fileName }
+  job.items[0].result = { stage: "streaming_workbook", rowCount: 0, fileName }
   await savePlatformProductJob(job)
-  await writeWorkbookFile(platformProductWorkbookSheets(rows), filePath, job)
+  const rowCount = await writePlatformProductWorkbookFromPages(filePath, job)
   job.fileName = fileName
   job.filePath = filePath
   job.downloadUrl = `/api/shein-platform-products/export-jobs/${job.id}/download`
   job.items[0].spu_code = "EXPORT"
   job.items[0].status = "completed"
-  job.items[0].result = { rowCount: rows.length, fileName }
+  job.items[0].result = { rowCount, fileName }
   job.items[0].finished_at = nowIso()
-  job.completed_count = rows.length
+  job.completed_count = rowCount
   setJobDone(job)
   await savePlatformProductJob(job)
 }
@@ -1159,7 +1166,7 @@ function ensurePlatformProductSyncScheduleRow(db: SyncPostgresDatabase = getDb()
       sync_scope,
       spu_names_json
     )
-    values (?, 1, ?, 'full', '[]')
+    values (?, 0, ?, 'full', '[]')
     on conflict(id) do nothing
   `).run(DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_ID, DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_HOUR)
 }
@@ -1168,7 +1175,7 @@ function scheduleConfigFromRow(row: JsonRecord | undefined, db: SyncPostgresData
   const activeJob = activeScheduledPlatformProductSyncJob(db)
   return {
     id: stringValue(row?.id) || DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_ID,
-    enabled: booleanEnv(row?.enabled, true),
+    enabled: booleanEnv(row?.enabled, false),
     schedule_hour: boundedHour(row?.schedule_hour, DEFAULT_PLATFORM_PRODUCT_SYNC_SCHEDULE_HOUR),
     sync_scope: syncScheduleScope(row?.sync_scope),
     spu_names: scheduleSpuNames(row?.spu_names_json),
@@ -1386,7 +1393,7 @@ export function getPlatformProductExportJob(id: string) {
   return job ? snapshot(job) : null
 }
 
-export async function readPlatformProductExportFile(id: string) {
+export function readPlatformProductExportFile(id: string) {
   const job = loadPlatformProductJob("export", id)
   if (!job) return null
   if (job.status !== "completed") schedulePlatformProductJobs()
@@ -1397,7 +1404,7 @@ export async function readPlatformProductExportFile(id: string) {
     pending: false as const,
     job: snapshot(job),
     fileName: job.fileName,
-    buffer: await readFile(job.filePath),
+    filePath: job.filePath,
   }
 }
 

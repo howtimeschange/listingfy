@@ -1,8 +1,10 @@
 import { Hono } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
+import { routePermissionGuard } from "../lib/auth"
 
 const mdmProducts = new Hono()
+mdmProducts.use("*", routePermissionGuard("DATA_READ", "DATA_WRITE"))
 
 type SourceRow = {
   id: number
@@ -173,4 +175,3 @@ mdmProducts.get("/:spuCode", (c) => {
 })
 
 export default mdmProducts
-

@@ -1,18 +1,22 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
 const {
+  assertCredentialEncryptionConfigured,
   credentialIsEncrypted,
+  encryptCredential,
   encryptStoredPlatformCredentials,
   ensurePlatformIntegrationBootstrap,
   maskSecret,
   platformIntegrationForResponse,
   resolveSheinCredentials,
 } = await import("../../web/server/lib/platform-config.ts");
+
+const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 
 async function createTempDb() {
   const tempPath = await mkdtemp(path.join(os.tmpdir(), "listingify-platform-config-"));
@@ -158,6 +162,32 @@ test("encryptStoredPlatformCredentials encrypts existing plaintext credentials w
   } finally {
     await cleanup();
   }
+});
+
+test("platform credentials are never persisted without an encryption secret", async () => {
+  await withEnv({ LISTINGIFY_CREDENTIAL_SECRET: undefined }, () => {
+    assert.throws(
+      () => encryptCredential("plain-secret"),
+      /LISTINGIFY_CREDENTIAL_SECRET is required/,
+    );
+  });
+});
+
+test("production startup and deployment require protected credential configuration", async () => {
+  await withEnv({
+    NODE_ENV: "production",
+    LISTINGIFY_CREDENTIAL_SECRET: undefined,
+  }, () => {
+    assert.throws(
+      () => assertCredentialEncryptionConfigured(),
+      /LISTINGIFY_CREDENTIAL_SECRET is required/,
+    );
+  });
+
+  const deployScript = await readFile(path.join(PROJECT_ROOT, "ci/yunxiao-deploy.sh"), "utf8");
+  assert.match(deployScript, /umask 077/);
+  assert.match(deployScript, /LISTINGIFY_CREDENTIAL_SECRET is required/);
+  assert.match(deployScript, /chmod 600 \.env\.local/);
 });
 
 test("inactive database SHEIN credentials fall back to environment credentials", async () => {

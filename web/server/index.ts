@@ -5,12 +5,12 @@ import { loadLocalEnv } from "../../scripts/lib/local_env.mjs"
 import { errorHandler, logger } from "./middleware/error-handler"
 import metadata from "./routes/metadata"
 import categoryMapping from "./routes/category-mapping"
-import productArchives from "./routes/product-archives"
-import productArchiveDrafts from "./routes/product-archive-drafts"
+import productArchives, { resumeProductArchiveSyncQueue } from "./routes/product-archives"
+import productArchiveDrafts, { resumeProductArchiveDraftQueue } from "./routes/product-archive-drafts"
 import deepdrawFieldMappings from "./routes/deepdraw-field-mappings"
 import mdmProducts from "./routes/mdm-products"
 import deepdrawContent from "./routes/deepdraw-content"
-import deepdrawMetadata from "./routes/deepdraw-metadata"
+import deepdrawMetadata, { resumeDeepdrawMetadataSyncJobs } from "./routes/deepdraw-metadata"
 import imageLibrary from "./routes/image-library"
 import businessRules from "./routes/business-rules"
 import sheinProducts from "./routes/shein-products"
@@ -28,15 +28,23 @@ import platformIntegrations from "./routes/platform-integrations"
 import system from "./routes/system"
 import { applyPendingMigrations, DB_DSN_SAFE, DB_PROVIDER, getDb } from "./db"
 import { ensureAdminUser, requireAuth } from "./lib/auth"
-import { encryptStoredPlatformCredentials, ensurePlatformIntegrationBootstrap } from "./lib/platform-config"
+import {
+  assertCredentialEncryptionConfigured,
+  encryptStoredPlatformCredentials,
+  ensurePlatformIntegrationBootstrap,
+} from "./lib/platform-config"
 
 loadLocalEnv()
+assertCredentialEncryptionConfigured()
 
 const db = getDb()
 const appliedMigrations = applyPendingMigrations(db)
 const adminSeeded = ensureAdminUser(db)
 const sheinConfigSeeded = ensurePlatformIntegrationBootstrap(db)
 const encryptedPlatformCredentials = encryptStoredPlatformCredentials(db)
+resumeProductArchiveSyncQueue()
+resumeProductArchiveDraftQueue()
+resumeDeepdrawMetadataSyncJobs()
 
 const app = new Hono()
 

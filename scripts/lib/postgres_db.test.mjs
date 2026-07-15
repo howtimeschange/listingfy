@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
+  applyPostgresMigrations,
   convertSqliteMigration,
   identitySequenceSetvalSql,
-  syncAwait,
+  SyncPostgresDatabase,
   toPostgresQuery,
 } from "./postgres_db.mjs";
 
@@ -212,13 +216,78 @@ test("identity sequence sync advances past existing migrated ids", () => {
   assert.doesNotMatch(sql, /,\s*false\s*\)/);
 });
 
-test("syncAwait times out unresolved synchronous PostgreSQL calls", () => {
-  const previous = process.env.DATABASE_SYNC_TIMEOUT_MS;
-  process.env.DATABASE_SYNC_TIMEOUT_MS = "1";
+test("PostgreSQL migrations reject a new duplicate numeric prefix", async () => {
+  const migrationsDir = fs.mkdtempSync(path.join(os.tmpdir(), "listingify-migrations-"));
+  fs.writeFileSync(path.join(migrationsDir, "042_first.sql"), "select 1;\n");
+  fs.writeFileSync(path.join(migrationsDir, "042_second.sql"), "select 2;\n");
+  const client = {
+    async query(sql) {
+      if (/information_schema\.columns/i.test(sql)) return { rows: [] };
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const pool = {
+    async query(sql) {
+      if (/select version from schema_migration/i.test(sql)) return { rows: [] };
+      return { rows: [] };
+    },
+    async connect() {
+      return client;
+    },
+  };
+
   try {
-    assert.throws(() => syncAwait(new Promise(() => {})), /timed out after 1ms/);
+    await assert.rejects(
+      applyPostgresMigrations(pool, migrationsDir),
+      /duplicate migration prefix 042/i,
+    );
   } finally {
-    if (previous === undefined) delete process.env.DATABASE_SYNC_TIMEOUT_MS;
-    else process.env.DATABASE_SYNC_TIMEOUT_MS = previous;
+    fs.rmSync(migrationsDir, { recursive: true, force: true });
+  }
+});
+
+test("synchronous PostgreSQL worker discards a timed-out query before the next request", () => {
+  const previousTimeout = process.env.DATABASE_SYNC_TIMEOUT_MS;
+  const databaseUrl = process.env.DATABASE_URL
+    ?? "postgres://listingify:listingify@localhost:5432/listingify";
+  const db = new SyncPostgresDatabase(databaseUrl, { connectionTimeoutMillis: 1000 });
+
+  try {
+    process.env.DATABASE_SYNC_TIMEOUT_MS = "50";
+    assert.throws(
+      () => db.queryRows("select pg_sleep(0.25), 42 as value"),
+      /timed out after 50ms/,
+    );
+
+    process.env.DATABASE_SYNC_TIMEOUT_MS = "1000";
+    assert.deepEqual(db.queryRows("select 99 as value"), [{ value: 99 }]);
+  } finally {
+    process.env.DATABASE_SYNC_TIMEOUT_MS = "1000";
+    db.close();
+    if (previousTimeout === undefined) delete process.env.DATABASE_SYNC_TIMEOUT_MS;
+    else process.env.DATABASE_SYNC_TIMEOUT_MS = previousTimeout;
+  }
+});
+
+test("nested synchronous PostgreSQL transactions use savepoints and preserve outer rollback", () => {
+  const databaseUrl = process.env.DATABASE_URL
+    ?? "postgres://listingify:listingify@localhost:5432/listingify";
+  const db = new SyncPostgresDatabase(databaseUrl, { connectionTimeoutMillis: 1000 });
+
+  try {
+    db.exec("create temporary table listingify_nested_tx_test(value integer)");
+    const outer = db.transaction(() => {
+      db.prepare("insert into listingify_nested_tx_test(value) values (?)").run(1);
+      db.transaction(() => {
+        db.prepare("insert into listingify_nested_tx_test(value) values (?)").run(2);
+      })();
+      throw new Error("rollback outer transaction");
+    });
+
+    assert.throws(outer, /rollback outer transaction/);
+    assert.equal(db.prepare("select count(*) as count from listingify_nested_tx_test").get().count, 0);
+  } finally {
+    db.close();
   }
 });
