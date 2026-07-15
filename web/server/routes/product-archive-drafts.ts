@@ -14,6 +14,7 @@ import { syncMdmProduct } from "../services/product-archive-sync"
 import {
   applyProductArchiveDraftTrade,
   checkDuplicateProductArchiveDraft,
+  confirmProductArchiveDraftRecommendedTrade,
   createProductArchiveDraftFromSpu,
   fillProductArchiveDraftFieldsWithAi,
   getProductArchiveDraftDetail,
@@ -746,7 +747,16 @@ productArchiveDrafts.patch("/:draftId/trade", async (c) => {
   requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const db = getDb()
   const draftId = readId(c.req.param("draftId"))
-  const result = applyProductArchiveDraftTrade(db, draftId, await readJson(c))
+  let result
+  try {
+    result = applyProductArchiveDraftTrade(db, draftId, await readJson(c))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message === "草稿数据已更新，请刷新后重试") {
+      throw new HTTPException(409, { message })
+    }
+    throw error
+  }
   auditFromContext(c, {
     action: "draft.trade.applied",
     module: "PRODUCT_ARCHIVE_DRAFT",
@@ -756,6 +766,31 @@ productArchiveDrafts.patch("/:draftId/trade", async (c) => {
     metadata: { tradeId: result.detail.draft.trade_id },
   })
   return c.json(result.detail)
+})
+
+productArchiveDrafts.patch("/:draftId/trade/confirm", async (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const db = getDb()
+  const draftId = readId(c.req.param("draftId"))
+  let detail
+  try {
+    detail = confirmProductArchiveDraftRecommendedTrade(db, draftId, await readJson(c))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message === "推荐结果已更新，请刷新后重新确认") {
+      throw new HTTPException(409, { message })
+    }
+    throw error
+  }
+  auditFromContext(c, {
+    action: "draft.trade.confirmed",
+    module: "PRODUCT_ARCHIVE_DRAFT",
+    entityType: "product_archive_draft",
+    entityId: draftId,
+    summary: `确认深绘推荐类目 ${draftId}`,
+    metadata: { tradeId: detail.draft.trade_id },
+  })
+  return c.json(detail)
 })
 
 productArchiveDrafts.patch("/:draftId/fields", async (c) => {

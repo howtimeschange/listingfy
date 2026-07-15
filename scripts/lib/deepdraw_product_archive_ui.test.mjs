@@ -80,6 +80,7 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
     /productArchiveDrafts\.post\("\/source-imports"/,
     /productArchiveDrafts\.get\("\/:draftId"/,
     /productArchiveDrafts\.patch\("\/:draftId\/trade"/,
+    /productArchiveDrafts\.patch\("\/:draftId\/trade\/confirm"/,
     /productArchiveDrafts\.patch\("\/:draftId\/fields"/,
     /productArchiveDrafts\.post\("\/:draftId\/validate"/,
     /productArchiveDrafts\.post\("\/:draftId\/check-duplicate"/,
@@ -101,7 +102,15 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
   assert.doesNotMatch(draftRoute, /const mdmCodes = parseSpuCodes\(form\.get\("mdmCodes"\)/);
   assert.match(draftRoute, /sourceBatchId:\s*Number\(result\.batch\.id\)/);
   assert.match(draftRoute, /applyProductArchiveDraftTrade/);
+  assert.match(draftRoute, /confirmProductArchiveDraftRecommendedTrade/);
+  assert.match(draftRoute, /new HTTPException\(409, \{ message \}\)/);
+  assert.match(
+    draftRoute,
+    /message === "草稿数据已更新，请刷新后重试"[\s\S]{0,120}new HTTPException\(409, \{ message \}\)/,
+  );
   assert.match(draftService, /export function applyProductArchiveDraftTrade/);
+  assert.match(draftService, /export function confirmProductArchiveDraftRecommendedTrade/);
+  assert.match(draftService, /tradeSelectionDecision: currentTradeSelectionDecision\(db, draft\)/);
   assert.match(draftService, /export async function fillProductArchiveDraftFieldsWithAi/);
   assert.match(draftService, /rebuildProductArchiveDraftFields/);
   assert.match(draftService, /deepdraw_trade_cache/);
@@ -198,6 +207,38 @@ test("draft detail trade picker shows launch-plan category reference above searc
   assert.match(draftDetailPage, /launchPlanReference\.fields\.map/);
   assert.match(draftDetailPage, /\{field\.label\}/);
   assert.match(draftDetailPage, /\{field\.value\}/);
+});
+
+test("draft detail renders backend trade selection conclusion and human confirmation action", async () => {
+  const draftDetailPage = await readFile(files.draftDetailPage, "utf8");
+
+  for (const status of [
+    "auto_applied",
+    "pending_confirmation",
+    "manual_selection_required",
+    "human_confirmed",
+    "human_adjusted",
+  ]) {
+    assert.match(draftDetailPage, new RegExp(status));
+  }
+  assert.match(draftDetailPage, /tradeSelectionDecision/);
+  assert.match(draftDetailPage, /深绘类目选择结论/);
+  assert.match(draftDetailPage, /已自动应用推荐类目/);
+  assert.match(draftDetailPage, /已自动应用，待人工确认/);
+  assert.match(draftDetailPage, /需要人工选择/);
+  assert.match(draftDetailPage, /人工已确认/);
+  assert.match(draftDetailPage, /人工已调整/);
+  assert.match(draftDetailPage, /高置信度/);
+  assert.match(draftDetailPage, /中置信度/);
+  assert.match(draftDetailPage, /确认推荐类目/);
+  assert.match(draftDetailPage, /重新选择/);
+  assert.match(
+    draftDetailPage,
+    /api\.patch<DraftDetail>\(`\/product-archive-drafts\/\$\{draftId\}\/trade\/confirm`,[\s\S]*recommendedTradeId/,
+  );
+  assert.match(draftDetailPage, /tradeSelectionDecision\.reason/);
+  assert.match(draftDetailPage, /tradeSelectionDecision\.recommendedTrade/);
+  assert.match(draftDetailPage, /tradeSelectionDecision\.appliedTrade/);
 });
 
 test("draft detail field fill tab highlights validation issues and can jump between problem fields", async () => {

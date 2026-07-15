@@ -54,6 +54,44 @@ interface ApplyTradeInput {
   tradePath?: string | null
 }
 
+interface ConfirmTradeInput {
+  recommendedTradeId?: string | null
+}
+
+export type TradeSelectionStatus =
+  | "auto_applied"
+  | "pending_confirmation"
+  | "manual_selection_required"
+  | "human_confirmed"
+  | "human_adjusted"
+
+export type TradeSelectionReasonCode =
+  | "unique_high_confidence"
+  | "medium_confidence"
+  | "source_category_conflict"
+  | "missing_source_category"
+  | "missing_platform_coverage"
+  | "missing_semantic_match"
+  | "ambiguous_match"
+  | "human_confirmed"
+  | "human_adjusted"
+
+export interface TradeSelectionDecision {
+  status: TradeSelectionStatus
+  confidence: "high" | "medium" | "none"
+  reasonCode: TradeSelectionReasonCode
+  recommendedTrade: { tradeId: string; tradePath: string } | null
+  appliedTrade: { tradeId: string; tradePath: string } | null
+  matchedField: string | null
+  matchedValue: string | null
+  requiredPlatforms: string[]
+  coveredPlatforms: string[]
+  sourceConflict: boolean
+  reason: string
+  evaluatedAt: string
+  confirmedAt: string | null
+}
+
 interface DeepdrawResult {
   status: number
   ok: boolean
@@ -648,34 +686,131 @@ function firstLines(value: unknown) {
 }
 
 function materialPercentText(sourceRows: JsonRecord[]) {
-  const composition = copywritingValue(sourceRows, "面料成分") || copywritingValue(sourceRows, "材质成分")
-  const match = composition.match(/面料[:：]\s*([0-9.]+%)/)
-  return match?.[1] ?? (composition.match(/([0-9.]+%)/)?.[1] ?? "")
+  const component = primaryMaterialComponents(sourceRows)[0]
+  return component ? `${component.percent}%` : ""
 }
 
-function materialCompositionInputText(value: unknown) {
-  const text = stringValue(value).replace(/\u00a0/g, " ")
-  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-  if (!lines.length) return text
-  const cleaned = lines
-    .filter((line) => !/^成分[:：]?$/.test(line))
-    .map((line) => line.replace(/^(面料|主面料|材质|成分)\s*[:：]\s*/, "").trim())
-    .filter(Boolean)
-  if (!cleaned.length) return ""
-  const [primary, ...rest] = cleaned
-  if (rest.length > 0 && rest.every((line) => /^[（(].*除外.*[）)]$/.test(line))) {
-    return `${primary}${rest.join("")}`
+type MaterialComponent = {
+  name: string
+  percent: string
+}
+
+const SECONDARY_MATERIAL_SECTION = "里料|衬里|花边|填充物|配料|辅料|罗纹|帽里|胆料|内胆|装饰物|鞋面|鞋底"
+
+function formatMaterialPercent(value: unknown) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return stringValue(value)
+  return String(Number(number.toFixed(4)))
+}
+
+function normalizeMaterialName(value: unknown) {
+  const text = stringValue(value)
+    .replace(/^[,，;；:：\s]+|[,，;；:：\s]+$/g, "")
+    .replace(/[（(][^）)]*(?:除外|不含)[）)]/g, "")
+    .replace(/(?:薄膜|配料|辅料|装饰物|罗纹)?\s*(?:除外|不含).*$/g, "")
+    .trim()
+  if (/^(?:纯棉|全棉)$/.test(text)) return "棉"
+  if (/^(?:涤纶|涤纶[（(]聚酯纤维[）)]|聚酯纤维[（(]涤纶[）)])$/.test(text)) return "聚酯纤维"
+  return text
+}
+
+function primaryMaterialRawSection(value: unknown) {
+  const text = stringValue(value)
+    .replace(/\u00a0/g, " ")
+    .replace(/％/g, "%")
+    .replace(/\r/g, "")
+    .replace(/^\s*成分\s*[:：]?\s*/i, "")
+  if (!text) return ""
+  const primaryLabel = /(?:^|\n|\s)(?:主面料|大身面料|面料)\s*[:：]\s*/g
+  const labelMatch = primaryLabel.exec(text)
+  const afterLabel = labelMatch ? text.slice(labelMatch.index + labelMatch[0].length) : text
+  const secondaryLabel = new RegExp(`(?:^|\\n|\\s)(?:${SECONDARY_MATERIAL_SECTION})\\s*[:：]`)
+  const secondaryIndex = afterLabel.search(secondaryLabel)
+  return (secondaryIndex >= 0 ? afterLabel.slice(0, secondaryIndex) : afterLabel).trim()
+}
+
+function primaryMaterialSection(value: unknown) {
+  return primaryMaterialRawSection(value)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !/(?:除外|不含)/.test(line))
+    .join(" ")
+    .trim()
+}
+
+function primaryMaterialExclusionText(value: unknown) {
+  return Array.from(primaryMaterialRawSection(value).matchAll(/[（(][^）)]*(?:除外|不含)[）)]/g))
+    .map((match) => match[0])
+    .join("")
+}
+
+function materialComponentsFromText(value: unknown): MaterialComponent[] {
+  const section = primaryMaterialSection(value)
+  if (!section) return []
+  const components: MaterialComponent[] = []
+  const addComponent = (rawName: unknown, rawPercent: unknown) => {
+    const name = normalizeMaterialName(rawName)
+    const percent = formatMaterialPercent(rawPercent)
+    if (!name || !percent) return
+    const existing = components.find((component) => component.name === name)
+    if (existing) {
+      existing.percent = formatMaterialPercent(Number(existing.percent) + Number(percent))
+    } else {
+      components.push({ name, percent })
+    }
   }
-  return cleaned.join("；")
+  const percentFirst = /(\d+(?:\.\d+)?)\s*%\s*([^\d%]+?)(?=(?:\s*[,，;；]?\s*\d+(?:\.\d+)?\s*%)|$)/g
+  for (const match of section.matchAll(percentFirst)) addComponent(match[2], match[1])
+  if (components.length > 0) return components
+  const nameFirst = /([^\d%]+?)\s*(\d+(?:\.\d+)?)\s*%(?=\s*[,，;；]|\s*$)/g
+  for (const match of section.matchAll(nameFirst)) addComponent(match[1], match[2])
+  return components
+}
+
+function materialCompositionSourceText(sourceRows: JsonRecord[]) {
+  return copywritingValue(sourceRows, "面料成分")
+    || copywritingValue(sourceRows, "材质成分")
+}
+
+function primaryMaterialComponents(sourceRows: JsonRecord[]) {
+  return materialComponentsFromText(materialCompositionSourceText(sourceRows))
+}
+
+function materialCompositionValue(sourceRows: JsonRecord[], jd = false) {
+  return primaryMaterialComponents(sourceRows)
+    .map((component) => {
+      const name = jd && component.name === "聚酯纤维" ? "涤纶(聚酯纤维)" : component.name
+      return `${name},${component.percent}`
+    })
+    .join(";")
+}
+
+function materialChoiceValue(sourceRows: JsonRecord[]) {
+  return primaryMaterialComponents(sourceRows).map((component) => component.name).join(";")
+}
+
+function materialSummaryValue(sourceRows: JsonRecord[], fieldName: string) {
+  const components = primaryMaterialComponents(sourceRows)
+  if (!components.length) return ""
+  const key = compactFieldKey(fieldName)
+  if (components.length === 1) {
+    const component = components[0]
+    if (key === "面料" && component.name === "棉" && Number(component.percent) === 100) {
+      return "纯棉(棉含量100%)"
+    }
+    return component.name
+  }
+  const dominant = [...components].sort((left, right) => Number(right.percent) - Number(left.percent))[0]
+  return `${dominant.name}混纺`
 }
 
 function materialCompositionText(sourceRows: JsonRecord[]) {
-  return materialCompositionInputText(
-    copywritingValue(sourceRows, "面料成分")
-      || copywritingValue(sourceRows, "材质成分")
-      || launchValue(sourceRows, "面料成分")
-      || launchValue(sourceRows, "材质成分"),
-  )
+  const components = primaryMaterialComponents(sourceRows)
+  if (components.length > 0) {
+    const composition = components.map((component) => `${component.percent}%${component.name}`).join("；")
+    return `${composition}${primaryMaterialExclusionText(materialCompositionSourceText(sourceRows))}`
+  }
+  return primaryMaterialSection(materialCompositionSourceText(sourceRows))
 }
 
 function sizeSegmentRanges(value: unknown) {
@@ -741,6 +876,12 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   const sourceRows = input.sourceRows ?? []
   if (isProductArchiveBusinessBlankField(fieldName, input.spu, sourceRows)) return ""
   if (key === "材质成分文本" || key === "面料成分文本" || key === "成分含量文本") return materialCompositionText(sourceRows)
+  if (key === "材质成分") return materialCompositionValue(sourceRows)
+  if (key === "京东材质成分") return materialCompositionValue(sourceRows, true)
+  if (key === "面料多选" || key === "材质多选" || key === "材质成分多选") return materialChoiceValue(sourceRows)
+  if (key === "面料" || key === "材质" || key === "面料俗称" || key === "详情页面料" || key === "抖音面料材质") {
+    return materialSummaryValue(sourceRows, fieldName)
+  }
   const sourceReference = productArchiveSourceReference(sourceField)
   if (isProductArchiveListPriceReference(sourceField) || isProductArchiveListPriceReference(fieldName)) {
     return productArchiveListPriceText(input.spu, sourceRows)
@@ -787,7 +928,6 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
 
   if (key === "上市时间" || key === "上市时间文本") return dateFromText(launchDateValue(sourceRows))
   if (key === "选择期数") return launchValue(sourceRows, "产品季") || stringValue(input.spu.season_name) || stringValue(input.spu.year)
-  if (key === "京东材质成分" || key === "材质多选" || key === "材质成分多选" || key === "面料俗称") return copywritingValue(sourceRows, "面料成分")
   if (key === "厚薄") return copywritingValue(sourceRows, "厚薄")
   if (key === "分类" || key === "类型") return "外套"
   if (key === "品牌单选") return stringValue(input.spu.brand_name) || "巴拉巴拉"
@@ -1115,6 +1255,35 @@ function appendSourceBatchId(snapshot: JsonRecord, sourceType: string, sourceBat
   return next
 }
 
+function appendSourceBatchIdToDraft(
+  db: SyncPostgresDatabase,
+  draftId: number,
+  sourceType: string,
+  sourceBatchId: number,
+) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const draft = draftById(db, draftId)
+    const currentSnapshot = recordValue(draft.source_snapshot_json)
+    const nextSnapshot = appendSourceBatchId(currentSnapshot, sourceType, sourceBatchId)
+    const result = db.prepare(`
+      update product_archive_draft
+      set source_snapshot_json = ?::jsonb,
+        updated_at = ?::timestamptz
+      where id = ?
+        and trade_id is not distinct from ?
+        and source_snapshot_json is not distinct from ?::jsonb
+    `).run(
+      jsonText(nextSnapshot),
+      nowIso(),
+      draftId,
+      draft.trade_id ?? null,
+      jsonText(currentSnapshot),
+    )
+    if (Number(result.changes ?? 0) > 0) return
+  }
+  throw new Error("草稿数据持续更新，来源批次刷新未完成，请稍后重试")
+}
+
 function sourceRowsForDraft(db: SyncPostgresDatabase, draft: JsonRecord) {
   const snapshot = recordValue(draft.source_snapshot_json)
   const batchIds = sourceBatchIdsFromSnapshot(snapshot)
@@ -1200,6 +1369,16 @@ const LAUNCH_PLAN_CATEGORY_REFERENCE_FIELDS = [
 
 const LAUNCH_PLAN_CATEGORY_FIELDS = LAUNCH_PLAN_CATEGORY_REFERENCE_FIELDS.flatMap((field) => field.aliases)
 
+function latestLaunchPlanCategoryRows(sourceRows: JsonRecord[]) {
+  const launchPlanRows = sourceRows.filter((row) => stringValue(row.source_type) === "launch_plan")
+  const batchIds = launchPlanRows
+    .map((row) => numberValue(row.source_batch_id ?? row.sourceBatchId))
+    .filter((value): value is number => value !== null && value > 0)
+  if (batchIds.length === 0) return launchPlanRows
+  const latestBatchId = Math.max(...batchIds)
+  return launchPlanRows.filter((row) => numberValue(row.source_batch_id ?? row.sourceBatchId) === latestBatchId)
+}
+
 function normalizeTradeText(value: unknown) {
   return stringValue(value)
     .replace(/[＞〉》]/g, ">")
@@ -1219,8 +1398,7 @@ function tradeLeaf(value: string) {
 function launchPlanCategoryValues(sourceRows: JsonRecord[]) {
   const values: Array<{ field: string; value: string }> = []
   const seen = new Set<string>()
-  for (const row of sourceRows) {
-    if (stringValue(row.source_type) !== "launch_plan") continue
+  for (const row of latestLaunchPlanCategoryRows(sourceRows)) {
     const rowJson = recordValue(row.row_json)
     for (const field of LAUNCH_PLAN_CATEGORY_FIELDS) {
       const value = stringValue(rowJson[field])
@@ -1235,10 +1413,10 @@ function launchPlanCategoryValues(sourceRows: JsonRecord[]) {
 
 export function buildLaunchPlanCategoryReference(sourceRows: JsonRecord[]) {
   const fields: Array<{ key: string; label: string; value: string }> = []
+  const launchPlanRows = latestLaunchPlanCategoryRows(sourceRows)
   for (const field of LAUNCH_PLAN_CATEGORY_REFERENCE_FIELDS) {
     const values: string[] = []
-    for (const row of sourceRows) {
-      if (stringValue(row.source_type) !== "launch_plan") continue
+    for (const row of launchPlanRows) {
       const rowJson = recordValue(row.row_json)
       for (const alias of field.aliases) {
         const value = stringValue(rowJson[alias])
@@ -1270,8 +1448,12 @@ function scoreTradeMatch(trade: JsonRecord, category: { field: string; value: st
   const candidateLeaf = tradeLeaf(candidatePath)
   if (!categoryText || (!candidatePathText && !candidateNameText)) return 0
   const fieldBoost = category.field.includes("官方") ? 400 : category.field.includes("唯品四级") ? 20 : 10
-  const pathBoost = /blbl&mini/i.test(candidatePath) ? 80 : candidatePathText.includes("童装服饰") ? 40 : 0
-  const boost = fieldBoost + pathBoost
+  const pathBoost = candidatePathText.includes("童装服饰") ? 40 : 0
+  const categoryContext = categoryText.split(">").slice(0, -1)
+  const contextBoost = uniqueTextValues(categoryContext)
+    .filter((segment) => segment.length >= 2 && candidatePathText.includes(segment))
+    .length * 30
+  const boost = fieldBoost + pathBoost + contextBoost
   if (candidatePathText === categoryText) return 1000 + boost
   if (candidateNameText === categoryText) return 850 + boost
   if (candidateNameText && candidateNameText === categoryLeaf) return 760 + boost
@@ -1282,49 +1464,384 @@ function scoreTradeMatch(trade: JsonRecord, category: { field: string; value: st
   return 0
 }
 
-export function chooseDeepdrawTradeFromLaunchPlanRows(sourceRows: JsonRecord[], trades: JsonRecord[]) {
+function isBrandPrivateDeepdrawTrade(trade: JsonRecord) {
+  const candidatePath = normalizeTradeText(stringValue(trade.trade_path) || stringValue(trade.trade_name)).toLowerCase()
+  return candidatePath === "blbl&mini" || candidatePath.startsWith("blbl&mini>")
+}
+
+function tradePlatformValues(trade: JsonRecord) {
+  const rawValue = trade.third_platforms ?? trade.thirdPlatforms
+  const values = Array.isArray(rawValue) ? rawValue : stringValue(rawValue).split(/[,，;；]/)
+  return new Set(values.map((value) => stringValue(value).toUpperCase()).filter(Boolean))
+}
+
+function hasTradePlatformMetadata(trade: JsonRecord) {
+  return Object.prototype.hasOwnProperty.call(trade, "third_platforms")
+    || Object.prototype.hasOwnProperty.call(trade, "thirdPlatforms")
+}
+
+function requiredLaunchPlanPlatformGroups(categories: Array<{ field: string; value: string }>) {
+  const groups: string[][] = []
+  if (categories.some((category) => category.field.includes("官方"))) {
+    groups.push(["ALIBABA"], ["PDD"], ["TAOBAO"], ["KUAISHOU"])
+  }
+  if (categories.some((category) => category.field.includes("唯品"))) groups.push(["VIP"])
+  if (categories.some((category) => category.field.includes("抖音"))) groups.push(["DOUYIN", "DOUYINXSG"])
+  return groups
+}
+
+function tradeCoversPlatformGroups(trade: JsonRecord, groups: string[][]) {
+  const platforms = tradePlatformValues(trade)
+  return groups.every((group) => group.some((platform) => platforms.has(platform)))
+}
+
+function tradePathDepth(trade: JsonRecord) {
+  return normalizeTradeText(stringValue(trade.trade_path) || stringValue(trade.trade_name)).split(">").filter(Boolean).length
+}
+
+function launchPlanCategorySourceConflict(sourceRows: JsonRecord[]) {
+  const launchPlanRows = latestLaunchPlanCategoryRows(sourceRows)
+  return LAUNCH_PLAN_CATEGORY_REFERENCE_FIELDS.some((field) => {
+    const values: string[] = []
+    for (const row of launchPlanRows) {
+      const rowJson = recordValue(row.row_json)
+      for (const alias of field.aliases) {
+        const value = stringValue(rowJson[alias])
+        if (value) values.push(value)
+      }
+    }
+    return uniqueTextValues(values).length > 1
+  })
+}
+
+function manualTradeSelectionDecision(input: {
+  reasonCode: Extract<TradeSelectionReasonCode,
+    | "missing_source_category"
+    | "missing_platform_coverage"
+    | "missing_semantic_match"
+    | "ambiguous_match">
+  reason: string
+  appliedTrade: TradeSelectionDecision["appliedTrade"]
+  requiredPlatforms: string[]
+  sourceConflict: boolean
+  evaluatedAt: string
+}): TradeSelectionDecision {
+  return {
+    status: "manual_selection_required",
+    confidence: "none",
+    reasonCode: input.reasonCode,
+    recommendedTrade: null,
+    appliedTrade: input.appliedTrade,
+    matchedField: null,
+    matchedValue: null,
+    requiredPlatforms: input.requiredPlatforms,
+    coveredPlatforms: [],
+    sourceConflict: input.sourceConflict,
+    reason: input.reason,
+    evaluatedAt: input.evaluatedAt,
+    confirmedAt: null,
+  }
+}
+
+export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
+  sourceRows: JsonRecord[],
+  trades: JsonRecord[],
+  input: {
+    appliedTrade?: TradeSelectionDecision["appliedTrade"]
+    evaluatedAt?: string
+    allowUnspecifiedPlatformMetadata?: boolean
+  } = {},
+): TradeSelectionDecision {
   const categories = launchPlanCategoryValues(sourceRows)
-  if (categories.length === 0 || trades.length === 0) return null
+  const evaluatedAt = input.evaluatedAt ?? nowIso()
+  const appliedTrade = input.appliedTrade ?? null
+  const sourceConflict = launchPlanCategorySourceConflict(sourceRows)
+  const platformGroups = requiredLaunchPlanPlatformGroups(categories)
+  const requiredPlatforms = platformGroups.map((group) => group.join("|"))
+  if (categories.length === 0) {
+    return manualTradeSelectionDecision({
+      reasonCode: "missing_source_category",
+      reason: "上市计划表未提供官方、唯品或抖音类目，需要人工选择深绘类目。",
+      appliedTrade,
+      requiredPlatforms,
+      sourceConflict,
+      evaluatedAt,
+    })
+  }
+  const selectableTrades = trades.filter((trade) => !isBrandPrivateDeepdrawTrade(trade))
+  const hasPlatformMetadata = selectableTrades.some(hasTradePlatformMetadata)
+  const allowUnspecifiedPlatformMetadata = input.allowUnspecifiedPlatformMetadata === true && !hasPlatformMetadata
+  const eligibleTrades = allowUnspecifiedPlatformMetadata
+    ? selectableTrades
+    : hasPlatformMetadata
+    ? selectableTrades.filter((trade) => hasTradePlatformMetadata(trade) && tradeCoversPlatformGroups(trade, platformGroups))
+    : []
+  if (eligibleTrades.length === 0) {
+    return manualTradeSelectionDecision({
+      reasonCode: "missing_platform_coverage",
+      reason: "没有深绘类目同时覆盖上市计划表涉及的平台，需要人工选择深绘类目。",
+      appliedTrade,
+      requiredPlatforms,
+      sourceConflict,
+      evaluatedAt,
+    })
+  }
   let best: {
     trade: JsonRecord
     category: { field: string; value: string }
     score: number
+    matchScore: number
+    pathDepth: number
   } | null = null
   let tied = false
-  for (const trade of trades) {
+  for (const trade of eligibleTrades) {
+    let score = 0
+    let matchScore = 0
+    let matchedCategory: { field: string; value: string } | null = null
     for (const category of categories) {
-      const score = scoreTradeMatch(trade, category)
-      if (score <= 0) continue
-      if (!best || score > best.score) {
-        best = { trade, category, score }
-        tied = false
-      } else if (score === best.score) {
-        tied = true
+      const categoryScore = scoreTradeMatch(trade, category)
+      if (categoryScore <= 0) continue
+      score += categoryScore
+      if (categoryScore > matchScore) {
+        matchScore = categoryScore
+        matchedCategory = category
       }
     }
+    if (!matchedCategory) continue
+    const pathDepth = tradePathDepth(trade)
+    if (!best || score > best.score || (score === best.score && pathDepth < best.pathDepth)) {
+      best = { trade, category: matchedCategory, score, matchScore, pathDepth }
+      tied = false
+    } else if (score === best.score && pathDepth === best.pathDepth) {
+      tied = true
+    }
   }
-  if (!best || tied) return null
+  if (!best) {
+    return manualTradeSelectionDecision({
+      reasonCode: "missing_semantic_match",
+      reason: "覆盖所需平台的深绘类目中没有找到语义匹配，需要人工选择深绘类目。",
+      appliedTrade,
+      requiredPlatforms,
+      sourceConflict,
+      evaluatedAt,
+    })
+  }
+  if (tied) {
+    return manualTradeSelectionDecision({
+      reasonCode: "ambiguous_match",
+      reason: "存在多个同分且同层级的深绘类目，无法自动确定，需要人工选择。",
+      appliedTrade,
+      requiredPlatforms,
+      sourceConflict,
+      evaluatedAt,
+    })
+  }
+  const confidence = best.matchScore >= 1200 ? "high" : "medium"
+  const status = confidence === "high" && !sourceConflict ? "auto_applied" : "pending_confirmation"
+  const reasonCode = sourceConflict
+    ? "source_category_conflict"
+    : confidence === "high"
+      ? "unique_high_confidence"
+      : "medium_confidence"
+  const reason = sourceConflict
+    ? "同一平台来源类目存在多个不同值，已自动应用最优推荐，需要人工确认。"
+    : confidence === "high"
+      ? `已根据${best.category.field}唯一匹配并自动应用深绘类目，置信度高。`
+      : "已自动应用推荐类目，但当前为中置信度，需要人工确认。"
   return {
-    tradeId: stringValue(best.trade.trade_id),
-    tradePath: stringValue(best.trade.trade_path) || stringValue(best.trade.trade_name),
-    confidence: best.score >= 1000 ? "high" : "medium",
+    status,
+    confidence,
+    reasonCode,
+    recommendedTrade: {
+      tradeId: stringValue(best.trade.trade_id),
+      tradePath: stringValue(best.trade.trade_path) || stringValue(best.trade.trade_name),
+    },
+    appliedTrade,
     matchedField: best.category.field,
     matchedValue: best.category.value,
+    requiredPlatforms,
+    coveredPlatforms: Array.from(tradePlatformValues(best.trade)).sort(),
+    sourceConflict,
+    reason,
+    evaluatedAt,
+    confirmedAt: null,
   }
 }
 
-function inferDeepdrawTradeFromLaunchPlan(db: SyncPostgresDatabase, input: {
+export function chooseDeepdrawTradeFromLaunchPlanRows(sourceRows: JsonRecord[], trades: JsonRecord[]) {
+  const decision = evaluateDeepdrawTradeSelectionFromLaunchPlanRows(sourceRows, trades, {
+    allowUnspecifiedPlatformMetadata: true,
+  })
+  if (!decision.recommendedTrade) return null
+  return {
+    ...decision.recommendedTrade,
+    confidence: decision.confidence,
+    matchedField: decision.matchedField,
+    matchedValue: decision.matchedValue,
+  }
+}
+
+export function applyHumanTradeSelectionDecision(
+  decision: TradeSelectionDecision,
+  appliedTrade: NonNullable<TradeSelectionDecision["appliedTrade"]>,
+  confirmedAt = nowIso(),
+): TradeSelectionDecision {
+  const confirmed = decision.recommendedTrade?.tradeId === appliedTrade.tradeId
+  return {
+    ...decision,
+    status: confirmed ? "human_confirmed" : "human_adjusted",
+    reasonCode: confirmed ? "human_confirmed" : "human_adjusted",
+    appliedTrade,
+    reason: confirmed
+      ? "人工已确认系统推荐的深绘类目。"
+      : decision.recommendedTrade
+        ? "人工已选择不同于系统推荐的深绘类目，后续来源刷新不会覆盖当前人工类目。"
+        : "系统未生成唯一推荐，当前深绘类目由人工选择。",
+    confirmedAt,
+  }
+}
+
+export function mergeTradeSelectionHumanState(
+  evaluated: TradeSelectionDecision,
+  persistedValue: unknown,
+): TradeSelectionDecision {
+  const persisted = recordValue(persistedValue)
+  const persistedStatus = stringValue(persisted.status)
+  const confirmedAt = stringValue(persisted.confirmedAt) || null
+  if (persistedStatus === "human_adjusted") {
+    return {
+      ...evaluated,
+      status: "human_adjusted",
+      reasonCode: "human_adjusted",
+      reason: evaluated.recommendedTrade
+        ? "人工已选择不同于系统推荐的深绘类目，后续来源刷新不会覆盖当前人工类目。"
+        : "系统未生成唯一推荐，当前深绘类目由人工选择。",
+      confirmedAt,
+    }
+  }
+  if (persistedStatus !== "human_confirmed") return evaluated
+  const persistedRecommended = recordValue(persisted.recommendedTrade)
+  const persistedRecommendedId = stringValue(persistedRecommended.tradeId)
+  const currentRecommendedId = evaluated.recommendedTrade?.tradeId ?? ""
+  const currentAppliedId = evaluated.appliedTrade?.tradeId ?? ""
+  if (!persistedRecommendedId || persistedRecommendedId !== currentRecommendedId || currentAppliedId !== currentRecommendedId) {
+    return evaluated
+  }
+  return {
+    ...evaluated,
+    status: "human_confirmed",
+    reasonCode: "human_confirmed",
+    reason: "人工已确认系统推荐的深绘类目。",
+    confirmedAt,
+  }
+}
+
+export function listDeepdrawTradeSelectionCandidates(
+  db: SyncPostgresDatabase,
+  tenantName: string,
+  merchantId: string,
+) {
+  return db.prepare(`
+    select
+      trade.trade_id,
+      trade.trade_name,
+      trade.trade_path,
+      coalesce((
+        select string_agg(distinct field.raw_payload_json #>> '{attributes,thirdPlatform}', ',')
+        from deepdraw_trade_field_cache field
+        where field.tenant_name = trade.tenant_name
+          and field.merchant_id = trade.merchant_id
+          and field.trade_id = trade.trade_id
+          and coalesce(field.raw_payload_json #>> '{attributes,thirdPlatform}', '') <> ''
+      ), '') as third_platforms
+    from deepdraw_trade_cache trade
+    where trade.tenant_name = ?
+      and trade.merchant_id = ?
+  `).all(tenantName, merchantId) as JsonRecord[]
+}
+
+function inferDeepdrawTradeSelectionFromLaunchPlan(db: SyncPostgresDatabase, input: {
   tenantName: string
   merchantId: string
   sourceRows: JsonRecord[]
+  appliedTrade?: TradeSelectionDecision["appliedTrade"]
+  evaluatedAt?: string
+  tradeCandidates?: JsonRecord[]
 }) {
-  const trades = db.prepare(`
-    select trade_id, trade_name, trade_path
-    from deepdraw_trade_cache
-    where tenant_name = ?
-      and merchant_id = ?
-  `).all(input.tenantName, input.merchantId) as JsonRecord[]
-  return chooseDeepdrawTradeFromLaunchPlanRows(input.sourceRows, trades)
+  const trades = input.tradeCandidates ?? listDeepdrawTradeSelectionCandidates(
+    db,
+    input.tenantName,
+    input.merchantId,
+  )
+  return evaluateDeepdrawTradeSelectionFromLaunchPlanRows(input.sourceRows, trades, {
+    appliedTrade: input.appliedTrade,
+    evaluatedAt: input.evaluatedAt,
+  })
+}
+
+function appliedTradeForDraft(draft: JsonRecord): TradeSelectionDecision["appliedTrade"] {
+  const tradeId = stringValue(draft.trade_id)
+  if (!tradeId) return null
+  return {
+    tradeId,
+    tradePath: stringValue(draft.trade_path) || tradeId,
+  }
+}
+
+function currentTradeSelectionDecision(db: SyncPostgresDatabase, draft: JsonRecord) {
+  const tenantName = stringValue(draft.tenant_name)
+  const merchantId = stringValue(draft.merchant_id)
+  const evaluated = inferDeepdrawTradeSelectionFromLaunchPlan(db, {
+    tenantName,
+    merchantId,
+    sourceRows: referenceSourceRowsForDraft(db, draft),
+    appliedTrade: appliedTradeForDraft(draft),
+  })
+  return mergeTradeSelectionHumanState(
+    evaluated,
+    recordValue(draft.source_snapshot_json).tradeSelection,
+  )
+}
+
+function persistTradeSelectionDecision(
+  db: SyncPostgresDatabase,
+  draftId: number,
+  snapshotValue: unknown,
+  decision: TradeSelectionDecision,
+  updatedAt = nowIso(),
+  expected?: { tradeId: unknown; snapshotValue: unknown },
+) {
+  const snapshot = {
+    ...recordValue(snapshotValue),
+    tradeSelection: decision,
+  }
+  const result = expected
+    ? db.prepare(`
+        update product_archive_draft
+        set source_snapshot_json = ?::jsonb,
+          updated_at = ?::timestamptz
+        where id = ?
+          and trade_id is not distinct from ?
+          and source_snapshot_json is not distinct from ?::jsonb
+      `).run(
+        jsonText(snapshot),
+        updatedAt,
+        draftId,
+        expected.tradeId ?? null,
+        jsonText(recordValue(expected.snapshotValue)),
+      )
+    : db.prepare(`
+    update product_archive_draft
+    set source_snapshot_json = ?::jsonb,
+      updated_at = ?::timestamptz
+    where id = ?
+  `).run(jsonText(snapshot), updatedAt, draftId)
+  return { snapshot, changes: Number(result.changes ?? 0) }
+}
+
+function hasHumanTradeSelection(snapshotValue: unknown) {
+  const status = stringValue(recordValue(recordValue(snapshotValue).tradeSelection).status)
+  return status === "human_adjusted" || status === "human_confirmed"
 }
 
 function chooseTitle(spu: JsonRecord, sourceRows: JsonRecord[] = []) {
@@ -1535,6 +2052,49 @@ function multiAgeOptionValue(text: string, options: unknown[]) {
   return values.length ? values.join(";") : singleAgeOptionValue(text, options)
 }
 
+function normalizeMaterialOptionValue(value: unknown, options: unknown[]) {
+  const text = normalizeMaterialName(value)
+  if (!text) return ""
+  if (!options.length) return text
+  if (text === "聚酯纤维") {
+    return pickOption(options, [
+      (option) => option === "聚酯纤维",
+      (option) => option === "聚酯纤维（涤纶）",
+      (option) => option === "涤纶(聚酯纤维)",
+      (option) => option.includes("聚酯纤维") || option.includes("涤纶"),
+    ]) || text
+  }
+  if (text === "棉") {
+    return pickOption(options, [
+      (option) => option === "棉",
+      (option) => option === "纯棉",
+      (option) => option === "纯棉(棉含量100%)",
+      (option) => option.includes("棉"),
+    ]) || text
+  }
+  return pickOption(options, [
+    (option) => option === text,
+    (option) => option.includes(text) || text.includes(option),
+  ]) || text
+}
+
+function normalizeMaterialCompositionValue(value: unknown, options: unknown[]) {
+  const values = semicolonTextValues(value).map((item) => {
+    const [rawName, ...rawPercent] = item.split(/[,，]/).map((part) => part.trim())
+    const name = normalizeMaterialOptionValue(rawName, options)
+    const percent = rawPercent.join(",").replace(/%$/, "").trim()
+    return name && percent ? `${name},${percent}` : ""
+  }).filter(Boolean)
+  return values.length ? values.join(";") : stringValue(value)
+}
+
+function normalizeMaterialMultiChoiceValue(value: unknown, options: unknown[]) {
+  const values = semicolonTextValues(value)
+    .map((item) => normalizeMaterialOptionValue(item.split(/[,，]/)[0], options))
+    .filter(Boolean)
+  return values.length ? uniqueTextValues(values).join(";") : stringValue(value)
+}
+
 export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, value: unknown, options: unknown[]) {
   const text = stringValue(value)
   const key = compactFieldKey(fieldName)
@@ -1542,6 +2102,10 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
   if (!text || !options.length) return text
   const exact = pickOption(options, [(option) => option === text])
   if (exact) return exact
+  if (key === "材质成分" || key === "京东材质成分") return normalizeMaterialCompositionValue(text, options)
+  if (key === "面料多选" || key === "材质多选" || key === "材质成分多选") {
+    return normalizeMaterialMultiChoiceValue(text, options)
+  }
   if (key.includes("颜色")) {
     const values = text.split(/[;；]/).map((part) => part.trim()).filter(Boolean)
     const normalized = values.map((item) => {
@@ -2027,13 +2591,17 @@ export function fieldMappingDomainApplies(rule: JsonRecord, spu: JsonRecord = {}
   return mdmText.includes(target)
 }
 
+export function resolveProductArchiveDraftSpu(db: SyncPostgresDatabase, draft: JsonRecord) {
+  const liveSpu = db.prepare("select * from product_spu where spu_code = ?").get(draft.spu_code) as JsonRecord | undefined
+  if (liveSpu) return liveSpu
+  const snapshotSpu = recordValue(recordValue(draft.source_snapshot_json).spu)
+  if (Object.keys(snapshotSpu).length > 0) return snapshotSpu
+  throw new Error(`MDM 款号不存在：${draft.spu_code}`)
+}
+
 export function fieldMappingRulesForDraft(db: SyncPostgresDatabase, draft: JsonRecord) {
   try {
-    const spu = db.prepare(`
-      select product_line_name, product_type_name, middle_class_name, subclass_name, age_group_name, spu_name
-      from product_spu
-      where spu_code = ?
-    `).get(draft.spu_code) as JsonRecord | undefined
+    const spu = resolveProductArchiveDraftSpu(db, draft)
     const tenantRules = db.prepare(`
       select
         id,
@@ -2067,8 +2635,7 @@ export function fieldMappingRulesForDraft(db: SyncPostgresDatabase, draft: JsonR
 }
 
 function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeFields: JsonRecord[], existingFields: JsonRecord[] = []) {
-  const spu = db.prepare("select * from product_spu where spu_code = ?").get(draft.spu_code) as JsonRecord | undefined
-  if (!spu) throw new Error(`MDM 款号不存在：${draft.spu_code}`)
+  const spu = resolveProductArchiveDraftSpu(db, draft)
   const rules = fieldMappingRulesForDraft(db, draft)
   const sourceRows = sourceRowsForDraft(db, draft)
   const sizeChartMappings = sizeChartMappingsForDraft(db, draft)
@@ -2206,6 +2773,7 @@ function serializeDraftDetail(db: SyncPostgresDatabase, draftId: number) {
   }))
   return {
     draft,
+    tradeSelectionDecision: currentTradeSelectionDecision(db, draft),
     launchPlanReference: buildLaunchPlanCategoryReference(sourceRows),
     sizeChartMappings,
     sizeChartSourceRows,
@@ -2391,6 +2959,79 @@ export function importProductArchiveSourceRows(db: SyncPostgresDatabase, input: 
   }
 }
 
+export function refreshDraftTradeSelectionFromLaunchPlan(
+  db: SyncPostgresDatabase,
+  draftId: number,
+  options: { attempt?: number; tradeCandidates?: JsonRecord[] } = {},
+) {
+  const attempt = options.attempt ?? 0
+  const draft = draftById(db, draftId)
+  const tenantName = stringValue(draft.tenant_name)
+  const merchantId = stringValue(draft.merchant_id)
+  const evaluated = inferDeepdrawTradeSelectionFromLaunchPlan(db, {
+    tenantName,
+    merchantId,
+    sourceRows: referenceSourceRowsForDraft(db, draft),
+    appliedTrade: appliedTradeForDraft(draft),
+    tradeCandidates: options.tradeCandidates,
+  })
+  const merged = mergeTradeSelectionHumanState(
+    evaluated,
+    recordValue(draft.source_snapshot_json).tradeSelection,
+  )
+  if (merged.status === "human_adjusted" || merged.status === "human_confirmed") {
+    const persisted = persistTradeSelectionDecision(
+      db,
+      draftId,
+      draft.source_snapshot_json,
+      merged,
+      nowIso(),
+      { tradeId: draft.trade_id, snapshotValue: draft.source_snapshot_json },
+    )
+    if (persisted.changes === 0) {
+      if (attempt >= 2) throw new Error("草稿数据持续更新，类目推荐刷新未完成，请稍后重试")
+      return refreshDraftTradeSelectionFromLaunchPlan(db, draftId, { ...options, attempt: attempt + 1 })
+    }
+    if (stringValue(draft.trade_id)) rebuildProductArchiveDraftFields(db, draftId)
+    validateProductArchiveDraft(db, draftId)
+    return {
+      autoApplied: false,
+      noMatch: !evaluated.recommendedTrade,
+      refreshed: Boolean(stringValue(draft.trade_id)),
+    }
+  }
+  if (evaluated.recommendedTrade) {
+    const result = applyProductArchiveDraftTrade(db, draftId, {
+      tradeId: evaluated.recommendedTrade.tradeId,
+      tradePath: evaluated.recommendedTrade.tradePath,
+    }, { automaticDecision: evaluated })
+    return {
+      autoApplied: result.tradeSelectionAutoApplied !== false,
+      noMatch: false,
+      refreshed: true,
+    }
+  }
+  const persisted = persistTradeSelectionDecision(
+    db,
+    draftId,
+    draft.source_snapshot_json,
+    evaluated,
+    nowIso(),
+    { tradeId: draft.trade_id, snapshotValue: draft.source_snapshot_json },
+  )
+  if (persisted.changes === 0) {
+    if (attempt >= 2) throw new Error("草稿数据持续更新，类目推荐刷新未完成，请稍后重试")
+    return refreshDraftTradeSelectionFromLaunchPlan(db, draftId, { ...options, attempt: attempt + 1 })
+  }
+  if (stringValue(draft.trade_id)) rebuildProductArchiveDraftFields(db, draftId)
+  validateProductArchiveDraft(db, draftId)
+  return {
+    autoApplied: false,
+    noMatch: true,
+    refreshed: Boolean(stringValue(draft.trade_id)),
+  }
+}
+
 export function refreshProductArchiveDraftsFromSourceBatch(db: SyncPostgresDatabase, input: RefreshSourceBatchInput) {
   const sourceType = sourceImportType(input.sourceType)
   if (!["launch_plan", "copywriting", "size_chart"].includes(sourceType)) {
@@ -2419,33 +3060,13 @@ export function refreshProductArchiveDraftsFromSourceBatch(db: SyncPostgresDatab
     const draftId = numberValue(draft.id)
     if (draftId === null) continue
     try {
-      const snapshot = appendSourceBatchId(recordValue(draft.source_snapshot_json), sourceType, sourceBatchId)
-      db.prepare(`
-        update product_archive_draft
-        set source_snapshot_json = ?::jsonb,
-          updated_at = ?::timestamptz
-        where id = ?
-      `).run(jsonText(snapshot), nowIso(), draftId)
+      appendSourceBatchIdToDraft(db, draftId, sourceType, sourceBatchId)
 
-      if (sourceType === "launch_plan" && !stringValue(draft.trade_id)) {
-        const sourceRows = sourceRowsForSpu(db, stringValue(draft.spu_code), sourceBatchId)
-        const draftMerchantId = stringValue(draft.merchant_id)
-        const autoMatchedTrade = inferDeepdrawTradeFromLaunchPlan(db, {
-          tenantName: stringValue(draft.tenant_name),
-          merchantId: draftMerchantId,
-          sourceRows,
-        })
-        if (autoMatchedTrade?.tradeId) {
-          applyProductArchiveDraftTrade(db, draftId, {
-            tradeId: autoMatchedTrade.tradeId,
-            tradePath: autoMatchedTrade.tradePath,
-          })
-          autoAppliedTradeCount += 1
-          refreshedDraftCount += 1
-        } else {
-          validateProductArchiveDraft(db, draftId)
-          skippedNoTradeMatchCount += 1
-        }
+      if (sourceType === "launch_plan") {
+        const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
+        if (tradeRefresh.autoApplied) autoAppliedTradeCount += 1
+        if (tradeRefresh.noMatch) skippedNoTradeMatchCount += 1
+        if (tradeRefresh.refreshed) refreshedDraftCount += 1
       } else if (stringValue(draft.trade_id)) {
         rebuildProductArchiveDraftFields(db, draftId)
         validateProductArchiveDraft(db, draftId)
@@ -2507,33 +3128,13 @@ export async function refreshProductArchiveDraftsFromSourceBatchInChunks(
       const draftId = numberValue(draft.id)
       if (draftId === null) continue
       try {
-        const snapshot = appendSourceBatchId(recordValue(draft.source_snapshot_json), sourceType, sourceBatchId)
-        db.prepare(`
-          update product_archive_draft
-          set source_snapshot_json = ?::jsonb,
-            updated_at = ?::timestamptz
-          where id = ?
-        `).run(jsonText(snapshot), nowIso(), draftId)
+        appendSourceBatchIdToDraft(db, draftId, sourceType, sourceBatchId)
 
-        if (sourceType === "launch_plan" && !stringValue(draft.trade_id)) {
-          const sourceRows = sourceRowsForSpu(db, stringValue(draft.spu_code), sourceBatchId)
-          const draftMerchantId = stringValue(draft.merchant_id)
-          const autoMatchedTrade = inferDeepdrawTradeFromLaunchPlan(db, {
-            tenantName: stringValue(draft.tenant_name),
-            merchantId: draftMerchantId,
-            sourceRows,
-          })
-          if (autoMatchedTrade?.tradeId) {
-            applyProductArchiveDraftTrade(db, draftId, {
-              tradeId: autoMatchedTrade.tradeId,
-              tradePath: autoMatchedTrade.tradePath,
-            })
-            autoAppliedTradeCount += 1
-            refreshedDraftCount += 1
-          } else {
-            validateProductArchiveDraft(db, draftId)
-            skippedNoTradeMatchCount += 1
-          }
+        if (sourceType === "launch_plan") {
+          const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
+          if (tradeRefresh.autoApplied) autoAppliedTradeCount += 1
+          if (tradeRefresh.noMatch) skippedNoTradeMatchCount += 1
+          if (tradeRefresh.refreshed) refreshedDraftCount += 1
         } else if (stringValue(draft.trade_id)) {
           rebuildProductArchiveDraftFields(db, draftId)
           validateProductArchiveDraft(db, draftId)
@@ -2605,23 +3206,45 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
   const sourceRows = sourceBatchIdValues.length > 0
     ? sourceRowsForSpuBatchIds(db, input.spuCode, sourceBatchIdValues)
     : sourceRowsForSpu(db, input.spuCode, input.sourceBatchId)
-  const autoMatchedTrade = input.tradeId
-    ? null
-    : inferDeepdrawTradeFromLaunchPlan(db, { tenantName, merchantId, sourceRows })
-  const draftTradeId = input.tradeId ?? autoMatchedTrade?.tradeId ?? null
-  const draftTradePath = input.tradePath ?? autoMatchedTrade?.tradePath ?? null
+  const now = nowIso()
+  const evaluatedTradeSelection = inferDeepdrawTradeSelectionFromLaunchPlan(db, {
+    tenantName,
+    merchantId,
+    sourceRows,
+    evaluatedAt: now,
+  })
+  const selectedTrade = input.tradeId
+    ? {
+        tradeId: input.tradeId,
+        tradePath: input.tradePath ?? input.tradeId,
+      }
+    : evaluatedTradeSelection.recommendedTrade
+  const tradeSelection = selectedTrade
+    ? input.tradeId
+      ? applyHumanTradeSelectionDecision(evaluatedTradeSelection, selectedTrade, now)
+      : { ...evaluatedTradeSelection, appliedTrade: selectedTrade }
+    : evaluatedTradeSelection
+  const draftTradeId = selectedTrade?.tradeId ?? null
+  const draftTradePath = selectedTrade?.tradePath ?? null
   const tradeFields = draftTradeId
     ? tradeFieldsForDraft(db, { tenant_name: tenantName, merchant_id: merchantId, trade_id: draftTradeId }, draftTradeId)
     : []
 
-  const now = nowIso()
   const sourceBatchId = numberValue(input.sourceBatchId) ?? sourceBatchIds.launch_plan?.[0] ?? null
   const sourceSnapshot = {
     spu,
     sourceRows,
     sourceBatchId: sourceBatchId ?? null,
     sourceBatchIds,
-    autoMatchedTrade,
+    autoMatchedTrade: evaluatedTradeSelection.recommendedTrade
+      ? {
+          ...evaluatedTradeSelection.recommendedTrade,
+          confidence: evaluatedTradeSelection.confidence,
+          matchedField: evaluatedTradeSelection.matchedField,
+          matchedValue: evaluatedTradeSelection.matchedValue,
+        }
+      : null,
+    tradeSelection,
   }
   const result = db.transaction(() => {
     const inserted = db.prepare(`
@@ -2738,10 +3361,21 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
   return serializeDraftDetail(db, result)
 }
 
-export function applyProductArchiveDraftTrade(db: SyncPostgresDatabase, draftId: number, input: ApplyTradeInput) {
+export function applyProductArchiveDraftTrade(
+  db: SyncPostgresDatabase,
+  draftId: number,
+  input: ApplyTradeInput,
+  options: { automaticDecision?: TradeSelectionDecision } = {},
+) {
   const draft = draftById(db, draftId)
   const tradeId = stringValue(input.tradeId)
   if (!tradeId) throw new Error("请选择深绘类目")
+  if (options.automaticDecision && hasHumanTradeSelection(draft.source_snapshot_json)) {
+    return {
+      ...validateProductArchiveDraft(db, draftId),
+      tradeSelectionAutoApplied: false,
+    }
+  }
   const trade = db.prepare(`
     select *
     from deepdraw_trade_cache
@@ -2753,20 +3387,84 @@ export function applyProductArchiveDraftTrade(db: SyncPostgresDatabase, draftId:
   if (!trade) throw new Error("本地未找到该深绘类目，请先同步类目主数据")
 
   const now = nowIso()
-  db.prepare(`
+  const tradePath = stringValue(input.tradePath) || stringValue(trade.trade_path) || stringValue(trade.trade_name) || tradeId
+  const appliedTrade = { tradeId, tradePath }
+  const decision = options.automaticDecision
+    ? { ...options.automaticDecision, appliedTrade }
+    : applyHumanTradeSelectionDecision(
+        currentTradeSelectionDecision(db, { ...draft, trade_id: tradeId, trade_path: tradePath }),
+        appliedTrade,
+        now,
+      )
+  const snapshot = {
+    ...recordValue(draft.source_snapshot_json),
+    tradeSelection: decision,
+  }
+  const updateResult = db.prepare(`
     update product_archive_draft
     set trade_id = ?,
       trade_path = ?,
+      source_snapshot_json = ?::jsonb,
       updated_at = ?::timestamptz
     where id = ?
+      and trade_id is not distinct from ?
+      and source_snapshot_json is not distinct from ?::jsonb
   `).run(
     tradeId,
-    stringValue(input.tradePath) || stringValue(trade.trade_path) || stringValue(trade.trade_name) || tradeId,
+    tradePath,
+    jsonText(snapshot),
     now,
     draftId,
+    draft.trade_id ?? null,
+    jsonText(recordValue(draft.source_snapshot_json)),
   )
+  if (Number(updateResult.changes ?? 0) === 0) {
+    const currentDraft = draftById(db, draftId)
+    if (options.automaticDecision && hasHumanTradeSelection(currentDraft.source_snapshot_json)) {
+      return {
+        ...validateProductArchiveDraft(db, draftId),
+        tradeSelectionAutoApplied: false,
+      }
+    }
+    throw new Error("草稿数据已更新，请刷新后重试")
+  }
   rebuildProductArchiveDraftFields(db, draftId)
-  return validateProductArchiveDraft(db, draftId)
+  const result = validateProductArchiveDraft(db, draftId)
+  return options.automaticDecision
+    ? { ...result, tradeSelectionAutoApplied: true }
+    : result
+}
+
+export function confirmProductArchiveDraftRecommendedTrade(
+  db: SyncPostgresDatabase,
+  draftId: number,
+  input: ConfirmTradeInput = {},
+) {
+  const draft = draftById(db, draftId)
+  const decision = currentTradeSelectionDecision(db, draft)
+  const recommendedTradeId = decision.recommendedTrade?.tradeId ?? ""
+  const expectedTradeId = stringValue(input.recommendedTradeId)
+  if (!recommendedTradeId || !expectedTradeId || expectedTradeId !== recommendedTradeId) {
+    throw new Error("推荐结果已更新，请刷新后重新确认")
+  }
+  const appliedTrade = appliedTradeForDraft(draft)
+  if (!appliedTrade || appliedTrade.tradeId !== recommendedTradeId) {
+    throw new Error("推荐结果已更新，请刷新后重新确认")
+  }
+  const confirmedAt = nowIso()
+  const confirmed = applyHumanTradeSelectionDecision(decision, appliedTrade, confirmedAt)
+  const persisted = persistTradeSelectionDecision(
+    db,
+    draftId,
+    draft.source_snapshot_json,
+    confirmed,
+    confirmedAt,
+    { tradeId: draft.trade_id, snapshotValue: draft.source_snapshot_json },
+  )
+  if (persisted.changes === 0) {
+    throw new Error("推荐结果已更新，请刷新后重新确认")
+  }
+  return serializeDraftDetail(db, draftId)
 }
 
 export function patchProductArchiveDraftFields(db: SyncPostgresDatabase, draftId: number, input: PatchFieldInput) {

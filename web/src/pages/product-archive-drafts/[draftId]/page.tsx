@@ -107,6 +107,7 @@ interface DraftLog {
 
 interface DraftDetail {
   draft: Draft
+  tradeSelectionDecision: TradeSelectionDecision
   launchPlanReference?: LaunchPlanReference
   sizeChartMappings?: SizeChartMapping[]
   sizeChartSourceRows?: SizeChartSourceRow[]
@@ -114,6 +115,22 @@ interface DraftDetail {
   skus: DraftSku[]
   issues: DraftIssue[]
   logs: DraftLog[]
+}
+
+interface TradeSelectionDecision {
+  status: "auto_applied" | "pending_confirmation" | "manual_selection_required" | "human_confirmed" | "human_adjusted"
+  confidence: "high" | "medium" | "none"
+  reasonCode: "unique_high_confidence" | "medium_confidence" | "source_category_conflict" | "missing_source_category" | "missing_platform_coverage" | "missing_semantic_match" | "ambiguous_match" | "human_confirmed" | "human_adjusted"
+  recommendedTrade: { tradeId: string; tradePath: string } | null
+  appliedTrade: { tradeId: string; tradePath: string } | null
+  matchedField: string | null
+  matchedValue: string | null
+  requiredPlatforms: string[]
+  coveredPlatforms: string[]
+  sourceConflict: boolean
+  reason: string
+  evaluatedAt: string
+  confirmedAt: string | null
 }
 
 interface LaunchPlanReferenceField {
@@ -206,6 +223,29 @@ function statusClass(status: string) {
   if (["missing_fields", "manual_review", "readback_mismatch"].includes(status)) return "border-[#f4ddb3] bg-[#fff8e8] text-[#c37d0d]"
   if (["failed", "duplicate_found"].includes(status)) return "border-[#f1cccc] bg-[#fff1f1] text-[#d45656]"
   return "border-[#d7e5fb] bg-[#eef5ff] text-[#3772cf]"
+}
+
+function tradeSelectionTitle(status: TradeSelectionDecision["status"]) {
+  if (status === "auto_applied") return "已自动应用推荐类目"
+  if (status === "pending_confirmation") return "已自动应用，待人工确认"
+  if (status === "manual_selection_required") return "需要人工选择"
+  if (status === "human_confirmed") return "人工已确认"
+  return "人工已调整"
+}
+
+function tradeSelectionConfidenceLabel(confidence: TradeSelectionDecision["confidence"]) {
+  if (confidence === "high") return "高置信度"
+  if (confidence === "medium") return "中置信度"
+  return "无自动匹配置信度"
+}
+
+function tradeSelectionClass(status: TradeSelectionDecision["status"]) {
+  if (status === "auto_applied" || status === "human_confirmed") {
+    return "border-[#b9f4d8] bg-[#f2fcf7]"
+  }
+  if (status === "pending_confirmation") return "border-[#f4ddb3] bg-[#fffaf0]"
+  if (status === "manual_selection_required") return "border-[#f1cccc] bg-[#fff6f6]"
+  return "border-[#d7e5fb] bg-[#f4f8ff]"
 }
 
 function parseOptionList(value: unknown): unknown[] {
@@ -400,6 +440,7 @@ export default function ProductArchiveDraftDetailPage() {
 
   const draft = detail.data?.draft
   const summary = draft?.validation_summary_json ?? {}
+  const tradeSelectionDecision = detail.data?.tradeSelectionDecision
   const launchPlanReference = detail.data?.launchPlanReference ?? { matched: false, fields: [] }
   const trades = useQuery<TradeListResponse>({
     queryKey: ["deepdraw-metadata-trades", draft?.tenant_name, debouncedTradeSearch],
@@ -550,6 +591,19 @@ export default function ProductArchiveDraftDetailPage() {
     },
   })
 
+  const confirmRecommendedTrade = useMutation({
+    mutationFn: () => api.patch<DraftDetail>(`/product-archive-drafts/${draftId}/trade/confirm`, {
+      recommendedTradeId: tradeSelectionDecision?.recommendedTrade?.tradeId,
+    }),
+    onSuccess: (result) => {
+      queryClient.setQueryData(["product-archive-drafts", draftId], result)
+      toast.success("推荐类目已确认")
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "确认推荐类目失败")
+    },
+  })
+
   const validate = useMutation({
     mutationFn: async () => {
       if (changedFields.length > 0) {
@@ -690,13 +744,29 @@ export default function ProductArchiveDraftDetailPage() {
               选择深绘类目
             </Button>
           </DialogTrigger>
-          <DialogContent className="grid max-h-[82vh] grid-rows-[auto_auto_auto_minmax(0,1fr)_auto] sm:max-w-3xl">
+          <DialogContent className="grid max-h-[82vh] grid-rows-[auto_auto_auto_auto_minmax(0,1fr)_auto] sm:max-w-3xl">
             <DialogHeader>
               <DialogTitle>选择深绘类目</DialogTitle>
               <DialogDescription>
                 从已同步的深绘类目主数据中选择模板，应用后会按类目字段重新生成草稿字段。
               </DialogDescription>
             </DialogHeader>
+            {tradeSelectionDecision ? (
+              <div className={cn("rounded-lg border p-3", tradeSelectionClass(tradeSelectionDecision.status))}>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs text-muted-foreground">系统选择结论</div>
+                    <div className="mt-0.5 text-sm font-medium">{tradeSelectionTitle(tradeSelectionDecision.status)}</div>
+                  </div>
+                  <Badge variant="outline">{tradeSelectionConfidenceLabel(tradeSelectionDecision.confidence)}</Badge>
+                </div>
+                <div className="mt-2 text-sm leading-5 text-muted-foreground">{tradeSelectionDecision.reason}</div>
+                <div className="mt-2 text-xs">
+                  推荐：{tradeSelectionDecision.recommendedTrade?.tradePath || "暂无唯一推荐"}
+                  {tradeSelectionDecision.recommendedTrade ? ` · ${tradeSelectionDecision.recommendedTrade.tradeId}` : ""}
+                </div>
+              </div>
+            ) : null}
             <div className="rounded-lg border bg-muted/30 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-sm font-medium">上市计划表类目参考</div>
@@ -812,6 +882,103 @@ export default function ProductArchiveDraftDetailPage() {
           </DialogContent>
         </Dialog>
       </PageHeader>
+
+      {tradeSelectionDecision ? (
+        <section
+          data-trade-selection-decision={tradeSelectionDecision.status}
+          className={cn("rounded-lg border p-4", tradeSelectionClass(tradeSelectionDecision.status))}
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex min-w-0 items-start gap-3">
+              {tradeSelectionDecision.status === "manual_selection_required" || tradeSelectionDecision.status === "pending_confirmation" ? (
+                <AlertTriangle className="mt-0.5 size-5 shrink-0 text-[#c37d0d]" />
+              ) : (
+                <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-[#0fa76e]" />
+              )}
+              <div className="min-w-0">
+                <div className="text-xs font-medium text-muted-foreground">深绘类目选择结论</div>
+                <h2 className="mt-1 text-base font-semibold">{tradeSelectionTitle(tradeSelectionDecision.status)}</h2>
+                <p className="mt-1 text-sm leading-6 text-muted-foreground">{tradeSelectionDecision.reason}</p>
+              </div>
+            </div>
+            <Badge variant="outline">{tradeSelectionConfidenceLabel(tradeSelectionDecision.confidence)}</Badge>
+          </div>
+
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <div className="rounded-md border bg-background/80 px-3 py-2">
+              <div className="text-xs text-muted-foreground">系统推荐类目</div>
+              <div className="mt-1 break-words text-sm font-medium">
+                {tradeSelectionDecision.recommendedTrade?.tradePath || "暂无唯一推荐"}
+              </div>
+              {tradeSelectionDecision.recommendedTrade ? (
+                <div className="mt-0.5 font-mono text-xs text-muted-foreground">
+                  tradeId {tradeSelectionDecision.recommendedTrade.tradeId}
+                </div>
+              ) : null}
+            </div>
+            <div className="rounded-md border bg-background/80 px-3 py-2">
+              <div className="text-xs text-muted-foreground">当前已应用类目</div>
+              <div className="mt-1 break-words text-sm font-medium">
+                {tradeSelectionDecision.appliedTrade?.tradePath || "尚未应用类目"}
+              </div>
+              {tradeSelectionDecision.appliedTrade ? (
+                <div className="mt-0.5 font-mono text-xs text-muted-foreground">
+                  tradeId {tradeSelectionDecision.appliedTrade.tradeId}
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          {tradeSelectionDecision.confirmedAt ? (
+            <div className="mt-2 text-xs text-muted-foreground">
+              人工处理时间：{formatDateTime(tradeSelectionDecision.confirmedAt)}
+            </div>
+          ) : null}
+
+          {tradeSelectionDecision.status === "pending_confirmation" ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                disabled={!tradeSelectionDecision.recommendedTrade || confirmRecommendedTrade.isPending}
+                onClick={() => confirmRecommendedTrade.mutate()}
+              >
+                {confirmRecommendedTrade.isPending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+                确认推荐类目
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setSelectedTradeId(draft.trade_id)
+                  setTradeDialogOpen(true)
+                }}
+              >
+                <ListTree className="size-4" />
+                重新选择
+              </Button>
+            </div>
+          ) : null}
+
+          {tradeSelectionDecision.status === "manual_selection_required" || tradeSelectionDecision.status === "human_adjusted" ? (
+            <div className="mt-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setSelectedTradeId(draft.trade_id)
+                  setTradeDialogOpen(true)
+                }}
+              >
+                <ListTree className="size-4" />
+                {tradeSelectionDecision.status === "manual_selection_required" ? "选择深绘类目" : "重新选择"}
+              </Button>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       <section data-draft-summary-table="true" className="overflow-hidden rounded-lg border bg-card/80 text-sm shadow-[0_8px_18px_rgba(15,23,42,0.04)]">
         <div className="border-b px-4 py-2">

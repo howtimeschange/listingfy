@@ -103,6 +103,25 @@ test("product archive draft source rows stay scoped to the import batch when pre
   assert.match(service, /sourceRowsForDraft\(db, draft\)/);
 });
 
+test("product archive field rebuild falls back to the draft MDM snapshot for cloned test SPUs", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const snapshotSpu = {
+    spu_code: "208326105206",
+    spu_name: "儿童外套",
+    product_line_name: "幼童服装",
+  };
+  const fakeDb = {
+    prepare() {
+      return { get: () => undefined };
+    },
+  };
+
+  assert.deepEqual(service.resolveProductArchiveDraftSpu(fakeDb, {
+    spu_code: "208326105206-TEST",
+    source_snapshot_json: { spu: snapshotSpu },
+  }), snapshotSpu);
+});
+
 test("product archive source imports support PLM size-chart batches", async () => {
   const [migration, service, route] = await Promise.all([
     readText(files.sizeChartMigration),
@@ -147,7 +166,7 @@ test("product archive trade matching accepts duplicate source rows that point to
   });
 });
 
-test("product archive trade matching falls back from launch-plan leaf names to shorter DeepDraw trade names", async () => {
+test("product archive trade matching does not auto-recommend brand-private DeepDraw paths", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const sourceRows = [
     {
@@ -159,16 +178,10 @@ test("product archive trade matching falls back from launch-plan leaf names to s
     { trade_id: "12390", trade_name: "外套", trade_path: "blbl&mini / 童装服饰 / 外套" },
   ];
 
-  assert.deepEqual(service.chooseDeepdrawTradeFromLaunchPlanRows(sourceRows, trades), {
-    tradeId: "12390",
-    tradePath: "blbl&mini / 童装服饰 / 外套",
-    confidence: "medium",
-    matchedField: "官方发布类目",
-    matchedValue: "童装/婴儿装/亲子装 > 外套/夹克/大衣 > 普通外套",
-  });
+  assert.equal(service.chooseDeepdrawTradeFromLaunchPlanRows(sourceRows, trades), null);
 });
 
-test("product archive trade matching prefers the brand tenant clothing path when many short trade names tie", async () => {
+test("product archive trade matching prefers a public path over a brand-private path", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const sourceRows = [
     {
@@ -181,7 +194,519 @@ test("product archive trade matching prefers the brand tenant clothing path when
     { trade_id: "12390", trade_name: "外套", trade_path: "blbl&mini / 童装服饰 / 外套" },
   ];
 
-  assert.equal(service.chooseDeepdrawTradeFromLaunchPlanRows(sourceRows, trades)?.tradeId, "12390");
+  assert.equal(service.chooseDeepdrawTradeFromLaunchPlanRows(sourceRows, trades)?.tradeId, "68");
+});
+
+test("product archive trade matching requires every launch-plan platform to map before preferring a trade", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sourceRows = [
+    {
+      source_type: "launch_plan",
+      row_json: {
+        "大货款号": "208326105206",
+        "年龄段": "幼童",
+        "官方发布类目": "童装/婴儿装/亲子装 > 外套/夹克/大衣 > 普通外套",
+        "发布类目 (唯品)": "婴幼外套/风衣",
+        "主款式 （唯品四级品类）": "夹棉外套",
+        "发布类目 (抖音)": "服饰内衣>服饰>童装 > 其他外套",
+      },
+    },
+  ];
+  const everyPlatform = "ALIBABA,PDD,TAOBAO,KUAISHOU,DOUYIN,VIP";
+  const trades = [
+    {
+      trade_id: "12390",
+      trade_name: "外套",
+      trade_path: "blbl&mini / 童装服饰 / 外套",
+      third_platforms: "",
+    },
+    {
+      trade_id: "9647",
+      trade_name: "外套",
+      trade_path: "童装婴幼儿服装 / 中大童 / 外套",
+      third_platforms: everyPlatform,
+    },
+    {
+      trade_id: "68",
+      trade_name: "外套",
+      trade_path: "童装婴幼儿服装 / 外套",
+      third_platforms: everyPlatform,
+    },
+    {
+      trade_id: "89",
+      trade_name: "外套",
+      trade_path: "运动女装 / 外套",
+      third_platforms: everyPlatform,
+    },
+  ];
+
+  assert.deepEqual(service.chooseDeepdrawTradeFromLaunchPlanRows(sourceRows, trades), {
+    tradeId: "68",
+    tradePath: "童装婴幼儿服装 / 外套",
+    confidence: "medium",
+    matchedField: "官方发布类目",
+    matchedValue: "童装/婴儿装/亲子装 > 外套/夹克/大衣 > 普通外套",
+  });
+});
+
+test("trade selection decision auto-applies a unique high-confidence category", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const evaluatedAt = "2026-07-15T00:00:00.000Z";
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    {
+      source_type: "launch_plan",
+      row_json: { "官方发布类目": "童装/婴儿装/亲子装 > 外套/夹克/大衣 > 普通外套" },
+    },
+  ], [
+    {
+      trade_id: "12390",
+      trade_name: "普通外套",
+      trade_path: "童装/婴儿装/亲子装 > 外套/夹克/大衣 > 普通外套",
+      third_platforms: "ALIBABA,PDD,TAOBAO,KUAISHOU",
+    },
+  ], { evaluatedAt });
+
+  assert.equal(decision.status, "auto_applied");
+  assert.equal(decision.confidence, "high");
+  assert.equal(decision.reasonCode, "unique_high_confidence");
+  assert.deepEqual(decision.recommendedTrade, {
+    tradeId: "12390",
+    tradePath: "童装/婴儿装/亲子装 > 外套/夹克/大衣 > 普通外套",
+  });
+  assert.equal(decision.appliedTrade, null);
+  assert.deepEqual(decision.requiredPlatforms, ["ALIBABA", "PDD", "TAOBAO", "KUAISHOU"]);
+  assert.deepEqual(decision.coveredPlatforms, ["ALIBABA", "KUAISHOU", "PDD", "TAOBAO"]);
+  assert.equal(decision.sourceConflict, false);
+  assert.equal(decision.evaluatedAt, evaluatedAt);
+  assert.equal(decision.confirmedAt, null);
+});
+
+test("trade selection decision auto-applies a medium-confidence category pending confirmation", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    {
+      source_type: "launch_plan",
+      row_json: {
+        "官方发布类目": "童装/婴儿装/亲子装 > 外套/夹克/大衣 > 普通外套",
+        "发布类目 (唯品)": "婴幼外套/风衣",
+        "主款式 （唯品四级品类）": "夹棉外套",
+        "发布类目 (抖音)": "服饰内衣>服饰>童装 > 其他外套",
+      },
+    },
+  ], [
+    {
+      trade_id: "68",
+      trade_name: "外套",
+      trade_path: "童装婴幼儿服装 / 外套",
+      third_platforms: "ALIBABA,PDD,TAOBAO,KUAISHOU,DOUYIN,VIP",
+    },
+  ], { evaluatedAt: "2026-07-15T00:00:00.000Z" });
+
+  assert.equal(decision.status, "pending_confirmation");
+  assert.equal(decision.confidence, "medium");
+  assert.equal(decision.reasonCode, "medium_confidence");
+  assert.equal(decision.recommendedTrade?.tradeId, "68");
+  assert.deepEqual(decision.requiredPlatforms, [
+    "ALIBABA",
+    "PDD",
+    "TAOBAO",
+    "KUAISHOU",
+    "VIP",
+    "DOUYIN|DOUYINXSG",
+  ]);
+  assert.match(decision.reason, /中置信度|人工确认/);
+});
+
+test("trade selection decision marks conflicting source categories pending confirmation", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    {
+      source_type: "launch_plan",
+      row_json: { "官方发布类目": "童装 > 外套 > 普通外套" },
+    },
+    {
+      source_type: "launch_plan",
+      row_json: { "官方发布类目": "童装 > 外套 > 夹棉外套" },
+    },
+  ], [
+    {
+      trade_id: "12390",
+      trade_name: "普通外套",
+      trade_path: "童装 > 外套 > 普通外套",
+      third_platforms: "ALIBABA,PDD,TAOBAO,KUAISHOU",
+    },
+  ], { evaluatedAt: "2026-07-15T00:00:00.000Z" });
+
+  assert.equal(decision.status, "pending_confirmation");
+  assert.equal(decision.reasonCode, "source_category_conflict");
+  assert.equal(decision.sourceConflict, true);
+  assert.equal(decision.recommendedTrade?.tradeId, "12390");
+  assert.match(decision.reason, /多个不同值|人工确认/);
+});
+
+test("trade selection decision ignores older launch-plan batches for the same SPU", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const platforms = "ALIBABA,PDD,TAOBAO,KUAISHOU";
+  const sourceRows = [
+    {
+      source_batch_id: 10,
+      source_type: "launch_plan",
+      row_json: { "官方发布类目": "童装 > 外套" },
+    },
+    {
+      source_batch_id: 11,
+      source_type: "launch_plan",
+      row_json: { "官方发布类目": "童装 > 裤子" },
+    },
+  ];
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows(sourceRows, [
+    { trade_id: "1", trade_name: "外套", trade_path: "童装 > 外套", third_platforms: platforms },
+    { trade_id: "2", trade_name: "裤子", trade_path: "童装 > 裤子", third_platforms: platforms },
+  ], { evaluatedAt: "2026-07-15T00:00:00.000Z" });
+
+  assert.equal(decision.sourceConflict, false);
+  assert.equal(decision.status, "auto_applied");
+  assert.equal(decision.recommendedTrade?.tradeId, "2");
+  assert.deepEqual(service.buildLaunchPlanCategoryReference(sourceRows).fields, [
+    { key: "officialCategory", label: "官方发布类目", value: "童装 > 裤子" },
+  ]);
+});
+
+test("trade selection decision explains every manual-selection outcome", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const evaluatedAt = "2026-07-15T00:00:00.000Z";
+  const sourceRows = [{
+    source_type: "launch_plan",
+    row_json: { "官方发布类目": "童装 > 袜子" },
+  }];
+  const platforms = "ALIBABA,PDD,TAOBAO,KUAISHOU";
+  const cases = [
+    {
+      expected: "missing_source_category",
+      sourceRows: [],
+      trades: [{ trade_id: "1", trade_name: "外套", trade_path: "童装 > 外套", third_platforms: platforms }],
+    },
+    {
+      expected: "missing_platform_coverage",
+      sourceRows,
+      trades: [{ trade_id: "1", trade_name: "袜子", trade_path: "童装 > 袜子", third_platforms: "ALIBABA" }],
+    },
+    {
+      expected: "missing_semantic_match",
+      sourceRows,
+      trades: [{ trade_id: "1", trade_name: "外套", trade_path: "成人 > 外套", third_platforms: platforms }],
+    },
+    {
+      expected: "ambiguous_match",
+      sourceRows: [{ source_type: "launch_plan", row_json: { "官方发布类目": "童装 > 外套" } }],
+      trades: [
+        { trade_id: "1", trade_name: "外套", trade_path: "A类 > 外套", third_platforms: platforms },
+        { trade_id: "2", trade_name: "外套", trade_path: "B类 > 外套", third_platforms: platforms },
+      ],
+    },
+  ];
+
+  for (const item of cases) {
+    const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows(item.sourceRows, item.trades, { evaluatedAt });
+    assert.equal(decision.status, "manual_selection_required", item.expected);
+    assert.equal(decision.confidence, "none", item.expected);
+    assert.equal(decision.reasonCode, item.expected, item.expected);
+    assert.equal(decision.recommendedTrade, null, item.expected);
+    assert.equal(decision.evaluatedAt, evaluatedAt, item.expected);
+    assert.ok(decision.reason, item.expected);
+  }
+});
+
+test("trade selection decision records human confirmation or adjustment from the applied category", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const evaluatedAt = "2026-07-15T00:00:00.000Z";
+  const confirmedAt = "2026-07-15T01:00:00.000Z";
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    { source_type: "launch_plan", row_json: { "官方发布类目": "童装 > 外套" } },
+  ], [
+    {
+      trade_id: "68",
+      trade_name: "外套",
+      trade_path: "童装 > 外套",
+      third_platforms: "ALIBABA,PDD,TAOBAO,KUAISHOU",
+    },
+  ], { evaluatedAt });
+
+  const confirmed = service.applyHumanTradeSelectionDecision(decision, {
+    tradeId: "68",
+    tradePath: "童装 > 外套",
+  }, confirmedAt);
+  assert.equal(confirmed.status, "human_confirmed");
+  assert.equal(confirmed.reasonCode, "human_confirmed");
+  assert.equal(confirmed.confirmedAt, confirmedAt);
+  assert.equal(confirmed.appliedTrade?.tradeId, "68");
+
+  const adjusted = service.applyHumanTradeSelectionDecision(decision, {
+    tradeId: "99",
+    tradePath: "童装 > 其他外套",
+  }, confirmedAt);
+  assert.equal(adjusted.status, "human_adjusted");
+  assert.equal(adjusted.reasonCode, "human_adjusted");
+  assert.equal(adjusted.confirmedAt, confirmedAt);
+  assert.equal(adjusted.appliedTrade?.tradeId, "99");
+  assert.equal(adjusted.recommendedTrade?.tradeId, "68");
+});
+
+test("trade selection decision preserves human adjustment but resets stale confirmation", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const evaluated = {
+    status: "pending_confirmation",
+    confidence: "medium",
+    reasonCode: "medium_confidence",
+    recommendedTrade: { tradeId: "2", tradePath: "童装 > 新推荐" },
+    appliedTrade: { tradeId: "9", tradePath: "童装 > 人工类目" },
+    matchedField: "官方发布类目",
+    matchedValue: "童装 > 新推荐",
+    requiredPlatforms: ["ALIBABA"],
+    coveredPlatforms: ["ALIBABA"],
+    sourceConflict: false,
+    reason: "已自动应用推荐类目，但当前为中置信度，需要人工确认。",
+    evaluatedAt: "2026-07-15T02:00:00.000Z",
+    confirmedAt: null,
+  };
+  const persisted = {
+    ...evaluated,
+    status: "human_adjusted",
+    reasonCode: "human_adjusted",
+    recommendedTrade: { tradeId: "1", tradePath: "童装 > 旧推荐" },
+    confirmedAt: "2026-07-15T01:00:00.000Z",
+  };
+
+  const adjusted = service.mergeTradeSelectionHumanState(evaluated, persisted);
+  assert.equal(adjusted.status, "human_adjusted");
+  assert.equal(adjusted.recommendedTrade?.tradeId, "2");
+  assert.equal(adjusted.appliedTrade?.tradeId, "9");
+
+  const staleConfirmation = service.mergeTradeSelectionHumanState(evaluated, {
+    ...persisted,
+    status: "human_confirmed",
+    reasonCode: "human_confirmed",
+    appliedTrade: { tradeId: "1", tradePath: "童装 > 旧推荐" },
+  });
+  assert.equal(staleConfirmation.status, "pending_confirmation");
+  assert.equal(staleConfirmation.reasonCode, "medium_confidence");
+  assert.equal(staleConfirmation.confirmedAt, null);
+});
+
+test("automatic trade refresh does not overwrite a human-adjusted draft", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sourceRows = [{ source_type: "launch_plan", row_json: { "官方发布类目": "童装 > 外套" } }];
+  const recommendedTrade = { tradeId: "68", tradePath: "童装 > 外套" };
+  const automaticDecision = {
+    status: "pending_confirmation",
+    confidence: "medium",
+    reasonCode: "medium_confidence",
+    recommendedTrade,
+    appliedTrade: null,
+    matchedField: "官方发布类目",
+    matchedValue: "童装 > 外套",
+    requiredPlatforms: ["ALIBABA", "PDD", "TAOBAO", "KUAISHOU"],
+    coveredPlatforms: ["ALIBABA", "KUAISHOU", "PDD", "TAOBAO"],
+    sourceConflict: false,
+    reason: "已自动应用推荐类目，但当前为中置信度，需要人工确认。",
+    evaluatedAt: "2026-07-15T00:00:00.000Z",
+    confirmedAt: null,
+  };
+  const draft = {
+    id: 101,
+    spu_code: "SPU001",
+    tenant_name: "电商巴拉巴拉",
+    merchant_id: "1162",
+    trade_id: "99",
+    trade_path: "童装 > 人工类目",
+    source_snapshot_json: {
+      sourceRows,
+      tradeSelection: {
+        ...automaticDecision,
+        status: "human_adjusted",
+        reasonCode: "human_adjusted",
+        appliedTrade: { tradeId: "99", tradePath: "童装 > 人工类目" },
+        confirmedAt: "2026-07-15T01:00:00.000Z",
+      },
+    },
+    validation_summary_json: {},
+  };
+  const trade = {
+    trade_id: "68",
+    trade_name: "外套",
+    trade_path: "童装 > 外套",
+    third_platforms: "ALIBABA,PDD,TAOBAO,KUAISHOU",
+  };
+  const tradeUpdateSql = [];
+  const fakeDb = {
+    prepare(sql) {
+      return {
+        get() {
+          return /from deepdraw_trade_cache/i.test(sql) ? trade : draft;
+        },
+        all() {
+          if (/from deepdraw_trade_cache trade/i.test(sql)) return [trade];
+          if (/from product_archive_source_row/i.test(sql)) return sourceRows;
+          return [];
+        },
+        run() {
+          if (/set\s+trade_id\s*=/i.test(sql)) tradeUpdateSql.push(sql);
+          return { changes: 1, lastInsertRowid: null };
+        },
+      };
+    },
+    transaction(fn) {
+      return fn;
+    },
+  };
+
+  const result = service.applyProductArchiveDraftTrade(fakeDb, 101, {
+    tradeId: recommendedTrade.tradeId,
+    tradePath: recommendedTrade.tradePath,
+  }, { automaticDecision });
+
+  assert.equal(result.tradeSelectionAutoApplied, false);
+  assert.equal(tradeUpdateSql.length, 0);
+});
+
+test("source-batch refresh preserves a concurrent human trade adjustment", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sourceRows = [{
+    source_batch_id: 11,
+    source_type: "launch_plan",
+    row_json: { "官方发布类目": "童装 > 外套" },
+  }];
+  const trade = {
+    trade_id: "68",
+    trade_name: "外套",
+    trade_path: "童装 > 外套",
+    third_platforms: "ALIBABA,PDD,TAOBAO,KUAISHOU",
+  };
+  const staleDraft = {
+    id: 101,
+    spu_code: "SPU001",
+    tenant_name: "电商巴拉巴拉",
+    merchant_id: "1162",
+    trade_id: null,
+    trade_path: null,
+    status: "draft",
+    source_snapshot_json: {
+      sourceBatchIds: { launch_plan: [10] },
+      tradeSelection: { status: "manual_selection_required" },
+    },
+    validation_summary_json: {},
+  };
+  let currentDraft = {
+    ...staleDraft,
+    trade_id: "99",
+    trade_path: "童装 > 人工类目",
+    source_snapshot_json: {
+      sourceBatchIds: { launch_plan: [10] },
+      tradeSelection: {
+        status: "human_adjusted",
+        reasonCode: "human_adjusted",
+        recommendedTrade: null,
+        appliedTrade: { tradeId: "99", tradePath: "童装 > 人工类目" },
+        confirmedAt: "2026-07-15T01:00:00.000Z",
+      },
+    },
+  };
+  const fakeDb = {
+    prepare(sql) {
+      return {
+        get() {
+          if (/from deepdraw_trade_cache(?!\s+trade)/i.test(sql)) return trade;
+          return currentDraft;
+        },
+        all() {
+          if (/select distinct draft\.\*/i.test(sql)) return [staleDraft];
+          if (/from deepdraw_trade_cache trade/i.test(sql)) return [trade];
+          if (/from product_archive_source_row/i.test(sql)) return sourceRows;
+          return [];
+        },
+        run(...params) {
+          if (/set\s+trade_id\s*=/i.test(sql)) {
+            currentDraft = {
+              ...currentDraft,
+              trade_id: params[0],
+              trade_path: params[1],
+              source_snapshot_json: JSON.parse(params[2]),
+            };
+            return { changes: 1, lastInsertRowid: null };
+          }
+          if (/set\s+source_snapshot_json\s*=/i.test(sql)) {
+            const nextSnapshot = JSON.parse(params[0]);
+            const expectedSnapshot = params.length >= 5 ? JSON.parse(params[4]) : null;
+            if (expectedSnapshot && JSON.stringify(expectedSnapshot) !== JSON.stringify(currentDraft.source_snapshot_json)) {
+              return { changes: 0, lastInsertRowid: null };
+            }
+            currentDraft = { ...currentDraft, source_snapshot_json: nextSnapshot };
+          }
+          return { changes: 1, lastInsertRowid: null };
+        },
+      };
+    },
+    transaction(fn) {
+      return fn;
+    },
+  };
+
+  const result = service.refreshProductArchiveDraftsFromSourceBatch(fakeDb, {
+    sourceBatchId: 11,
+    sourceType: "launch_plan",
+  });
+
+  assert.equal(currentDraft.trade_id, "99");
+  assert.equal(currentDraft.source_snapshot_json.tradeSelection.status, "human_adjusted");
+  assert.deepEqual(currentDraft.source_snapshot_json.sourceBatchIds.launch_plan, [10, 11]);
+  assert.equal(result.autoAppliedTradeCount, 0);
+  assert.equal(result.failedDrafts.length, 0);
+});
+
+test("confirming a recommendation rejects a concurrent snapshot change", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sourceRows = [{ source_type: "launch_plan", row_json: { "官方发布类目": "童装 > 外套" } }];
+  const trade = {
+    trade_id: "68",
+    trade_name: "外套",
+    trade_path: "童装 > 外套",
+    third_platforms: "ALIBABA,PDD,TAOBAO,KUAISHOU",
+  };
+  const draft = {
+    id: 101,
+    spu_code: "SPU001",
+    tenant_name: "电商巴拉巴拉",
+    merchant_id: "1162",
+    trade_id: "68",
+    trade_path: "童装 > 外套",
+    source_snapshot_json: { sourceRows },
+    validation_summary_json: {},
+  };
+  const fakeDb = {
+    prepare(sql) {
+      return {
+        get() {
+          return draft;
+        },
+        all() {
+          if (/from deepdraw_trade_cache trade/i.test(sql)) return [trade];
+          if (/from product_archive_source_row/i.test(sql)) return sourceRows;
+          return [];
+        },
+        run() {
+          if (/set\s+source_snapshot_json\s*=/i.test(sql)) return { changes: 0, lastInsertRowid: null };
+          return { changes: 1, lastInsertRowid: null };
+        },
+      };
+    },
+    transaction(fn) {
+      return fn;
+    },
+  };
+
+  assert.throws(() => service.confirmProductArchiveDraftRecommendedTrade(fakeDb, 101, {
+    recommendedTradeId: "68",
+  }), /推荐结果已更新/);
 });
 
 test("product archive trade matching gives official launch category priority over VIP or Douyin category leaves", async () => {
@@ -196,11 +721,11 @@ test("product archive trade matching gives official launch category priority ove
     },
   ];
   const trades = [
-    { trade_id: "12390", trade_name: "外套", trade_path: "blbl&mini / 童装服饰 / 外套" },
-    { trade_id: "12394", trade_name: "风衣", trade_path: "blbl&mini / 童装服饰 / 风衣" },
+    { trade_id: "68", trade_name: "外套", trade_path: "童装婴幼儿服装 / 外套" },
+    { trade_id: "12394", trade_name: "风衣", trade_path: "童装婴幼儿服装 / 风衣" },
   ];
 
-  assert.equal(service.chooseDeepdrawTradeFromLaunchPlanRows(sourceRows, trades)?.tradeId, "12390");
+  assert.equal(service.chooseDeepdrawTradeFromLaunchPlanRows(sourceRows, trades)?.tradeId, "68");
 });
 
 test("product archive service exposes launch-plan category reference fields for manual trade selection", async () => {
@@ -774,6 +1299,56 @@ test("product archive service fills material composition text fields from copywr
 
   assert.equal(materialValue, "100%棉（配料除外）");
   assert.equal(compositionValue, "100%棉（配料除外）");
+});
+
+test("product archive service maps every main-fabric component for 208326105206-TEST", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sourceRows = [
+    {
+      source_type: "copywriting",
+      row_json: {
+        "款号": "208326105206-TEST",
+        "面料成分": "成分\n面料：68.4%棉\n31.6%聚酯纤维\n里料：100%聚酯纤维\n（装饰物除外）",
+      },
+    },
+  ];
+  const derive = (fieldName, sourceField = "面料成分") => service.buildProductArchiveSourceDerivedFieldValue(fieldName, {
+    spu: { spu_code: "208326105206-TEST" },
+    sourceRows,
+    sourceField,
+  });
+
+  assert.equal(derive("材质成分"), "棉,68.4;聚酯纤维,31.6");
+  assert.equal(derive("面料(多选)"), "棉;聚酯纤维");
+  assert.equal(derive("材质成分(多选)", ""), "棉;聚酯纤维");
+  assert.equal(derive("面料"), "棉混纺");
+  assert.equal(derive("材质"), "棉混纺");
+  assert.equal(derive("面料俗称", "根据面料成分填主材质"), "棉混纺");
+  assert.equal(derive("京东材质成分", "吊牌成分"), "棉,68.4;涤纶(聚酯纤维),31.6");
+  assert.equal(derive("材质成分(文本)"), "68.4%棉；31.6%聚酯纤维");
+  assert.equal(derive("袖长", ""), "长袖");
+
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("面料(多选)", "棉;聚酯纤维", [
+    { value: "棉" },
+    { value: "聚酯纤维" },
+  ]), "棉;聚酯纤维");
+});
+
+test("product archive material mapping does not fall back to launch-plan composition", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sourceRows = [{
+    source_type: "launch_plan",
+    row_json: { "面料成分": "面料：100%聚酯纤维" },
+  }];
+  const derive = (fieldName) => service.buildProductArchiveSourceDerivedFieldValue(fieldName, {
+    spu: { spu_code: "208326105206-TEST" },
+    sourceRows,
+    sourceField: "面料成分",
+  });
+
+  assert.equal(derive("材质成分"), "");
+  assert.equal(derive("面料(多选)"), "");
+  assert.equal(derive("材质成分(文本)"), "");
 });
 
 test("product archive service follows DeepDraw field adjustment doc for optional and default fields", async () => {
