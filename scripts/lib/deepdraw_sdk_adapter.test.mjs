@@ -490,9 +490,36 @@ test("getDeepdrawProductWithSdk delegates product resource reads to the Java SDK
     },
     query: {
       productCode: "208326105214",
-      resource: "form",
     },
   }]);
   assert.equal(result.ok, true);
   assert.equal(result.requestId, "9901");
+});
+
+test("getDeepdrawProductWithSdk preserves an explicit resource filter", async () => {
+  const seen = [];
+  await getDeepdrawProductWithSdk({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    productCode: "208326105214",
+    resource: "form",
+    runner: async (input) => {
+      seen.push(input);
+      return JSON.stringify({
+        status: 200,
+        response: {
+          code: 10200,
+          response: "success",
+          body: { productId: 7788 },
+        },
+      });
+    },
+  });
+
+  assert.equal(seen[0].query.resource, "form");
 });

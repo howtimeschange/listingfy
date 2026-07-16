@@ -279,7 +279,8 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
   };
 }
 
-export function buildDeepdrawSdkResourceInput({ config, productCode, productId, resource = "form" }) {
+export function buildDeepdrawSdkResourceInput({ config, productCode, productId, resource }) {
+  const normalizedResource = stringValue(resource);
   return {
     config: {
       appKey: stringValue(config?.appKey),
@@ -291,7 +292,7 @@ export function buildDeepdrawSdkResourceInput({ config, productCode, productId, 
     query: {
       productCode: stringValue(productCode),
       ...(stringValue(productId) ? { productId: stringValue(productId) } : {}),
-      resource: stringValue(resource) || "form",
+      ...(normalizedResource ? { resource: normalizedResource } : {}),
     },
   };
 }
@@ -496,7 +497,7 @@ export async function getDeepdrawProductWithSdk({
   config,
   productCode,
   productId,
-  resource = "form",
+  resource,
   timeoutMs = 30000,
   projectRoot,
   runner = runDeepdrawSdkResourceCli,

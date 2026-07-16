@@ -397,12 +397,12 @@ export async function requestDeepdrawPost({ config, type, query, timeoutMs = 300
   };
 }
 
-export async function getDeepdrawProduct({ config, productCode, timeoutMs = 30000, adapter } = {}) {
+export async function getDeepdrawProduct({ config, productCode, productId, resource, timeoutMs = 30000, adapter } = {}) {
   const resourceAdapter = adapter ?? getDeepdrawProductWithSdk;
   if (typeof resourceAdapter !== "function") {
     throw new Error("DeepDraw product resource adapter must be a function.");
   }
-  return resourceAdapter({ config, productCode, resource: "form", timeoutMs });
+  return resourceAdapter({ config, productCode, productId, resource, timeoutMs });
 }
 
 export async function searchDeepdrawProductBasic({ config, productCode, timeoutMs = 30000 }) {

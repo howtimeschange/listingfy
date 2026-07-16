@@ -289,6 +289,58 @@ test("getDeepdrawProduct delegates product resource reads to the SDK adapter con
   }
 });
 
+test("getDeepdrawProduct omits resource by default so product archive sync gets all resources", async () => {
+  const calls = [];
+  await getDeepdrawProduct({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    productCode: "208326120201",
+    adapter: async (input) => {
+      calls.push(input);
+      return {
+        status: 200,
+        ok: true,
+        requestId: "request-3",
+        payload: { response: { code: 10200, response: "success", body: { productId: 7788 } } },
+      };
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].resource, undefined);
+});
+
+test("getDeepdrawProduct can pass an explicit resource filter to the SDK adapter", async () => {
+  const calls = [];
+  await getDeepdrawProduct({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    productCode: "208326120201",
+    resource: "form",
+    adapter: async (input) => {
+      calls.push(input);
+      return {
+        status: 200,
+        ok: true,
+        requestId: "request-4",
+        payload: { response: { code: 10200, response: "success", body: { productId: 7788 } } },
+      };
+    },
+  });
+
+  assert.equal(calls[0].resource, "form");
+});
+
 test("resolveDeepdrawConfig can select credentials from env JSON by tenant name", () => {
   const previousJson = process.env.DEEPDRAW_TENANT_CREDENTIALS_JSON;
   const previousTenant = process.env.DEEPDRAW_TENANT_NAME;
