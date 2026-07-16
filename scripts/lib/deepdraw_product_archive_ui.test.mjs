@@ -231,6 +231,8 @@ test("draft detail renders backend trade selection conclusion and human confirma
   assert.match(draftDetailPage, /高置信度/);
   assert.match(draftDetailPage, /中置信度/);
   assert.match(draftDetailPage, /确认推荐类目/);
+  assert.match(draftDetailPage, /应用并确认推荐类目/);
+  assert.match(draftDetailPage, /recommendationNeedsApply/);
   assert.match(draftDetailPage, /重新选择/);
   assert.match(
     draftDetailPage,

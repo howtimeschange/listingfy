@@ -58,6 +58,16 @@ interface ConfirmTradeInput {
   recommendedTradeId?: string | null
 }
 
+const PRODUCT_ARCHIVE_TRADE_BACKFILL_EDITABLE_STATUSES = new Set([
+  "draft",
+  "manual_review",
+  "ready",
+])
+
+export function isProductArchiveTradeBackfillStatus(status: unknown) {
+  return PRODUCT_ARCHIVE_TRADE_BACKFILL_EDITABLE_STATUSES.has(stringValue(status))
+}
+
 export type TradeSelectionStatus =
   | "auto_applied"
   | "pending_confirmation"
@@ -73,6 +83,8 @@ export type TradeSelectionReasonCode =
   | "missing_platform_coverage"
   | "missing_semantic_match"
   | "ambiguous_match"
+  | "applied_trade_mismatch"
+  | "legacy_backfill_confirmation_required"
   | "human_confirmed"
   | "human_adjusted"
 
@@ -1469,6 +1481,109 @@ function isBrandPrivateDeepdrawTrade(trade: JsonRecord) {
   return candidatePath === "blbl&mini" || candidatePath.startsWith("blbl&mini>")
 }
 
+const BALA_DEEPDRAW_TENANT = "电商巴拉巴拉"
+
+interface DeepdrawTradePriorityRule {
+  key: "first" | "second" | "fallback"
+  label: string
+  roots: ReadonlyMap<string, string>
+  branches: ReadonlyMap<string, string>
+}
+
+const BALA_DEEPDRAW_TRADE_PRIORITY: DeepdrawTradePriorityRule[] = [
+  {
+    key: "first",
+    label: "第一优先级",
+    roots: new Map([
+      ["7", "童装婴幼儿服装"],
+      ["531", "童鞋/亲子鞋"],
+      ["9483", "寝具服饰"],
+    ]),
+    branches: new Map([
+      ["6741", "运动/瑜伽/健身/球迷用品 / 游泳 / 亲子家庭装"],
+      ["6744", "运动/瑜伽/健身/球迷用品 / 游泳 / 儿童泳衣/裤"],
+      ["905", "运动中性鞋 / 女童鞋"],
+      ["10087", "运动中性鞋 / 男童鞋"],
+    ]),
+  },
+  {
+    key: "second",
+    label: "第二优先级",
+    roots: new Map([
+      ["3245", "尿片/洗护/喂哺/推车床"],
+      ["3525", "婴幼儿寝具"],
+      ["893", "玩具/模型/动漫/早教/益智"],
+    ]),
+    branches: new Map(),
+  },
+  {
+    key: "fallback",
+    label: "兜底优先级",
+    roots: new Map([["9631", "blbl&mini"]]),
+    branches: new Map(),
+  },
+]
+
+interface PrioritizedDeepdrawTrade {
+  trade: JsonRecord
+  policyRootName: string | null
+}
+
+interface DeepdrawTradePriorityTier {
+  key: DeepdrawTradePriorityRule["key"] | "default"
+  label: string | null
+  candidates: PrioritizedDeepdrawTrade[]
+}
+
+function deepdrawTradeAncestorIds(trade: JsonRecord, tradesById: Map<string, JsonRecord>) {
+  const ids: string[] = []
+  const visited = new Set<string>()
+  let current: JsonRecord | undefined = trade
+  while (current) {
+    const tradeId = stringValue(current.trade_id)
+    if (!tradeId || visited.has(tradeId)) break
+    ids.push(tradeId)
+    visited.add(tradeId)
+    const parentId = stringValue(current.parent_trade_id)
+    current = parentId ? tradesById.get(parentId) : undefined
+  }
+  return ids
+}
+
+function deepdrawTradePriorityTiers(tenantName: string, trades: JsonRecord[]): DeepdrawTradePriorityTier[] {
+  if (tenantName !== BALA_DEEPDRAW_TENANT) {
+    return [{
+      key: "default",
+      label: null,
+      candidates: trades
+        .filter((trade) => !isBrandPrivateDeepdrawTrade(trade))
+        .map((trade) => ({ trade, policyRootName: null })),
+    }]
+  }
+  const tradesById = new Map(
+    trades
+      .map((trade) => [stringValue(trade.trade_id), trade] as const)
+      .filter(([tradeId]) => Boolean(tradeId)),
+  )
+  return BALA_DEEPDRAW_TRADE_PRIORITY.map((rule) => {
+    const candidates: PrioritizedDeepdrawTrade[] = []
+    for (const trade of trades) {
+      const ancestorIds = deepdrawTradeAncestorIds(trade, tradesById)
+      let policyRootName: string | null = null
+      for (const ancestorId of ancestorIds) {
+        policyRootName = rule.branches.get(ancestorId) ?? rule.roots.get(ancestorId) ?? null
+        if (policyRootName) break
+      }
+      if (policyRootName) candidates.push({ trade, policyRootName })
+    }
+    return {
+      key: rule.key,
+      label: rule.label,
+      candidates,
+    }
+  })
+}
+
 function tradePlatformValues(trade: JsonRecord) {
   const rawValue = trade.third_platforms ?? trade.thirdPlatforms
   const values = Array.isArray(rawValue) ? rawValue : stringValue(rawValue).split(/[,，;；]/)
@@ -1497,6 +1612,43 @@ function tradeCoversPlatformGroups(trade: JsonRecord, groups: string[][]) {
 
 function tradePathDepth(trade: JsonRecord) {
   return normalizeTradeText(stringValue(trade.trade_path) || stringValue(trade.trade_name)).split(">").filter(Boolean).length
+}
+
+function bestDeepdrawTradeMatch(
+  candidates: PrioritizedDeepdrawTrade[],
+  categories: Array<{ field: string; value: string }>,
+) {
+  let best: {
+    candidate: PrioritizedDeepdrawTrade
+    category: { field: string; value: string }
+    score: number
+    matchScore: number
+    pathDepth: number
+  } | null = null
+  let tied = false
+  for (const candidate of candidates) {
+    let score = 0
+    let matchScore = 0
+    let matchedCategory: { field: string; value: string } | null = null
+    for (const category of categories) {
+      const categoryScore = scoreTradeMatch(candidate.trade, category)
+      if (categoryScore <= 0) continue
+      score += categoryScore
+      if (categoryScore > matchScore) {
+        matchScore = categoryScore
+        matchedCategory = category
+      }
+    }
+    if (!matchedCategory) continue
+    const pathDepth = tradePathDepth(candidate.trade)
+    if (!best || score > best.score || (score === best.score && pathDepth < best.pathDepth)) {
+      best = { candidate, category: matchedCategory, score, matchScore, pathDepth }
+      tied = false
+    } else if (score === best.score && pathDepth === best.pathDepth) {
+      tied = true
+    }
+  }
+  return { best, tied }
 }
 
 function launchPlanCategorySourceConflict(sourceRows: JsonRecord[]) {
@@ -1547,6 +1699,7 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
   sourceRows: JsonRecord[],
   trades: JsonRecord[],
   input: {
+    tenantName?: string | null
     appliedTrade?: TradeSelectionDecision["appliedTrade"]
     evaluatedAt?: string
     allowUnspecifiedPlatformMetadata?: boolean
@@ -1568,99 +1721,94 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
       evaluatedAt,
     })
   }
-  const selectableTrades = trades.filter((trade) => !isBrandPrivateDeepdrawTrade(trade))
-  const hasPlatformMetadata = selectableTrades.some(hasTradePlatformMetadata)
+  const candidateTiers = deepdrawTradePriorityTiers(stringValue(input.tenantName), trades)
+  const selectableCandidates = candidateTiers.flatMap((tier) => tier.candidates)
+  const hasPlatformMetadata = selectableCandidates.some((candidate) => hasTradePlatformMetadata(candidate.trade))
   const allowUnspecifiedPlatformMetadata = input.allowUnspecifiedPlatformMetadata === true && !hasPlatformMetadata
-  const eligibleTrades = allowUnspecifiedPlatformMetadata
-    ? selectableTrades
-    : hasPlatformMetadata
-    ? selectableTrades.filter((trade) => hasTradePlatformMetadata(trade) && tradeCoversPlatformGroups(trade, platformGroups))
-    : []
-  if (eligibleTrades.length === 0) {
-    return manualTradeSelectionDecision({
-      reasonCode: "missing_platform_coverage",
-      reason: "没有深绘类目同时覆盖上市计划表涉及的平台，需要人工选择深绘类目。",
-      appliedTrade,
-      requiredPlatforms,
-      sourceConflict,
-      evaluatedAt,
-    })
-  }
-  let best: {
-    trade: JsonRecord
-    category: { field: string; value: string }
-    score: number
-    matchScore: number
-    pathDepth: number
+  let selected: {
+    tier: DeepdrawTradePriorityTier
+    best: NonNullable<ReturnType<typeof bestDeepdrawTradeMatch>["best"]>
   } | null = null
-  let tied = false
-  for (const trade of eligibleTrades) {
-    let score = 0
-    let matchScore = 0
-    let matchedCategory: { field: string; value: string } | null = null
-    for (const category of categories) {
-      const categoryScore = scoreTradeMatch(trade, category)
-      if (categoryScore <= 0) continue
-      score += categoryScore
-      if (categoryScore > matchScore) {
-        matchScore = categoryScore
-        matchedCategory = category
-      }
+  let foundPlatformEligibleTrade = false
+  for (const tier of candidateTiers) {
+    const eligibleCandidates = allowUnspecifiedPlatformMetadata
+      ? tier.candidates
+      : hasPlatformMetadata
+        ? tier.candidates.filter((candidate) => (
+            hasTradePlatformMetadata(candidate.trade)
+            && tradeCoversPlatformGroups(candidate.trade, platformGroups)
+          ))
+        : []
+    if (eligibleCandidates.length === 0) continue
+    foundPlatformEligibleTrade = true
+    const match = bestDeepdrawTradeMatch(eligibleCandidates, categories)
+    if (!match.best) continue
+    if (match.tied) {
+      return manualTradeSelectionDecision({
+        reasonCode: "ambiguous_match",
+        reason: tier.label
+          ? `${tier.label}存在多个同分且同层级的深绘类目，无法自动确定，需要人工选择。`
+          : "存在多个同分且同层级的深绘类目，无法自动确定，需要人工选择。",
+        appliedTrade,
+        requiredPlatforms,
+        sourceConflict,
+        evaluatedAt,
+      })
     }
-    if (!matchedCategory) continue
-    const pathDepth = tradePathDepth(trade)
-    if (!best || score > best.score || (score === best.score && pathDepth < best.pathDepth)) {
-      best = { trade, category: matchedCategory, score, matchScore, pathDepth }
-      tied = false
-    } else if (score === best.score && pathDepth === best.pathDepth) {
-      tied = true
-    }
+    selected = { tier, best: match.best }
+    break
   }
-  if (!best) {
+  if (!selected) {
     return manualTradeSelectionDecision({
-      reasonCode: "missing_semantic_match",
-      reason: "覆盖所需平台的深绘类目中没有找到语义匹配，需要人工选择深绘类目。",
+      reasonCode: foundPlatformEligibleTrade ? "missing_semantic_match" : "missing_platform_coverage",
+      reason: foundPlatformEligibleTrade
+        ? "覆盖所需平台的深绘类目中没有找到语义匹配，需要人工选择深绘类目。"
+        : "没有深绘类目同时覆盖上市计划表涉及的平台，需要人工选择深绘类目。",
       appliedTrade,
       requiredPlatforms,
       sourceConflict,
       evaluatedAt,
     })
   }
-  if (tied) {
-    return manualTradeSelectionDecision({
-      reasonCode: "ambiguous_match",
-      reason: "存在多个同分且同层级的深绘类目，无法自动确定，需要人工选择。",
-      appliedTrade,
-      requiredPlatforms,
-      sourceConflict,
-      evaluatedAt,
-    })
-  }
+  const { best, tier } = selected
   const confidence = best.matchScore >= 1200 ? "high" : "medium"
-  const status = confidence === "high" && !sourceConflict ? "auto_applied" : "pending_confirmation"
-  const reasonCode = sourceConflict
-    ? "source_category_conflict"
+  const recommendedTrade = {
+    tradeId: stringValue(best.candidate.trade.trade_id),
+    tradePath: stringValue(best.candidate.trade.trade_path) || stringValue(best.candidate.trade.trade_name),
+  }
+  const appliedTradeMismatch = Boolean(
+    appliedTrade?.tradeId && appliedTrade.tradeId !== recommendedTrade.tradeId,
+  )
+  const status = confidence === "high" && !sourceConflict && !appliedTradeMismatch
+    ? "auto_applied"
+    : "pending_confirmation"
+  const reasonCode = appliedTradeMismatch
+    ? "applied_trade_mismatch"
+    : sourceConflict
+      ? "source_category_conflict"
     : confidence === "high"
       ? "unique_high_confidence"
       : "medium_confidence"
-  const reason = sourceConflict
-    ? "同一平台来源类目存在多个不同值，已自动应用最优推荐，需要人工确认。"
+  const baseReason = appliedTradeMismatch
+    ? "当前已应用类目与系统推荐类目不一致，需要应用推荐类目并由人工确认。"
+    : sourceConflict
+      ? "同一平台来源类目存在多个不同值，已自动应用最优推荐，需要人工确认。"
     : confidence === "high"
       ? `已根据${best.category.field}唯一匹配并自动应用深绘类目，置信度高。`
       : "已自动应用推荐类目，但当前为中置信度，需要人工确认。"
+  const reason = tier.label && best.candidate.policyRootName
+    ? `${tier.label}「${best.candidate.policyRootName}」命中。${baseReason}`
+    : baseReason
   return {
     status,
     confidence,
     reasonCode,
-    recommendedTrade: {
-      tradeId: stringValue(best.trade.trade_id),
-      tradePath: stringValue(best.trade.trade_path) || stringValue(best.trade.trade_name),
-    },
+    recommendedTrade,
     appliedTrade,
     matchedField: best.category.field,
     matchedValue: best.category.value,
     requiredPlatforms,
-    coveredPlatforms: Array.from(tradePlatformValues(best.trade)).sort(),
+    coveredPlatforms: Array.from(tradePlatformValues(best.candidate.trade)).sort(),
     sourceConflict,
     reason,
     evaluatedAt,
@@ -1701,12 +1849,26 @@ export function applyHumanTradeSelectionDecision(
   }
 }
 
+const LEGACY_TRADE_BACKFILL_CONFIRMATION_REASON = "旧草稿已按最新规则应用推荐类目，等待人工确认。"
+
+function legacyTradeBackfillReason(decision: TradeSelectionDecision) {
+  if (decision.reason.includes(LEGACY_TRADE_BACKFILL_CONFIRMATION_REASON)) return decision.reason
+  return `${decision.reason}${LEGACY_TRADE_BACKFILL_CONFIRMATION_REASON}`
+}
+
+function isCompletedLegacyTradeBackfill(decision: TradeSelectionDecision) {
+  return decision.reasonCode === "legacy_backfill_confirmation_required"
+    && Boolean(decision.recommendedTrade?.tradeId)
+    && decision.recommendedTrade?.tradeId === decision.appliedTrade?.tradeId
+}
+
 export function mergeTradeSelectionHumanState(
   evaluated: TradeSelectionDecision,
   persistedValue: unknown,
 ): TradeSelectionDecision {
   const persisted = recordValue(persistedValue)
   const persistedStatus = stringValue(persisted.status)
+  const persistedReasonCode = stringValue(persisted.reasonCode)
   const confirmedAt = stringValue(persisted.confirmedAt) || null
   if (persistedStatus === "human_adjusted") {
     return {
@@ -1717,6 +1879,27 @@ export function mergeTradeSelectionHumanState(
         ? "人工已选择不同于系统推荐的深绘类目，后续来源刷新不会覆盖当前人工类目。"
         : "系统未生成唯一推荐，当前深绘类目由人工选择。",
       confirmedAt,
+    }
+  }
+  if (
+    persistedStatus === "pending_confirmation"
+    && persistedReasonCode === "legacy_backfill_confirmation_required"
+  ) {
+    const persistedRecommendedId = stringValue(recordValue(persisted.recommendedTrade).tradeId)
+    const currentRecommendedId = evaluated.recommendedTrade?.tradeId ?? ""
+    const currentAppliedId = evaluated.appliedTrade?.tradeId ?? ""
+    if (
+      persistedRecommendedId
+      && persistedRecommendedId === currentRecommendedId
+      && currentAppliedId === currentRecommendedId
+    ) {
+      return {
+        ...evaluated,
+        status: "pending_confirmation",
+        reasonCode: "legacy_backfill_confirmation_required",
+        reason: legacyTradeBackfillReason(evaluated),
+        confirmedAt: null,
+      }
     }
   }
   if (persistedStatus !== "human_confirmed") return evaluated
@@ -1744,6 +1927,7 @@ export function listDeepdrawTradeSelectionCandidates(
   return db.prepare(`
     select
       trade.trade_id,
+      trade.parent_trade_id,
       trade.trade_name,
       trade.trade_path,
       coalesce((
@@ -1774,6 +1958,7 @@ function inferDeepdrawTradeSelectionFromLaunchPlan(db: SyncPostgresDatabase, inp
     input.merchantId,
   )
   return evaluateDeepdrawTradeSelectionFromLaunchPlanRows(input.sourceRows, trades, {
+    tenantName: input.tenantName,
     appliedTrade: input.appliedTrade,
     evaluatedAt: input.evaluatedAt,
   })
@@ -3171,6 +3356,187 @@ export async function refreshProductArchiveDraftsFromSourceBatchInChunks(
   }
 }
 
+export function backfillLegacyProductArchiveDraftTrades(
+  db: SyncPostgresDatabase,
+  options: { apply?: boolean } = {},
+) {
+  const apply = options.apply === true
+  const drafts = db.prepare(`
+    select *
+    from product_archive_draft
+    where tenant_name = ?
+      and lower(coalesce(trade_path, '')) like 'blbl&mini%'
+    order by updated_at desc, id desc
+  `).all(BALA_DEEPDRAW_TENANT) as JsonRecord[]
+  const items: Array<{
+    draftId: number
+    draftNo: string
+    spuCode: string
+    status: string
+    currentTrade: TradeSelectionDecision["appliedTrade"]
+    recommendedTrade: TradeSelectionDecision["recommendedTrade"]
+    decisionStatus: TradeSelectionStatus | null
+    action: "preview_apply" | "applied" | "manual_selection_required" | "review_only" | "skipped_changed" | "failed"
+    message: string
+  }> = []
+
+  for (const draft of drafts) {
+    const draftId = numberValue(draft.id)
+    if (draftId === null) continue
+    const fallbackBase = {
+      draftId,
+      draftNo: stringValue(draft.draft_no),
+      spuCode: stringValue(draft.spu_code),
+      status: stringValue(draft.status),
+      currentTrade: appliedTradeForDraft(draft),
+      recommendedTrade: null,
+      decisionStatus: null,
+    }
+    let failureBase: Omit<(typeof items)[number], "action" | "message"> = fallbackBase
+    try {
+      const decision = currentTradeSelectionDecision(db, draft)
+      const base = {
+        ...fallbackBase,
+        recommendedTrade: decision.recommendedTrade,
+        decisionStatus: decision.status,
+      }
+      failureBase = base
+      if (!isProductArchiveTradeBackfillStatus(draft.status)) {
+        items.push({
+          ...base,
+          action: "review_only",
+          message: "终态或非回填状态，仅列入人工审核清单。",
+        })
+        continue
+      }
+      if (hasHumanTradeSelection(draft.source_snapshot_json)) {
+        items.push({
+          ...base,
+          action: "skipped_changed",
+          message: "草稿已有人工选择，未执行自动回填。",
+        })
+        continue
+      }
+      if (isCompletedLegacyTradeBackfill(decision)) {
+        items.push({
+          ...base,
+          action: "skipped_changed",
+          message: "草稿已完成安全回填，正在等待人工确认，未重复执行。",
+        })
+        continue
+      }
+      if (!decision.recommendedTrade) {
+        items.push({
+          ...base,
+          action: "manual_selection_required",
+          message: decision.reason,
+        })
+        continue
+      }
+      if (!apply) {
+        items.push({
+          ...base,
+          action: "preview_apply",
+          message: "预览：将自动应用推荐类目并保留待人工确认状态。",
+        })
+        continue
+      }
+      const appliedItem = db.transaction((): (typeof items)[number] => {
+        const currentDraft = db.prepare(`
+          select *
+          from product_archive_draft
+          where id = ?
+          for update
+        `).get(draftId) as JsonRecord | undefined
+        if (!currentDraft) {
+          return {
+            ...base,
+            action: "skipped_changed",
+            message: "草稿已不存在，未执行自动回填。",
+          }
+        }
+        const currentDecision = currentTradeSelectionDecision(db, currentDraft)
+        const currentBase = {
+          ...base,
+          status: stringValue(currentDraft.status),
+          currentTrade: appliedTradeForDraft(currentDraft),
+          recommendedTrade: currentDecision.recommendedTrade,
+          decisionStatus: currentDecision.status,
+        }
+        if (!isProductArchiveTradeBackfillStatus(currentDraft.status)) {
+          return {
+            ...currentBase,
+            action: "review_only",
+            message: "草稿已进入终态或非回填状态，仅列入人工审核清单。",
+          }
+        }
+        if (hasHumanTradeSelection(currentDraft.source_snapshot_json)) {
+          return {
+            ...currentBase,
+            action: "skipped_changed",
+            message: "草稿已有人工选择，未执行自动回填。",
+          }
+        }
+        if (isCompletedLegacyTradeBackfill(currentDecision)) {
+          return {
+            ...currentBase,
+            action: "skipped_changed",
+            message: "草稿已完成安全回填，正在等待人工确认，未重复执行。",
+          }
+        }
+        if (!currentDecision.recommendedTrade) {
+          return {
+            ...currentBase,
+            action: "manual_selection_required",
+            message: currentDecision.reason,
+          }
+        }
+        const pendingDecision: TradeSelectionDecision = {
+          ...currentDecision,
+          status: "pending_confirmation",
+          reasonCode: "legacy_backfill_confirmation_required",
+          appliedTrade: currentDecision.recommendedTrade,
+          reason: legacyTradeBackfillReason(currentDecision),
+          confirmedAt: null,
+        }
+        applyProductArchiveDraftTrade(db, draftId, currentDecision.recommendedTrade, {
+          automaticDecision: pendingDecision,
+        })
+        const refreshed = draftById(db, draftId)
+        const refreshedDecision = currentTradeSelectionDecision(db, refreshed)
+        return {
+          ...currentBase,
+          status: stringValue(refreshed.status),
+          currentTrade: appliedTradeForDraft(refreshed),
+          recommendedTrade: refreshedDecision.recommendedTrade,
+          decisionStatus: refreshedDecision.status,
+          action: "applied",
+          message: "已自动应用推荐类目，等待人工确认。",
+        }
+      })()
+      items.push(appliedItem)
+    } catch (error) {
+      items.push({
+        ...failureBase,
+        action: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  return {
+    mode: apply ? "apply" : "preview",
+    scannedDraftCount: drafts.length,
+    appliedDraftCount: items.filter((item) => item.action === "applied").length,
+    previewApplyCount: items.filter((item) => item.action === "preview_apply").length,
+    manualSelectionCount: items.filter((item) => item.action === "manual_selection_required").length,
+    reviewOnlyCount: items.filter((item) => item.action === "review_only").length,
+    skippedChangedCount: items.filter((item) => item.action === "skipped_changed").length,
+    failedCount: items.filter((item) => item.action === "failed").length,
+    items,
+  }
+}
+
 export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input: CreateDraftInput) {
   const spu = db.prepare("select * from product_spu where spu_code = ?").get(input.spuCode) as JsonRecord | undefined
   if (!spu) throw new Error(`MDM 款号不存在：${input.spuCode}`)
@@ -3442,31 +3808,90 @@ export function confirmProductArchiveDraftRecommendedTrade(
   draftId: number,
   input: ConfirmTradeInput = {},
 ) {
-  const draft = draftById(db, draftId)
-  const decision = currentTradeSelectionDecision(db, draft)
-  const recommendedTradeId = decision.recommendedTrade?.tradeId ?? ""
-  const expectedTradeId = stringValue(input.recommendedTradeId)
-  if (!recommendedTradeId || !expectedTradeId || expectedTradeId !== recommendedTradeId) {
-    throw new Error("推荐结果已更新，请刷新后重新确认")
-  }
-  const appliedTrade = appliedTradeForDraft(draft)
-  if (!appliedTrade || appliedTrade.tradeId !== recommendedTradeId) {
-    throw new Error("推荐结果已更新，请刷新后重新确认")
-  }
-  const confirmedAt = nowIso()
-  const confirmed = applyHumanTradeSelectionDecision(decision, appliedTrade, confirmedAt)
-  const persisted = persistTradeSelectionDecision(
-    db,
-    draftId,
-    draft.source_snapshot_json,
-    confirmed,
-    confirmedAt,
-    { tradeId: draft.trade_id, snapshotValue: draft.source_snapshot_json },
-  )
-  if (persisted.changes === 0) {
-    throw new Error("推荐结果已更新，请刷新后重新确认")
-  }
-  return serializeDraftDetail(db, draftId)
+  return db.transaction(() => {
+    const draft = draftById(db, draftId)
+    const decision = currentTradeSelectionDecision(db, draft)
+    const recommendedTradeId = decision.recommendedTrade?.tradeId ?? ""
+    const expectedTradeId = stringValue(input.recommendedTradeId)
+    if (
+      !recommendedTradeId
+      || !expectedTradeId
+      || expectedTradeId !== recommendedTradeId
+      || decision.status === "human_adjusted"
+    ) {
+      throw new Error("推荐结果已更新，请刷新后重新确认")
+    }
+    const trade = db.prepare(`
+      select *
+      from deepdraw_trade_cache
+      where tenant_name = ?
+        and merchant_id = ?
+        and trade_id = ?
+      limit 1
+    `).get(draft.tenant_name, draft.merchant_id, recommendedTradeId) as JsonRecord | undefined
+    if (!trade) throw new Error("本地未找到该深绘类目，请先同步类目主数据")
+
+    const appliedTrade = {
+      tradeId: recommendedTradeId,
+      tradePath: stringValue(trade.trade_path)
+        || stringValue(trade.trade_name)
+        || decision.recommendedTrade?.tradePath
+        || recommendedTradeId,
+    }
+    const appliedAt = nowIso()
+    const appliedDecision: TradeSelectionDecision = {
+      ...decision,
+      appliedTrade,
+      confirmedAt: null,
+    }
+    const appliedSnapshot = {
+      ...recordValue(draft.source_snapshot_json),
+      tradeSelection: appliedDecision,
+    }
+    const updateResult = db.prepare(`
+      update product_archive_draft
+      set trade_id = ?,
+        trade_path = ?,
+        source_snapshot_json = ?::jsonb,
+        updated_at = ?::timestamptz
+      where id = ?
+        and trade_id is not distinct from ?
+        and source_snapshot_json is not distinct from ?::jsonb
+    `).run(
+      appliedTrade.tradeId,
+      appliedTrade.tradePath,
+      jsonText(appliedSnapshot),
+      appliedAt,
+      draftId,
+      draft.trade_id ?? null,
+      jsonText(recordValue(draft.source_snapshot_json)),
+    )
+    if (Number(updateResult.changes ?? 0) === 0) {
+      throw new Error("推荐结果已更新，请刷新后重新确认")
+    }
+    rebuildProductArchiveDraftFields(db, draftId)
+    validateProductArchiveDraft(db, draftId)
+
+    const validatedDraft = draftById(db, draftId)
+    const recheckedDecision = currentTradeSelectionDecision(db, validatedDraft)
+    if (recheckedDecision.recommendedTrade?.tradeId !== recommendedTradeId) {
+      throw new Error("推荐结果已更新，请刷新后重新确认")
+    }
+    const confirmedAt = nowIso()
+    const confirmed = applyHumanTradeSelectionDecision(recheckedDecision, appliedTrade, confirmedAt)
+    const persisted = persistTradeSelectionDecision(
+      db,
+      draftId,
+      validatedDraft.source_snapshot_json,
+      confirmed,
+      confirmedAt,
+      { tradeId: validatedDraft.trade_id, snapshotValue: validatedDraft.source_snapshot_json },
+    )
+    if (persisted.changes === 0) {
+      throw new Error("推荐结果已更新，请刷新后重新确认")
+    }
+    return serializeDraftDetail(db, draftId)
+  })()
 }
 
 export function patchProductArchiveDraftFields(db: SyncPostgresDatabase, draftId: number, input: PatchFieldInput) {

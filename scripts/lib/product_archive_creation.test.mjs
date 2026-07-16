@@ -13,6 +13,7 @@ const files = {
   draftRoute: path.join(PROJECT_ROOT, "web/server/routes/product-archive-drafts.ts"),
   metadataRoute: path.join(PROJECT_ROOT, "web/server/routes/deepdraw-metadata.ts"),
   deepdrawClient: path.join(PROJECT_ROOT, "scripts/lib/deepdraw_client.mjs"),
+  tradeBackfillScript: path.join(PROJECT_ROOT, "scripts/product_archive_trade_backfill.mjs"),
 };
 
 async function readText(file) {
@@ -197,6 +198,235 @@ test("product archive trade matching prefers a public path over a brand-private 
   assert.equal(service.chooseDeepdrawTradeFromLaunchPlanRows(sourceRows, trades)?.tradeId, "68");
 });
 
+const BALA_TRADE_TEST_PLATFORMS = "ALIBABA,PDD,TAOBAO,KUAISHOU";
+
+function deepdrawRoot(tradeId, tradeName) {
+  return {
+    trade_id: tradeId,
+    parent_trade_id: null,
+    trade_name: tradeName,
+    trade_path: tradeName,
+  };
+}
+
+function deepdrawChild(tradeId, parentTradeId, tradeName, tradePath) {
+  return {
+    trade_id: tradeId,
+    parent_trade_id: parentTradeId,
+    trade_name: tradeName,
+    trade_path: tradePath,
+    third_platforms: BALA_TRADE_TEST_PLATFORMS,
+  };
+}
+
+function evaluateBalaTrade(service, category, trades) {
+  return service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    {
+      source_type: "launch_plan",
+      row_json: { "官方发布类目": category },
+    },
+  ], trades, {
+    tenantName: "电商巴拉巴拉",
+    evaluatedAt: "2026-07-16T00:00:00.000Z",
+  });
+}
+
+test("Bala DeepDraw priority keeps a first-tier semantic match above exact lower-tier matches", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const decision = evaluateBalaTrade(service, "童装 > 普通外套", [
+    deepdrawRoot("7", "童装婴幼儿服装"),
+    deepdrawChild("7001", "7", "外套", "童装婴幼儿服装 / 外套"),
+    deepdrawRoot("3245", "尿片/洗护/喂哺/推车床"),
+    deepdrawChild("3245001", "3245", "普通外套", "尿片/洗护/喂哺/推车床 / 普通外套"),
+    deepdrawRoot("9631", "blbl&mini"),
+    deepdrawChild("9631001", "9631", "普通外套", "blbl&mini / 普通外套"),
+  ]);
+
+  assert.equal(decision.recommendedTrade?.tradeId, "7001");
+  assert.match(decision.reason, /第一优先级.*童装婴幼儿服装/);
+});
+
+test("Bala DeepDraw priority falls through to the second tier through parent IDs", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const decision = evaluateBalaTrade(service, "母婴 > 奶瓶", [
+    deepdrawRoot("7", "童装婴幼儿服装"),
+    deepdrawChild("7001", "7", "凉鞋", "童装婴幼儿服装 / 凉鞋"),
+    deepdrawRoot("3245", "尿片/洗护/喂哺/推车床"),
+    deepdrawChild("3245001", "3245", "奶瓶", "尿片/洗护/喂哺/推车床 / 奶瓶"),
+    deepdrawRoot("9631", "blbl&mini"),
+    deepdrawChild("9631001", "9631", "奶瓶", "blbl&mini / 奶瓶"),
+  ]);
+
+  assert.equal(decision.recommendedTrade?.tradeId, "3245001");
+  assert.match(decision.reason, /第二优先级.*尿片\/洗护\/喂哺\/推车床/);
+});
+
+test("Bala DeepDraw priority uses blbl&mini only as the final fallback", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const decision = evaluateBalaTrade(service, "童装 > 普通外套", [
+    deepdrawRoot("7", "童装婴幼儿服装"),
+    deepdrawChild("7001", "7", "凉鞋", "童装婴幼儿服装 / 凉鞋"),
+    deepdrawRoot("3245", "尿片/洗护/喂哺/推车床"),
+    deepdrawChild("3245001", "3245", "奶瓶", "尿片/洗护/喂哺/推车床 / 奶瓶"),
+    deepdrawRoot("9631", "blbl&mini"),
+    deepdrawChild("9631001", "9631", "普通外套", "blbl&mini / 普通外套"),
+  ]);
+
+  assert.equal(decision.recommendedTrade?.tradeId, "9631001");
+  assert.match(decision.reason, /兜底优先级.*blbl&mini/);
+});
+
+test("Bala DeepDraw priority does not bypass a first-tier ambiguity", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const decision = evaluateBalaTrade(service, "童装 > 外套", [
+    deepdrawRoot("7", "童装婴幼儿服装"),
+    deepdrawChild("7001", "7", "外套", "童装婴幼儿服装 / A类 / 外套"),
+    deepdrawChild("7002", "7", "外套", "童装婴幼儿服装 / B类 / 外套"),
+    deepdrawRoot("3245", "尿片/洗护/喂哺/推车床"),
+    deepdrawChild("3245001", "3245", "外套", "童装 > 外套"),
+    deepdrawRoot("9631", "blbl&mini"),
+    deepdrawChild("9631001", "9631", "外套", "童装 > 外套"),
+  ]);
+
+  assert.equal(decision.status, "manual_selection_required");
+  assert.equal(decision.reasonCode, "ambiguous_match");
+  assert.equal(decision.recommendedTrade, null);
+  assert.match(decision.reason, /第一优先级/);
+});
+
+test("Bala DeepDraw priority excludes exact matches outside the approved scopes", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const decision = evaluateBalaTrade(service, "女装 > 连衣裙", [
+    deepdrawRoot("999", "女装"),
+    deepdrawChild("999001", "999", "连衣裙", "女装 / 连衣裙"),
+  ]);
+
+  assert.equal(decision.status, "manual_selection_required");
+  assert.equal(decision.recommendedTrade, null);
+});
+
+test("Bala DeepDraw priority allows only the approved children under sports root 888", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const approved = evaluateBalaTrade(service, "儿童泳衣/裤 > 连体泳衣", [
+    deepdrawRoot("888", "运动/瑜伽/健身/球迷用品"),
+    deepdrawChild("461", "888", "游泳", "运动/瑜伽/健身/球迷用品 / 游泳"),
+    deepdrawChild("6744", "461", "儿童泳衣/裤", "运动/瑜伽/健身/球迷用品 / 游泳 / 儿童泳衣/裤"),
+    deepdrawChild("6744001", "6744", "连体泳衣", "运动/瑜伽/健身/球迷用品 / 游泳 / 儿童泳衣/裤 / 连体泳衣"),
+  ]);
+  const excluded = evaluateBalaTrade(service, "成人泳衣 > 连体泳衣", [
+    deepdrawRoot("888", "运动/瑜伽/健身/球迷用品"),
+    deepdrawChild("461", "888", "游泳", "运动/瑜伽/健身/球迷用品 / 游泳"),
+    deepdrawChild("6750", "461", "成人泳衣", "运动/瑜伽/健身/球迷用品 / 游泳 / 成人泳衣"),
+    deepdrawChild("6750001", "6750", "连体泳衣", "运动/瑜伽/健身/球迷用品 / 游泳 / 成人泳衣 / 连体泳衣"),
+  ]);
+
+  assert.equal(approved.recommendedTrade?.tradeId, "6744001");
+  assert.match(approved.reason, /第一优先级.*儿童泳衣\/裤/);
+  assert.equal(excluded.recommendedTrade, null);
+});
+
+test("Bala DeepDraw priority allows only male and female kids shoes under root 891", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const approved = evaluateBalaTrade(service, "男童鞋 > 运动鞋", [
+    deepdrawRoot("891", "运动中性鞋"),
+    deepdrawChild("10087", "891", "男童鞋", "运动中性鞋 / 男童鞋"),
+    deepdrawChild("1008701", "10087", "运动鞋", "运动中性鞋 / 男童鞋 / 运动鞋"),
+  ]);
+  const excluded = evaluateBalaTrade(service, "男鞋 > 运动鞋", [
+    deepdrawRoot("891", "运动中性鞋"),
+    deepdrawChild("900", "891", "男鞋", "运动中性鞋 / 男鞋"),
+    deepdrawChild("900001", "900", "运动鞋", "运动中性鞋 / 男鞋 / 运动鞋"),
+  ]);
+
+  assert.equal(approved.recommendedTrade?.tradeId, "1008701");
+  assert.match(approved.reason, /第一优先级.*男童鞋/);
+  assert.equal(excluded.recommendedTrade, null);
+});
+
+test("Bala DeepDraw priority includes every remaining approved root and narrow branch", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const cases = [
+    {
+      expectedTradeId: "531001",
+      expectedPriority: "第一优先级",
+      category: "童鞋",
+      trades: [
+        deepdrawRoot("531", "童鞋/亲子鞋"),
+        deepdrawChild("531001", "531", "童鞋", "童鞋/亲子鞋 / 童鞋"),
+      ],
+    },
+    {
+      expectedTradeId: "9483001",
+      expectedPriority: "第一优先级",
+      category: "儿童睡衣",
+      trades: [
+        deepdrawRoot("9483", "寝具服饰"),
+        deepdrawChild("9483001", "9483", "儿童睡衣", "寝具服饰 / 儿童睡衣"),
+      ],
+    },
+    {
+      expectedTradeId: "3525001",
+      expectedPriority: "第二优先级",
+      category: "婴儿床品",
+      trades: [
+        deepdrawRoot("3525", "婴幼儿寝具"),
+        deepdrawChild("3525001", "3525", "婴儿床品", "婴幼儿寝具 / 婴儿床品"),
+      ],
+    },
+    {
+      expectedTradeId: "893001",
+      expectedPriority: "第二优先级",
+      category: "益智玩具",
+      trades: [
+        deepdrawRoot("893", "玩具/模型/动漫/早教/益智"),
+        deepdrawChild("893001", "893", "益智玩具", "玩具/模型/动漫/早教/益智 / 益智玩具"),
+      ],
+    },
+    {
+      expectedTradeId: "6741",
+      expectedPriority: "第一优先级",
+      category: "亲子家庭装",
+      trades: [
+        deepdrawRoot("888", "运动/瑜伽/健身/球迷用品"),
+        deepdrawChild("461", "888", "游泳", "运动/瑜伽/健身/球迷用品 / 游泳"),
+        deepdrawChild("6741", "461", "亲子家庭装", "运动/瑜伽/健身/球迷用品 / 游泳 / 亲子家庭装"),
+      ],
+    },
+    {
+      expectedTradeId: "905",
+      expectedPriority: "第一优先级",
+      category: "女童鞋",
+      trades: [
+        deepdrawRoot("891", "运动中性鞋"),
+        deepdrawChild("905", "891", "女童鞋", "运动中性鞋 / 女童鞋"),
+      ],
+    },
+  ];
+
+  for (const item of cases) {
+    const decision = evaluateBalaTrade(service, item.category, item.trades);
+    assert.equal(decision.recommendedTrade?.tradeId, item.expectedTradeId, item.category);
+    assert.match(decision.reason, new RegExp(item.expectedPriority), item.category);
+  }
+});
+
+test("Bala DeepDraw candidate ancestry and tenant context flow through the shared inference boundary", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const serviceSource = await readFile(files.draftService, "utf8");
+  let candidateSql = "";
+  const fakeDb = {
+    prepare(sql) {
+      candidateSql = sql;
+      return { all: () => [] };
+    },
+  };
+
+  service.listDeepdrawTradeSelectionCandidates(fakeDb, "电商巴拉巴拉", "1162");
+
+  assert.match(candidateSql, /trade\.parent_trade_id/);
+  assert.match(serviceSource, /tenantName:\s*input\.tenantName,[\s\S]{0,160}appliedTrade:\s*input\.appliedTrade/);
+});
+
 test("product archive trade matching requires every launch-plan platform to map before preferring a trade", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const sourceRows = [
@@ -279,6 +509,33 @@ test("trade selection decision auto-applies a unique high-confidence category", 
   assert.equal(decision.sourceConflict, false);
   assert.equal(decision.evaluatedAt, evaluatedAt);
   assert.equal(decision.confirmedAt, null);
+});
+
+test("trade selection decision requires confirmation when the applied category differs from a high-confidence recommendation", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    {
+      source_type: "launch_plan",
+      row_json: { "官方发布类目": "童装 > 外套" },
+    },
+  ], [
+    {
+      trade_id: "68",
+      trade_name: "外套",
+      trade_path: "童装 > 外套",
+      third_platforms: "ALIBABA,PDD,TAOBAO,KUAISHOU",
+    },
+  ], {
+    appliedTrade: { tradeId: "12390", tradePath: "blbl&mini > 童装服饰 > 外套" },
+    evaluatedAt: "2026-07-15T00:00:00.000Z",
+  });
+
+  assert.equal(decision.confidence, "high");
+  assert.equal(decision.recommendedTrade?.tradeId, "68");
+  assert.equal(decision.appliedTrade?.tradeId, "12390");
+  assert.equal(decision.status, "pending_confirmation");
+  assert.equal(decision.reasonCode, "applied_trade_mismatch");
+  assert.match(decision.reason, /当前已应用类目.*推荐类目.*人工确认/);
 });
 
 test("trade selection decision auto-applies a medium-confidence category pending confirmation", async () => {
@@ -491,6 +748,37 @@ test("trade selection decision preserves human adjustment but resets stale confi
   assert.equal(staleConfirmation.status, "pending_confirmation");
   assert.equal(staleConfirmation.reasonCode, "medium_confidence");
   assert.equal(staleConfirmation.confirmedAt, null);
+});
+
+test("trade selection decision preserves the manual-confirmation gate for legacy backfills", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const evaluated = {
+    status: "auto_applied",
+    confidence: "high",
+    reasonCode: "unique_high_confidence",
+    recommendedTrade: { tradeId: "68", tradePath: "童装 > 外套" },
+    appliedTrade: { tradeId: "68", tradePath: "童装 > 外套" },
+    matchedField: "官方发布类目",
+    matchedValue: "童装 > 外套",
+    requiredPlatforms: ["ALIBABA"],
+    coveredPlatforms: ["ALIBABA"],
+    sourceConflict: false,
+    reason: "第一优先级「童装婴幼儿服装」命中。已根据官方发布类目唯一匹配并自动应用深绘类目，置信度高。",
+    evaluatedAt: "2026-07-15T02:00:00.000Z",
+    confirmedAt: null,
+  };
+  const persisted = {
+    ...evaluated,
+    status: "pending_confirmation",
+    reasonCode: "legacy_backfill_confirmation_required",
+    reason: "旧草稿已按最新规则应用推荐类目，等待人工确认。",
+  };
+
+  const merged = service.mergeTradeSelectionHumanState(evaluated, persisted);
+  assert.equal(merged.status, "pending_confirmation");
+  assert.equal(merged.reasonCode, "legacy_backfill_confirmation_required");
+  assert.match(merged.reason, /第一优先级.*童装婴幼儿服装/);
+  assert.match(merged.reason, /旧草稿/);
 });
 
 test("automatic trade refresh does not overwrite a human-adjusted draft", async () => {
@@ -707,6 +995,221 @@ test("confirming a recommendation rejects a concurrent snapshot change", async (
   assert.throws(() => service.confirmProductArchiveDraftRecommendedTrade(fakeDb, 101, {
     recommendedTradeId: "68",
   }), /推荐结果已更新/);
+});
+
+test("confirming a legacy recommendation applies the trade and confirms it in one transaction", async () => {
+  const service = await readFile(files.draftService, "utf8");
+  const start = service.indexOf("export function confirmProductArchiveDraftRecommendedTrade");
+  const end = service.indexOf("export function patchProductArchiveDraftFields", start);
+  const implementation = service.slice(start, end);
+
+  assert.match(implementation, /return db\.transaction\(\(\) => \{/);
+  assert.match(implementation, /update product_archive_draft[\s\S]*set trade_id = \?/);
+  assert.match(implementation, /rebuildProductArchiveDraftFields\(db, draftId\)/);
+  assert.match(implementation, /validateProductArchiveDraft\(db, draftId\)/);
+  assert.match(implementation, /applyHumanTradeSelectionDecision/);
+  const applyTradeIndex = implementation.indexOf("update product_archive_draft");
+  const rebuildFieldsIndex = implementation.indexOf("rebuildProductArchiveDraftFields(db, draftId)");
+  const validateIndex = implementation.indexOf("validateProductArchiveDraft(db, draftId)");
+  const recheckRecommendationIndex = implementation.lastIndexOf("currentTradeSelectionDecision(db");
+  const confirmIndex = implementation.indexOf("applyHumanTradeSelectionDecision");
+  assert.ok(applyTradeIndex < rebuildFieldsIndex, "the recommended trade must be applied before fields are rebuilt");
+  assert.ok(rebuildFieldsIndex < validateIndex, "fields must be rebuilt before validation");
+  assert.ok(validateIndex < recheckRecommendationIndex, "the recommendation must be rechecked after validation");
+  assert.ok(recheckRecommendationIndex < confirmIndex, "the final recommendation check must precede confirmation");
+  assert.ok(validateIndex < confirmIndex, "human confirmation must only be persisted after validation");
+  assert.doesNotMatch(
+    implementation,
+    /appliedTrade\.tradeId !== recommendedTradeId\)[\s\S]*throw new Error\("推荐结果已更新/,
+  );
+});
+
+test("legacy trade backfill only mutates editable drafts and defaults to preview", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  assert.equal(typeof service.isProductArchiveTradeBackfillStatus, "function");
+  for (const status of ["draft", "manual_review", "ready"]) {
+    assert.equal(service.isProductArchiveTradeBackfillStatus(status), true, status);
+  }
+  for (const status of ["readback_verified", "duplicate_found", "created", "failed", "missing_fields"]) {
+    assert.equal(service.isProductArchiveTradeBackfillStatus(status), false, status);
+  }
+
+  const script = await readText(files.tradeBackfillScript);
+  const serviceSource = await readText(files.draftService);
+  const start = serviceSource.indexOf("export function backfillLegacyProductArchiveDraftTrades");
+  const end = serviceSource.indexOf("export function createProductArchiveDraftFromSpu", start);
+  const implementation = serviceSource.slice(start, end);
+  assert.match(script, /--apply/);
+  assert.match(script, /preview/i);
+  assert.match(script, /backfillLegacyProductArchiveDraftTrades/);
+  assert.match(script, /apply:\s*args\.has\("--apply"\)/);
+  assert.match(script, /closeDb/);
+  assert.match(script, /finally/);
+  assert.match(script, /failedCount[\s\S]*process\.exitCode = 1/);
+  assert.match(implementation, /for update/i);
+  assert.match(implementation, /status:\s*"pending_confirmation"/);
+  assert.match(implementation, /hasHumanTradeSelection/);
+  assert.match(implementation, /catch \(error\)/);
+  assert.match(implementation, /failedCount/);
+});
+
+test("legacy trade backfill includes stale automatic decisions in the Bala preview", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sourceRows = [{
+    source_type: "launch_plan",
+    row_json: { "官方发布类目": "童装 > 外套" },
+  }];
+  const draft = {
+    id: 101,
+    draft_no: "PAD-SPU001",
+    spu_code: "SPU001",
+    tenant_name: "电商巴拉巴拉",
+    merchant_id: "1162",
+    status: "manual_review",
+    trade_id: "12390",
+    trade_path: "blbl&mini / 童装服饰 / 外套",
+    source_snapshot_json: {
+      sourceRows,
+      tradeSelection: {
+        status: "manual_selection_required",
+        reasonCode: "missing_semantic_match",
+      },
+    },
+  };
+  const trades = [
+    deepdrawRoot("7", "童装婴幼儿服装"),
+    deepdrawChild("68", "7", "外套", "童装婴幼儿服装 / 外套"),
+  ];
+  const fakeDb = {
+    prepare(sql) {
+      return {
+        all() {
+          if (/from product_archive_draft/i.test(sql)) {
+            return /source_snapshot_json\s*->\s*'tradeSelection'/i.test(sql) ? [] : [draft];
+          }
+          if (/from deepdraw_trade_cache trade/i.test(sql)) return trades;
+          if (/from product_archive_source_row/i.test(sql)) return sourceRows;
+          return [];
+        },
+      };
+    },
+  };
+
+  const result = service.backfillLegacyProductArchiveDraftTrades(fakeDb);
+
+  assert.equal(result.mode, "preview");
+  assert.equal(result.scannedDraftCount, 1);
+  assert.equal(result.previewApplyCount, 1);
+  assert.equal(result.items[0]?.action, "preview_apply");
+  assert.equal(result.items[0]?.recommendedTrade?.tradeId, "68");
+});
+
+test("legacy trade backfill preview skips drafts with a human category decision", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sourceRows = [{
+    source_type: "launch_plan",
+    row_json: { "官方发布类目": "童装 > 外套" },
+  }];
+  const draft = {
+    id: 102,
+    draft_no: "PAD-SPU002",
+    spu_code: "SPU002",
+    tenant_name: "电商巴拉巴拉",
+    merchant_id: "1162",
+    status: "manual_review",
+    trade_id: "12390",
+    trade_path: "blbl&mini / 童装服饰 / 外套",
+    source_snapshot_json: {
+      sourceRows,
+      tradeSelection: {
+        status: "human_adjusted",
+        reasonCode: "human_adjusted",
+        appliedTrade: {
+          tradeId: "12390",
+          tradePath: "blbl&mini / 童装服饰 / 外套",
+        },
+      },
+    },
+  };
+  const trades = [
+    deepdrawRoot("7", "童装婴幼儿服装"),
+    deepdrawChild("68", "7", "外套", "童装婴幼儿服装 / 外套"),
+  ];
+  const fakeDb = {
+    prepare(sql) {
+      return {
+        all() {
+          if (/from product_archive_draft/i.test(sql)) return [draft];
+          if (/from deepdraw_trade_cache trade/i.test(sql)) return trades;
+          if (/from product_archive_source_row/i.test(sql)) return sourceRows;
+          return [];
+        },
+      };
+    },
+  };
+
+  const result = service.backfillLegacyProductArchiveDraftTrades(fakeDb);
+
+  assert.equal(result.scannedDraftCount, 1);
+  assert.equal(result.previewApplyCount, 0);
+  assert.equal(result.skippedChangedCount, 1);
+  assert.equal(result.items[0]?.action, "skipped_changed");
+  assert.match(result.items[0]?.message ?? "", /已有人工选择/);
+});
+
+test("legacy trade backfill is idempotent when blbl&mini remains the confirmed fallback", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sourceRows = [{
+    source_type: "launch_plan",
+    row_json: { "官方发布类目": "童装 > 普通外套" },
+  }];
+  const fallbackTrade = {
+    tradeId: "9631001",
+    tradePath: "blbl&mini / 普通外套",
+  };
+  const draft = {
+    id: 103,
+    draft_no: "PAD-SPU003",
+    spu_code: "SPU003",
+    tenant_name: "电商巴拉巴拉",
+    merchant_id: "1162",
+    status: "manual_review",
+    trade_id: fallbackTrade.tradeId,
+    trade_path: fallbackTrade.tradePath,
+    source_snapshot_json: {
+      sourceRows,
+      tradeSelection: {
+        status: "pending_confirmation",
+        reasonCode: "legacy_backfill_confirmation_required",
+        recommendedTrade: fallbackTrade,
+        appliedTrade: fallbackTrade,
+        reason: "兜底优先级「blbl&mini」命中。旧草稿已按最新规则应用推荐类目，等待人工确认。",
+      },
+    },
+  };
+  const trades = [
+    deepdrawRoot("9631", "blbl&mini"),
+    deepdrawChild("9631001", "9631", "普通外套", "blbl&mini / 普通外套"),
+  ];
+  const fakeDb = {
+    prepare(sql) {
+      return {
+        all() {
+          if (/from product_archive_draft/i.test(sql)) return [draft];
+          if (/from deepdraw_trade_cache trade/i.test(sql)) return trades;
+          if (/from product_archive_source_row/i.test(sql)) return sourceRows;
+          return [];
+        },
+      };
+    },
+  };
+
+  const result = service.backfillLegacyProductArchiveDraftTrades(fakeDb);
+
+  assert.equal(result.previewApplyCount, 0);
+  assert.equal(result.skippedChangedCount, 1);
+  assert.equal(result.items[0]?.action, "skipped_changed");
+  assert.match(result.items[0]?.message ?? "", /已完成安全回填/);
 });
 
 test("product archive trade matching gives official launch category priority over VIP or Douyin category leaves", async () => {

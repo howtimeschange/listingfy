@@ -120,7 +120,7 @@ interface DraftDetail {
 interface TradeSelectionDecision {
   status: "auto_applied" | "pending_confirmation" | "manual_selection_required" | "human_confirmed" | "human_adjusted"
   confidence: "high" | "medium" | "none"
-  reasonCode: "unique_high_confidence" | "medium_confidence" | "source_category_conflict" | "missing_source_category" | "missing_platform_coverage" | "missing_semantic_match" | "ambiguous_match" | "human_confirmed" | "human_adjusted"
+  reasonCode: "unique_high_confidence" | "medium_confidence" | "source_category_conflict" | "missing_source_category" | "missing_platform_coverage" | "missing_semantic_match" | "ambiguous_match" | "applied_trade_mismatch" | "legacy_backfill_confirmation_required" | "human_confirmed" | "human_adjusted"
   recommendedTrade: { tradeId: string; tradePath: string } | null
   appliedTrade: { tradeId: string; tradePath: string } | null
   matchedField: string | null
@@ -441,6 +441,10 @@ export default function ProductArchiveDraftDetailPage() {
   const draft = detail.data?.draft
   const summary = draft?.validation_summary_json ?? {}
   const tradeSelectionDecision = detail.data?.tradeSelectionDecision
+  const recommendationNeedsApply = Boolean(
+    tradeSelectionDecision?.recommendedTrade
+    && tradeSelectionDecision.recommendedTrade.tradeId !== tradeSelectionDecision.appliedTrade?.tradeId,
+  )
   const launchPlanReference = detail.data?.launchPlanReference ?? { matched: false, fields: [] }
   const trades = useQuery<TradeListResponse>({
     queryKey: ["deepdraw-metadata-trades", draft?.tenant_name, debouncedTradeSearch],
@@ -944,7 +948,7 @@ export default function ProductArchiveDraftDetailPage() {
                 onClick={() => confirmRecommendedTrade.mutate()}
               >
                 {confirmRecommendedTrade.isPending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-                确认推荐类目
+                {recommendationNeedsApply ? "应用并确认推荐类目" : "确认推荐类目"}
               </Button>
               <Button
                 type="button"
