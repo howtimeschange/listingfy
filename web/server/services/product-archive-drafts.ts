@@ -4517,6 +4517,7 @@ export async function checkDuplicateProductArchiveDraft(db: SyncPostgresDatabase
     return await getDeepdrawProduct({
       config,
       productCode: stringValue(draft.spu_code),
+      resource: "form",
       timeoutMs: Number(process.env.DEEPDRAW_TIMEOUT_MS ?? 30000),
     }) as DeepdrawResult
   })
@@ -4626,6 +4627,7 @@ export async function readbackProductArchiveDraft(db: SyncPostgresDatabase, draf
     return await getDeepdrawProduct({
       config,
       productCode: stringValue(draft.spu_code),
+      resource: "form",
       timeoutMs: Number(process.env.DEEPDRAW_TIMEOUT_MS ?? 30000),
     }) as DeepdrawResult
   })

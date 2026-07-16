@@ -95,6 +95,19 @@ test("product archive draft service is PG-first and covers build validate patch 
   assert.doesNotMatch(service, /openDatabase|applyMigrations|better-sqlite3|node:sqlite/);
 });
 
+test("product archive duplicate and readback calls keep DeepDraw resource reads form-only", async () => {
+  const service = await readFile(files.draftService, "utf8");
+  const duplicateStart = service.indexOf("export async function checkDuplicateProductArchiveDraft");
+  const duplicateEnd = service.indexOf("export async function submitProductArchiveDraft", duplicateStart);
+  const duplicateImplementation = service.slice(duplicateStart, duplicateEnd);
+  const readbackStart = service.indexOf("export async function readbackProductArchiveDraft");
+  const readbackEnd = service.indexOf("export function listProductArchiveSubmitLogs", readbackStart);
+  const readbackImplementation = service.slice(readbackStart, readbackEnd);
+
+  assert.match(duplicateImplementation, /getDeepdrawProduct\(\{[\s\S]*resource: "form"[\s\S]*\}\)/);
+  assert.match(readbackImplementation, /getDeepdrawProduct\(\{[\s\S]*resource: "form"[\s\S]*\}\)/);
+});
+
 test("product archive draft source rows stay scoped to the import batch when present", async () => {
   const service = await readFile(files.draftService, "utf8");
 
