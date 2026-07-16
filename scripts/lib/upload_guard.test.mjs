@@ -6,10 +6,19 @@ import { test } from "node:test";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const VALID_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
+const VALID_JPEG = Buffer.from(
+  "/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAAaADAAQAAAABAAAAAQAAAAD/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9sAQwACAgICAgIDAgIDBQMDAwUGBQUFBQYIBgYGBgYICggICAgICAoKCgoKCgoKDAwMDAwMDg4ODg4PDw8PDw8PDw8P/9sAQwECAgIEBAQHBAQHEAsJCxAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ/90ABAAB/9oADAMBAAIRAxEAPwD9OKKKK+TPUP/Z",
+  "base64",
+);
 
 const {
   assertUploadFile,
   detectImageUploadType,
+  readImageDimensions,
   readValidatedUploadBuffer,
   safeUploadFileName,
 } = await import("../../web/server/lib/upload-guard.ts");
@@ -82,6 +91,38 @@ test("upload guard verifies image size, extension, MIME, and magic bytes", async
   assert.throws(
     () => detectImageUploadType(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x00, 0x00, 0x00])),
     /不是支持的图片文件/,
+  );
+});
+
+test("upload guard reads JPEG and PNG dimensions before SHEIN image validation", () => {
+  const sofOnlyJpeg = Buffer.from([
+    0xff, 0xd8,
+    0xff, 0xc0, 0x00, 0x11, 0x08,
+    0x06, 0xf9,
+    0x05, 0x3c,
+    0x03, 0x01, 0x11, 0x00,
+    0x02, 0x11, 0x00,
+    0x03, 0x11, 0x00,
+    0xff, 0xd9,
+  ]);
+  const truncatedPng = Buffer.alloc(24);
+  PNG_BYTES.copy(truncatedPng, 0);
+  truncatedPng.writeUInt32BE(1200, 16);
+  truncatedPng.writeUInt32BE(1200, 20);
+
+  assert.deepEqual(readImageDimensions(VALID_JPEG), { width: 1, height: 1 });
+  assert.deepEqual(readImageDimensions(VALID_PNG), { width: 1, height: 1 });
+  assert.throws(
+    () => readImageDimensions(sofOnlyJpeg),
+    /无法读取图片尺寸/,
+  );
+  assert.throws(
+    () => readImageDimensions(truncatedPng),
+    /无法读取图片尺寸/,
+  );
+  assert.throws(
+    () => readImageDimensions(Buffer.from([0xff, 0xd8, 0xff, 0xd9])),
+    /无法读取图片尺寸/,
   );
 });
 

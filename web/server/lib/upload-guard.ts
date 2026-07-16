@@ -10,6 +10,11 @@ export type ImageUploadType = {
   contentType: "image/jpeg" | "image/png" | "image/webp"
 }
 
+export type ImageDimensions = {
+  width: number
+  height: number
+}
+
 const MB = 1024 * 1024
 const SPREADSHEET_EXTENSIONS = new Set([".xlsx", ".xlsm", ".csv"])
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"])
@@ -123,6 +128,126 @@ export function detectImageUploadType(buffer: Buffer): ImageUploadType {
     return { extension: ".webp", contentType: "image/webp" }
   }
   throw new HTTPException(400, { message: "不是支持的图片文件" })
+}
+
+function validDimensions(width: number, height: number): ImageDimensions | null {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return null
+  return { width, height }
+}
+
+function readJpegDimensions(buffer: Buffer): ImageDimensions | null {
+  let offset = 2
+  let dimensions: ImageDimensions | null = null
+  while (offset + 3 < buffer.length) {
+    if (buffer[offset] !== 0xff) {
+      offset += 1
+      continue
+    }
+    const marker = buffer[offset + 1]
+    offset += 2
+    if (marker === 0xd9) return null
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue
+    if (offset + 2 > buffer.length) break
+    const segmentLength = buffer.readUInt16BE(offset)
+    if (segmentLength < 2 || offset + segmentLength > buffer.length) break
+    const isStartOfFrame = (
+      marker >= 0xc0
+      && marker <= 0xcf
+      && ![0xc4, 0xc8, 0xcc].includes(marker)
+    )
+    if (isStartOfFrame && segmentLength >= 7) {
+      dimensions = validDimensions(buffer.readUInt16BE(offset + 5), buffer.readUInt16BE(offset + 3))
+      if (!dimensions) return null
+    }
+    if (marker === 0xda) {
+      if (!dimensions) return null
+      let scanOffset = offset + segmentLength
+      let hasScanData = false
+      while (scanOffset + 1 < buffer.length) {
+        if (buffer[scanOffset] !== 0xff) {
+          hasScanData = true
+          scanOffset += 1
+          continue
+        }
+        const scanMarker = buffer[scanOffset + 1]
+        if (scanMarker === 0x00) {
+          hasScanData = true
+          scanOffset += 2
+          continue
+        }
+        if (scanMarker === 0xd9) return hasScanData ? dimensions : null
+        scanOffset += scanMarker === 0xff ? 1 : 2
+      }
+      return null
+    }
+    offset += segmentLength
+  }
+  return null
+}
+
+function readWebpDimensions(buffer: Buffer): ImageDimensions | null {
+  const chunkType = buffer.subarray(12, 16).toString("ascii")
+  if (chunkType === "VP8X" && buffer.length >= 30) {
+    const width = 1 + buffer.readUIntLE(24, 3)
+    const height = 1 + buffer.readUIntLE(27, 3)
+    return validDimensions(width, height)
+  }
+  if (chunkType === "VP8L" && buffer.length >= 25 && buffer[20] === 0x2f) {
+    const width = 1 + (buffer[21] | ((buffer[22] & 0x3f) << 8))
+    const height = 1 + ((buffer[22] >> 6) | (buffer[23] << 2) | ((buffer[24] & 0x0f) << 10))
+    return validDimensions(width, height)
+  }
+  if (
+    chunkType === "VP8 "
+    && buffer.length >= 30
+    && buffer[23] === 0x9d
+    && buffer[24] === 0x01
+    && buffer[25] === 0x2a
+  ) {
+    const width = buffer.readUInt16LE(26) & 0x3fff
+    const height = buffer.readUInt16LE(28) & 0x3fff
+    return validDimensions(width, height)
+  }
+  return null
+}
+
+function readPngDimensions(buffer: Buffer): ImageDimensions | null {
+  if (buffer.length < 45) return null
+  if (buffer.readUInt32BE(8) !== 13 || buffer.subarray(12, 16).toString("ascii") !== "IHDR") return null
+  const dimensions = validDimensions(buffer.readUInt32BE(16), buffer.readUInt32BE(20))
+  if (!dimensions) return null
+
+  let offset = 8
+  let hasImageData = false
+  let hasEnd = false
+  while (offset + 12 <= buffer.length) {
+    const chunkLength = buffer.readUInt32BE(offset)
+    const chunkEnd = offset + 12 + chunkLength
+    if (chunkEnd > buffer.length) return null
+    const chunkType = buffer.subarray(offset + 4, offset + 8).toString("ascii")
+    if (chunkType === "IDAT" && chunkLength > 0) hasImageData = true
+    if (chunkType === "IEND") {
+      if (chunkLength !== 0) return null
+      hasEnd = true
+      break
+    }
+    offset = chunkEnd
+  }
+  return hasImageData && hasEnd ? dimensions : null
+}
+
+export function readImageDimensions(buffer: Buffer): ImageDimensions {
+  const type = detectImageUploadType(buffer)
+  let dimensions: ImageDimensions | null = null
+  if (type.contentType === "image/png") {
+    dimensions = readPngDimensions(buffer)
+  } else if (type.contentType === "image/jpeg") {
+    dimensions = readJpegDimensions(buffer)
+  } else if (type.contentType === "image/webp") {
+    dimensions = readWebpDimensions(buffer)
+  }
+  if (!dimensions) throw new HTTPException(400, { message: "无法读取图片尺寸，请重新导出图片后上传" })
+  return dimensions
 }
 
 export async function readValidatedUploadBuffer(file: File, kind: UploadKind): Promise<Buffer> {

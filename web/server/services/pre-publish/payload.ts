@@ -118,3 +118,44 @@ export function buildPublishSupplierSkuMap(skus: Array<Record<string, unknown>>)
 export function publishPackageWeight(value: unknown, fallbackValue?: unknown) {
   return asPositiveNumber(value) ?? asPositiveNumber(fallbackValue)
 }
+
+export function skuWeightLookupKeys(sku: Record<string, unknown>) {
+  const values = [
+    sku.sku_code,
+    sku.ean_code,
+    sku.barcode,
+    sku.supplier_barcode,
+    sku.source_ean_code,
+    sku.source_supplier_barcode,
+  ]
+  const keys = new Set<string>()
+  for (const value of values) {
+    const text = normalizeText(value)
+    if (text) keys.add(`sku:${text}`)
+    const barcode = normalizeBarcode(value)
+    if (barcode) keys.add(`sku:${barcode}`)
+  }
+  return Array.from(keys)
+}
+
+export function resolveSkuWeightRecord<T>(weights: Map<string, T>, sku: Record<string, unknown>): T | null {
+  for (const key of skuWeightLookupKeys(sku)) {
+    const row = weights.get(key)
+    if (row) return row
+  }
+  return null
+}
+
+export function resolveMissingSkuWeightUpdates<T extends Record<string, unknown>>(
+  weights: Map<string, T>,
+  skus: Array<Record<string, unknown>>,
+) {
+  return skus.flatMap((sku) => {
+    const id = asPositiveNumber(sku.id)
+    if (!id || asPositiveNumber(sku.package_weight_g)) return []
+    const source = resolveSkuWeightRecord(weights, sku)
+    const weight = asPositiveNumber(source?.package_weight_g)
+    if (!weight) return []
+    return [{ id, package_weight_g: Math.round(weight) }]
+  })
+}

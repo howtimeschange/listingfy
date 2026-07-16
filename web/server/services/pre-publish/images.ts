@@ -15,12 +15,19 @@ export type PictureRequirement = {
   single: number | null
   image_type: string
   asset_types: string[]
+  max_count: number
   count_rule: string
   dimension_rule: string
   format_rule: string
   size_rule: string
   field_keys: Array<{ field_key: string; is_true: number | null }>
   note: string | null
+}
+
+export type PictureCapacityRule = {
+  label: string
+  asset_types: string[]
+  max_count: number
 }
 
 const MAIN_DETAIL_IMAGE_RULE = {
@@ -73,6 +80,7 @@ export function buildPictureRequirements(config: PictureConfigRow[]): PictureReq
       single: boolValue("spu_image_detail_single"),
       image_type: detailImageType(boolValue("spu_image_detail_single")),
       asset_types: ["MAIN", "DETAIL", "DETAIL_BACK"],
+      max_count: boolValue("spu_image_detail_single") === 1 ? 1 : 11,
       count_rule: detailCountRule(boolValue("spu_image_detail_single")),
       ...MAIN_DETAIL_IMAGE_RULE,
       field_keys: [
@@ -92,6 +100,7 @@ export function buildPictureRequirements(config: PictureConfigRow[]): PictureReq
       single: null,
       image_type: "5-方块图",
       asset_types: ["SQUARE"],
+      max_count: 1,
       count_rule: "1 张",
       ...SQUARE_IMAGE_RULE,
       field_keys: [
@@ -110,6 +119,7 @@ export function buildPictureRequirements(config: PictureConfigRow[]): PictureReq
       single: boolValue("skc_image_detail_single"),
       image_type: detailImageType(boolValue("skc_image_detail_single")),
       asset_types: ["MAIN", "DETAIL", "DETAIL_BACK"],
+      max_count: boolValue("skc_image_detail_single") === 1 ? 1 : 11,
       count_rule: detailCountRule(boolValue("skc_image_detail_single")),
       ...MAIN_DETAIL_IMAGE_RULE,
       field_keys: [
@@ -129,6 +139,7 @@ export function buildPictureRequirements(config: PictureConfigRow[]): PictureReq
       single: null,
       image_type: "5-方块图",
       asset_types: ["SQUARE"],
+      max_count: 1,
       count_rule: "1 张",
       ...SQUARE_IMAGE_RULE,
       field_keys: [
@@ -147,6 +158,7 @@ export function buildPictureRequirements(config: PictureConfigRow[]): PictureReq
       single: 1,
       image_type: "6-色块图",
       asset_types: ["COLOR_BLOCK", "COLOR"],
+      max_count: 1,
       count_rule: "每个 SKC 1 张；多 SKC 必填，单 SKC 非必填",
       ...COLOR_IMAGE_RULE,
       field_keys: [],
@@ -165,6 +177,31 @@ export function imageFileSizeLimitBytes(requirement: PictureRequirement) {
   const match = requirement.size_rule.match(/[≤<]\s*(\d+(?:\.\d+)?)\s*M/i)
   if (!match) return null
   return Math.round(Number(match[1]) * 1024 * 1024)
+}
+
+export function canAddImagesToRequirement(
+  currentCount: number,
+  incomingCount: number,
+  requirement: PictureRequirement,
+) {
+  const current = Math.max(0, Math.floor(Number(currentCount) || 0))
+  const incoming = Math.max(0, Math.floor(Number(incomingCount) || 0))
+  return incoming > 0 && current + incoming <= requirement.max_count
+}
+
+export function pictureCapacityRules(requirement: PictureRequirement): PictureCapacityRule[] {
+  const rules: PictureCapacityRule[] = [{
+    label: requirement.name,
+    asset_types: requirement.asset_types,
+    max_count: requirement.max_count,
+  }]
+  if (requirement.requirement_key.endsWith("_DETAIL") && requirement.single !== 1) {
+    rules.push(
+      { label: "主图", asset_types: ["MAIN"], max_count: 1 },
+      { label: "细节图", asset_types: ["DETAIL", "DETAIL_BACK"], max_count: 10 },
+    )
+  }
+  return rules
 }
 
 export function isNearRatio(width: number, height: number, ratio: number, tolerance = 0.08) {

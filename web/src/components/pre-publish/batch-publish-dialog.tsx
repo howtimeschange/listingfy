@@ -97,6 +97,7 @@ interface BatchPublishCheckItem {
       selected_for_publish?: boolean
       confirmed: boolean
       required: boolean
+      asset_ids: number[]
     }>
   }
 }
@@ -314,9 +315,6 @@ export function BatchPublishDialog({
             }))
             .filter((sku) => sku.package_length_cm.trim() || sku.package_width_cm.trim() || sku.package_height_cm.trim())
           const imageFixes = item.quick_fixes?.image_confirmations ?? []
-          const imageConfirmedSkcIds = imageFixes
-            .filter((skc) => imageConfirmEdits[batchEditKey(item.listing_id, skc.skc_id)])
-            .map((skc) => skc.skc_id)
 
           return {
             listing_id: item.listing_id,
@@ -324,7 +322,15 @@ export function BatchPublishDialog({
             sku_size_values: skuSizeValues,
             sku_weight_values: skuWeightValues,
             sku_commercial_values: skuCommercialValues,
-            ...(imageFixes.length > 0 ? { image_confirmed_skc_ids: imageConfirmedSkcIds } : {}),
+            ...(imageFixes.length > 0
+              ? {
+                image_confirmations: imageFixes.map((skc) => ({
+                  skc_id: skc.skc_id,
+                  confirmed: Boolean(imageConfirmEdits[batchEditKey(item.listing_id, skc.skc_id)]),
+                  asset_ids: skc.asset_ids,
+                })),
+              }
+              : {}),
             ...(commonFieldEdits.categoryId.trim() && commonFieldEdits.productTypeId.trim()
               ? {
                 category: {

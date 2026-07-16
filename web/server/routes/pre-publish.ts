@@ -11,7 +11,7 @@ import { assertLocalImageFile } from "../lib/local-path-guard"
 import { resolveSheinCredentials } from "../lib/platform-config"
 import { getSheinPriceConfig } from "../lib/price-config"
 import { resolvePackageRule } from "../lib/rule-resolver"
-import { detectImageUploadType, maxUploadBytes, readValidatedUploadBuffer, safeUploadFileName } from "../lib/upload-guard"
+import { detectImageUploadType, maxUploadBytes, readImageDimensions, readValidatedUploadBuffer, safeUploadFileName } from "../lib/upload-guard"
 import { platformAdapterFor } from "../platform-adapters"
 import {
   ensurePublishTask,
@@ -26,10 +26,12 @@ import { coerceFieldValues, normalizeMaterialValue, tariffValueCandidatesForCont
 import {
   boolConfigValue,
   buildPictureRequirements,
+  canAddImagesToRequirement,
   classifyImportedImage,
   imageCompliance,
   inferAssetTypeFromLibraryAsset,
   inferAssetTypeFromRequirement,
+  pictureCapacityRules,
   type PictureConfigRow,
   type PictureRequirement,
 } from "../services/pre-publish/images"
@@ -40,6 +42,9 @@ import {
   publishInfo,
   publishPackageWeight,
   publishSupplierSku,
+  resolveMissingSkuWeightUpdates,
+  resolveSkuWeightRecord,
+  skuWeightLookupKeys,
   responseCode,
   responseMessage,
 } from "../services/pre-publish/payload"
@@ -622,8 +627,9 @@ function activeWeights(db: ReturnType<typeof getDb>) {
   `).all() as SourceRow[]
   const map = new Map<string, SourceRow>()
   for (const row of rows) {
-    const skuCode = normalizeText(row.sku_code)
-    if (skuCode && !map.has(`sku:${skuCode}`)) map.set(`sku:${skuCode}`, row)
+    for (const key of skuWeightLookupKeys(row)) {
+      if (!map.has(key)) map.set(key, row)
+    }
   }
   return map
 }
@@ -1540,7 +1546,7 @@ function buildRow({
   const storedTitleEn = getStoredFill(fills, spuCode, "title_en")
   const titleEn = normalizeText(storedTitleEn?.field_value) || normalizeText(row.listing_title_en)
   const compositionText = firstField(fields, ["材质成分", "25面料成分", "详情页面料", "材质"])
-  const weightCoverage = skus.filter((sku) => weights.has(`sku:${normalizeText(sku.sku_code)}`)).length
+  const weightCoverage = skus.filter((sku) => resolveSkuWeightRecord(weights, sku)).length
   const sizeCoverage = skus.filter((sku) => {
     const sizeRule = sizeConversionForSku(sizeConversions, sku)
     return Boolean(resolveSkuSizeSelection(sizeAttr, sku, sizeRule).option)
@@ -2170,7 +2176,7 @@ function upsertListingChildren(db: ReturnType<typeof getDb>, listingId: number, 
       const sizeOption = sizeSelection.option
       const priceTag = Number(sku.price_tag ?? sourceRow.price_tag ?? 0)
       const costPrice = priceTag > 0 ? Number((priceTag * discount).toFixed(2)) : null
-      const weightRow = weights.get(`sku:${skuCode}`)
+      const weightRow = resolveSkuWeightRecord(weights, sku)
       const existingSku = db.prepare(`
         select
           shein_size_value,
@@ -2460,6 +2466,68 @@ function refreshListingAfterFill(db: ReturnType<typeof getDb>, listingId: number
     changeSummary,
   })
   return { listing, readiness, version }
+}
+
+function listingSkuWeightRows(db: ReturnType<typeof getDb>, listingId: number) {
+  return db.prepare(`
+    select
+      sku.id,
+      sku.sku_code,
+      sku.supplier_barcode,
+      source_sku.ean_code as source_ean_code,
+      source_sku.inner_code as source_supplier_barcode,
+      sku.package_weight_g,
+      sku.selected_for_publish,
+      skc.skc_code
+    from listing_sku sku
+    join listing_skc skc on skc.id = sku.listing_skc_id
+    left join product_sku source_sku on source_sku.id = sku.product_sku_id
+    where skc.listing_id = ?
+    order by skc.skc_code, sku.sku_code
+  `).all(listingId) as SourceRow[]
+}
+
+function applyMissingListingSkuWeights(
+  db: ReturnType<typeof getDb>,
+  listingId: number,
+  rows: SourceRow[],
+  weights: Map<string, SourceRow>,
+) {
+  const updates = resolveMissingSkuWeightUpdates(weights, rows)
+  const update = db.prepare(`
+    update listing_sku
+    set package_weight_g = ?,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+      and coalesce(package_weight_g, 0) <= 0
+      and listing_skc_id in (
+        select id from listing_skc where listing_id = ?
+      )
+  `)
+  for (const item of updates) update.run(item.package_weight_g, item.id, listingId)
+  return updates
+}
+
+function summarizeListingWeightSync(
+  beforeRows: SourceRow[],
+  afterRows: SourceRow[],
+  weights: Map<string, SourceRow>,
+) {
+  const beforeById = new Map(beforeRows.map((row) => [Number(row.id), row]))
+  const sourceMatchedCount = beforeRows.filter((row) => resolveSkuWeightRecord(weights, row)).length
+  const filledRows = afterRows.filter((row) => (
+    !asPositiveNumber(beforeById.get(Number(row.id))?.package_weight_g)
+    && Boolean(asPositiveNumber(row.package_weight_g))
+  ))
+  const missingRows = afterRows.filter((row) => !asPositiveNumber(row.package_weight_g))
+  return {
+    total_sku_count: afterRows.length,
+    source_matched_count: sourceMatchedCount,
+    filled_count: filledRows.length,
+    preserved_count: afterRows.filter((row) => asPositiveNumber(beforeById.get(Number(row.id))?.package_weight_g)).length,
+    missing_count: missingRows.length,
+    missing_sku_codes: missingRows.slice(0, 20).map((row) => normalizeText(row.sku_code)),
+  }
 }
 
 function selectedListingSkcWhere(alias = "skc", options?: { onlySelected?: boolean }) {
@@ -2792,6 +2860,94 @@ function getImageRequirements(db: ReturnType<typeof getDb>, listing: ListingRow)
   return buildPictureRequirements(rows)
 }
 
+function inspectListingImageForRequirement(bytes: Buffer, requirement: PictureRequirement) {
+  const detected = detectImageUploadType(bytes)
+  if (detected.contentType === "image/webp") {
+    throw new HTTPException(400, { message: `${requirement.name} 仅支持 JPG、JPEG、PNG` })
+  }
+  const { width, height } = readImageDimensions(bytes)
+  const compliance = imageCompliance({
+    width,
+    height,
+    file_size: bytes.length,
+  }, requirement)
+  if (!compliance.compliant) {
+    throw new HTTPException(400, {
+      message: `图片不符合${requirement.name}要求：${compliance.reasons.join("；")}`,
+    })
+  }
+  return { detected, width, height, compliance }
+}
+
+function listingImageRequirementAssetCount({
+  db,
+  listingId,
+  listingSkcId,
+  assetTypes,
+  excludeAssetId,
+}: {
+  db: ReturnType<typeof getDb>
+  listingId: number
+  listingSkcId?: unknown
+  assetTypes: string[]
+  excludeAssetId?: unknown
+}) {
+  const clauses = ["listing_id = ?"]
+  const params: unknown[] = [listingId]
+  if (Number.isFinite(Number(listingSkcId)) && Number(listingSkcId) > 0) {
+    clauses.push("listing_skc_id = ?")
+    params.push(Number(listingSkcId))
+  } else {
+    clauses.push("listing_skc_id is null")
+  }
+  clauses.push(`asset_type in (${assetTypes.map(() => "?").join(",")})`)
+  params.push(...assetTypes)
+  const excludedId = Number(excludeAssetId)
+  if (Number.isFinite(excludedId) && excludedId > 0) {
+    clauses.push("id <> ?")
+    params.push(excludedId)
+  }
+  const row = db.prepare(`
+    select count(*) as count
+    from listing_asset
+    where ${clauses.join(" and ")}
+  `).get(...params) as SourceRow | undefined
+  return Number(row?.count ?? 0)
+}
+
+function assertListingImageCapacity(input: {
+  db: ReturnType<typeof getDb>
+  listingId: number
+  listingSkcId?: unknown
+  requirement: PictureRequirement
+  assetType: string
+  incomingCount?: number
+  excludeAssetId?: unknown
+}) {
+  const incomingCount = input.incomingCount ?? 1
+  for (const rule of pictureCapacityRules(input.requirement)) {
+    if (!rule.asset_types.includes(input.assetType)) continue
+    const currentCount = listingImageRequirementAssetCount({
+      db: input.db,
+      listingId: input.listingId,
+      listingSkcId: input.listingSkcId,
+      assetTypes: rule.asset_types,
+      excludeAssetId: input.excludeAssetId,
+    })
+    const ruleRequirement = { ...input.requirement, max_count: rule.max_count }
+    if (!canAddImagesToRequirement(currentCount, incomingCount, ruleRequirement)) {
+      throw new HTTPException(409, {
+        message: `${rule.label}最多 ${rule.max_count} 张，请先删除或调整已有图片`,
+      })
+    }
+  }
+}
+
+function lockListingImageMutation(db: ReturnType<typeof getDb>, listingId: number) {
+  const listing = db.prepare("select id from listing where id = ? for update").get(listingId) as SourceRow | undefined
+  if (!listing) throw new HTTPException(404, { message: "草稿不存在" })
+}
+
 function getListingAssets(db: ReturnType<typeof getDb>, listingId: number, options?: { onlySelected?: boolean }) {
   return db.prepare(`
     select
@@ -2838,6 +2994,8 @@ function getImageChecklist(skcs: SourceRow[], assets: SourceRow[], imageRequirem
         status: satisfied ? "READY" : "MISSING",
       }
     })
+    const groupConfirmed = Number(skc.image_confirmed ?? 0) === 1
+    const assetConfirmationsAligned = skcAssets.every((asset) => Number(asset.confirmed ?? 0) === 1)
     return {
       skc_code: skcCode,
       color_name: skc.color_name ?? null,
@@ -2845,7 +3003,7 @@ function getImageChecklist(skcs: SourceRow[], assets: SourceRow[], imageRequirem
       has_tmall_color_image: hasTmallColor,
       imported_asset_count: skcAssets.length,
       detail_asset_count: detailCount,
-      confirmed: Number(skc.image_confirmed ?? 0) === 1,
+      confirmed: groupConfirmed && assetConfirmationsAligned,
       status: missing.length === 0 ? "READY" : "MISSING",
       missing,
       requirements: requirementStatus,
@@ -4178,7 +4336,10 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
     const colorPayload = parseJsonObject(skc.color_attribute_payload_json)
     const colorValueId = asPositiveNumber(colorPayload.attribute_value_id)
     if (!colorValueId && !normalizeText(colorPayload.custom_attribute_value)) errors.push(`${skc.skc_code} 缺颜色枚举`)
-    if (Number(skc.image_confirmed ?? 0) !== 1) errors.push(`${skc.skc_code} 图片未确认`)
+    const skcAssets = selectedAssetBySkc.get(normalizeText(skc.skc_code)) ?? []
+    const imagesConfirmed = Number(skc.image_confirmed ?? 0) === 1
+      && skcAssets.every((asset) => Number(asset.confirmed ?? 0) === 1)
+    if (!imagesConfirmed) errors.push(`${skc.skc_code} 图片未确认`)
     const skcSkus = skus.filter((sku) => normalizeText(sku.skc_code) === normalizeText(skc.skc_code))
     const barcodeCounts = new Map<string, number>()
     if (fieldShown(publishFields, "supplier_barcode")) {
@@ -4736,25 +4897,84 @@ function applyDraftCategorySelection({
   return true
 }
 
-function updateListingImageConfirmations({
+function resetListingSkcImageConfirmation(
+  db: ReturnType<typeof getDb>,
+  listingId: number,
+  listingSkcId: unknown,
+) {
+  const skcId = Number(listingSkcId)
+  if (!Number.isFinite(skcId) || skcId <= 0) return
+  db.prepare(`
+    update listing_skc
+    set image_confirmed = 0,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+      and listing_id = ?
+  `).run(skcId, listingId)
+  db.prepare(`
+    update listing_asset
+    set confirmed = 0,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where listing_id = ?
+      and listing_skc_id = ?
+  `).run(listingId, skcId)
+}
+
+function setListingSkcImageConfirmation({
   db,
   listingId,
-  imageConfirmedSkcIds,
+  listingSkcId,
+  confirmed,
+  expectedAssetIds,
 }: {
   db: ReturnType<typeof getDb>
   listingId: number
-  imageConfirmedSkcIds?: unknown[]
+  listingSkcId: unknown
+  confirmed: boolean
+  expectedAssetIds?: unknown[]
 }) {
-  if (!Array.isArray(imageConfirmedSkcIds)) return
-  const confirmedSkcIds = new Set(imageConfirmedSkcIds.map(Number).filter(Number.isFinite))
+  const skcId = Number(listingSkcId)
+  lockListingImageMutation(db, listingId)
+  const skc = Number.isFinite(skcId) && skcId > 0
+    ? db.prepare("select id from listing_skc where id = ? and listing_id = ?").get(skcId, listingId) as SourceRow | undefined
+    : undefined
+  if (!skc) throw new HTTPException(404, { message: "草稿款色不存在" })
+
+  if (confirmed) {
+    if (!Array.isArray(expectedAssetIds)) {
+      throw new HTTPException(400, { message: "确认图片前需要提交当前图片清单" })
+    }
+    const currentAssetIds = (db.prepare(`
+      select id
+      from listing_asset
+      where listing_id = ?
+        and listing_skc_id = ?
+      order by id
+    `).all(listingId, skcId) as SourceRow[]).map((row) => Number(row.id))
+    const submittedAssetIds = Array.from(new Set(
+      expectedAssetIds.map(Number).filter((id) => Number.isFinite(id) && id > 0),
+    )).sort((a, b) => a - b)
+    const assetsUnchanged = currentAssetIds.length === submittedAssetIds.length
+      && currentAssetIds.every((id, index) => id === submittedAssetIds[index])
+    if (!assetsUnchanged) {
+      throw new HTTPException(409, { message: "图片列表已变化，请刷新后重新确认" })
+    }
+  }
+
   db.prepare(`
     update listing_skc
-    set image_confirmed = case when id in (
-      ${confirmedSkcIds.size ? Array.from(confirmedSkcIds).map(() => "?").join(",") : "null"}
-    ) then 1 else 0 end,
+    set image_confirmed = ?,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+      and listing_id = ?
+  `).run(confirmed ? 1 : 0, skcId, listingId)
+  db.prepare(`
+    update listing_asset
+    set confirmed = ?,
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     where listing_id = ?
-  `).run(...Array.from(confirmedSkcIds), listingId)
+      and listing_skc_id = ?
+  `).run(confirmed ? 1 : 0, listingId, skcId)
 }
 
 function buildBatchPublishCheckResponse(db: ReturnType<typeof getDb>, listingIds: number[]) {
@@ -4864,6 +5084,10 @@ function buildBatchPublishCheckResponse(db: ReturnType<typeof getDb>, listingIds
         selected_for_publish: Number(skc.selected_for_publish ?? 1) === 1,
         confirmed: Number(skc.image_confirmed ?? 0) === 1,
         required: imageMissingSkcCodes.has(normalizeText(skc.skc_code)),
+        asset_ids: (detail.assets as SourceRow[])
+          .filter((asset) => Number(asset.listing_skc_id) === Number(skc.id))
+          .map((asset) => Number(asset.id))
+          .filter((id) => Number.isFinite(id) && id > 0),
       }))
     return {
       listing_id: listingId,
@@ -5419,6 +5643,71 @@ prePublish.patch("/drafts/:id/fields", async (c) => {
   return c.json({ ok: true, version: refreshed.version, detail: getListingDetail(db, listingId) })
 })
 
+prePublish.post("/drafts/:id/refresh-weights", (c) => {
+  requirePermission(c, "LISTING_WRITE")
+  const db = getDb()
+  const listingId = Number(c.req.param("id"))
+  const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
+  if (!listing) {
+    throw new HTTPException(404, { message: "草稿不存在" })
+  }
+  const transaction = db.transaction(() => {
+    const beforeRows = listingSkuWeightRows(db, listingId)
+    const weights = activeWeights(db)
+    applyMissingListingSkuWeights(db, listingId, beforeRows, weights)
+    const readiness = getReadinessForListing(db, listing)
+    if (!readiness) {
+      throw new HTTPException(500, { message: "同步后台毛重失败" })
+    }
+    persistListingValidation(db, listingId, readiness)
+    const refreshedListing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow
+    const version = createPublishVersion({
+      db,
+      listing: refreshedListing,
+      readiness,
+      changeSummary: "同步后台 SKU 毛重",
+    })
+    const afterRows = listingSkuWeightRows(db, listingId)
+    const summary = summarizeListingWeightSync(beforeRows, afterRows, weights)
+    refreshBucketProduct(db, listing.spu_code)
+    return { version, summary }
+  })
+  const { version, summary } = transaction()
+  return c.json({
+    ok: true,
+    summary,
+    version,
+    detail: getListingDetail(db, listingId),
+  })
+})
+
+prePublish.patch("/drafts/:id/image-confirmation", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
+  const db = getDb()
+  const listingId = Number(c.req.param("id"))
+  const listing = db.prepare("select id from listing where id = ?").get(listingId) as ListingRow | undefined
+  if (!listing) {
+    throw new HTTPException(404, { message: "草稿不存在" })
+  }
+  const body = await c.req.json().catch(() => ({})) as {
+    skc_id?: unknown
+    confirmed?: unknown
+    asset_ids?: unknown[]
+  }
+  const confirmed = body.confirmed === true || Number(body.confirmed) === 1
+  const transaction = db.transaction(() => {
+    setListingSkcImageConfirmation({
+      db,
+      listingId,
+      listingSkcId: body.skc_id,
+      confirmed,
+      expectedAssetIds: body.asset_ids,
+    })
+  })
+  transaction()
+  return c.json({ ok: true, detail: getListingDetail(db, listingId) })
+})
+
 prePublish.post("/drafts/:id/save", async (c) => {
   requirePermission(c, "LISTING_WRITE")
   const db = getDb()
@@ -5464,7 +5753,6 @@ prePublish.post("/drafts/:id/save", async (c) => {
       custom_attribute_value?: unknown
     }>
     manual_size_chart_rows?: ManualSizeChartInputRow[]
-    image_confirmed_skc_ids?: number[]
   }
   const fields = Array.isArray(body.fields) ? body.fields : []
   const skuSizeValues = Array.isArray(body.sku_size_values) ? body.sku_size_values : []
@@ -5475,7 +5763,6 @@ prePublish.post("/drafts/:id/save", async (c) => {
   const manualSizeChartRows = hasManualSizeChartRows ? body.manual_size_chart_rows ?? [] : []
   const hasSkcSelection = Array.isArray(body.selected_skc_ids)
   const hasSkuSelection = Array.isArray(body.selected_sku_ids)
-  const hasImageConfirmation = Array.isArray(body.image_confirmed_skc_ids)
   const selectedSkcIds = new Set((body.selected_skc_ids ?? []).map(Number).filter(Number.isFinite))
   const selectedSkuIds = new Set((body.selected_sku_ids ?? []).map(Number).filter(Number.isFinite))
 
@@ -5511,8 +5798,6 @@ prePublish.post("/drafts/:id/save", async (c) => {
     updateListingSkuCommercials({ db, listingId, skuCommercialValues })
     updateListingSkcColors({ db, listingId, skcColorValues })
     if (hasManualSizeChartRows) persistManualSizeChart({ db, listing, rows: manualSizeChartRows })
-
-    if (hasImageConfirmation) updateListingImageConfirmations({ db, listingId, imageConfirmedSkcIds: body.image_confirmed_skc_ids })
   })
   transaction()
 
@@ -5782,6 +6067,7 @@ function copyImportedImageToAssetRoot(input: {
   skcCode?: unknown
   sourcePath: string
   fileName: string
+  requirement: PictureRequirement
 }) {
   const stat = fs.statSync(input.sourcePath)
   if (!stat.isFile()) return null
@@ -5789,17 +6075,17 @@ function copyImportedImageToAssetRoot(input: {
     return { skipped: true, reason: "图片文件过大" }
   }
   const bytes = fs.readFileSync(input.sourcePath)
-  let detected: ReturnType<typeof detectImageUploadType>
+  let inspection: ReturnType<typeof inspectListingImageForRequirement>
   try {
-    detected = detectImageUploadType(bytes)
-  } catch {
-    return { skipped: true, reason: "不是支持的图片文件" }
+    inspection = inspectListingImageForRequirement(bytes, input.requirement)
+  } catch (error) {
+    return { skipped: true, reason: error instanceof Error ? error.message : "图片不符合平台要求" }
   }
   const dir = path.join(uploadsRoot(), String(input.listingId), skcFingerprint(input.skcCode || "spu"))
   fs.mkdirSync(dir, { recursive: true })
-  const localPath = path.join(dir, safeAssetFileName(input.fileName, detected.extension))
+  const localPath = path.join(dir, safeAssetFileName(input.fileName, inspection.detected.extension))
   fs.writeFileSync(localPath, bytes)
-  return { localPath, bytes, detected }
+  return { localPath, bytes, ...inspection }
 }
 
 function importListingImagesFromFolder(db: ReturnType<typeof getDb>, listingId: number, folderPath: string) {
@@ -5818,6 +6104,7 @@ function importListingImagesFromFolder(db: ReturnType<typeof getDb>, listingId: 
     where listing_id = ?
     order by skc_code
   `).all(listingId) as SourceRow[]
+  const requirements = getImageRequirements(db, listing)
   const folderFinger = skcFingerprint(path.basename(folderPath))
   const fallbackSkc = listingSkcs.find((skc) => folderFinger.includes(skcFingerprint(skc.skc_code)))
     ?? listingSkcs.find((skc) => folderFinger.includes(skcFingerprint(String(skc.skc_code).split(":").pop())))
@@ -5840,17 +6127,21 @@ function importListingImagesFromFolder(db: ReturnType<typeof getDb>, listingId: 
       image_sort,
       local_path,
       file_size,
+      width,
+      height,
       status,
       confirmed,
       note,
       raw_payload_json,
       updated_at
     )
-    values (?, ?, ?, 'MANUAL_FOLDER_IMPORT', ?, ?, ?, ?, 'PENDING_CONFIRM', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    values (?, ?, ?, 'MANUAL_FOLDER_IMPORT', ?, ?, ?, ?, ?, ?, 'PENDING_CONFIRM', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   `)
   const saved: SourceRow[] = []
+  const affectedSkcIds = new Set<number>()
   let importedBytes = 0
   const transaction = db.transaction(() => {
+    lockListingImageMutation(db, listingId)
     for (const fileName of files) {
       const filePath = path.join(folderRealPath, fileName)
       const fileFinger = skcFingerprint(fileName)
@@ -5859,6 +6150,26 @@ function importListingImagesFromFolder(db: ReturnType<typeof getDb>, listingId: 
         ?? fallbackSkc
       if (!matchedSkc) continue
       const classified = classifyImportedImage(fileName)
+      const requirement = requirements.find((item) => item.requirement_key === classified.requirementKey)
+      if (!requirement) {
+        warnings.push({ file_name: fileName, reason: "当前类目没有对应图片规则" })
+        continue
+      }
+      try {
+        assertListingImageCapacity({
+          db,
+          listingId,
+          listingSkcId: matchedSkc.id,
+          requirement,
+          assetType: classified.assetType,
+        })
+      } catch (error) {
+        warnings.push({
+          file_name: fileName,
+          reason: error instanceof Error ? error.message : "图片数量超过平台限制",
+        })
+        continue
+      }
       const sourceFile = resolveImportImageSource(folderRealPath, filePath)
       if ("skipped" in sourceFile) {
         warnings.push({ file_name: fileName, reason: sourceFile.reason })
@@ -5873,6 +6184,7 @@ function importListingImagesFromFolder(db: ReturnType<typeof getDb>, listingId: 
         skcCode: matchedSkc.skc_code,
         sourcePath: sourceFile.realPath,
         fileName,
+        requirement,
       })
       if (!copied || "skipped" in copied) {
         warnings.push({ file_name: fileName, reason: copied?.reason ?? "图片文件不可用" })
@@ -5887,18 +6199,25 @@ function importListingImagesFromFolder(db: ReturnType<typeof getDb>, listingId: 
         classified.sort,
         copied.localPath,
         copied.bytes.length,
+        copied.width,
+        copied.height,
         classified.note,
         JSON.stringify({
           file_name: fileName,
           source_folder: path.basename(folderPath),
           file_size: copied.bytes.length,
           content_type: copied.detected.contentType,
+          width: copied.width,
+          height: copied.height,
+          compliance: copied.compliance,
           requirement_key: classified.requirementKey,
           classification_rule: "filename_index",
         }),
       )
+      affectedSkcIds.add(Number(matchedSkc.id))
       saved.push(db.prepare("select * from listing_asset where id = ?").get(result.lastInsertRowid) as SourceRow)
     }
+    for (const skcId of affectedSkcIds) resetListingSkcImageConfirmation(db, listingId, skcId)
   })
   transaction()
   return { listing, assets: saved, warnings }
@@ -6114,7 +6433,13 @@ prePublish.post("/drafts/:id/images/from-library", async (c) => {
   if (!requirement) {
     throw new HTTPException(400, { message: "图片规则不存在" })
   }
-  const skcCode = normalizeText(body.skc_code) || normalizeText(productAsset.skc_code)
+  const requestedSkcCode = normalizeText(body.skc_code)
+  if (requirement.level === "SPU" && requestedSkcCode) {
+    throw new HTTPException(400, { message: "SPU 图片不能指定 SKC 款色" })
+  }
+  const skcCode = requirement.level === "SKC"
+    ? requestedSkcCode || normalizeText(productAsset.skc_code)
+    : ""
   const listingSkc = skcCode
     ? db.prepare("select * from listing_skc where listing_id = ? and skc_code = ?").get(listingId, skcCode) as SourceRow | undefined
     : undefined
@@ -6122,59 +6447,80 @@ prePublish.post("/drafts/:id/images/from-library", async (c) => {
     throw new HTTPException(400, { message: "SKC 图片必须指定草稿内的款色" })
   }
   const assetType = normalizeText(body.asset_type) || inferAssetTypeFromLibraryAsset(productAsset, requirement)
-  const sortRow = db.prepare(`
-    select coalesce(max(image_sort), 0) + 1 as next_sort
-    from listing_asset
-    where listing_id = ?
-      and coalesce(skc_code, '') = coalesce(?, '')
-      and asset_type = ?
-  `).get(listingId, skcCode || null, assetType) as SourceRow | undefined
-  const imageSort = Number(sortRow?.next_sort ?? 1)
+  if (!requirement.asset_types.includes(assetType)) {
+    throw new HTTPException(400, { message: `图片类型不属于${requirement.name}` })
+  }
   const compliance = imageCompliance(productAsset, requirement)
-  const result = db.prepare(`
-    insert into listing_asset (
-      listing_id,
-      listing_skc_id,
-      skc_code,
-      source_type,
-      asset_type,
-      image_sort,
-      source_url,
-      width,
-      height,
-      file_size,
-      status,
-      confirmed,
-      note,
-      raw_payload_json,
-      updated_at
+  if (!compliance.compliant) {
+    throw new HTTPException(400, {
+      message: `图片不符合${requirement.name}要求：${compliance.reasons.join("；")}`,
+    })
+  }
+  const transaction = db.transaction(() => {
+    lockListingImageMutation(db, listingId)
+    assertListingImageCapacity({
+      db,
+      listingId,
+      listingSkcId: listingSkc?.id,
+      requirement,
+      assetType,
+    })
+    const sortRow = db.prepare(`
+      select coalesce(max(image_sort), 0) + 1 as next_sort
+      from listing_asset
+      where listing_id = ?
+        and coalesce(skc_code, '') = coalesce(?, '')
+        and asset_type = ?
+    `).get(listingId, skcCode || null, assetType) as SourceRow | undefined
+    const imageSort = Number(sortRow?.next_sort ?? 1)
+    const result = db.prepare(`
+      insert into listing_asset (
+        listing_id,
+        listing_skc_id,
+        skc_code,
+        source_type,
+        asset_type,
+        image_sort,
+        source_url,
+        width,
+        height,
+        file_size,
+        status,
+        confirmed,
+        note,
+        raw_payload_json,
+        updated_at
+      )
+      values (?, ?, ?, 'IMAGE_LIBRARY', ?, ?, ?, ?, ?, ?, 'PENDING_CONFIRM', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    `).run(
+      listingId,
+      listingSkc?.id ?? null,
+      skcCode || null,
+      assetType,
+      imageSort,
+      normalizeText(productAsset.normalized_url) || normalizeText(productAsset.source_url),
+      asPositiveNumber(productAsset.width),
+      asPositiveNumber(productAsset.height),
+      asPositiveNumber(productAsset.file_size),
+      `素材库选图：${requirement.name}`,
+      JSON.stringify({
+        product_asset_id: productAsset.id,
+        requirement_key: requirement.requirement_key,
+        source_kind: productAsset.source_kind,
+        asset_type: productAsset.asset_type,
+        picture_type: productAsset.picture_type,
+        file_name: productAsset.file_name,
+        compliance,
+      }),
     )
-    values (?, ?, ?, 'IMAGE_LIBRARY', ?, ?, ?, ?, ?, ?, 'PENDING_CONFIRM', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-  `).run(
-    listingId,
-    listingSkc?.id ?? null,
-    skcCode || null,
-    assetType,
-    imageSort,
-    normalizeText(productAsset.normalized_url) || normalizeText(productAsset.source_url),
-    asPositiveNumber(productAsset.width),
-    asPositiveNumber(productAsset.height),
-    asPositiveNumber(productAsset.file_size),
-    `素材库选图：${requirement.name}`,
-    JSON.stringify({
-      product_asset_id: productAsset.id,
-      requirement_key: requirement.requirement_key,
-      source_kind: productAsset.source_kind,
-      asset_type: productAsset.asset_type,
-      picture_type: productAsset.picture_type,
-      file_name: productAsset.file_name,
-      compliance,
-    }),
-  )
+    resetListingSkcImageConfirmation(db, listingId, listingSkc?.id)
+    return result.lastInsertRowid
+  })
+  const assetId = transaction()
 
   return c.json({
     ok: true,
-    asset: db.prepare("select * from listing_asset where id = ?").get(result.lastInsertRowid),
+    asset: db.prepare("select * from listing_asset where id = ?").get(assetId),
     detail: getListingDetail(db, listingId),
   })
 })
@@ -6194,61 +6540,100 @@ prePublish.post("/drafts/:id/images/upload", async (c) => {
   }
   const skcCode = normalizeText(form.get("skc_code"))
   const requirementKey = normalizeText(form.get("requirement_key"))
+  const requirement = getImageRequirements(db, listing).find((item) => item.requirement_key === requirementKey)
+  if (!requirement) {
+    throw new HTTPException(400, { message: "图片规则不存在，请刷新草稿后重试" })
+  }
+  if (requirement.level === "SPU" && skcCode) {
+    throw new HTTPException(400, { message: "SPU 图片不能指定 SKC 款色" })
+  }
   const assetType = normalizeText(form.get("asset_type")) || inferAssetTypeFromRequirement(requirementKey, file.name)
+  if (!requirement.asset_types.includes(assetType)) {
+    throw new HTTPException(400, { message: `图片类型不属于${requirement.name}` })
+  }
   const listingSkc = skcCode
     ? db.prepare("select * from listing_skc where listing_id = ? and skc_code = ?").get(listingId, skcCode) as SourceRow | undefined
     : undefined
-  const sortRow = db.prepare(`
-    select coalesce(max(image_sort), 0) + 1 as next_sort
-    from listing_asset
-    where listing_id = ?
-      and coalesce(skc_code, '') = coalesce(?, '')
-      and asset_type = ?
-  `).get(listingId, skcCode || null, assetType) as SourceRow | undefined
-  const imageSort = Number(sortRow?.next_sort ?? 1)
+  if (requirement.level === "SKC" && !listingSkc) {
+    throw new HTTPException(400, { message: "SKC 图片必须指定草稿内的款色" })
+  }
   const bytes = await readValidatedUploadBuffer(file, "image")
-  const detected = detectImageUploadType(bytes)
-  const safeName = safeAssetFileName(file.name, detected.extension)
+  const inspection = inspectListingImageForRequirement(bytes, requirement)
+  const safeName = safeAssetFileName(file.name, inspection.detected.extension)
   const dir = path.join(uploadsRoot(), String(listingId), skcFingerprint(skcCode || "spu"))
   fs.mkdirSync(dir, { recursive: true })
   const localPath = path.join(dir, safeName)
-  fs.writeFileSync(localPath, bytes)
-  const result = db.prepare(`
-    insert into listing_asset (
-      listing_id,
-      listing_skc_id,
-      skc_code,
-      source_type,
-      asset_type,
-      image_sort,
-      local_path,
-      file_size,
-      status,
-      confirmed,
-      note,
-      raw_payload_json,
-      updated_at
+  const transaction = db.transaction(() => {
+    lockListingImageMutation(db, listingId)
+    assertListingImageCapacity({
+      db,
+      listingId,
+      listingSkcId: listingSkc?.id,
+      requirement,
+      assetType,
+    })
+    const sortRow = db.prepare(`
+      select coalesce(max(image_sort), 0) + 1 as next_sort
+      from listing_asset
+      where listing_id = ?
+        and coalesce(skc_code, '') = coalesce(?, '')
+        and asset_type = ?
+    `).get(listingId, skcCode || null, assetType) as SourceRow | undefined
+    const imageSort = Number(sortRow?.next_sort ?? 1)
+    fs.writeFileSync(localPath, bytes)
+    const result = db.prepare(`
+      insert into listing_asset (
+        listing_id,
+        listing_skc_id,
+        skc_code,
+        source_type,
+        asset_type,
+        image_sort,
+        local_path,
+        file_size,
+        width,
+        height,
+        status,
+        confirmed,
+        note,
+        raw_payload_json,
+        updated_at
+      )
+      values (?, ?, ?, 'MANUAL_UPLOAD', ?, ?, ?, ?, ?, ?, 'PENDING_CONFIRM', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    `).run(
+      listingId,
+      listingSkc?.id ?? null,
+      skcCode || null,
+      assetType,
+      imageSort,
+      localPath,
+      bytes.length,
+      inspection.width,
+      inspection.height,
+      `人工上传 ${requirementKey || assetType}`,
+      JSON.stringify({
+        file_name: file.name,
+        requirement_key: requirementKey || null,
+        content_type: inspection.detected.contentType,
+        size: bytes.length,
+        width: inspection.width,
+        height: inspection.height,
+        compliance: inspection.compliance,
+      }),
     )
-    values (?, ?, ?, 'MANUAL_UPLOAD', ?, ?, ?, ?, 'PENDING_CONFIRM', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-  `).run(
-    listingId,
-    listingSkc?.id ?? null,
-    skcCode || null,
-    assetType,
-    imageSort,
-    localPath,
-    bytes.length,
-    `人工上传 ${requirementKey || assetType}`,
-    JSON.stringify({
-      file_name: file.name,
-      requirement_key: requirementKey || null,
-      content_type: detected.contentType,
-      size: bytes.length,
-    }),
-  )
+    resetListingSkcImageConfirmation(db, listingId, listingSkc?.id)
+    return result.lastInsertRowid
+  })
+  let assetId: unknown
+  try {
+    assetId = transaction()
+  } catch (error) {
+    fs.rmSync(localPath, { force: true })
+    throw error
+  }
   return c.json({
     ok: true,
-    asset: db.prepare("select * from listing_asset where id = ?").get(result.lastInsertRowid),
+    asset: db.prepare("select * from listing_asset where id = ?").get(assetId),
     detail: getListingDetail(db, listingId),
   })
 })
@@ -6264,25 +6649,63 @@ prePublish.patch("/drafts/:id/images/:assetId", async (c) => {
     confirmed?: unknown
     note?: unknown
   }
-  const asset = db.prepare("select * from listing_asset where id = ? and listing_id = ?").get(assetId, listingId) as SourceRow | undefined
-  if (!asset) {
-    throw new HTTPException(404, { message: "草稿图片不存在" })
-  }
-  const nextAssetType = normalizeText(body.asset_type) || normalizeText(asset.asset_type)
-  const nextSort = asPositiveNumber(body.image_sort) ?? asPositiveNumber(asset.image_sort) ?? 1
-  const confirmed = body.confirmed == null
-    ? Number(asset.confirmed ?? 0)
-    : (Number(body.confirmed) === 1 || body.confirmed === true ? 1 : 0)
-  db.prepare(`
-    update listing_asset
-    set asset_type = ?,
-      image_sort = ?,
-      confirmed = ?,
-      note = ?,
-      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-    where id = ?
-      and listing_id = ?
-  `).run(nextAssetType, Math.round(nextSort), confirmed, normalizeText(body.note), assetId, listingId)
+  const transaction = db.transaction(() => {
+    lockListingImageMutation(db, listingId)
+    const asset = db.prepare("select * from listing_asset where id = ? and listing_id = ?").get(assetId, listingId) as SourceRow | undefined
+    if (!asset) {
+      throw new HTTPException(404, { message: "草稿图片不存在" })
+    }
+    const nextAssetType = normalizeText(body.asset_type) || normalizeText(asset.asset_type)
+    const nextSort = asPositiveNumber(body.image_sort) ?? asPositiveNumber(asset.image_sort) ?? 1
+    const metadataChanged = nextAssetType !== normalizeText(asset.asset_type)
+      || Math.round(nextSort) !== Number(asset.image_sort ?? 1)
+    if (nextAssetType !== normalizeText(asset.asset_type)) {
+      const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
+      const level = asset.listing_skc_id ? "SKC" : "SPU"
+      const requirement = listing
+        ? getImageRequirements(db, listing).find((item) => (
+            item.level === level && item.asset_types.includes(nextAssetType)
+          ))
+        : undefined
+      if (!requirement) {
+        throw new HTTPException(400, { message: "图片类型不属于当前类目规则" })
+      }
+      const compliance = imageCompliance(asset, requirement)
+      if (!compliance.compliant) {
+        throw new HTTPException(400, {
+          message: `图片不符合${requirement.name}要求：${compliance.reasons.join("；")}`,
+        })
+      }
+      assertListingImageCapacity({
+        db,
+        listingId,
+        listingSkcId: asset.listing_skc_id,
+        requirement,
+        assetType: nextAssetType,
+        excludeAssetId: assetId,
+      })
+    }
+    const listingSkc = asset.listing_skc_id
+      ? db.prepare("select image_confirmed from listing_skc where id = ? and listing_id = ?").get(asset.listing_skc_id, listingId) as SourceRow | undefined
+      : undefined
+    const confirmed = asset.listing_skc_id
+      ? Number(listingSkc?.image_confirmed ?? 0)
+      : body.confirmed == null
+        ? Number(asset.confirmed ?? 0)
+        : (Number(body.confirmed) === 1 || body.confirmed === true ? 1 : 0)
+    db.prepare(`
+      update listing_asset
+      set asset_type = ?,
+        image_sort = ?,
+        confirmed = ?,
+        note = ?,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      where id = ?
+        and listing_id = ?
+    `).run(nextAssetType, Math.round(nextSort), confirmed, normalizeText(body.note), assetId, listingId)
+    if (metadataChanged) resetListingSkcImageConfirmation(db, listingId, asset.listing_skc_id)
+  })
+  transaction()
   return c.json({
     ok: true,
     asset: db.prepare("select * from listing_asset where id = ?").get(assetId),
@@ -6295,11 +6718,16 @@ prePublish.delete("/drafts/:id/images/:assetId", (c) => {
   const db = getDb()
   const listingId = Number(c.req.param("id"))
   const assetId = Number(c.req.param("assetId"))
-  const asset = db.prepare("select * from listing_asset where id = ? and listing_id = ?").get(assetId, listingId) as SourceRow | undefined
-  if (!asset) {
-    throw new HTTPException(404, { message: "草稿图片不存在" })
-  }
-  db.prepare("delete from listing_asset where id = ? and listing_id = ?").run(assetId, listingId)
+  const transaction = db.transaction(() => {
+    lockListingImageMutation(db, listingId)
+    const asset = db.prepare("select * from listing_asset where id = ? and listing_id = ?").get(assetId, listingId) as SourceRow | undefined
+    if (!asset) {
+      throw new HTTPException(404, { message: "草稿图片不存在" })
+    }
+    db.prepare("delete from listing_asset where id = ? and listing_id = ?").run(assetId, listingId)
+    resetListingSkcImageConfirmation(db, listingId, asset.listing_skc_id)
+  })
+  transaction()
   return c.json({
     ok: true,
     detail: getListingDetail(db, listingId),
@@ -6416,7 +6844,11 @@ prePublish.post("/drafts/batch-quick-fix", async (c) => {
         package_width_cm?: unknown
         package_height_cm?: unknown
       }>
-      image_confirmed_skc_ids?: unknown[]
+      image_confirmations?: Array<{
+        skc_id?: unknown
+        confirmed?: unknown
+        asset_ids?: unknown[]
+      }>
       category?: {
         category_id?: unknown
         product_type_id?: unknown
@@ -6444,8 +6876,9 @@ prePublish.post("/drafts/batch-quick-fix", async (c) => {
       const skuSizeValues = Array.isArray(fix.sku_size_values) ? fix.sku_size_values : []
       const skuWeightValues = Array.isArray(fix.sku_weight_values) ? fix.sku_weight_values : []
       const skuCommercialValues = Array.isArray(fix.sku_commercial_values) ? fix.sku_commercial_values : []
+      const imageConfirmations = Array.isArray(fix.image_confirmations) ? fix.image_confirmations : []
       const hasCategoryChange = Boolean(fix.category?.category_id || fix.category?.product_type_id)
-      const hasImageConfirmationChange = Array.isArray(fix.image_confirmed_skc_ids)
+      const hasImageConfirmationChange = imageConfirmations.length > 0
       const hasChanges = fields.length > 0
         || skuSizeValues.length > 0
         || skuWeightValues.length > 0
@@ -6482,11 +6915,15 @@ prePublish.post("/drafts/batch-quick-fix", async (c) => {
         listingId,
         skuCommercialValues,
       })
-      updateListingImageConfirmations({
-        db,
-        listingId,
-        imageConfirmedSkcIds: fix.image_confirmed_skc_ids,
-      })
+      for (const confirmation of imageConfirmations) {
+        setListingSkcImageConfirmation({
+          db,
+          listingId,
+          listingSkcId: confirmation.skc_id,
+          confirmed: confirmation.confirmed === true || Number(confirmation.confirmed) === 1,
+          expectedAssetIds: confirmation.asset_ids,
+        })
+      }
       if (hasChanges) changedListingIds.add(listingId)
     }
   })

@@ -23,6 +23,8 @@ const ROUTES = [
       ["patch", "/drafts/:id/category", "LISTING_WRITE"],
       ["post", "/drafts/:id/convert-openapi-single-item", "LISTING_WRITE"],
       ["patch", "/drafts/:id/fields", "LISTING_WRITE"],
+      ["post", "/drafts/:id/refresh-weights", "LISTING_WRITE"],
+      ["patch", "/drafts/:id/image-confirmation", "LISTING_WRITE"],
       ["post", "/drafts/:id/save", "LISTING_WRITE"],
       ["post", "/drafts/:id/ai-enrich", "LISTING_WRITE"],
       ["post", "/drafts/:id/ai-field", "LISTING_WRITE"],

@@ -173,7 +173,23 @@ test("image service builds SHEIN picture requirements and validates common image
   ]);
   const squareRequirement = requirements.find((item) => item.requirement_key === "SKC_SQUARE");
   assert.equal(squareRequirement.required, 1);
+  assert.equal(squareRequirement.max_count, 1);
   assert.deepEqual(squareRequirement.asset_types, ["SQUARE"]);
+
+  const detailRequirement = requirements.find((item) => item.requirement_key === "SKC_DETAIL");
+  assert.equal(detailRequirement.max_count, 11);
+  assert.deepEqual(images.pictureCapacityRules(detailRequirement), [
+    { label: "SKC 主图/细节图", asset_types: ["MAIN", "DETAIL", "DETAIL_BACK"], max_count: 11 },
+    { label: "主图", asset_types: ["MAIN"], max_count: 1 },
+    { label: "细节图", asset_types: ["DETAIL", "DETAIL_BACK"], max_count: 10 },
+  ]);
+  assert.deepEqual(images.pictureCapacityRules(squareRequirement), [
+    { label: "SKC 方形图", asset_types: ["SQUARE"], max_count: 1 },
+  ]);
+  assert.equal(images.canAddImagesToRequirement(0, 1, squareRequirement), true);
+  assert.equal(images.canAddImagesToRequirement(1, 1, squareRequirement), false);
+  assert.equal(images.canAddImagesToRequirement(10, 1, detailRequirement), true);
+  assert.equal(images.canAddImagesToRequirement(11, 1, detailRequirement), false);
 
   assert.equal(
     images.imageCompliance({ width: 1200, height: 1200, file_size: 1024 * 1024 }, squareRequirement).status,
@@ -233,6 +249,85 @@ test("payload service supplies default SHEIN package weight when SKU gross weigh
   assert.equal(payload.publishPackageWeight(null), null);
   assert.equal(payload.publishPackageWeight("", 500), 500);
   assert.equal(payload.publishPackageWeight(320), 320);
+});
+
+test("SKU weight lookup matches imported barcode rows before refreshing an existing draft", () => {
+  const rows = new Map([
+    ["sku:6900137936439", { sku_code: "6900137936439", package_weight_g: 187 }],
+    ["sku:20832610200100366120", { sku_code: "20832610200100366120", package_weight_g: 255 }],
+  ]);
+
+  assert.equal(
+    payload.resolveSkuWeightRecord(rows, {
+      sku_code: "20832610200100366110",
+      ean_code: "6900137936439",
+    }).package_weight_g,
+    187,
+  );
+  assert.equal(
+    payload.resolveSkuWeightRecord(rows, {
+      sku_code: "20832610200100366120",
+      ean_code: "6900137939999",
+    }).package_weight_g,
+    255,
+  );
+  assert.equal(
+    payload.resolveSkuWeightRecord(rows, {
+      sku_code: "unmatched",
+      supplier_barcode: "6900-1379 36439",
+    }).package_weight_g,
+    187,
+  );
+  assert.equal(payload.resolveSkuWeightRecord(rows, { sku_code: "missing" }), null);
+  assert.deepEqual(
+    payload.resolveMissingSkuWeightUpdates(rows, [
+      { id: 1, sku_code: "unmatched", supplier_barcode: "6900-1379 36439", package_weight_g: null },
+      { id: 2, sku_code: "20832610200100366120", package_weight_g: 333 },
+      { id: 3, sku_code: "missing", package_weight_g: null },
+    ]),
+    [{ id: 1, package_weight_g: 187 }],
+  );
+});
+
+test("pre-publish image upload validates dimensions locally and synchronizes group confirmations", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+
+  assert.match(source, /readImageDimensions\(bytes\)/);
+  assert.match(source, /imageCompliance\([\s\S]*width[\s\S]*height[\s\S]*file_size/);
+  assert.match(source, /图片不符合[\s\S]*requirement\.name/);
+  assert.match(source, /assertListingImageCapacity/);
+  assert.match(source, /setListingSkcImageConfirmation/);
+  assert.match(source, /expectedAssetIds/);
+  assert.match(source, /resetListingSkcImageConfirmation/);
+  assert.match(source, /select id from listing where id = \? for update/);
+  assert.match(source, /SPU 图片不能指定 SKC 款色/);
+  assert.match(source, /图片类型不属于当前类目规则/);
+
+  const uploadRoute = source.slice(
+    source.indexOf('prePublish.post("/drafts/:id/images/upload"'),
+    source.indexOf('prePublish.patch("/drafts/:id/images/:assetId"'),
+  );
+  assert.ok(uploadRoute.indexOf("readValidatedUploadBuffer") < uploadRoute.indexOf("assertListingImageCapacity"));
+  assert.ok(uploadRoute.indexOf("lockListingImageMutation") < uploadRoute.indexOf("assertListingImageCapacity"));
+});
+
+test("weight refresh only fills missing weights without re-running the full draft upsert", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const weightRows = source.slice(
+    source.indexOf("function listingSkuWeightRows"),
+    source.indexOf("function applyMissingListingSkuWeights"),
+  );
+  const refreshRoute = source.slice(
+    source.indexOf('prePublish.post("/drafts/:id/refresh-weights"'),
+    source.indexOf('prePublish.patch("/drafts/:id/image-confirmation"'),
+  );
+  assert.match(weightRows, /left join product_sku source_sku on source_sku\.id = sku\.product_sku_id/);
+  assert.match(weightRows, /source_sku\.ean_code as source_ean_code/);
+  assert.match(weightRows, /source_sku\.inner_code as source_supplier_barcode/);
+  assert.match(refreshRoute, /applyMissingListingSkuWeights/);
+  assert.match(refreshRoute, /persistListingValidation/);
+  assert.doesNotMatch(refreshRoute, /refreshListingAfterFill/);
+  assert.doesNotMatch(refreshRoute, /price_confirmed/);
 });
 
 test("SHEIN API service exposes upload and transform helpers for platform-bound image calls", () => {

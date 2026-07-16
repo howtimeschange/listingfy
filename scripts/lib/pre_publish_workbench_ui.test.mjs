@@ -52,6 +52,8 @@ test("pre publish route builds readiness rows from SHEIN product bucket data", a
   assert.match(route, /existingSalePayloadIsValid/);
   assert.match(route, /\/drafts\/:id\/ai-enrich/);
   assert.match(route, /\/drafts\/:id\/save/);
+  assert.match(route, /\/drafts\/:id\/refresh-weights/);
+  assert.match(route, /\/drafts\/:id\/image-confirmation/);
   assert.match(route, /\/drafts\/batch-publish-check/);
   assert.match(route, /\/drafts\/:id\/images\/import-folder/);
   assert.match(route, /sku_size_values/);
@@ -303,7 +305,7 @@ test("pre publish has a single listing detail route with editable fields and ver
   assert.match(detailPage, /导入图片/);
   assert.match(detailPage, /上传补齐/);
   assert.match(detailPage, /files: File\[\]/);
-  assert.match(detailPage, /multiple/);
+  assert.match(detailPage, /multiple=\{requirement\.max_count !== 1\}/);
   assert.match(detailPage, /Array\.from\(event\.target\.files \?\? \[\]\)/);
   assert.match(detailPage, /for \(const \[index, file\] of files\.entries\(\)\)/);
   assert.match(detailPage, /images\/upload/);
@@ -317,6 +319,14 @@ test("pre publish has a single listing detail route with editable fields and ver
   assert.match(detailPage, /发布到 SHEIN/);
   assert.match(detailPage, /\/publish/);
   assert.match(detailPage, /TMALL COLOR_BLOCK \/ COLOR/);
+  assert.match(detailPage, /groupConfirmed/);
+  assert.match(detailPage, /随款色统一确认/);
+  assert.match(detailPage, /imageConfirmationMutation/);
+  assert.match(detailPage, /asset_ids:/);
+  assert.doesNotMatch(detailPage, /image_confirmed_skc_ids:\s*Array\.from\(confirmedSkcIds\)/);
+  assert.match(detailPage, /syncWeightsMutation/);
+  assert.match(detailPage, /同步后台毛重/);
+  assert.match(detailPage, /setSkuWeightValues/);
 });
 
 test("creating drafts returns to the unified SHEIN draft box", async () => {
@@ -329,6 +339,28 @@ test("creating drafts returns to the unified SHEIN draft box", async () => {
   assert.doesNotMatch(page, /\/draft-workbench\?ids=/);
   assert.match(router, /path: "draft-workbench"/);
   assert.match(router, /Navigate to="\/pre-publish-validation"/);
+});
+
+test("batch image confirmation carries the reviewed asset list through the stale-write guard", async () => {
+  const [route, dialog] = await Promise.all([
+    readFile(ROUTE_FILE, "utf8"),
+    readFile(BATCH_PUBLISH_DIALOG, "utf8"),
+  ]);
+
+  assert.match(route, /image_confirmations\?: Array<\{/);
+  assert.match(route, /expectedAssetIds:\s*confirmation\.asset_ids/);
+  assert.doesNotMatch(route, /image_confirmed_skc_ids\?: unknown\[\]/);
+  assert.match(dialog, /asset_ids: number\[\]/);
+  assert.match(dialog, /image_confirmations:\s*imageFixes\.map/);
+  assert.doesNotMatch(dialog, /image_confirmed_skc_ids:/);
+});
+
+test("multi-image upload surfaces text errors and reports partial success", async () => {
+  const detailPage = await readFile(DETAIL_PAGE_FILE, "utf8");
+
+  assert.match(detailPage, /const errorText = await response\.text\(\)/);
+  assert.match(detailPage, /已成功上传 \$\{index\} 张/);
+  assert.doesNotMatch(detailPage, /const body = await response\.json\(\)\.catch/);
 });
 
 test("pre publish AI calls handle reasoning responses and transient provider failures", async () => {

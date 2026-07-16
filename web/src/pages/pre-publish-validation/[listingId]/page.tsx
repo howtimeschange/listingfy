@@ -24,6 +24,7 @@ import {
   Sparkles,
   Upload,
   MoreHorizontal,
+  RefreshCw,
   Trash2,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -143,6 +144,7 @@ interface ImageRequirement {
   single: number | null
   image_type: string
   asset_types: string[]
+  max_count: number
   count_rule: string
   dimension_rule: string
   format_rule: string
@@ -1165,7 +1167,7 @@ function ImageRequirementTable({
                         <Input
                           type="file"
                           accept="image/*"
-                          multiple
+                          multiple={requirement.max_count !== 1}
                           className="hidden"
                           disabled={uploadBlocked}
                           onChange={(event) => {
@@ -1190,11 +1192,13 @@ function ImageRequirementTable({
 
 function DraftAssetCard({
   asset,
+  groupConfirmed,
   onUpdate,
   onDelete,
   pending,
 }: {
   asset: ListingAsset
+  groupConfirmed?: boolean
   onUpdate: (assetId: number, values: { asset_type: string; image_sort: number; confirmed: number; note: string }) => void
   onDelete: (assetId: number) => void
   pending: boolean
@@ -1204,15 +1208,16 @@ function DraftAssetCard({
   const [confirmed, setConfirmed] = useState(Number(asset.confirmed ?? 0) === 1)
   const [note, setNote] = useState(asset.note ?? "")
   const rawPayload = assetRawPayload(asset)
+  const displayConfirmed = groupConfirmed ?? confirmed
 
   // Keep the editable asset form aligned when the selected asset row changes.
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     setAssetType(asset.asset_type)
     setImageSort(String(asset.image_sort ?? 1))
-    setConfirmed(Number(asset.confirmed ?? 0) === 1)
+    setConfirmed(groupConfirmed ?? Number(asset.confirmed ?? 0) === 1)
     setNote(asset.note ?? "")
-  }, [asset])
+  }, [asset, groupConfirmed])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   return (
@@ -1233,11 +1238,11 @@ function DraftAssetCard({
             <Badge variant="outline">{assetTypeLabel(asset.asset_type)}</Badge>
             <Badge
               variant="outline"
-              className={Number(asset.confirmed ?? 0) === 1
+              className={displayConfirmed
                 ? "border-[#b9f4d8] bg-[#f4fff9] text-[#0f8a5f]"
                 : "border-[#f4ddb3] bg-[#fff8e8] text-[#8a5a08]"}
             >
-              {Number(asset.confirmed ?? 0) === 1 ? "已确认" : "待确认"}
+              {displayConfirmed ? "已确认" : "待确认"}
             </Badge>
           </div>
           <div className="grid gap-1 text-xs text-muted-foreground">
@@ -1272,8 +1277,12 @@ function DraftAssetCard({
         </Label>
         <div className="flex items-center justify-end gap-2">
           <label className="flex items-center gap-2 whitespace-nowrap text-sm">
-            <Checkbox checked={confirmed} onCheckedChange={(value) => setConfirmed(Boolean(value))} />
-            确认
+            <Checkbox
+              checked={displayConfirmed}
+              disabled={groupConfirmed != null}
+              onCheckedChange={(value) => setConfirmed(Boolean(value))}
+            />
+            {groupConfirmed != null ? "随款色统一确认" : "确认"}
           </label>
           <Button
             type="button"
@@ -1281,7 +1290,7 @@ function DraftAssetCard({
             onClick={() => onUpdate(asset.id, {
               asset_type: assetType,
               image_sort: Number(imageSort || asset.image_sort || 1),
-              confirmed: confirmed ? 1 : 0,
+              confirmed: displayConfirmed ? 1 : 0,
               note,
             })}
             disabled={pending}
@@ -1312,6 +1321,7 @@ function ImageRequirementManager({
   assets,
   checklist,
   skcCode,
+  groupConfirmed,
   onUpload,
   uploadingKey,
   uploadingState,
@@ -1324,6 +1334,7 @@ function ImageRequirementManager({
   assets: ListingAsset[]
   checklist?: ListingDetail["image_checklist"][number]
   skcCode?: string | null
+  groupConfirmed?: boolean
   onUpload?: (params: ImageUploadParams) => void
   uploadingKey?: string | null
   uploadingState?: ImageUploadingState | null
@@ -1376,7 +1387,7 @@ function ImageRequirementManager({
                       <Input
                         type="file"
                         accept="image/*"
-                        multiple
+                        multiple={requirement.max_count !== 1}
                         className="hidden"
                         disabled={uploadBlocked}
                         onChange={(event) => {
@@ -1398,6 +1409,7 @@ function ImageRequirementManager({
                     <DraftAssetCard
                       key={asset.id}
                       asset={asset}
+                      groupConfirmed={groupConfirmed}
                       onUpdate={onUpdateAsset}
                       onDelete={onDeleteAsset}
                       pending={pending}
@@ -2048,7 +2060,6 @@ export default function PrePublishDraftDetailPage() {
           values: manualSizeChartValues[sku.id] ?? {},
         }))
         : [],
-      image_confirmed_skc_ids: Array.from(confirmedSkcIds),
     }
   }
 
@@ -2187,6 +2198,69 @@ export default function PrePublishDraftDetailPage() {
     toast.success(`导入填充 ${filled} 行尺码表，保存草稿后生效`)
   }
 
+  const imageConfirmationMutation = useMutation({
+    mutationFn: ({ skcId, confirmed, assetIds }: { skcId: number; confirmed: boolean; assetIds: number[] }) =>
+      api.patch(`/pre-publish/drafts/${listingId}/image-confirmation`, {
+        skc_id: skcId,
+        confirmed,
+        asset_ids: assetIds,
+      }),
+    onMutate: ({ skcId, confirmed }) => {
+      setConfirmedSkcIds((prev) => {
+        const next = new Set(prev)
+        if (confirmed) next.add(skcId)
+        else next.delete(skcId)
+        return next
+      })
+    },
+    onSuccess: (_, { confirmed }) => {
+      toast.success(confirmed ? "该款色图片已统一确认" : "已取消该款色图片确认")
+      queryClient.invalidateQueries({ queryKey: ["pre-publish", "drafts"] })
+    },
+    onError: (error, { skcId, confirmed }) => {
+      setConfirmedSkcIds((prev) => {
+        const next = new Set(prev)
+        if (confirmed) next.delete(skcId)
+        else next.add(skcId)
+        return next
+      })
+      toast.error(error instanceof Error ? error.message : "同步图片确认失败")
+    },
+  })
+
+  const syncWeightsMutation = useMutation({
+    mutationFn: () => api.post<{
+      summary: {
+        total_sku_count: number
+        source_matched_count: number
+        filled_count: number
+        preserved_count: number
+        missing_count: number
+        missing_sku_codes: string[]
+      }
+      detail: ListingDetail
+    }>(`/pre-publish/drafts/${listingId}/refresh-weights`, {}),
+    onSuccess: ({ summary, detail }) => {
+      setSkuWeightValues((prev) => {
+        const next = { ...prev }
+        for (const sku of detail.skus) {
+          if (String(next[sku.id] ?? "").trim()) continue
+          if (sku.package_weight_g != null) next[sku.id] = String(sku.package_weight_g)
+        }
+        return next
+      })
+      const missing = summary.missing_count > 0 ? `，仍缺 ${summary.missing_count} 个` : ""
+      toast.success(
+        `后台毛重同步完成：匹配 ${summary.source_matched_count}/${summary.total_sku_count}，新补齐 ${summary.filled_count} 个${missing}`,
+      )
+      queryClient.invalidateQueries({ queryKey: ["pre-publish", "drafts"] })
+      queryClient.invalidateQueries({ queryKey: ["shein-products"] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "同步后台毛重失败")
+    },
+  })
+
   const saveDraftMutation = useMutation({
     mutationFn: () =>
       api.post(`/pre-publish/drafts/${listingId}/save`, buildSaveDraftPayload()),
@@ -2322,9 +2396,17 @@ export default function PrePublishDraftDetailPage() {
           body: form,
         })
         if (!response.ok) {
-          const body = await response.json().catch(() => null) as { message?: string } | null
-          const prefix = files.length > 1 ? `第 ${index + 1}/${files.length} 张 ${file.name}：` : ""
-          throw new Error(`${prefix}${body?.message || "图片上传失败"}`)
+          const errorText = await response.text()
+          let errorMessage = errorText.trim()
+          try {
+            const body = JSON.parse(errorText) as { message?: string }
+            errorMessage = String(body.message ?? "").trim() || errorMessage
+          } catch {
+            // Hono HTTPException responses are plain text in the current server runtime.
+          }
+          const position = files.length > 1 ? `第 ${index + 1}/${files.length} 张 ${file.name}：` : ""
+          const uploaded = index > 0 ? `已成功上传 ${index} 张；` : ""
+          throw new Error(`${uploaded}${position}${errorMessage || "图片上传失败"}`)
         }
         lastResult = await response.json()
       }
@@ -2402,13 +2484,6 @@ export default function PrePublishDraftDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["pre-publish", "drafts"] })
     },
   })
-
-  function toggle(setter: (value: Set<number>) => void, current: Set<number>, id: number) {
-    const next = new Set(current)
-    if (next.has(id)) next.delete(id)
-    else next.add(id)
-    setter(next)
-  }
 
   function toggleSkcSelection(group: { skc: ListingDetail["skcs"][number]; skus: ListingDetail["skus"] }) {
     const nextSkcs = new Set(selectedSkcIds)
@@ -2765,8 +2840,20 @@ export default function PrePublishDraftDetailPage() {
           </Card>
 
           <Card id="draft-skc-sku" className="scroll-mt-24 rounded-lg">
-            <CardHeader>
-              <CardTitle>{skcDimension?.title ?? "SKC 款色维度"}</CardTitle>
+            <CardHeader className="flex flex-row items-start justify-between gap-4">
+              <div>
+                <CardTitle>{skcDimension?.title ?? "SKC 款色维度"}</CardTitle>
+                <p className="mt-1 text-sm text-muted-foreground">后台毛重按 MDM SKU 或商品条码匹配，只补齐当前为空的 SKU。</p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => syncWeightsMutation.mutate()}
+                disabled={syncWeightsMutation.isPending}
+              >
+                <RefreshCw className={cn("mr-2 size-4", syncWeightsMutation.isPending && "animate-spin")} />
+                同步后台毛重
+              </Button>
             </CardHeader>
             <CardContent className="space-y-5">
               <div className="rounded border p-4">
@@ -2885,9 +2972,14 @@ export default function PrePublishDraftDetailPage() {
                             <label className="flex items-center gap-2 text-sm">
                               <Checkbox
                                 checked={confirmedSkcIds.has(group.skc.id)}
-                                onCheckedChange={() => toggle(setConfirmedSkcIds, confirmedSkcIds, group.skc.id)}
+                                disabled={imageConfirmationMutation.isPending}
+                                onCheckedChange={(value) => imageConfirmationMutation.mutate({
+                                  skcId: group.skc.id,
+                                  confirmed: value === true,
+                                  assetIds: group.assets.map((asset) => asset.id),
+                                })}
                               />
-                              图片已确认
+                              {imageConfirmationMutation.isPending ? "同步确认中" : "图片已确认"}
                             </label>
                           </div>
                           <ImageRequirementManager
@@ -2895,6 +2987,7 @@ export default function PrePublishDraftDetailPage() {
                             assets={group.assets}
                             checklist={checklist}
                             skcCode={group.skc.skc_code}
+                            groupConfirmed={confirmedSkcIds.has(group.skc.id)}
                             onUpload={(params) => uploadImageMutation.mutate(params)}
                             uploadingKey={uploadingImageKey}
                             uploadingState={uploadingImageState}
