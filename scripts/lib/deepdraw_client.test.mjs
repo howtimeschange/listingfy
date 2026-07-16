@@ -4,7 +4,12 @@ import {
   buildDeepdrawGetRequest,
   buildDeepdrawPostRequest,
   createDeepdrawProduct,
+  deepdrawBusinessResult,
+  deepdrawFailureMessage,
   getDeepdrawProduct,
+  hasDeepdrawBusinessBody,
+  isDeepdrawBusinessSuccess,
+  normalizeDeepdrawBusinessPayload,
   parseTenantCredentialsFromText,
   resolveDeepdrawConfig,
 } from "./deepdraw_client.mjs";
@@ -145,6 +150,71 @@ test("buildDeepdrawGetRequest does not let payload fields override signed creden
   );
   assert.match(request.stringToSign, /dopKey=credential-dop-key&merchantId=1162/);
   assert.doesNotMatch(request.stringToSign, /payload-dop-key|dp\.product\.create/);
+});
+
+test("DeepDraw business parser unwraps SDK response envelopes", () => {
+  const result = {
+    status: 200,
+    ok: true,
+    payload: {
+      status: 200,
+      response: {
+        code: 10200,
+        response: "success",
+        reason: "访问成功！",
+        requestId: 1066,
+        body: {
+          code: "208326105104",
+          productId: 6420658,
+        },
+      },
+    },
+  };
+
+  assert.equal(isDeepdrawBusinessSuccess(result), true);
+  assert.equal(hasDeepdrawBusinessBody(result.payload), true);
+  assert.deepEqual(deepdrawBusinessResult(result.payload), {
+    status: 200,
+    code: 10200,
+    response: "success",
+    state: "success",
+    reason: "访问成功！",
+    requestId: "1066",
+    body: {
+      code: "208326105104",
+      productId: 6420658,
+    },
+  });
+  assert.deepEqual(normalizeDeepdrawBusinessPayload(result.payload), {
+    code: 10200,
+    response: "success",
+    reason: "访问成功！",
+    requestId: "1066",
+    body: {
+      code: "208326105104",
+      productId: 6420658,
+    },
+  });
+});
+
+test("DeepDraw business parser surfaces HTTP 200 business failure reasons", () => {
+  const result = {
+    status: 200,
+    ok: false,
+    payload: {
+      status: 200,
+      response: {
+        code: 10404,
+        response: "failure",
+        reason: "未在服务器上发现商品",
+        requestId: "request-3",
+      },
+    },
+  };
+
+  assert.equal(isDeepdrawBusinessSuccess(result), false);
+  assert.equal(hasDeepdrawBusinessBody(result.payload), false);
+  assert.equal(deepdrawFailureMessage(result), "未在服务器上发现商品");
 });
 
 test("createDeepdrawProduct delegates creation to the SDK adapter contract", async () => {

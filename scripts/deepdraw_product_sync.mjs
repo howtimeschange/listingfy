@@ -7,7 +7,12 @@ import { loadLocalEnv } from "./lib/local_env.mjs";
 import {
   DEFAULT_DEEPDRAW_BASE_URL,
   DEFAULT_DEEPDRAW_TENANT_NAME,
+  deepdrawBusinessResult,
+  deepdrawFailureMessage,
   getDeepdrawProduct,
+  hasDeepdrawBusinessBody,
+  isDeepdrawBusinessSuccess,
+  normalizeDeepdrawBusinessPayload,
   resolveDeepdrawConfig,
 } from "./lib/deepdraw_client.mjs";
 
@@ -112,16 +117,18 @@ Examples:
 }
 
 function summarizePayload(productCode, result) {
-  const body = result.payload?.body;
+  const payload = normalizeDeepdrawBusinessPayload(result.payload);
+  const business = deepdrawBusinessResult(result.payload);
+  const body = payload.body;
   const skuItems = body?.skus?.skuItems || [];
   const detailPages = body?.detalPages || body?.detailPages || [];
   const colorOptions = body?.colors?.options || [];
   return {
     productCode,
     httpStatus: result.status,
-    requestId: result.requestId,
-    responseCode: result.payload?.code ?? null,
-    hasBody: body != null,
+    requestId: result.requestId ?? business.requestId,
+    responseCode: business.code ?? null,
+    hasBody: hasDeepdrawBusinessBody(result.payload),
     brandName: body?.brandName ?? null,
     returnedCode: body?.code ?? null,
     skuCount: skuItems.length,
@@ -193,6 +200,7 @@ async function main() {
         timeoutMs: args.timeoutMs,
       });
       const summary = summarizePayload(productCode, result);
+      const payload = normalizeDeepdrawBusinessPayload(result.payload);
       writeJsonl(files.productsJsonl, {
         productCode,
         httpStatus: result.status,
@@ -200,19 +208,19 @@ async function main() {
         payload: result.payload,
       });
       writeJsonl(files.summariesJsonl, summary);
-      if (!result.ok || !summary.hasBody) {
+      if (!isDeepdrawBusinessSuccess(result) || !summary.hasBody) {
         manifest.counts.failed += 1;
         writeJsonl(files.failuresJsonl, {
           productCode,
           httpStatus: result.status,
           requestId: result.requestId,
-          responseCode: result.payload?.code ?? null,
-          reason: result.payload?.reason ?? result.payload?.message ?? null,
+          responseCode: summary.responseCode,
+          reason: deepdrawFailureMessage(result),
           rawPrefix: typeof result.payload === "string" ? result.payload.slice(0, 500) : undefined,
         });
       } else {
         manifest.counts.success += 1;
-        writeJson(path.join(productsDir, `${productCode}.json`), result.payload);
+        writeJson(path.join(productsDir, `${productCode}.json`), payload);
       }
       manifest.products.push(summary);
     } catch (error) {

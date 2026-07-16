@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { normalizeDeepdrawBusinessPayload } from "./deepdraw_client.mjs";
 
 export const DEEPDRAW_SOURCE_SYSTEM = "DEEPDRAW";
 
@@ -483,15 +484,17 @@ export function extractDeepdrawContentRows({
   productCode = payload?.body?.code,
   syncedAt = new Date().toISOString(),
 }) {
-  if (!payload || typeof payload !== "object") {
+  const normalizedPayload = normalizeDeepdrawBusinessPayload(payload);
+  if (!normalizedPayload || typeof normalizedPayload !== "object") {
     throw new Error("DeepDraw payload must be an object");
   }
-  if (!payload.body || typeof payload.body !== "object") {
-    throw new Error(`DeepDraw payload has no body for product: ${productCode || "unknown"}`);
+  const effectiveProductCode = productCode || normalizedPayload.body?.code;
+  if (!normalizedPayload.body || typeof normalizedPayload.body !== "object") {
+    throw new Error(`DeepDraw payload has no body for product: ${effectiveProductCode || "unknown"}`);
   }
 
-  const body = payload.body;
-  const packageRow = extractPackage({ payload, productCode, syncedAt });
+  const body = normalizedPayload.body;
+  const packageRow = extractPackage({ payload: normalizedPayload, productCode: effectiveProductCode, syncedAt });
   const skcs = extractSkcs({ body, packageRow, syncedAt });
   const skus = extractSkus({ body, packageRow, skcs, syncedAt });
   const sizes = extractSizes({ body, packageRow, syncedAt });

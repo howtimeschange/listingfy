@@ -4,7 +4,12 @@ import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
 import { routePermissionGuard } from "../lib/auth"
 import {
+  deepdrawBusinessResult,
+  deepdrawFailureMessage,
   getDeepdrawProduct,
+  hasDeepdrawBusinessBody,
+  isDeepdrawBusinessSuccess,
+  normalizeDeepdrawBusinessPayload,
   resolveDeepdrawConfig,
 } from "../../../scripts/lib/deepdraw_client.mjs"
 import { importDeepdrawPayloads } from "../../../scripts/lib/deepdraw_content_importer.mjs"
@@ -40,16 +45,6 @@ type SourceRow = {
   id: number
   synced_at?: string | null
   [key: string]: unknown
-}
-
-type DeepdrawPayload = {
-  code?: unknown
-  reason?: string
-  message?: string
-  body?: {
-    code?: unknown
-    [key: string]: unknown
-  }
 }
 
 function likeQuery(value: string) {
@@ -121,18 +116,13 @@ async function syncDeepdrawProduct(
     productCode: spuCode,
     timeoutMs: Number(process.env.DEEPDRAW_TIMEOUT_MS ?? 30000),
   })
-  const payload = (
-    result.payload && typeof result.payload === "object"
-      ? result.payload
-      : { message: String(result.payload ?? "") }
-  ) as DeepdrawPayload
-  const body = payload.body
-  if (!result.ok || !body) {
-    throw new Error(
-      payload.reason
-        ?? payload.message
-        ?? `DeepDraw request failed with HTTP ${result.status}`,
-    )
+  const business = deepdrawBusinessResult(result.payload)
+  const payload = normalizeDeepdrawBusinessPayload(result.payload)
+  if (!isDeepdrawBusinessSuccess(result)) {
+    throw new Error(deepdrawFailureMessage(result))
+  }
+  if (!hasDeepdrawBusinessBody(result.payload)) {
+    throw new Error("DeepDraw product resource response missing body")
   }
 
   const finishedAt = new Date().toISOString()
@@ -152,14 +142,14 @@ async function syncDeepdrawProduct(
       {
         productCode: spuCode,
         httpStatus: result.status,
-        requestId: result.requestId,
-        responseCode: payload.code ?? null,
-        returnedCode: body.code ?? null,
+        requestId: result.requestId ?? business.requestId,
+        responseCode: business.code ?? null,
+        returnedCode: payload.body?.code ?? null,
       },
     ],
   }
   const summary = importDeepdrawPayloads(db, {
-    payloads: [{ productCode: spuCode, payload: result.payload }],
+    payloads: [{ productCode: spuCode, payload }],
     sourceDir: `web-sync/deepdraw/${spuCode}`,
     manifest,
     syncedAt: finishedAt,

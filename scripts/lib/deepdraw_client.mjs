@@ -17,6 +17,27 @@ export const TRADE_FIELDS_TYPE = "dp.trade.fields";
 export const REST_PATH = "/rest";
 export const REST_V2_PATH = "/rest/v2";
 
+function stringValue(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function numberValue(value) {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function recordValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function hasRecordValue(value) {
+  return Object.keys(recordValue(value)).length > 0;
+}
+
 export function readEnv(name, fallback = undefined) {
   const value = process.env[name];
   return value === undefined || value === "" ? fallback : value;
@@ -159,6 +180,59 @@ function canonicalResource(requestPath, params) {
     ))
     .join("&");
   return query ? `${requestPath}?${query}` : requestPath;
+}
+
+export function deepdrawBusinessResult(payload) {
+  const top = recordValue(payload);
+  const nested = recordValue(top.response);
+  const nestedBody = recordValue(nested.body);
+  const topBody = recordValue(top.body);
+  const responseText = stringValue(nested.response ?? top.response);
+  return {
+    status: numberValue(top.status),
+    code: numberValue(nested.code ?? top.code ?? top.responseCode),
+    response: responseText,
+    state: responseText.toLowerCase(),
+    reason: stringValue(nested.reason ?? nested.message ?? top.reason ?? top.message),
+    requestId: stringValue(nested.requestId ?? top.requestId),
+    body: hasRecordValue(nestedBody) ? nestedBody : topBody,
+  };
+}
+
+export function normalizeDeepdrawBusinessPayload(payload) {
+  const business = deepdrawBusinessResult(payload);
+  return {
+    code: business.code,
+    response: business.response || null,
+    reason: business.reason || null,
+    requestId: business.requestId || null,
+    body: hasRecordValue(business.body) ? business.body : null,
+  };
+}
+
+export function hasDeepdrawBusinessBody(payload) {
+  return hasRecordValue(deepdrawBusinessResult(payload).body);
+}
+
+export function isDeepdrawBusinessSuccess(result) {
+  const business = deepdrawBusinessResult(result?.payload);
+  const outerStatus = business.status ?? numberValue(result?.status);
+  const responseCode = business.code;
+  const responseState = business.state;
+  return Boolean(result?.ok)
+    && (outerStatus === null || outerStatus === 200)
+    && (responseCode === null || responseCode === 10200)
+    && (!responseState || responseState === "success");
+}
+
+export function deepdrawFailureMessage(result) {
+  const business = deepdrawBusinessResult(result?.payload);
+  const fallbackPayload = recordValue(result?.payload);
+  const text = stringValue(result?.text);
+  return business.reason
+    || stringValue(fallbackPayload.reason ?? fallbackPayload.message ?? fallbackPayload.error)
+    || (text.length > 500 ? `${text.slice(0, 500)}...` : text)
+    || `DeepDraw request failed with HTTP ${result?.status ?? "unknown"}`;
 }
 
 export function buildDeepdrawGetRequest({
