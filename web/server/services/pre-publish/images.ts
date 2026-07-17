@@ -42,6 +42,12 @@ const SQUARE_IMAGE_RULE = {
   size_rule: "≤ 8MB",
 }
 
+const SKC_SQUARE_IMAGE_RULE = {
+  dimension_rule: "1:1，900-2200 px；或 3:4，宽 900-2200 px（由 SHEIN 自动裁切）",
+  format_rule: "JPG / JPEG / PNG",
+  size_rule: "≤ 8MB",
+}
+
 const COLOR_IMAGE_RULE = {
   dimension_rule: "1:1，80 x 80 px",
   format_rule: "JPG / JPEG / PNG",
@@ -141,7 +147,7 @@ export function buildPictureRequirements(config: PictureConfigRow[]): PictureReq
       asset_types: ["SQUARE"],
       max_count: 1,
       count_rule: "1 张",
-      ...SQUARE_IMAGE_RULE,
+      ...SKC_SQUARE_IMAGE_RULE,
       field_keys: [
         field("skc_image_square_show"),
         field("skc_image_square_required"),
@@ -222,9 +228,18 @@ export function imageCompliance(asset: Record<string, unknown>, requirement: Pic
     if (requirement.requirement_key === "SKC_COLOR_BLOCK") {
       if (!square) failures.push("色块图需为 1:1")
       if (width < 80 || height < 80) failures.push("色块图尺寸需不小于 80 x 80")
-    } else if (requirement.requirement_key === "SPU_SQUARE" || requirement.requirement_key === "SKC_SQUARE") {
+    } else if (requirement.requirement_key === "SPU_SQUARE") {
       if (!square) failures.push("方形图需为 1:1")
       if (width < 900 || height < 900 || width > 2200 || height > 2200) failures.push("方形图尺寸需在 900-2200 px")
+    } else if (requirement.requirement_key === "SKC_SQUARE") {
+      const portrait = isNearRatio(width, height, 3 / 4, 0.03)
+      if (!square && !portrait) {
+        failures.push("SKC 方块图需为 1:1 或 3:4")
+      } else if (square && (width < 900 || height < 900 || width > 2200 || height > 2200)) {
+        failures.push("SKC 方块图 1:1 图片尺寸需在 900-2200 px")
+      } else if (portrait && (width < 900 || width > 2200)) {
+        failures.push("SKC 方块图 3:4 图片宽度需在 900-2200 px")
+      }
     } else {
       const mainRatioOk = isNearRatio(width, height, 1340 / 1785, 0.08) && width >= 900 && height >= 1200
       const squareOk = square && width >= 900 && height >= 900 && width <= 2200 && height <= 2200

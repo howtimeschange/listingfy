@@ -175,6 +175,10 @@ test("image service builds SHEIN picture requirements and validates common image
   assert.equal(squareRequirement.required, 1);
   assert.equal(squareRequirement.max_count, 1);
   assert.deepEqual(squareRequirement.asset_types, ["SQUARE"]);
+  assert.equal(
+    squareRequirement.dimension_rule,
+    "1:1，900-2200 px；或 3:4，宽 900-2200 px（由 SHEIN 自动裁切）",
+  );
 
   const detailRequirement = requirements.find((item) => item.requirement_key === "SKC_DETAIL");
   assert.equal(detailRequirement.max_count, 11);
@@ -195,9 +199,31 @@ test("image service builds SHEIN picture requirements and validates common image
     images.imageCompliance({ width: 1200, height: 1200, file_size: 1024 * 1024 }, squareRequirement).status,
     "PASS",
   );
+  assert.equal(
+    images.imageCompliance({ width: 1340, height: 1785, file_size: 1024 * 1024 }, squareRequirement).status,
+    "PASS",
+  );
+  assert.equal(
+    images.imageCompliance({ width: 1200, height: 1600, file_size: 1024 * 1024 }, squareRequirement).status,
+    "PASS",
+  );
   assert.deepEqual(
-    images.imageCompliance({ width: 800, height: 1200, file_size: 1024 * 1024 }, squareRequirement).reasons,
-    ["方形图需为 1:1", "方形图尺寸需在 900-2200 px"],
+    images.imageCompliance({ width: 800, height: 1067, file_size: 1024 * 1024 }, squareRequirement).reasons,
+    ["SKC 方块图 3:4 图片宽度需在 900-2200 px"],
+  );
+  assert.deepEqual(
+    images.imageCompliance({ width: 2300, height: 3067, file_size: 1024 * 1024 }, squareRequirement).reasons,
+    ["SKC 方块图 3:4 图片宽度需在 900-2200 px"],
+  );
+  assert.deepEqual(
+    images.imageCompliance({ width: 1200, height: 1800, file_size: 1024 * 1024 }, squareRequirement).reasons,
+    ["SKC 方块图需为 1:1 或 3:4"],
+  );
+
+  const spuSquareRequirement = requirements.find((item) => item.requirement_key === "SPU_SQUARE");
+  assert.deepEqual(
+    images.imageCompliance({ width: 1200, height: 1600, file_size: 1024 * 1024 }, spuSquareRequirement).reasons,
+    ["方形图需为 1:1"],
   );
 
   const switchOnly = images.buildPictureRequirements([{ field_key: "switch_spu_picture", is_true: 1 }]);
