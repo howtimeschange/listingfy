@@ -2642,6 +2642,112 @@ function displayReadinessForSelectedSkcs(readiness: ReadinessRow, selectedSkcs: 
   }
 }
 
+function summarizeListings(
+  db: ReturnType<typeof getDb>,
+  listings: SourceRow[],
+  options?: { onlySelected?: boolean },
+) {
+  if (listings.length === 0) return []
+  const listingIds = listings.map((listing) => Number(listing.id))
+  const placeholders = listingIds.map(() => "?").join(", ")
+  const selectedSkuFilter = options?.onlySelected
+    ? "and sku.selected_for_publish = 1 and skc.selected_for_publish = 1"
+    : ""
+  const summaryRows = db.prepare(`
+    with target_listing as (
+      select id
+      from listing
+      where id in (${placeholders})
+    ),
+    skc_summary as (
+      select
+        skc.listing_id,
+        jsonb_agg(
+          jsonb_build_object(
+            'skc_code', skc.skc_code,
+            'color_name', skc.color_name,
+            'image_url', skc.image_url,
+            'selected_for_publish', skc.selected_for_publish
+          )
+          order by skc.selected_for_publish desc, skc.skc_code
+        ) as all_skcs
+      from listing_skc skc
+      join target_listing target on target.id = skc.listing_id
+      group by skc.listing_id
+    ),
+    version_summary as (
+      select distinct on (version.listing_id)
+        version.listing_id,
+        version.version_no,
+        version.status,
+        version.change_summary
+      from listing_publish_version version
+      join target_listing target on target.id = version.listing_id
+      order by version.listing_id, version.version_no desc
+    ),
+    validation_summary as (
+      select
+        validation.listing_id,
+        count(*) as issue_count,
+        count(*) filter (where validation.severity = 'ERROR' and validation.resolved = 0) as blocker_count
+      from listing_validation_result validation
+      join target_listing target on target.id = validation.listing_id
+      group by validation.listing_id
+    ),
+    sku_summary as (
+      select skc.listing_id, count(*) as sku_count
+      from listing_sku sku
+      join listing_skc skc on skc.id = sku.listing_skc_id
+      join target_listing target on target.id = skc.listing_id
+      where true ${selectedSkuFilter}
+      group by skc.listing_id
+    )
+    select
+      target.id as listing_id,
+      coalesce(skc_summary.all_skcs, '[]'::jsonb) as all_skcs,
+      version_summary.version_no as latest_version_no,
+      version_summary.status as latest_version_status,
+      version_summary.change_summary as latest_version_summary,
+      coalesce(validation_summary.issue_count, 0) as issue_count,
+      coalesce(validation_summary.blocker_count, 0) as blocker_count,
+      coalesce(sku_summary.sku_count, 0) as sku_count
+    from target_listing target
+    left join skc_summary on skc_summary.listing_id = target.id
+    left join version_summary on version_summary.listing_id = target.id
+    left join validation_summary on validation_summary.listing_id = target.id
+    left join sku_summary on sku_summary.listing_id = target.id
+  `).all(...listingIds) as SourceRow[]
+  const summaryById = new Map(summaryRows.map((row) => [Number(row.listing_id), row]))
+
+  return listings.map((listing) => {
+    const summary = summaryById.get(Number(listing.id)) ?? {}
+    const allSkcs = parseJsonArray(summary.all_skcs) as SourceRow[]
+    const selectedSkcs = options?.onlySelected
+      ? allSkcs.filter((skc) => Number(skc.selected_for_publish ?? 1) === 1)
+      : allSkcs
+    const hero = selectedSkcs.find((skc) => normalizeText(skc.image_url))
+    const skcPreview = selectedSkcs.slice(0, 4).map((skc) => ({
+      skc_code: skc.skc_code,
+      color_name: skc.color_name,
+      image_url: skc.image_url,
+    }))
+    return {
+      ...displayListingForSelectedSkcs(listing, selectedSkcs, allSkcs),
+      latest_version_no: summary.latest_version_no ?? null,
+      latest_version_status: summary.latest_version_status ?? null,
+      latest_version_summary: summary.latest_version_summary ?? null,
+      issue_count: Number(summary.issue_count ?? 0),
+      blocker_count: Number(summary.blocker_count ?? 0),
+      skc_count: selectedSkcs.length,
+      sku_count: Number(summary.sku_count ?? 0),
+      hero_image_url: hero?.image_url ?? null,
+      hero_color_name: hero?.color_name ?? null,
+      hero_skc_code: hero?.skc_code ?? null,
+      skc_preview: skcPreview,
+    }
+  })
+}
+
 function summarizeListing(db: ReturnType<typeof getDb>, listing: SourceRow, options?: { onlySelected?: boolean }) {
   const allSkcs = db.prepare(`
     select skc_code, color_name, image_url, selected_for_publish
@@ -5283,7 +5389,7 @@ prePublish.get("/drafts", (c) => {
     where ${clauses.join(" and ")}
   `).get(...params) as { count: number }
   return c.json({
-    items: rows.map((row) => summarizeListing(db, row, { onlySelected: true })),
+    items: summarizeListings(db, rows, { onlySelected: true }),
     pagination: {
       total: total.count,
       limit,

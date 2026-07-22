@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { test } from "node:test";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
+const requireFromWeb = createRequire(new URL("../../web/package.json", import.meta.url));
+const sharp = requireFromWeb("sharp");
 
 const shared = await import("../../web/server/services/pre-publish/shared.ts");
 const drafts = await import("../../web/server/services/pre-publish/drafts.ts");
@@ -12,6 +18,55 @@ const images = await import("../../web/server/services/pre-publish/images.ts");
 const payload = await import("../../web/server/services/pre-publish/payload.ts");
 const sheinApi = await import("../../web/server/services/pre-publish/shein-api.ts");
 const versions = await import("../../web/server/services/pre-publish/versions.ts");
+const uploadGuard = await import("../../web/server/lib/upload-guard.ts");
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data = Buffer.alloc(0)) {
+  const typeBytes = Buffer.from(type, "ascii");
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const checksum = Buffer.alloc(4);
+  checksum.writeUInt32BE(crc32(Buffer.concat([typeBytes, data])));
+  return Buffer.concat([length, typeBytes, data, checksum]);
+}
+
+function rgbPng(width, height, colorForRow) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  const pixels = Buffer.concat(Array.from({ length: height }, (_, y) => {
+    const row = Buffer.alloc(1 + width * 3);
+    const color = colorForRow(y);
+    for (let x = 0; x < width; x += 1) {
+      row[1 + x * 3] = color[0];
+      row[2 + x * 3] = color[1];
+      row[3 + x * 3] = color[2];
+    }
+    return row;
+  }));
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", zlib.deflateSync(pixels)),
+    pngChunk("IEND"),
+  ]);
+}
+
+function solidPng(width, height) {
+  return rgbPng(width, height, () => [255, 255, 255]);
+}
 
 test("pre-publish shared helpers normalize input and build stable scoped keys", () => {
   assert.equal(shared.normalizeText("  A \n B  "), "A \n B");
@@ -177,7 +232,7 @@ test("image service builds SHEIN picture requirements and validates common image
   assert.deepEqual(squareRequirement.asset_types, ["SQUARE"]);
   assert.equal(
     squareRequirement.dimension_rule,
-    "1:1，900-2200 px；或 3:4，宽 900-2200 px（由 SHEIN 自动裁切）",
+    "1:1，900-2200 px；或 3:4，宽 900-2200 px（发布时自动居中裁切为方图）",
   );
 
   const detailRequirement = requirements.find((item) => item.requirement_key === "SKC_DETAIL");
@@ -359,6 +414,62 @@ test("weight refresh only fills missing weights without re-running the full draf
 test("SHEIN API service exposes upload and transform helpers for platform-bound image calls", () => {
   assert.equal(typeof sheinApi.uploadLocalImageToShein, "function");
   assert.equal(typeof sheinApi.transformOnlineImageToShein, "function");
+});
+
+test("SHEIN type-5 upload center-crops a 3:4 local image to a disposable square copy", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "listingify-square-upload-"));
+  const sourcePath = path.join(tmpDir, "portrait.png");
+  fs.writeFileSync(sourcePath, rgbPng(900, 1200, (y) => {
+    if (y < 150) return [255, 0, 0];
+    if (y >= 1050) return [0, 0, 255];
+    return [0, 255, 0];
+  }));
+
+  try {
+    const prepared = await sheinApi.prepareLocalImageForSheinUpload(sourcePath, 5);
+    assert.equal(prepared.generated, true);
+    assert.notEqual(prepared.uploadPath, sourcePath);
+    assert.deepEqual(uploadGuard.readImageDimensions(fs.readFileSync(prepared.uploadPath)), {
+      width: 900,
+      height: 900,
+    });
+    const firstPixel = await sharp(prepared.uploadPath).raw().toBuffer();
+    assert.ok(firstPixel[1] > 200, "center crop should start in the green middle band");
+    assert.ok(firstPixel[0] < 30 && firstPixel[2] < 30);
+    prepared.cleanup();
+    assert.equal(fs.existsSync(prepared.uploadPath), false);
+    assert.equal(fs.existsSync(sourcePath), true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("SHEIN type-5 upload reuses an already-square local image", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "listingify-square-upload-"));
+  const sourcePath = path.join(tmpDir, "square.png");
+  fs.writeFileSync(sourcePath, solidPng(1200, 1200));
+
+  try {
+    const prepared = await sheinApi.prepareLocalImageForSheinUpload(sourcePath, 5);
+    assert.equal(prepared.generated, false);
+    assert.equal(prepared.uploadPath, sourcePath);
+    prepared.cleanup();
+    assert.equal(fs.existsSync(sourcePath), true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("pre-publish draft list batches per-row summaries into one database query", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const listRoute = source.slice(
+    source.indexOf('prePublish.get("/drafts"'),
+    source.indexOf('prePublish.post("/drafts"'),
+  );
+
+  assert.match(listRoute, /summarizeListings\(db, rows, \{ onlySelected: true \}\)/);
+  assert.doesNotMatch(listRoute, /rows\.map\(\(row\) => summarizeListing/);
+  assert.match(source, /function summarizeListings[\s\S]+with target_listing as[\s\S]+jsonb_agg/);
 });
 
 test("publish version service exposes snapshot and version helpers", () => {

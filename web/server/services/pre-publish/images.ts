@@ -43,7 +43,7 @@ const SQUARE_IMAGE_RULE = {
 }
 
 const SKC_SQUARE_IMAGE_RULE = {
-  dimension_rule: "1:1，900-2200 px；或 3:4，宽 900-2200 px（由 SHEIN 自动裁切）",
+  dimension_rule: "1:1，900-2200 px；或 3:4，宽 900-2200 px（发布时自动居中裁切为方图）",
   format_rule: "JPG / JPEG / PNG",
   size_rule: "≤ 8MB",
 }
