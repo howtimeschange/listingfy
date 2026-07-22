@@ -15,6 +15,7 @@ const shared = await import("../../web/server/services/pre-publish/shared.ts");
 const drafts = await import("../../web/server/services/pre-publish/drafts.ts");
 const fieldFills = await import("../../web/server/services/pre-publish/field-fills.ts");
 const images = await import("../../web/server/services/pre-publish/images.ts");
+const imagePackage = await import("../../web/server/services/pre-publish/image-package.ts");
 const payload = await import("../../web/server/services/pre-publish/payload.ts");
 const sheinApi = await import("../../web/server/services/pre-publish/shein-api.ts");
 const versions = await import("../../web/server/services/pre-publish/versions.ts");
@@ -67,6 +68,36 @@ function rgbPng(width, height, colorForRow) {
 function solidPng(width, height) {
   return rgbPng(width, height, () => [255, 255, 255]);
 }
+
+test("SHEIN image packages parse exact SPU/SKC paths and assign image fields in business order", () => {
+  const parsed = [
+    imagePackage.parseSheinImagePackageEntry("SHEIN图包/208326102001/20832610200100366/20832610200100366_2.jpg", 200),
+    imagePackage.parseSheinImagePackageEntry("SHEIN图包/208326102001/20832610200100366/20832610200100366_1.jpg", 100),
+  ].filter(Boolean);
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].spu_code, "208326102001");
+  assert.equal(parsed[0].skc_code, "20832610200100366");
+  assert.equal(imagePackage.parseSheinImagePackageEntry("../208326102001/20832610200100366/20832610200100366_1.jpg"), null);
+  assert.equal(imagePackage.parseSheinImagePackageEntry("SHEIN图包/208326102001/other/other_1.jpg"), null);
+
+  const [group] = imagePackage.groupSheinImagePackageEntries(parsed);
+  assert.deepEqual(group.entries.map((entry) => entry.image_index), [1, 2]);
+  assert.deepEqual(
+    imagePackage.packageImageAssignments(group).map((assignment) => [
+      assignment.requirement_key,
+      assignment.asset_type,
+      assignment.image_sort,
+      assignment.entry.image_index,
+      assignment.derivative,
+    ]),
+    [
+      ["SKC_DETAIL", "MAIN", 1, 1, null],
+      ["SKC_DETAIL", "DETAIL", 2, 2, null],
+      ["SKC_SQUARE", "SQUARE", 1, 1, null],
+      ["SKC_COLOR_BLOCK", "COLOR_BLOCK", 1, 1, "color-square-80"],
+    ],
+  );
+});
 
 test("pre-publish shared helpers normalize input and build stable scoped keys", () => {
   assert.equal(shared.normalizeText("  A \n B  "), "A \n B");
@@ -562,6 +593,8 @@ test("pre-publish AI and batch fixes keep critical fields rule-owned", async () 
   assert.match(source, /quick_fixes:\s*\{\s*fields/);
   assert.match(source, /sku_commercials/);
   assert.match(source, /batch-import-folders/);
+  assert.match(source, /batch-upload-image-package/);
+  assert.match(source, /spu_skc_directory_and_image_index/);
 
   assert.match(dialog, /commonPackageEdits/);
   assert.match(dialog, /批量标题/);
@@ -571,6 +604,8 @@ test("pre-publish AI and batch fixes keep critical fields rule-owned", async () 
 
   assert.match(draftList, /批量导入图片目录/);
   assert.match(draftList, /batch-import-folders/);
+  assert.match(draftList, /批量上传图包/);
+  assert.match(draftList, /batch-upload-image-package/);
 });
 
 test("pre-publish route resolves SHEIN size sale attribute by metadata and conversion rule before direct category enum", async () => {

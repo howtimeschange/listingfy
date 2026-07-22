@@ -29,6 +29,7 @@ const ROUTES = [
       ["post", "/drafts/:id/ai-enrich", "LISTING_WRITE"],
       ["post", "/drafts/:id/ai-field", "LISTING_WRITE"],
       ["post", "/drafts/batch-import-folders", "LISTING_WRITE"],
+      ["post", "/drafts/batch-upload-image-package", "LISTING_WRITE"],
       ["post", "/drafts/:id/images/import-folder", "LISTING_WRITE"],
       ["get", "/drafts/:id/image-candidates", "LISTING_READ"],
       ["post", "/drafts/:id/images/from-library", "LISTING_WRITE"],

@@ -199,7 +199,8 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    client_max_body_size 100m;
+    client_max_body_size 600m;
+    client_body_timeout 600s;
 
     location /api/ {
         proxy_pass http://127.0.0.1:3001/api/;
@@ -209,6 +210,8 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $listingify_forwarded_proto;
         proxy_set_header X-Forwarded-Scheme $listingify_forwarded_proto;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
     }
 
     location /assets/ {

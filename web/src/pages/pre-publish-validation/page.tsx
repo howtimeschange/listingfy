@@ -2,6 +2,7 @@ import { useMemo, useState } from "react"
 import { Link, useSearchParams } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
+  Archive,
   CopyPlus,
   FileClock,
   ImageIcon,
@@ -13,6 +14,7 @@ import {
   RefreshCw,
   Search,
   Trash2,
+  Upload,
 } from "lucide-react"
 import { ApiError, api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
@@ -129,6 +131,27 @@ interface CreateDraftResult {
   items: Array<{ listing_id: number; spu_code: string; publish_unit_no?: string; version_no: number }>
 }
 
+interface BatchImagePackageResult {
+  ok: boolean
+  package: {
+    file_name: string
+    size: number
+    spu_count: number
+    skc_count: number
+    source_image_count: number
+    ignored_entry_count: number
+  }
+  scope: "SELECTED_DRAFTS" | "ALL_SHEIN_DRAFTS"
+  matched_draft_count: number
+  matched_spu_count: number
+  matched_skc_count: number
+  imported_count: number
+  replaced_count: number
+  unmatched_spu_codes: string[]
+  unmatched_skc_codes: string[]
+  warning_count: number
+}
+
 function usePlatforms() {
   return useQuery<{ items: PlatformOption[] }>({
     queryKey: ["pre-publish", "platforms"],
@@ -215,6 +238,9 @@ export default function PrePublishValidationPage() {
   const [selectedDraftIds, setSelectedDraftIds] = useState<Set<number>>(new Set())
   const [createDraftDialogOpen, setCreateDraftDialogOpen] = useState(false)
   const [createDraftText, setCreateDraftText] = useState("")
+  const [batchImagePackageDialogOpen, setBatchImagePackageDialogOpen] = useState(false)
+  const [batchImagePackageFile, setBatchImagePackageFile] = useState<File | null>(null)
+  const [batchImagePackageResult, setBatchImagePackageResult] = useState<BatchImagePackageResult | null>(null)
   const [batchImageDialogOpen, setBatchImageDialogOpen] = useState(false)
   const [batchImageFolderPath, setBatchImageFolderPath] = useState("")
   const { data: platformData } = usePlatforms()
@@ -296,6 +322,24 @@ export default function PrePublishValidationPage() {
     },
     onError: (error) => toast.error(errorMessage(error, "批量导入图片目录失败")),
   })
+  const batchUploadImagePackageMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const form = new FormData()
+      form.append("file", file)
+      form.append("listing_ids", JSON.stringify(Array.from(selectedDraftIds)))
+      return api.postForm<BatchImagePackageResult>("/pre-publish/drafts/batch-upload-image-package", form)
+    },
+    onSuccess: async (result) => {
+      setBatchImagePackageResult(result)
+      if (result.imported_count > 0) {
+        toast.success(`图包匹配完成：${formatNumber(result.imported_count)} 张图片字段已填充`)
+      } else {
+        toast.warning("图包已解析，但没有匹配到可填充的草稿图片字段")
+      }
+      await queryClient.invalidateQueries({ queryKey: ["pre-publish", "drafts"] })
+    },
+    onError: (error) => toast.error(errorMessage(error, "批量上传图包失败")),
+  })
   function updateBatchSearch(value: string) {
     const next = new URLSearchParams(searchParams)
     if (value.trim()) next.set("batch_search", value)
@@ -350,6 +394,89 @@ export default function PrePublishValidationPage() {
         description="同一个 SHEIN 商品可以派生多个独立草稿；每个草稿有自己的状态、版本记录、发布任务和字段填充进度。"
         actions={(
           <>
+            <Dialog open={batchImagePackageDialogOpen} onOpenChange={setBatchImagePackageDialogOpen}>
+              <DialogTrigger asChild>
+                <Button type="button" size="sm" variant="outline">
+                  <Upload className="size-4" />
+                  批量上传图包
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-2xl">
+                <DialogHeader>
+                  <DialogTitle>批量上传 SHEIN 图包</DialogTitle>
+                  <DialogDescription>
+                    ZIP 结构为“款号 / SKC / SKC_序号.jpg”。系统按完整 SKC 精确匹配草稿，原图按序填入主图/细节图，第一张同时生成方形图和 80×80 色块图。
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div className="rounded-lg border border-dashed p-4">
+                    <div className="flex items-center gap-3">
+                      <span className="flex size-10 items-center justify-center rounded-lg bg-muted">
+                        <Archive className="size-5 text-muted-foreground" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium">
+                          {batchImagePackageFile?.name ?? "选择 ZIP 图包"}
+                        </span>
+                        <span className="mt-1 block text-xs text-muted-foreground">
+                          {batchImagePackageFile
+                            ? `${formatNumber(Math.ceil(batchImagePackageFile.size / 1024 / 1024))} MB`
+                            : "最大 600MB；支持 JPG、JPEG、PNG 图片"}
+                        </span>
+                      </span>
+                    </div>
+                    <input
+                      type="file"
+                      aria-label="选择 SHEIN ZIP 图包"
+                      accept=".zip,application/zip,application/x-zip-compressed"
+                      className="mt-3 block w-full rounded-md border bg-background px-3 py-2 text-sm file:mr-3 file:rounded file:border-0 file:bg-muted file:px-3 file:py-1 file:text-sm file:font-medium"
+                      onChange={(event) => {
+                        setBatchImagePackageFile(event.target.files?.[0] ?? null)
+                        setBatchImagePackageResult(null)
+                      }}
+                    />
+                  </div>
+                  <div className="rounded-lg bg-muted/60 px-4 py-3 text-sm">
+                    {selectedDraftIds.size > 0 ? (
+                      <p>本次只匹配已勾选的 {formatNumber(selectedDraftIds.size)} 个草稿。</p>
+                    ) : (
+                      <p>当前未勾选草稿，本次将按图包款号匹配全部 SHEIN 发布草稿。</p>
+                    )}
+                    <p className="mt-1 text-xs text-muted-foreground">重复上传同一款色时，只替换上一轮图包自动填充的图片，不影响人工上传和素材库图片。</p>
+                  </div>
+                  {batchImagePackageResult ? (
+                    <div className="space-y-3 rounded-lg border p-4">
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                        <div><p className="text-xs text-muted-foreground">图包款号</p><p className="mt-1 font-semibold">{formatNumber(batchImagePackageResult.package.spu_count)}</p></div>
+                        <div><p className="text-xs text-muted-foreground">匹配草稿</p><p className="mt-1 font-semibold">{formatNumber(batchImagePackageResult.matched_draft_count)}</p></div>
+                        <div><p className="text-xs text-muted-foreground">匹配 SKC</p><p className="mt-1 font-semibold">{formatNumber(batchImagePackageResult.matched_skc_count)}</p></div>
+                        <div><p className="text-xs text-muted-foreground">填充图片字段</p><p className="mt-1 font-semibold text-emerald-700">{formatNumber(batchImagePackageResult.imported_count)}</p></div>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        已解析 {formatNumber(batchImagePackageResult.package.source_image_count)} 张原图
+                        {batchImagePackageResult.replaced_count > 0 ? `；替换上一轮 ${formatNumber(batchImagePackageResult.replaced_count)} 张` : ""}
+                        {batchImagePackageResult.warning_count > 0 ? `；${formatNumber(batchImagePackageResult.warning_count)} 条提示` : ""}
+                      </p>
+                      {batchImagePackageResult.unmatched_spu_codes.length > 0 ? (
+                        <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                          未匹配款号：{batchImagePackageResult.unmatched_spu_codes.join("、")}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    onClick={() => batchImagePackageFile && batchUploadImagePackageMutation.mutate(batchImagePackageFile)}
+                    disabled={!batchImagePackageFile || batchUploadImagePackageMutation.isPending}
+                  >
+                    {batchUploadImagePackageMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Upload className="mr-2 size-4" />}
+                    {batchUploadImagePackageMutation.isPending ? "正在上传并匹配…" : "上传并批量填充"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
             <Button
               type="button"
               size="sm"

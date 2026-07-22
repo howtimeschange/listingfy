@@ -2,6 +2,8 @@ import fs from "node:fs"
 import path from "node:path"
 import { Hono } from "hono"
 import { HTTPException } from "hono/http-exception"
+import sharp from "sharp"
+import unzipper, { type CentralDirectory, type File as ZipFile } from "unzipper"
 import { DATA_DIR, getDb } from "../db"
 import { callAiCategoryMatcher } from "../../../scripts/lib/ai_category_matcher.mjs"
 import { callAiChatJson, resolveAiConfig } from "../../../scripts/lib/ai_chat_client.mjs"
@@ -49,6 +51,15 @@ import {
   responseMessage,
 } from "../services/pre-publish/payload"
 import { transformOnlineImageToShein, uploadLocalImageToShein } from "../services/pre-publish/shein-api"
+import {
+  groupSheinImagePackageEntries,
+  MAX_SHEIN_IMAGE_PACKAGE_ENTRIES,
+  MAX_SHEIN_IMAGE_PACKAGE_UNCOMPRESSED_BYTES,
+  packageImageAssignments,
+  parseSheinImagePackageEntry,
+  type SheinImagePackageEntry,
+  type SheinImagePackageGroup,
+} from "../services/pre-publish/image-package"
 import {
   asNumber,
   asPositiveNumber,
@@ -6348,6 +6359,398 @@ prePublish.post("/drafts/batch-import-folders", async (c) => {
   return c.json({
     ok: items.every((item) => item.ok),
     imported_count: items.reduce((sum, item) => sum + item.imported_count, 0),
+    items,
+  })
+})
+
+const DEFAULT_MAX_IMAGE_PACKAGE_BYTES = 600 * 1024 * 1024
+
+function maxImagePackageBytes() {
+  const megabytes = Number(process.env.LISTINGIFY_MAX_IMAGE_PACKAGE_MB ?? 600)
+  if (!Number.isFinite(megabytes) || megabytes <= 0) return DEFAULT_MAX_IMAGE_PACKAGE_BYTES
+  return Math.floor(megabytes) * 1024 * 1024
+}
+
+function packageCodeMatches(listingCode: unknown, packageCode: string) {
+  const listingFinger = skcFingerprint(listingCode)
+  const packageFinger = skcFingerprint(packageCode)
+  return Boolean(listingFinger && packageFinger && (listingFinger === packageFinger || listingFinger.endsWith(packageFinger)))
+}
+
+function packageUploadListingRows(db: ReturnType<typeof getDb>, listingIds: number[]) {
+  const clauses = ["listing.platform = 'SHEIN'"]
+  const params: unknown[] = []
+  if (listingIds.length > 0) {
+    clauses.push(`listing.id in (${listingIds.map(() => "?").join(",")})`)
+    params.push(...listingIds)
+  }
+  return db.prepare(`
+    select
+      listing.id as listing_id,
+      listing.spu_code,
+      listing.status as listing_status,
+      skc.id as listing_skc_id,
+      skc.skc_code,
+      skc.color_name
+    from listing
+    join listing_skc skc on skc.listing_id = listing.id
+    where ${clauses.join(" and ")}
+    order by listing.id, skc.skc_code
+  `).all(...params) as SourceRow[]
+}
+
+type PreparedPackageAsset = {
+  bytes: Buffer
+  extension: string
+  fileName: string
+  requirement: PictureRequirement
+  requirementKey: string
+  assetType: string
+  imageSort: number
+  sourceEntry: SheinImagePackageEntry
+  width: number
+  height: number
+  contentType: string
+  compliance: ReturnType<typeof imageCompliance>
+  derivative: string | null
+}
+
+async function preparePackageAssetsForListing(input: {
+  listing: ListingRow
+  group: SheinImagePackageGroup
+  zipEntries: Map<string, ZipFile>
+  db: ReturnType<typeof getDb>
+}) {
+  const requirements = getImageRequirements(input.db, input.listing)
+    .filter((requirement) => requirement.level === "SKC" && requirement.show !== 0)
+  const requirementMap = new Map(requirements.map((requirement) => [requirement.requirement_key, requirement]))
+  const detailLimit = requirementMap.get("SKC_DETAIL")?.max_count ?? 0
+  const assignments = packageImageAssignments(input.group, detailLimit)
+    .filter((assignment) => requirementMap.has(assignment.requirement_key))
+  const sourceBuffers = new Map<string, Buffer>()
+  const prepared: PreparedPackageAsset[] = []
+  const warnings: Array<{ file_name: string; reason: string }> = []
+
+  for (const assignment of assignments) {
+    const requirement = requirementMap.get(assignment.requirement_key)
+    const zipEntry = input.zipEntries.get(assignment.entry.entry_path)
+    if (!requirement || !zipEntry) continue
+    try {
+      let sourceBytes = sourceBuffers.get(assignment.entry.entry_path)
+      if (!sourceBytes) {
+        sourceBytes = await zipEntry.buffer()
+        sourceBuffers.set(assignment.entry.entry_path, sourceBytes)
+      }
+      let bytes = sourceBytes
+      let fileName = path.basename(assignment.entry.entry_path)
+      if (assignment.derivative === "color-square-80") {
+        bytes = await sharp(sourceBytes)
+          .rotate()
+          .flatten({ background: "#ffffff" })
+          .resize({ width: 80, height: 80, fit: "cover", position: "centre" })
+          .jpeg({ quality: 92 })
+          .toBuffer()
+        fileName = `${input.group.skc_code}_${assignment.entry.image_index}_color-block.jpg`
+      }
+      const inspection = inspectListingImageForRequirement(bytes, requirement)
+      prepared.push({
+        bytes,
+        extension: inspection.detected.extension,
+        fileName,
+        requirement,
+        requirementKey: assignment.requirement_key,
+        assetType: assignment.asset_type,
+        imageSort: assignment.image_sort,
+        sourceEntry: assignment.entry,
+        width: inspection.width,
+        height: inspection.height,
+        contentType: inspection.detected.contentType,
+        compliance: inspection.compliance,
+        derivative: assignment.derivative,
+      })
+    } catch (error) {
+      warnings.push({
+        file_name: path.basename(assignment.entry.entry_path),
+        reason: error instanceof Error ? error.message : "图包图片处理失败",
+      })
+    }
+  }
+  return { assets: prepared, warnings }
+}
+
+function savePreparedPackageAssets(input: {
+  db: ReturnType<typeof getDb>
+  listing: ListingRow
+  listingSkc: SourceRow
+  group: SheinImagePackageGroup
+  packageFileName: string
+  assets: PreparedPackageAsset[]
+}) {
+  const oldAssets = input.db.prepare(`
+    select id, local_path
+    from listing_asset
+    where listing_id = ?
+      and listing_skc_id = ?
+      and source_type = 'SHEIN_IMAGE_PACKAGE'
+  `).all(input.listing.id, input.listingSkc.listing_skc_id) as SourceRow[]
+  const insert = input.db.prepare(`
+    insert into listing_asset (
+      listing_id,
+      listing_skc_id,
+      skc_code,
+      source_type,
+      asset_type,
+      image_sort,
+      local_path,
+      file_size,
+      width,
+      height,
+      status,
+      confirmed,
+      note,
+      raw_payload_json,
+      updated_at
+    )
+    values (?, ?, ?, 'SHEIN_IMAGE_PACKAGE', ?, ?, ?, ?, ?, ?, 'PENDING_CONFIRM', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  `)
+  const saved: SourceRow[] = []
+  const warnings: Array<{ file_name: string; reason: string }> = []
+  const newLocalPaths: string[] = []
+  const transaction = input.db.transaction(() => {
+    lockListingImageMutation(input.db, Number(input.listing.id))
+    input.db.prepare(`
+      delete from listing_asset
+      where listing_id = ?
+        and listing_skc_id = ?
+        and source_type = 'SHEIN_IMAGE_PACKAGE'
+    `).run(input.listing.id, input.listingSkc.listing_skc_id)
+
+    for (const asset of input.assets) {
+      try {
+        assertListingImageCapacity({
+          db: input.db,
+          listingId: Number(input.listing.id),
+          listingSkcId: input.listingSkc.listing_skc_id,
+          requirement: asset.requirement,
+          assetType: asset.assetType,
+        })
+      } catch (error) {
+        warnings.push({
+          file_name: asset.fileName,
+          reason: error instanceof Error ? error.message : "图片数量超过平台限制",
+        })
+        continue
+      }
+      const dir = path.join(
+        uploadsRoot(),
+        String(input.listing.id),
+        skcFingerprint(input.listingSkc.skc_code || input.group.skc_code),
+      )
+      fs.mkdirSync(dir, { recursive: true })
+      const localPath = path.join(dir, safeAssetFileName(asset.fileName, asset.extension))
+      fs.writeFileSync(localPath, asset.bytes)
+      newLocalPaths.push(localPath)
+      const result = insert.run(
+        input.listing.id,
+        input.listingSkc.listing_skc_id,
+        input.listingSkc.skc_code,
+        asset.assetType,
+        asset.imageSort,
+        localPath,
+        asset.bytes.length,
+        asset.width,
+        asset.height,
+        `SHEIN 图包自动填充：${asset.requirement.name}`,
+        JSON.stringify({
+          package_file_name: input.packageFileName,
+          source_entry: asset.sourceEntry.entry_path,
+          source_image_index: asset.sourceEntry.image_index,
+          requirement_key: asset.requirementKey,
+          classification_rule: "spu_skc_directory_and_image_index",
+          derivative: asset.derivative,
+          content_type: asset.contentType,
+          file_size: asset.bytes.length,
+          width: asset.width,
+          height: asset.height,
+          compliance: asset.compliance,
+        }),
+      )
+      saved.push(input.db.prepare("select * from listing_asset where id = ?").get(result.lastInsertRowid) as SourceRow)
+    }
+    resetListingSkcImageConfirmation(input.db, Number(input.listing.id), input.listingSkc.listing_skc_id)
+    input.db.prepare(`
+      update listing
+      set updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      where id = ?
+    `).run(input.listing.id)
+  })
+
+  try {
+    transaction()
+  } catch (error) {
+    for (const localPath of newLocalPaths) fs.rmSync(localPath, { force: true })
+    throw error
+  }
+  for (const oldAsset of oldAssets) {
+    const localPath = normalizeText(oldAsset.local_path)
+    if (localPath && isPathInside(uploadsRoot(), localPath)) fs.rmSync(localPath, { force: true })
+  }
+  return { assets: saved, warnings, replaced_count: oldAssets.length }
+}
+
+prePublish.post("/drafts/batch-upload-image-package", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
+  const db = getDb()
+  let form: FormData
+  try {
+    form = await c.req.formData()
+  } catch {
+    throw new HTTPException(400, { message: "图包上传内容无法解析，请重新选择 ZIP 文件" })
+  }
+  const file = form.get("file")
+  if (!(file instanceof File)) throw new HTTPException(400, { message: "请选择要上传的 SHEIN 图包" })
+  if (path.extname(file.name).toLowerCase() !== ".zip") {
+    throw new HTTPException(400, { message: "仅支持 ZIP 格式的 SHEIN 图包" })
+  }
+  if (file.size > maxImagePackageBytes()) {
+    throw new HTTPException(413, { message: `SHEIN 图包不能超过 ${Math.floor(maxImagePackageBytes() / 1024 / 1024)}MB` })
+  }
+  const mimeType = normalizeText(file.type).toLowerCase()
+  if (mimeType && !["application/zip", "application/x-zip-compressed", "application/octet-stream"].includes(mimeType)) {
+    throw new HTTPException(400, { message: "上传文件不是支持的 ZIP 图包" })
+  }
+  const listingIds = Array.from(new Set(
+    parseJsonArray(form.get("listing_ids"))
+      .map(Number)
+      .filter((id) => Number.isFinite(id) && id > 0),
+  ))
+  const archiveBytes = Buffer.from(await file.arrayBuffer())
+  if (archiveBytes.length < 4 || archiveBytes[0] !== 0x50 || archiveBytes[1] !== 0x4b) {
+    throw new HTTPException(400, { message: "上传文件不是有效的 ZIP 图包" })
+  }
+
+  let archive: CentralDirectory
+  try {
+    archive = await unzipper.Open.buffer(archiveBytes)
+  } catch {
+    throw new HTTPException(400, { message: "ZIP 图包已损坏或无法读取" })
+  }
+  if (archive.files.length > MAX_SHEIN_IMAGE_PACKAGE_ENTRIES) {
+    throw new HTTPException(413, { message: `图包文件数不能超过 ${MAX_SHEIN_IMAGE_PACKAGE_ENTRIES} 个` })
+  }
+  if (archive.files.some((entry) => (entry.flags & 1) === 1)) {
+    throw new HTTPException(400, { message: "不支持加密 ZIP 图包" })
+  }
+  const totalUncompressedBytes = archive.files.reduce((sum, entry) => sum + Number(entry.uncompressedSize ?? 0), 0)
+  if (totalUncompressedBytes > MAX_SHEIN_IMAGE_PACKAGE_UNCOMPRESSED_BYTES) {
+    throw new HTTPException(413, { message: "ZIP 解压后内容超过 1GB，已停止处理" })
+  }
+  const parsedEntries = archive.files
+    .filter((entry) => entry.type === "File")
+    .map((entry) => parseSheinImagePackageEntry(entry.path, entry.uncompressedSize))
+    .filter((entry): entry is SheinImagePackageEntry => Boolean(entry))
+  if (parsedEntries.length === 0) {
+    throw new HTTPException(400, {
+      message: "图包中未找到“款号/SKC/SKC_序号.jpg”结构的图片",
+    })
+  }
+  const groups = groupSheinImagePackageEntries(parsedEntries)
+  const zipEntries = new Map(archive.files.map((entry) => [entry.path.replaceAll("\\", "/"), entry]))
+  const listingSkcRows = packageUploadListingRows(db, listingIds)
+  const listingCache = new Map<number, ListingRow>()
+  const itemMap = new Map<number, {
+    listing_id: number
+    spu_code: string
+    matched_skc_count: number
+    source_image_count: number
+    imported_count: number
+    replaced_count: number
+    warnings: Array<{ file_name: string; reason: string }>
+  }>()
+  const matchedSpuCodes = new Set<string>()
+  const unmatchedSkcCodes: string[] = []
+
+  for (const group of groups) {
+    const targets = listingSkcRows.filter((row) => (
+      packageCodeMatches(row.spu_code, group.spu_code)
+      && packageCodeMatches(row.skc_code, group.skc_code)
+    ))
+    if (targets.length === 0) {
+      unmatchedSkcCodes.push(group.skc_code)
+      continue
+    }
+    matchedSpuCodes.add(group.spu_code)
+    for (const target of targets) {
+      const listingId = Number(target.listing_id)
+      let listing = listingCache.get(listingId)
+      if (!listing) {
+        listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
+        if (!listing) continue
+        listingCache.set(listingId, listing)
+      }
+      const item = itemMap.get(listingId) ?? {
+        listing_id: listingId,
+        spu_code: normalizeText(listing.spu_code),
+        matched_skc_count: 0,
+        source_image_count: 0,
+        imported_count: 0,
+        replaced_count: 0,
+        warnings: [],
+      }
+      try {
+        const prepared = await preparePackageAssetsForListing({ listing, group, zipEntries, db })
+        if (prepared.assets.length === 0) {
+          item.warnings.push(...prepared.warnings, {
+            file_name: group.skc_code,
+            reason: "当前类目没有可填充的 SKC 图片字段，或图包图片均不符合要求",
+          })
+          itemMap.set(listingId, item)
+          continue
+        }
+        const saved = savePreparedPackageAssets({
+          db,
+          listing,
+          listingSkc: target,
+          group,
+          packageFileName: file.name,
+          assets: prepared.assets,
+        })
+        item.matched_skc_count += 1
+        item.source_image_count += group.entries.length
+        item.imported_count += saved.assets.length
+        item.replaced_count += saved.replaced_count
+        item.warnings.push(...prepared.warnings, ...saved.warnings)
+      } catch (error) {
+        item.warnings.push({
+          file_name: group.skc_code,
+          reason: error instanceof Error ? error.message : "SKC 图包导入失败",
+        })
+      }
+      itemMap.set(listingId, item)
+    }
+  }
+
+  const items = Array.from(itemMap.values()).sort((left, right) => left.listing_id - right.listing_id)
+  const packageSpuCodes = Array.from(new Set(groups.map((group) => group.spu_code))).sort()
+  return c.json({
+    ok: items.some((item) => item.imported_count > 0),
+    package: {
+      file_name: file.name,
+      size: file.size,
+      spu_count: packageSpuCodes.length,
+      skc_count: groups.length,
+      source_image_count: parsedEntries.length,
+      ignored_entry_count: archive.files.length - parsedEntries.length,
+    },
+    scope: listingIds.length > 0 ? "SELECTED_DRAFTS" : "ALL_SHEIN_DRAFTS",
+    matched_draft_count: items.length,
+    matched_spu_count: matchedSpuCodes.size,
+    matched_skc_count: items.reduce((sum, item) => sum + item.matched_skc_count, 0),
+    imported_count: items.reduce((sum, item) => sum + item.imported_count, 0),
+    replaced_count: items.reduce((sum, item) => sum + item.replaced_count, 0),
+    unmatched_spu_codes: packageSpuCodes.filter((spuCode) => !matchedSpuCodes.has(spuCode)),
+    unmatched_skc_codes: unmatchedSkcCodes,
+    warning_count: items.reduce((sum, item) => sum + item.warnings.length, 0),
     items,
   })
 })
