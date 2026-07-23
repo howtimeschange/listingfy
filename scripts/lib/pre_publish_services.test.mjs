@@ -503,6 +503,19 @@ test("pre-publish draft list batches per-row summaries into one database query",
   assert.match(source, /function summarizeListings[\s\S]+with target_listing as[\s\S]+jsonb_agg/);
 });
 
+test("pre-publish draft list excludes heavyweight listing snapshots", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const listRoute = source.slice(
+    source.indexOf('prePublish.get("/drafts"'),
+    source.indexOf('prePublish.post("/drafts"'),
+  );
+
+  assert.doesNotMatch(listRoute, /listing\.\*/);
+  assert.doesNotMatch(listRoute, /source_snapshot_json/);
+  assert.match(listRoute, /listing\.id/);
+  assert.match(listRoute, /listing\.completeness/);
+});
+
 test("publish version service exposes snapshot and version helpers", () => {
   assert.equal(typeof versions.nextPublishVersionNo, "function");
   assert.equal(typeof versions.buildListingSnapshot, "function");
