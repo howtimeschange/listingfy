@@ -332,9 +332,17 @@ function skcRows(db: ReturnType<typeof getDb>, row: SourceRow) {
   `).all(row.content_package_id ?? -1) as SourceRow[]
 }
 
-function bucketSkcDetails(db: ReturnType<typeof getDb>, row: SourceRow) {
-  const mdm = db.prepare(`
+function bucketSkcDetailsBySpu(db: ReturnType<typeof getDb>, rows: SourceRow[]) {
+  const productSpuIds = rows
+    .map((row) => Number(row.product_spu_id))
+    .filter((id) => Number.isFinite(id))
+  const grouped = new Map<number, SourceRow[]>()
+  if (!productSpuIds.length) return grouped
+
+  const placeholders = productSpuIds.map(() => "?").join(", ")
+  const details = db.prepare(`
     select
+      skc.spu_id as product_spu_id,
       skc.skc_code,
       skc.skc_name,
       skc.color_code,
@@ -343,7 +351,8 @@ function bucketSkcDetails(db: ReturnType<typeof getDb>, row: SourceRow) {
       (
         select asset.normalized_url
         from product_asset asset
-        where asset.skc_code = skc.skc_code
+        where asset.spu_code = bucket.spu_code
+          and asset.skc_code = skc.skc_code
           and asset.source_kind = 'PICTURE'
           and asset.asset_type in ('COLOR_BLOCK', 'COLOR', 'MAIN')
           and coalesce(asset.normalized_url, '') <> ''
@@ -364,13 +373,13 @@ function bucketSkcDetails(db: ReturnType<typeof getDb>, row: SourceRow) {
         where sku.skc_id = skc.id
       ) as sku_count
     from product_skc skc
-    where skc.spu_id = ?
-    order by skc.skc_code
-  `).all(row.product_spu_id ?? row.id) as SourceRow[]
-  if (mdm.length) return mdm
+    join shein_product_bucket bucket on bucket.product_spu_id = skc.spu_id
+    where skc.spu_id in (${placeholders})
 
-  return db.prepare(`
+    union all
+
     select
+      bucket.product_spu_id,
       cskc.skc_code,
       null as skc_name,
       null as color_code,
@@ -379,7 +388,8 @@ function bucketSkcDetails(db: ReturnType<typeof getDb>, row: SourceRow) {
       (
         select asset.normalized_url
         from product_asset asset
-        where asset.skc_code = cskc.skc_code
+        where asset.spu_code = bucket.spu_code
+          and asset.skc_code = cskc.skc_code
           and asset.source_kind = 'PICTURE'
           and asset.asset_type in ('COLOR_BLOCK', 'COLOR', 'MAIN')
           and coalesce(asset.normalized_url, '') <> ''
@@ -396,9 +406,24 @@ function bucketSkcDetails(db: ReturnType<typeof getDb>, row: SourceRow) {
       ) as image_url,
       cskc.sku_count
     from product_content_skc cskc
-    where cskc.content_package_id = ?
-    order by cskc.skc_code
-  `).all(row.content_package_id ?? -1) as SourceRow[]
+    join product_content_package pkg on pkg.id = cskc.content_package_id
+    join shein_product_bucket bucket on bucket.spu_code = pkg.spu_code
+    where bucket.product_spu_id in (${placeholders})
+      and not exists (
+        select 1
+        from product_skc skc
+        where skc.spu_id = bucket.product_spu_id
+      )
+    order by product_spu_id, skc_code
+  `).all(...productSpuIds, ...productSpuIds) as SourceRow[]
+
+  for (const detail of details) {
+    const productSpuId = Number(detail.product_spu_id)
+    const item = { ...detail }
+    delete item.product_spu_id
+    grouped.set(productSpuId, [...(grouped.get(productSpuId) ?? []), item])
+  }
+  return grouped
 }
 
 function latestListing(db: ReturnType<typeof getDb>, productSpuId: number) {
@@ -726,8 +751,35 @@ function listWhere(query: {
 
 const bucketSelect = `
   select
-    bucket.*,
-    pkg.id as content_package_id,
+    bucket.id,
+    bucket.product_spu_id,
+    bucket.spu_code,
+    bucket.bucket_status,
+    bucket.platform_category_id,
+    bucket.product_type_id,
+    bucket.platform_category_name,
+    bucket.platform_category_path,
+    bucket.category_source,
+    bucket.category_status,
+    bucket.title_cn,
+    bucket.title_en,
+    bucket.supply_discount,
+    bucket.supply_price_cny,
+    bucket.retail_price_usd,
+    bucket.package_size_text,
+    bucket.weight_record_count,
+    bucket.size_match_count,
+    bucket.sku_count,
+    bucket.skc_count,
+    bucket.image_status,
+    bucket.readiness_status,
+    bucket.latest_listing_id,
+    bucket.latest_version_no,
+    bucket.latest_publish_status,
+    bucket.updated_at,
+    cast(coalesce(json_extract(bucket.raw_payload_json, '$.field_completeness.completeness'), 0) as integer) as field_completeness,
+    cast(coalesce(json_extract(bucket.raw_payload_json, '$.field_completeness.missing_field_count'), 0) as integer) as missing_field_count,
+    cast(coalesce(json_extract(bucket.raw_payload_json, '$.field_completeness.needs_ai_count'), 0) as integer) as needs_ai_count,
     spu.spu_name,
     spu.brand_code,
     spu.brand_name,
@@ -763,40 +815,9 @@ const bucketSelect = `
   left join product_content_package pkg on pkg.spu_code = bucket.spu_code
 `
 
-function ensureBucketHasRows(db: ReturnType<typeof getDb>) {
-  const row = db.prepare("select count(*) as count from shein_product_bucket").get() as { count: number }
-  if (Number(row.count ?? 0) === 0) {
-    const rows = db.prepare(`
-    select spu_code
-    from product_spu
-    order by updated_at desc, synced_at desc, spu_code desc
-    limit 20
-    `).all() as SourceRow[]
-    for (const item of rows) refreshBucketProduct(db, String(item.spu_code))
-    return
-  }
-
-  const staleRows = db.prepare(`
-    select spu_code
-    from shein_product_bucket
-    where bucket_status <> 'REMOVED'
-      and (
-        sku_count = 0
-        or skc_count = 0
-        or json_type(raw_payload_json, '$.weight_scope') is null
-        or json_extract(raw_payload_json, '$.weight_scope') = 'MISSING'
-        or json_extract(raw_payload_json, '$.seeded_from') = 'listing'
-      )
-    order by updated_at desc, id desc
-    limit 50
-  `).all() as SourceRow[]
-  for (const item of staleRows) refreshBucketProduct(db, String(item.spu_code))
-}
-
 sheinProducts.get("/", (c) => {
   requirePermission(c, "LISTING_READ")
   const db = getDb()
-  ensureBucketHasRows(db)
   const limit = readLimit(c.req.query("limit"))
   const offset = readOffset(c.req.query("offset"))
   const { clause, params } = listWhere({
@@ -815,6 +836,7 @@ sheinProducts.get("/", (c) => {
     order by bucket.updated_at desc, bucket.id desc
     limit ? offset ?
   `).all(...params, limit, offset) as SourceRow[]
+  const skcDetailsBySpu = bucketSkcDetailsBySpu(db, rows)
   const total = db.prepare(`
     select count(*) as count
     from shein_product_bucket bucket
@@ -837,7 +859,7 @@ sheinProducts.get("/", (c) => {
   return c.json({
     items: rows.map((row) => ({
       ...row,
-      skc_details: bucketSkcDetails(db, row),
+      skc_details: skcDetailsBySpu.get(Number(row.product_spu_id)) ?? [],
     })),
     summary,
     pagination: {
@@ -851,7 +873,6 @@ sheinProducts.get("/", (c) => {
 sheinProducts.get("/filters", (c) => {
   requirePermission(c, "LISTING_READ")
   const db = getDb()
-  ensureBucketHasRows(db)
   const categories = db.prepare(`
     select
       platform_category_id as category_id,

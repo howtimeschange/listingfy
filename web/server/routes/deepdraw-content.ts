@@ -56,7 +56,21 @@ deepdrawContent.get("/", (c) => {
 
   const items = db.prepare(`
     select
-      pkg.*,
+      pkg.id,
+      pkg.source_code,
+      pkg.spu_code,
+      pkg.deepdraw_product_id,
+      pkg.title,
+      pkg.brand_name,
+      pkg.category_name,
+      pkg.trade_path,
+      pkg.retail_price,
+      pkg.primary_color,
+      pkg.version,
+      pkg.complete,
+      pkg.response_code,
+      pkg.reason,
+      pkg.synced_at,
       (
         select count(*) from product_content_skc skc
         where skc.content_package_id = pkg.id

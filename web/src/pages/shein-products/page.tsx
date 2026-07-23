@@ -89,7 +89,9 @@ interface SheinBucketItem {
   latest_listing_id: number | null
   latest_version_no: number | null
   latest_publish_status: string | null
-  raw_payload_json: string
+  field_completeness: number
+  missing_field_count: number
+  needs_ai_count: number
   spu_name: string | null
   brand_code: string | null
   brand_name: string | null
@@ -353,24 +355,10 @@ function toggleValue(values: string[], value: string) {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value]
 }
 
-function parsePayload(value: string | null | undefined) {
-  if (!value) return {}
-  try {
-    const parsed = JSON.parse(value)
-    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {}
-  } catch {
-    return {}
-  }
-}
-
 function fieldCompleteness(item: SheinBucketItem) {
-  const payload = parsePayload(item.raw_payload_json)
-  const field = payload.field_completeness && typeof payload.field_completeness === "object"
-    ? payload.field_completeness as Record<string, unknown>
-    : {}
-  const completeness = Number(field.completeness ?? 0)
-  const missing = Number(field.missing_field_count ?? 0)
-  const needsAi = Number(field.needs_ai_count ?? 0)
+  const completeness = Number(item.field_completeness ?? 0)
+  const missing = Number(item.missing_field_count ?? 0)
+  const needsAi = Number(item.needs_ai_count ?? 0)
   return {
     completeness: Number.isFinite(completeness) ? completeness : 0,
     missing: Number.isFinite(missing) ? missing : 0,

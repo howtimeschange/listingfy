@@ -41,8 +41,8 @@ test("SHEIN product bucket has its own table, API, page, and navigation", async 
   assert.match(route, /refreshBucketProduct/);
   assert.match(route, /category_statuses/);
   assert.match(route, /readiness_statuses/);
-  assert.match(route, /json_type\(raw_payload_json, '\$\.weight_scope'\) is null/);
-  assert.match(route, /weight_scope'\) = 'MISSING'/);
+  assert.doesNotMatch(route, /ensureBucketHasRows/);
+  assert.match(route, /field_completeness/);
 
   assert.match(router, /SheinProductsPage/);
   assert.match(router, /shein-products/);

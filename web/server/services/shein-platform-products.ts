@@ -1305,7 +1305,30 @@ const productDisplayJoinSql = `
 `
 
 const productDisplaySelectSql = `
-  product.*,
+  product.id,
+  product.platform,
+  product.platform_account_key,
+  product.platform_integration_id,
+  product.spu_name,
+  product.supplier_code,
+  product.product_name,
+  product.brand_code,
+  product.brand_name,
+  product.category_id,
+  product.category_name,
+  product.product_type_id,
+  product.product_status,
+  product.shelf_status_text,
+  product.skc_count,
+  product.sku_count,
+  product.editable_status,
+  product.editable_message,
+  product.editable_checked_at,
+  product.last_list_synced_at,
+  product.last_detail_synced_at,
+  product.raw_detail_payload_json,
+  product.created_at,
+  product.updated_at,
   ${productBrandDisplaySql} as brand_display_name,
   ${productCategoryDisplaySql} as category_display_name
 `
@@ -1323,8 +1346,6 @@ function serializeOperation(row: JsonRecord) {
     traceId: stringValue(row.trace_id),
     errorMessage: stringValue(row.error_message),
     actorUsername: stringValue(row.actor_username),
-    requestPayload: parseJsonText(row.request_payload_json),
-    responsePayload: parseJsonText(row.response_payload_json),
     startedAt: stringValue(row.started_at),
     finishedAt: stringValue(row.finished_at),
     createdAt: stringValue(row.created_at),
@@ -1340,7 +1361,21 @@ function productOperations(db: SyncPostgresDatabase, context: SheinPlatformConte
   }
   params.push(limit)
   return db.prepare(`
-    select *
+    select
+      id,
+      operation_type,
+      spu_name,
+      skc_name,
+      sku_code,
+      status,
+      response_code,
+      response_message,
+      trace_id,
+      error_message,
+      actor_username,
+      started_at,
+      finished_at,
+      created_at
     from shein_lifecycle_operation
     where ${where}
     order by created_at desc, id desc
@@ -1425,10 +1460,12 @@ function serializeProductSummary(
     skcs,
     siteNames ?? (context ? siteNameLookup(db, context) : new Map()),
   )
-  const saleSiteDetails = skcSaleSitesFromProduct(
-    skcs,
-    siteNames ?? (context ? siteNameLookup(db, context) : new Map()),
-  )
+  const saleSiteDetails = includeDetails
+    ? skcSaleSitesFromProduct(
+        skcs,
+        siteNames ?? (context ? siteNameLookup(db, context) : new Map()),
+      )
+    : []
   const activeSites = activeSaleSiteAbbrs(saleSites)
 
   return {
@@ -1483,7 +1520,6 @@ function serializeProductSummary(
     skuCodeList: includeDetails
       ? skuDetailRows.map((sku) => stringValue(sku.sku_code)).filter(Boolean).slice(0, 12)
       : [],
-    rawListPayload: parseJsonText(row.raw_list_payload_json),
   }
 }
 

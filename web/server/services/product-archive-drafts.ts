@@ -3022,7 +3022,16 @@ export function listProductArchiveDrafts(db: SyncPostgresDatabase, input: ListDr
   const clause = where.length ? `where ${where.join(" and ")}` : ""
   const items = db.prepare(`
     select
-      draft.*,
+      draft.id,
+      draft.draft_no,
+      draft.spu_code,
+      draft.title,
+      draft.tenant_name,
+      draft.merchant_id,
+      draft.trade_path,
+      draft.status,
+      draft.created_product_id,
+      draft.updated_at,
       coalesce((draft.validation_summary_json::jsonb #>> '{blocker_count}')::integer, 0) as blocker_count,
       coalesce((draft.validation_summary_json::jsonb #>> '{warning_count}')::integer, 0) as warning_count,
       (select count(*) from product_archive_draft_sku sku where sku.draft_id = draft.id) as sku_count

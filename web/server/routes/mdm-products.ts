@@ -62,7 +62,29 @@ mdmProducts.get("/", (c) => {
 
   const items = db.prepare(`
     select
-      spu.*,
+      spu.spu_code,
+      spu.spu_name,
+      spu.spu_name_en,
+      spu.listing_title_cn,
+      spu.listing_title_en,
+      spu.shein_spu_code,
+      spu.shein_category_name,
+      spu.old_style_code,
+      spu.deepdraw_info_status,
+      spu.brand_code,
+      spu.brand_name,
+      spu.year,
+      spu.season_name,
+      spu.product_line_name,
+      spu.middle_class_name,
+      spu.subclass_name,
+      spu.gender_name,
+      spu.age_group_name,
+      spu.price_tag,
+      spu.status_name,
+      spu.enable_status,
+      spu.approve_status,
+      spu.synced_at,
       (
         select count(*) from product_skc skc
         where skc.spu_id = spu.id

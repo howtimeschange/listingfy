@@ -101,8 +101,6 @@ interface LifecycleOperation {
   traceId: string
   errorMessage: string
   actorUsername: string
-  requestPayload: JsonRecord
-  responsePayload: JsonRecord
   startedAt: string
   finishedAt: string
   createdAt: string
@@ -162,7 +160,6 @@ interface PlatformProductRow {
     }>
   }>
   skuCodeList: string[]
-  rawListPayload: JsonRecord
 }
 
 interface ProductListResponse {
