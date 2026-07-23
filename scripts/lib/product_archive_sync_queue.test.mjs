@@ -115,6 +115,122 @@ test("queue keeps going after one code fails", async () => {
   assert.match(finished.items[1].error, /upstream failed/);
 });
 
+test("queue retries transient rate-limit failures with bounded backoff", async () => {
+  const waits = [];
+  let attempts = 0;
+  const queue = createProductArchiveSyncQueue({
+    maxAttempts: 3,
+    retryDelayMs: 200,
+    wait: async (ms) => waits.push(ms),
+    syncOne: async () => {
+      attempts += 1;
+      if (attempts < 3) throw new Error("访问频率过高，请稍后重试");
+      return { ok: true };
+    },
+  });
+
+  const job = queue.enqueue({
+    source: "deepdraw",
+    rawCodes: ["208326120201"],
+    intervalMs: 0,
+  });
+  await queue.waitForIdle();
+
+  const finished = queue.getJob(job.id);
+  assert.equal(finished.status, "completed");
+  assert.equal(finished.completed_count, 1);
+  assert.equal(finished.failed_count, 0);
+  assert.equal(finished.items[0].attempt_count, 3);
+  assert.equal(finished.items[0].max_attempts, 3);
+  assert.deepEqual(waits, [200, 400]);
+});
+
+test("queue does not retry terminal not-found failures", async () => {
+  let attempts = 0;
+  const queue = createProductArchiveSyncQueue({
+    maxAttempts: 3,
+    retryDelayMs: 0,
+    wait: async () => {},
+    syncOne: async () => {
+      attempts += 1;
+      throw new Error("请求失败，请求的资源未在服务器上发现");
+    },
+  });
+
+  const job = queue.enqueue({
+    source: "deepdraw",
+    rawCodes: ["231326108202"],
+    intervalMs: 0,
+  });
+  await queue.waitForIdle();
+
+  const finished = queue.getJob(job.id);
+  assert.equal(attempts, 1);
+  assert.equal(finished.completed_count, 0);
+  assert.equal(finished.failed_count, 1);
+  assert.equal(finished.items[0].attempt_count, 1);
+  assert.equal(finished.items[0].retryable, false);
+});
+
+test("queue continues when one persistence write fails", async () => {
+  let saveCount = 0;
+  const seen = [];
+  const queue = createProductArchiveSyncQueue({
+    onInternalError: () => {},
+    store: {
+      recover: () => [],
+      get: () => null,
+      save: () => {
+        saveCount += 1;
+        if (saveCount === 3) throw new Error("temporary database failure");
+      },
+    },
+    wait: async () => {},
+    syncOne: async ({ spuCode }) => {
+      seen.push(spuCode);
+      return { ok: true };
+    },
+  });
+
+  const job = queue.enqueue({
+    source: "mdm",
+    rawCodes: ["208326102001", "208326105104"],
+    intervalMs: 0,
+  });
+  await queue.waitForIdle();
+
+  assert.deepEqual(seen, ["208326102001", "208326105104"]);
+  assert.equal(queue.getJob(job.id).completed_count, 2);
+});
+
+test("queue can enqueue only the failed items from a completed job", async () => {
+  const failedOnce = new Set(["208326120201"]);
+  const queue = createProductArchiveSyncQueue({
+    maxAttempts: 1,
+    wait: async () => {},
+    syncOne: async ({ spuCode }) => {
+      if (failedOnce.delete(spuCode)) throw new Error("temporary upstream failure");
+      return { ok: true };
+    },
+  });
+
+  const original = queue.enqueue({
+    source: "mdm_deepdraw",
+    rawCodes: ["208326120201", "208326102001"],
+    intervalMs: 0,
+    options: { deepdrawTenantName: "电商巴拉巴拉" },
+  });
+  await queue.waitForIdle();
+
+  const retry = queue.retryFailed(original.id);
+  assert.deepEqual(retry.codes, ["208326120201"]);
+  assert.equal(retry.source, "mdm_deepdraw");
+  assert.equal(retry.options.deepdrawTenantName, "电商巴拉巴拉");
+  assert.equal(retry.options.retryOfJobId, original.id);
+  await queue.waitForIdle();
+  assert.equal(queue.getJob(retry.id).completed_count, 1);
+});
+
 test("queue passes sync options to each item", async () => {
   const seen = [];
   const queue = createProductArchiveSyncQueue({

@@ -27,6 +27,20 @@ test("product archive bulk sync defaults to combined sync without exposing inter
   assert.doesNotMatch(source, /请求间隔 ms/);
 });
 
+test("product archive bulk sync refreshes completed results and can retry failed items", async () => {
+  const [page, route] = await Promise.all([
+    readFile(PAGE_FILE, "utf8"),
+    readFile(ROUTE_FILE, "utf8"),
+  ]);
+
+  assert.match(page, /useEffect\(\(\) => \{\s*if \(syncJob\?\.status !== "completed"\) return/s);
+  assert.match(page, /invalidateQueries\(\{ queryKey: \["product-archives"\] \}\)/);
+  assert.match(page, /重试失败款/);
+  assert.match(page, /\/product-archives\/sync-jobs\/\$\{syncJob\.id\}\/retry-failed/);
+  assert.match(route, /maxAttempts:\s*3/);
+  assert.match(route, /productArchives\.post\("\/sync-jobs\/:jobId\/retry-failed"/);
+});
+
 test("product archive pages stay source-only and move SHEIN business fields into bucket workflow", async () => {
   const [listPage, detailPage, route] = await Promise.all([
     readFile(PAGE_FILE, "utf8"),

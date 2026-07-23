@@ -167,6 +167,8 @@ async function syncDeepdrawProduct(
 
 const syncQueue = createProductArchiveSyncQueue({
   autoRecover: false,
+  maxAttempts: 3,
+  retryDelayMs: 3000,
   store: createPostgresProductArchiveSyncJobStore({
     getDb,
     queueName: "product_archives",
@@ -406,6 +408,17 @@ productArchives.post("/sync-jobs", async (c) => {
       },
     })
     return c.json(job, 202)
+  } catch (error) {
+    throw new HTTPException(400, {
+      message: error instanceof Error ? error.message : String(error),
+    })
+  }
+})
+
+productArchives.post("/sync-jobs/:jobId/retry-failed", (c) => {
+  assertAllowedProductArchiveQuery(c.req.url, [])
+  try {
+    return c.json(syncQueue.retryFailed(c.req.param("jobId")), 202)
   } catch (error) {
     throw new HTTPException(400, {
       message: error instanceof Error ? error.message : String(error),

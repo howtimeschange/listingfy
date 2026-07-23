@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 const DEFAULT_INTERVAL_MS = 1500;
+const DEFAULT_MAX_ATTEMPTS = 1;
+const DEFAULT_RETRY_DELAY_MS = 3000;
 const MAX_CODES_PER_JOB = 2000;
 const PRODUCT_ARCHIVE_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
@@ -8,6 +10,21 @@ function clampInterval(value) {
   const number = Number(value ?? DEFAULT_INTERVAL_MS);
   if (!Number.isFinite(number)) return DEFAULT_INTERVAL_MS;
   return Math.max(0, Math.min(60000, Math.floor(number)));
+}
+
+function clampMaxAttempts(value) {
+  const number = Number(value ?? DEFAULT_MAX_ATTEMPTS);
+  if (!Number.isFinite(number)) return DEFAULT_MAX_ATTEMPTS;
+  return Math.max(1, Math.min(10, Math.floor(number)));
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function isRetryableProductArchiveSyncError(error) {
+  const message = errorMessage(error);
+  return /访问频率过高|稍后重试|too many requests|rate.?limit|HTTP (408|425|429|500|502|503|504)\b|fetch failed|network|socket|timeout|timed out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|AbortError/i.test(message);
 }
 
 export function parseSpuCodes(input, options = {}) {
@@ -32,6 +49,10 @@ export function createProductArchiveSyncQueue({
   allowedSources = ["mdm", "deepdraw", "mdm_deepdraw"],
   store = null,
   autoRecover = true,
+  maxAttempts = DEFAULT_MAX_ATTEMPTS,
+  retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+  isRetryableError = isRetryableProductArchiveSyncError,
+  onInternalError = (error) => console.error("Product archive sync queue internal error", error),
   wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now = () => Date.now(),
 } = {}) {
@@ -41,9 +62,19 @@ export function createProductArchiveSyncQueue({
 
   const jobs = new Map();
   const pending = [];
+  const normalizedMaxAttempts = clampMaxAttempts(maxAttempts);
+  const normalizedRetryDelayMs = clampInterval(retryDelayMs);
   let running = false;
   let processScheduled = false;
   let idleResolvers = [];
+
+  function reportInternalError(error, context) {
+    try {
+      onInternalError?.(error, context);
+    } catch {
+      // Error reporting must never stop the product sync worker.
+    }
+  }
 
   function snapshot(job) {
     return {
@@ -62,7 +93,11 @@ export function createProductArchiveSyncQueue({
   }
 
   function persist(job) {
-    store?.save?.(snapshot(job));
+    try {
+      store?.save?.(snapshot(job));
+    } catch (error) {
+      reportInternalError(error, { phase: "persist", jobId: job.id });
+    }
   }
 
   function resolveIdleIfNeeded() {
@@ -76,50 +111,94 @@ export function createProductArchiveSyncQueue({
     processScheduled = false;
     if (running) return;
     running = true;
-    while (pending.length > 0) {
-      const job = pending.shift();
-      job.status = "running";
-      job.started_at = new Date(now()).toISOString();
-      persist(job);
-
-      let processedCount = 0;
-      for (let index = 0; index < job.items.length; index += 1) {
-        const item = job.items[index];
-        if (["completed", "failed"].includes(item.status)) continue;
-        if (processedCount > 0 && job.interval_ms > 0) {
-          await wait(job.interval_ms);
-        }
-        processedCount += 1;
-
-        item.status = "running";
-        item.started_at = new Date(now()).toISOString();
+    try {
+      while (pending.length > 0) {
+        const job = pending.shift();
+        job.status = "running";
+        job.started_at ??= new Date(now()).toISOString();
         persist(job);
-        try {
-          const result = await syncOne({
-            source: job.source,
-            spuCode: item.spu_code,
-            jobId: job.id,
-            options: job.options,
-          });
-          item.status = "completed";
-          item.result = result ?? null;
-          item.finished_at = new Date(now()).toISOString();
-          job.completed_count += 1;
-        } catch (error) {
-          item.status = "failed";
-          item.error = error instanceof Error ? error.message : String(error);
-          item.finished_at = new Date(now()).toISOString();
-          job.failed_count += 1;
+
+        let processedCount = 0;
+        for (let index = 0; index < job.items.length; index += 1) {
+          const item = job.items[index];
+          if (["completed", "failed"].includes(item.status)) continue;
+          if (processedCount > 0 && job.interval_ms > 0) {
+            try {
+              await wait(job.interval_ms);
+            } catch (error) {
+              reportInternalError(error, { phase: "item_interval", jobId: job.id });
+            }
+          }
+          processedCount += 1;
+
+          item.max_attempts = clampMaxAttempts(item.max_attempts ?? job.max_attempts);
+          item.attempt_count = Math.max(0, Number(item.attempt_count) || 0);
+          item.started_at ??= new Date(now()).toISOString();
+
+          while (item.attempt_count < item.max_attempts) {
+            item.status = "running";
+            item.attempt_count += 1;
+            item.next_retry_at = null;
+            persist(job);
+            try {
+              const result = await syncOne({
+                source: job.source,
+                spuCode: item.spu_code,
+                jobId: job.id,
+                options: job.options,
+                attempt: item.attempt_count,
+                maxAttempts: item.max_attempts,
+              });
+              item.status = "completed";
+              item.result = result ?? null;
+              item.error = null;
+              item.retryable = false;
+              item.finished_at = new Date(now()).toISOString();
+              job.completed_count += 1;
+              break;
+            } catch (error) {
+              const retryable = Boolean(isRetryableError?.(error));
+              const retryDelay = normalizedRetryDelayMs * item.attempt_count;
+              item.error = errorMessage(error);
+              item.retryable = retryable;
+
+              if (retryable && item.attempt_count < item.max_attempts) {
+                item.status = "retrying";
+                item.next_retry_at = new Date(now() + retryDelay).toISOString();
+                persist(job);
+                if (retryDelay > 0) {
+                  try {
+                    await wait(retryDelay);
+                  } catch (waitError) {
+                    reportInternalError(waitError, { phase: "retry_delay", jobId: job.id });
+                  }
+                }
+                continue;
+              }
+
+              item.status = "failed";
+              item.finished_at = new Date(now()).toISOString();
+              item.next_retry_at = null;
+              job.failed_count += 1;
+              break;
+            }
+          }
+          persist(job);
         }
+
+        job.status = "completed";
+        job.outcome = job.failed_count === 0
+          ? "succeeded"
+          : job.completed_count === 0
+            ? "failed"
+            : "partial_failure";
+        job.finished_at = new Date(now()).toISOString();
         persist(job);
       }
-
-      job.status = "completed";
-      job.finished_at = new Date(now()).toISOString();
-      persist(job);
+    } finally {
+      running = false;
+      resolveIdleIfNeeded();
     }
-    running = false;
-    resolveIdleIfNeeded();
   }
 
   function enqueue({ source, rawCodes, intervalMs, options = {} } = {}) {
@@ -147,6 +226,7 @@ export function createProductArchiveSyncQueue({
       total_count: codes.length,
       completed_count: 0,
       failed_count: 0,
+      max_attempts: normalizedMaxAttempts,
       created_at: new Date(now()).toISOString(),
       started_at: null,
       finished_at: null,
@@ -157,6 +237,10 @@ export function createProductArchiveSyncQueue({
         finished_at: null,
         result: null,
         error: null,
+        retryable: null,
+        attempt_count: 0,
+        max_attempts: normalizedMaxAttempts,
+        next_retry_at: null,
       })),
     };
 
@@ -166,7 +250,9 @@ export function createProductArchiveSyncQueue({
     if (!processScheduled) {
       processScheduled = true;
       queueMicrotask(() => {
-        void processLoop();
+        void processLoop().catch((error) => {
+          reportInternalError(error, { phase: "process_loop" });
+        });
       });
     }
     return snapshot(job);
@@ -175,6 +261,26 @@ export function createProductArchiveSyncQueue({
   function waitForIdle() {
     if (!running && !processScheduled && pending.length === 0) return Promise.resolve();
     return new Promise((resolve) => idleResolvers.push(resolve));
+  }
+
+  function retryFailed(id, { intervalMs } = {}) {
+    const original = getJob(id);
+    if (!original) throw new Error("Sync job not found");
+    if (original.status !== "completed") throw new Error("Sync job is still running");
+    const failedCodes = original.items
+      .filter((item) => item.status === "failed")
+      .map((item) => item.spu_code);
+    if (failedCodes.length === 0) throw new Error("Sync job has no failed items");
+
+    return enqueue({
+      source: original.source,
+      rawCodes: failedCodes,
+      intervalMs: intervalMs ?? original.interval_ms,
+      options: {
+        ...original.options,
+        retryOfJobId: original.id,
+      },
+    });
   }
 
   let recoveryStarted = false;
@@ -189,7 +295,7 @@ export function createProductArchiveSyncQueue({
       job.started_at = null;
       job.finished_at = null;
       for (const item of job.items) {
-        if (item.status !== "running") continue;
+        if (!["running", "retrying"].includes(item.status)) continue;
         item.status = "queued";
         item.started_at = null;
         item.finished_at = null;
@@ -204,7 +310,9 @@ export function createProductArchiveSyncQueue({
     if (pending.length > 0 && !processScheduled) {
       processScheduled = true;
       queueMicrotask(() => {
-        void processLoop();
+        void processLoop().catch((error) => {
+          reportInternalError(error, { phase: "recovery_loop" });
+        });
       });
     }
   }
@@ -213,6 +321,7 @@ export function createProductArchiveSyncQueue({
   return {
     enqueue,
     getJob,
+    retryFailed,
     resume,
     waitForIdle,
   };

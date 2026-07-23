@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Link } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
@@ -138,8 +138,11 @@ interface ProductArchiveConfig {
 
 interface SyncJobItem {
   spu_code: string
-  status: "queued" | "running" | "completed" | "failed"
+  status: "queued" | "running" | "retrying" | "completed" | "failed"
   error: string | null
+  retryable?: boolean | null
+  attempt_count?: number
+  max_attempts?: number
 }
 
 interface SyncJob {
@@ -258,6 +261,11 @@ export default function ProductArchivesPage() {
     },
   })
 
+  useEffect(() => {
+    if (syncJob?.status !== "completed") return
+    void queryClient.invalidateQueries({ queryKey: ["product-archives"] })
+  }, [queryClient, syncJob?.id, syncJob?.status])
+
   const items = useMemo(() => {
     return (data?.items ?? []).filter((item) => {
       const mdmOk = mdmStatusFilter.length === 0 || mdmStatusFilter.includes(item.mdm_status)
@@ -297,6 +305,20 @@ export default function ProductArchivesPage() {
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "同步失败")
+    },
+  })
+
+  const retryFailedMutation = useMutation({
+    mutationFn: async () => {
+      if (!syncJob) throw new Error("未找到同步批次")
+      return api.post<SyncJob>(`/product-archives/sync-jobs/${syncJob.id}/retry-failed`, {})
+    },
+    onSuccess: (result) => {
+      setSyncJobId(result.id)
+      toast.success(`已重新入队：${result.total_count} 个失败款号`)
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "失败款重试失败")
     },
   })
 
@@ -374,7 +396,7 @@ export default function ProductArchivesPage() {
                   <DialogHeader>
                     <DialogTitle>批量同步</DialogTitle>
                     <DialogDescription>
-                      粘贴一批款号后入队执行，服务端会串行请求并按 1500ms 间隔控频。
+                      粘贴一批款号后入队执行，服务端会串行请求并按 1500ms 间隔控频；限流、超时等临时错误最多自动尝试 3 次。
                     </DialogDescription>
                   </DialogHeader>
                   <div className="space-y-3">
@@ -447,11 +469,33 @@ export default function ProductArchivesPage() {
                         <div className="flex items-center justify-between text-sm">
                           <span className="font-medium">
                             {syncSourceLabel(syncJob.source)} 队列：
-                            {syncJob.status === "completed" ? "已完成" : "执行中"}
+                            {syncJob.status === "completed"
+                              ? syncJob.failed_count > 0
+                                ? "已完成（部分失败）"
+                                : "已完成"
+                              : "执行中"}
                           </span>
-                          <span className="text-muted-foreground">
-                            {syncJob.completed_count + syncJob.failed_count}/{syncJob.total_count}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-muted-foreground">
+                              成功 {syncJob.completed_count} / 失败 {syncJob.failed_count} / 共 {syncJob.total_count}
+                            </span>
+                            {syncJob.status === "completed" && syncJob.failed_count > 0 ? (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() => retryFailedMutation.mutate()}
+                                disabled={retryFailedMutation.isPending}
+                              >
+                                {retryFailedMutation.isPending ? (
+                                  <Loader2 className="size-4 animate-spin" />
+                                ) : (
+                                  <RefreshCw className="size-4" />
+                                )}
+                                重试失败款
+                              </Button>
+                            ) : null}
+                          </div>
                         </div>
                         <Progress value={syncProgress} />
                         <div className="max-h-28 space-y-1 overflow-auto font-mono text-xs">
@@ -459,7 +503,11 @@ export default function ProductArchivesPage() {
                             <div key={item.spu_code} className="flex items-center justify-between gap-2">
                               <span>{item.spu_code}</span>
                               <span className={item.status === "failed" ? "text-destructive" : "text-muted-foreground"}>
-                                {item.error ?? item.status}
+                                {item.status === "retrying"
+                                  ? `临时失败，正在重试（${item.attempt_count ?? 1}/${item.max_attempts ?? 3}）：${item.error ?? "稍后重试"}`
+                                  : item.status === "completed" && (item.attempt_count ?? 1) > 1
+                                    ? `completed（第 ${item.attempt_count} 次成功）`
+                                    : item.error ?? item.status}
                               </span>
                             </div>
                           ))}
