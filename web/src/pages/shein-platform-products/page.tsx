@@ -185,7 +185,6 @@ interface StoreSite {
   symbolRight: string
   storeType: number | null
   lastSyncedAt: string
-  rawPayload: JsonRecord
 }
 
 interface StoreSitesResponse {
@@ -843,6 +842,14 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const detail = detailQuery.data ?? null
   const detailProduct = detail?.product
   const detailSaleSites = detailProduct?.saleSites ?? EMPTY_SALE_SITES
+  const saleSitesDialogSites = saleSitesDialogProduct?.spuName === detailProduct?.spuName
+    ? detailProduct?.saleSites ?? EMPTY_SALE_SITES
+    : EMPTY_SALE_SITES
+  const saleSitesDialogLoading = Boolean(
+    saleSitesDialogProduct
+      && selectedSpuName === saleSitesDialogProduct.spuName
+      && detailQuery.isLoading,
+  )
   const currencyOptions = useMemo(() => {
     const currencies = Array.from(new Set(siteRows.map((site) => site.currency).filter(Boolean)))
     return currencies.length ? currencies : ["CNY", "USD", "EUR"]
@@ -1374,6 +1381,11 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
       items,
     })
     setCostDialogOpen(true)
+  }
+
+  function openSaleSitesDialog(row: PlatformProductRow) {
+    setSelectedSpuName(row.spuName)
+    setSaleSitesDialogProduct(row)
   }
 
   async function openBatchCostDialogFromList(row: PlatformProductRow) {
@@ -1938,7 +1950,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                             variant="outline"
                             size="sm"
                             className="w-full max-w-full justify-start truncate"
-                            onClick={() => setSaleSitesDialogProduct(row)}
+                            onClick={() => openSaleSitesDialog(row)}
                           >
                             <Globe2 className="size-4 shrink-0" />
                             <span className="truncate">{row.saleSiteSummary || "详情同步后显示"}</span>
@@ -2344,8 +2356,15 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {saleSitesDialogProduct?.saleSites?.length ? (
-                    saleSitesDialogProduct.saleSites.map((site) => (
+                  {saleSitesDialogLoading ? (
+                    <TableRow>
+                      <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                        <Loader2 className="mr-2 inline size-4 animate-spin" />
+                        加载销售站点明细...
+                      </TableCell>
+                    </TableRow>
+                  ) : saleSitesDialogSites.length ? (
+                    saleSitesDialogSites.map((site) => (
                       <TableRow key={`${site.siteAbbr}-${site.source}`}>
                         <TableCell>
                           <div className="text-sm font-medium">{site.siteName || site.siteAbbr}</div>

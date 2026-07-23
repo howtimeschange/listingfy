@@ -74,11 +74,17 @@ test("SHEIN platform-product list omits raw transport payloads", async () => {
   const displaySelect = between(service, "const productDisplaySelectSql = `", "\n`\n");
   const summarySerializer = between(service, "function serializeProductSummary(", "\n}\n\nfunction groupRowsByNumber");
   const operationSerializer = between(service, "function serializeOperation(", "\n}\n\nfunction productOperations");
+  const siteSerializer = between(service, "function serializeSite(", "\n}\n\nexport function listStoreSites");
+  const storeSiteInterface = between(page, "interface StoreSite {", "\n}");
 
   assert.doesNotMatch(displaySelect, /product\.\*/);
   assert.doesNotMatch(displaySelect, /raw_list_payload_json/);
   assert.match(displaySelect, /product\.spu_name/);
   assert.doesNotMatch(summarySerializer, /rawListPayload/);
+  assert.match(summarySerializer, /saleSites:\s*includeDetails \? saleSites : \[\]/);
   assert.doesNotMatch(operationSerializer, /requestPayload|responsePayload/);
+  assert.doesNotMatch(siteSerializer, /rawPayload|raw_payload_json/);
   assert.doesNotMatch(page, /rawListPayload/);
+  assert.doesNotMatch(storeSiteInterface, /rawPayload/);
+  assert.match(page, /setSelectedSpuName\(row\.spuName\)[\s\S]*setSaleSitesDialogProduct\(row\)/);
 });

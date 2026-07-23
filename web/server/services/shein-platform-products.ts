@@ -1489,7 +1489,7 @@ function serializeProductSummary(
     lastDetailSyncedAt: stringValue(row.last_detail_synced_at),
     updatedAt: stringValue(row.updated_at),
     imageUrl,
-    saleSites,
+    saleSites: includeDetails ? saleSites : [],
     saleSiteDetails,
     saleSiteCount: activeSites.length,
     saleSiteSummary: saleSiteSummary(saleSites),
@@ -1885,7 +1885,6 @@ function serializeSite(row: JsonRecord) {
     symbolRight: stringValue(row.symbol_right),
     storeType: numberValue(row.store_type),
     lastSyncedAt: stringValue(row.last_synced_at),
-    rawPayload: parseJsonText(row.raw_payload_json),
   }
 }
 
@@ -1893,7 +1892,18 @@ export function listStoreSites() {
   const db = getDb()
   const context = platformContext(db)
   const rows = db.prepare(`
-    select *
+    select
+      id,
+      main_site,
+      main_site_name,
+      site_abbr,
+      site_name,
+      currency,
+      site_status,
+      symbol_left,
+      symbol_right,
+      store_type,
+      last_synced_at
     from shein_platform_site
     where platform = ?
       and platform_account_key = ?
