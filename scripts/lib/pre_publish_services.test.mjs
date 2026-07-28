@@ -93,7 +93,7 @@ test("SHEIN image packages parse exact SPU/SKC paths and assign image fields in 
     [
       ["SKC_DETAIL", "MAIN", 1, 1, null],
       ["SKC_DETAIL", "DETAIL", 2, 2, null],
-      ["SKC_SQUARE", "SQUARE", 1, 1, null],
+      ["SKC_SQUARE", "SQUARE", 1, 1, "square-center-crop"],
       ["SKC_COLOR_BLOCK", "COLOR_BLOCK", 1, 1, "color-square-80"],
     ],
   );
@@ -123,6 +123,28 @@ test("pre-publish shared helpers normalize input and build stable scoped keys", 
   );
 });
 
+test("draft SKC selection rejects empty and unknown selections instead of expanding to all SKCs", () => {
+  const available = ["SKC-1", "SKC-2"];
+
+  assert.equal(shared.validateRequestedDraftSkcCodes(undefined, available), undefined);
+  assert.deepEqual(
+    shared.validateRequestedDraftSkcCodes([" SKC-2 ", "SKC-2"], available),
+    ["SKC-2"],
+  );
+  assert.throws(
+    () => shared.validateRequestedDraftSkcCodes([], available),
+    /至少选择一个款色/,
+  );
+  assert.throws(
+    () => shared.validateRequestedDraftSkcCodes(["MISSING"], available),
+    /不属于当前商品/,
+  );
+  assert.throws(
+    () => shared.validateRequestedDraftSkcCodes("SKC-1", available),
+    /格式无效/,
+  );
+});
+
 test("draft status transitions block active publish states and permit ordinary draft repair flows", () => {
   assert.equal(drafts.canTransitionDraftStatus("PUBLISHING", "DRAFT"), false);
   assert.equal(drafts.canTransitionDraftStatus("PUBLISH_SUBMITTED", "PAUSED"), false);
@@ -145,6 +167,146 @@ test("field-fill helpers normalize cotton blend material to platform fabric", ()
   assert.equal(fieldFills.normalizeMaterialValue("  棉 混 纺  "), "织物");
   assert.equal(fieldFills.normalizeMaterialValue("Cotton Blend"), "织物");
   assert.equal(fieldFills.normalizeMaterialValue("聚酯纤维"), "聚酯纤维");
+});
+
+test("conditional customs attributes expose lining when fabric clothing rules require it", () => {
+  assert.deepEqual(
+    fieldFills.contextualAttributeState?.({
+      attributeId: 58,
+      value: "",
+      tariffValue: "无腰带环长裤",
+      materialValue: "织物",
+    }),
+    { required: true, status: "MISSING" },
+  );
+  assert.deepEqual(
+    fieldFills.contextualAttributeState?.({
+      attributeId: 58,
+      value: "无内衬",
+      tariffValue: "连衫裤",
+      materialValue: "织物",
+    }),
+    { required: true, status: "READY" },
+  );
+  assert.deepEqual(
+    fieldFills.contextualAttributeState?.({
+      attributeId: 58,
+      value: "",
+      tariffValue: "常规T恤",
+      materialValue: "织物",
+    }),
+    { required: false, status: "WARNING" },
+  );
+  assert.equal(
+    fieldFills.contextualAttributeState?.({
+      attributeId: 999,
+      value: "",
+      tariffValue: "无腰带环长裤",
+      materialValue: "织物",
+    }),
+    null,
+  );
+});
+
+test("pre-publish attribute blockers reject missing template fields before calling SHEIN", () => {
+  assert.deepEqual(
+    fieldFills.blockingAttributeMessages?.([
+      { label: "长度", status: "MISSING" },
+      { label: "是否带里衬", status: "WARNING" },
+      { label: "材质", status: "READY" },
+      { label: "护理说明/注意事项", status: "NEEDS_AI" },
+    ]),
+    [
+      "商品属性「长度」未填写",
+      "商品属性「护理说明/注意事项」未填写",
+    ],
+  );
+});
+
+test("SHEIN category metadata rejects mismatched category and product-type pairs", () => {
+  assert.deepEqual(
+    fieldFills.categoryPairState?.({
+      categoryId: 2009,
+      productTypeId: 7402,
+      metadataMatch: false,
+    }),
+    {
+      valid: false,
+      status: "MISSING",
+      error: "SHEIN 类目与 Product Type 不匹配：2009/7402，请重新选择叶子类目",
+    },
+  );
+  assert.deepEqual(
+    fieldFills.categoryPairState?.({
+      categoryId: 2557,
+      productTypeId: 7402,
+      metadataMatch: true,
+    }),
+    {
+      valid: true,
+      status: "READY",
+      error: null,
+    },
+  );
+  assert.deepEqual(
+    fieldFills.categoryPairState?.({
+      categoryId: 9999,
+      productTypeId: 8888,
+      metadataMatch: false,
+      metadataKnown: false,
+    }),
+    {
+      valid: true,
+      status: "WARNING",
+      error: null,
+    },
+  );
+});
+
+test("composition percentages are renormalized after unsupported fibers are removed", () => {
+  assert.deepEqual(
+    fieldFills.normalizePercentageParts?.([
+      { name: "棉", value: 95 },
+    ]),
+    [{ name: "棉", value: 100 }],
+  );
+  const normalized = fieldFills.normalizePercentageParts?.([
+    { name: "棉", value: 95 },
+    { name: "聚酯纤维", value: 10 },
+  ]);
+  assert.deepEqual(normalized, [
+    { name: "棉", value: 90 },
+    { name: "聚酯纤维", value: 10 },
+  ]);
+  assert.equal(normalized?.reduce((sum, part) => sum + part.value, 0), 100);
+});
+
+test("SHEIN composition payload renormalizes only matched enum items to 100", () => {
+  const payloadItems = fieldFills.buildCompositionAttributeItems?.({
+    attributeId: 100,
+    compositionSource: "68.4%棉；31.5%聚酯纤维；0.1%不支持纤维",
+    options: [
+      { attribute_value_id: 1, attribute_value: "棉" },
+      { attribute_value_id: 2, attribute_value: "聚酯纤维" },
+    ],
+  });
+  assert.deepEqual(payloadItems, [
+    { attribute_id: 100, attribute_value_id: 1, attribute_extra_value: "68" },
+    { attribute_id: 100, attribute_value_id: 2, attribute_extra_value: "32" },
+  ]);
+  assert.equal(
+    payloadItems?.reduce((sum, item) => sum + Number(item.attribute_extra_value), 0),
+    100,
+  );
+
+  assert.deepEqual(
+    fieldFills.buildCompositionAttributeItems?.({
+      attributeId: 100,
+      compositionSource: "95%棉；5%不支持纤维",
+      options: [{ attribute_value_id: 1, attribute_value: "棉" }],
+    }),
+    [{ attribute_id: 100, attribute_value_id: 1, attribute_extra_value: "100" }],
+  );
 });
 
 test("field-fill helpers avoid unspecified tariff values for T-shirt contexts", () => {
@@ -251,6 +413,36 @@ test("pre-publish route exposes the deprecated tariff/material customs field whe
   assert.match(detailPage, /manualValues\[field\.conditional_on\.field_key\]/);
 });
 
+test("pre-publish includes contextual lining metadata and blocks it only when the customs rule is active", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const requiredAttributes = source.slice(
+    source.indexOf("function getRequiredAttributes"),
+    source.indexOf("function getAttributeById"),
+  );
+  assert.match(requiredAttributes, /attr\.attribute_id\s+in\s+\(58\)/);
+  assert.match(source, /contextualAttributeState\(/);
+  assert.match(source, /SHEIN 关务条件属性/);
+  assert.match(source, /blockingAttributeMessages\(/);
+
+  const buildRow = source.slice(
+    source.indexOf("function buildRow"),
+    source.indexOf("function buildReadiness"),
+  );
+  assert.ok(
+    buildRow.indexOf("getStoredFill(fills, spuCode, field.key)") < buildRow.indexOf("contextualAttributeState("),
+    "stored tariff/material values must be applied before contextual attribute rules",
+  );
+  assert.match(buildRow, /if \(field\.key === "category"\) continue/);
+});
+
+test("pre-publish detects invalid category pairs and still resolves template fields by product type", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  assert.match(source, /function getCategoryPairMetadata/);
+  assert.match(source, /function requiredAttributeCategoryId/);
+  assert.match(source, /categoryPairState\(/);
+  assert.match(source, /categoryPair\.error/);
+});
+
 test("image service builds SHEIN picture requirements and validates common image constraints", () => {
   const requirements = images.buildPictureRequirements([
     { field_key: "skc_image_square_show", is_true: 1 },
@@ -314,6 +506,52 @@ test("image service builds SHEIN picture requirements and validates common image
 
   const switchOnly = images.buildPictureRequirements([{ field_key: "switch_spu_picture", is_true: 1 }]);
   assert.equal(switchOnly.every((item) => item.key.startsWith("skc-")), true);
+});
+
+test("SHEIN image payload guarantees one main image and stable type ordering per SKC", () => {
+  const fallback = images.buildSheinImageInfo?.({
+    skcCode: "SKC-1",
+    skcImageUrl: "https://example.test/fallback-main.jpg",
+    allowSourceImages: true,
+    assets: [
+      {
+        id: 2,
+        skc_code: "SKC-1",
+        asset_type: "SQUARE",
+        image_sort: 1,
+        source_url: "https://example.test/square.jpg",
+      },
+      {
+        id: 3,
+        skc_code: "SKC-1",
+        asset_type: "COLOR_BLOCK",
+        image_sort: 1,
+        source_url: "https://example.test/color.jpg",
+      },
+    ],
+  });
+  assert.deepEqual(fallback?.image_info_list.map((image) => image.image_type), [1, 5, 6]);
+  assert.equal(
+    fallback?.image_info_list.filter((image) => image.image_type === 1).length,
+    1,
+  );
+  assert.equal(fallback?.image_info_list[0]?.image_url, "https://example.test/fallback-main.jpg");
+
+  const duplicateMains = images.buildSheinImageInfo?.({
+    skcCode: "SKC-2",
+    skcImageUrl: "",
+    allowSourceImages: true,
+    assets: [
+      { id: 9, skc_code: "SKC-2", asset_type: "MAIN", image_sort: 1, source_url: "https://example.test/main-b.jpg" },
+      { id: 8, skc_code: "SKC-2", asset_type: "MAIN", image_sort: 1, source_url: "https://example.test/main-a.jpg" },
+    ],
+  });
+  assert.deepEqual(duplicateMains?.image_info_list.map((image) => image.image_type), [1, 2]);
+  assert.equal(images.sheinMainImageError?.("SKC-2", duplicateMains), null);
+  assert.equal(
+    images.sheinMainImageError?.("SKC-3", { image_info_list: [{ image_sort: 1, image_type: 5, image_url: "square" }] }),
+    "SKC-3 有且只能有 1 张主图(type=1)，当前为 0 张",
+  );
 });
 
 test("payload service extracts SHEIN business validation messages", () => {
@@ -491,6 +729,91 @@ test("SHEIN type-5 upload reuses an already-square local image", async () => {
   }
 });
 
+test("SHEIN image package square derivative center-crops a 3:4 buffer", async () => {
+  assert.equal(typeof sheinApi.centerCropSquareImageBuffer, "function");
+  if (typeof sheinApi.centerCropSquareImageBuffer !== "function") return;
+  const source = rgbPng(900, 1200, (y) => {
+    if (y < 150) return [255, 0, 0];
+    if (y >= 1050) return [0, 0, 255];
+    return [0, 255, 0];
+  });
+  const cropped = await sheinApi.centerCropSquareImageBuffer(source);
+  assert.deepEqual(uploadGuard.readImageDimensions(cropped), {
+    width: 900,
+    height: 900,
+  });
+  const firstPixel = await sharp(cropped).raw().toBuffer();
+  assert.ok(firstPixel[1] > 200, "center crop should start in the green middle band");
+  assert.ok(firstPixel[0] < 30 && firstPixel[2] < 30);
+});
+
+test("remote SHEIN square images are downloaded and center-cropped before upload", async () => {
+  assert.equal(typeof sheinApi.downloadAndCenterCropSquareImage, "function");
+  if (typeof sheinApi.downloadAndCenterCropSquareImage !== "function") return;
+  const source = rgbPng(900, 1200, (y) => {
+    if (y < 150) return [255, 0, 0];
+    if (y >= 1050) return [0, 0, 255];
+    return [0, 255, 0];
+  });
+  const cropped = await sheinApi.downloadAndCenterCropSquareImage(
+    "https://example.test/source.png",
+    async () => new Response(source, {
+      status: 200,
+      headers: {
+        "content-type": "image/png",
+        "content-length": String(source.length),
+      },
+    }),
+    async () => [{ address: "8.8.8.8" }],
+    new Set(["example.test"]),
+  );
+  assert.deepEqual(uploadGuard.readImageDimensions(cropped), {
+    width: 900,
+    height: 900,
+  });
+
+  const route = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  assert.match(
+    route,
+    /imageType === 5[\s\S]+uploadRemoteSquareImageToShein\(sourceUrl, credentials\)/,
+  );
+});
+
+test("remote SHEIN square image downloads reject private hosts and private redirects", async () => {
+  await assert.rejects(
+    sheinApi.downloadAndCenterCropSquareImage?.(
+      "http://127.0.0.1/private.png",
+      async () => {
+        throw new Error("fetch must not run");
+      },
+    ),
+    /不允许访问本机或内网地址/,
+  );
+  await assert.rejects(
+    sheinApi.downloadAndCenterCropSquareImage?.(
+      "https://public.example/source.png",
+      async () => new Response(null, {
+        status: 302,
+        headers: { location: "http://169.254.169.254/latest/meta-data" },
+      }),
+      async () => [{ address: "8.8.8.8" }],
+      new Set(["public.example"]),
+    ),
+    /不允许访问本机或内网地址/,
+  );
+  await assert.rejects(
+    sheinApi.downloadAndCenterCropSquareImage?.(
+      "https://untrusted.example/source.png",
+      async () => {
+        throw new Error("fetch must not run");
+      },
+      async () => [{ address: "8.8.8.8" }],
+      new Set(["product.resources.deepdraw.biz"]),
+    ),
+    /域名不在允许列表/,
+  );
+});
+
 test("pre-publish draft list batches per-row summaries into one database query", async () => {
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
   const listRoute = source.slice(
@@ -600,7 +923,7 @@ test("pre-publish AI and batch fixes keep critical fields rule-owned", async () 
 
   assert.match(source, /normalizeMaterialValue/);
   assert.match(source, /normalizeFillFieldValue/);
-  assert.match(source, /shouldAutoApplyCategory/);
+  assert.match(source, /categoryDecisionForReadiness/);
   assert.match(source, /AI_CATEGORY_LIVE/);
   assert.doesNotMatch(source, /if \(mode === "all" \|\| mode === "category"\) \{\s*persistCategoryFill\(db, readiness\)\s*if \(readiness\.category\.category_id/s);
   assert.match(source, /quick_fixes:\s*\{\s*fields/);
@@ -608,6 +931,7 @@ test("pre-publish AI and batch fixes keep critical fields rule-owned", async () 
   assert.match(source, /batch-import-folders/);
   assert.match(source, /batch-upload-image-package/);
   assert.match(source, /spu_skc_directory_and_image_index/);
+  assert.match(source, /assignment\.derivative === "square-center-crop"[\s\S]+centerCropSquareImageBuffer/);
 
   assert.match(dialog, /commonPackageEdits/);
   assert.match(dialog, /批量标题/);
@@ -665,7 +989,7 @@ test("pre-publish sale attributes require enum ids when SHEIN metadata provides 
   assert.match(source, /return Boolean\(normalizeText\(payload\.custom_attribute_value\)\)/);
 });
 
-test("draft AI category enrichment calls AI live and applies the suggested category", async () => {
+test("draft AI category enrichment calls AI live and applies only a policy-approved category", async () => {
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
 
   assert.match(source, /callAiCategoryMatcher/);
@@ -673,10 +997,40 @@ test("draft AI category enrichment calls AI live and applies the suggested categ
   assert.match(source, /async function resolveLiveAiDraftCategory/);
   assert.match(source, /async function safeResolveLiveAiDraftCategory/);
   assert.match(source, /safeResolveLiveAiDraftCategory\(db,\s*categoryReadiness\)/);
+  assert.match(source, /const liveDecision = categoryDecisionForReadiness/);
+  assert.match(source, /if \(liveDecision\.apply && liveDecision\.category\)/);
   assert.match(source, /applyDraftCategorySelection/);
   assert.match(source, /source:\s*"AI_CATEGORY_LIVE"/);
   assert.match(source, /fieldLabel:\s*"SHEIN 类目"/);
   assert.doesNotMatch(source, /fieldLabel:\s*"SHEIN 类目候选"/);
+});
+
+test("draft creation auto-selects category only when deterministic or high-confidence AI safe", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const fallbackSource = await readFile(path.join(PROJECT_ROOT, "web/server/services/pre-publish/category-fallback.ts"), "utf8");
+  const policySource = await readFile(path.join(PROJECT_ROOT, "web/server/services/pre-publish/category-selection.ts"), "utf8");
+
+  assert.match(policySource, /DEFAULT_AUTO_APPLY_AI_CATEGORY_MIN_CONFIDENCE = 0\.92/);
+  assert.match(source, /async function readinessForDraftCreation/);
+  assert.match(source, /const initialDecision = categoryDecisionForReadiness\(db,\s*readiness\.category/);
+  assert.match(source, /await safeResolveLiveAiDraftCategory\(db,\s*readiness,\s*options\.skcCodes\)/);
+  assert.match(source, /buildReadinessWithCategoryOverride\(db,\s*sourceRow,\s*categoryOverride\)/);
+  assert.match(source, /draftInputs:\s*Array/);
+  assert.match(source, /categoryAiConcurrency = 2/);
+  assert.match(source, /await Promise\.all/);
+  assert.match(source, /preparedCategoryDecision\?: CategoryAutoSelectionDecision/);
+  assert.match(source, /const selectedCategory = categoryDecision\.apply \? categoryDecision\.category : null/);
+  assert.match(source, /const suggestionStatus = normalizeText\(suggestion\?\.status\)\.toUpperCase\(\)/);
+  assert.match(source, /splitBySkc:\s*suggestion\.split_by_skc === true/);
+  assert.match(policySource, /aiStatus !== "READY"/);
+  assert.match(policySource, /input\.liveAi\?\.splitBySkc === true/);
+  assert.match(policySource, /confidence < minConfidence/);
+  assert.match(policySource, /risks\.length > 0/);
+  assert.match(source, /and product_type_id = \?[\s\S]+and coalesce\(last_category,\s*0\) = 1/);
+  assert.doesNotMatch(fallbackSource, /inferKidsGender\(row,\s*text\) \?\? "female"/);
+  assert.match(fallbackSource, /const gender = inferKidsGender\(row,\s*text\)[\s\S]+if \(!gender\) return null[\s\S]+衬衫/);
+  assert.match(fallbackSource, /const gender = inferKidsGender\(row,\s*text\)[\s\S]+if \(!gender\) return null[\s\S]+开襟衫/);
+  assert.match(fallbackSource, /function inferKidsAgeBucket/);
 });
 
 test("draft color quick fixes resolve the current category color sale attribute and validate enum ids", async () => {
@@ -777,7 +1131,7 @@ test("draft category AI recomputes from source data instead of replaying the dra
   assert.match(source, /ignoreStoredCategory\?:\s*boolean/);
   assert.match(source, /const storedCategory = ignoreStoredCategory\s*\?\s*null\s*:\s*readStoredCategoryOverride\(fills,\s*spuCode\)/);
   assert.match(source, /getReadinessForListing\(db,\s*listing,\s*\{\s*ignoreListingCategory:\s*true,\s*ignoreStoredCategory:\s*true,\s*\}\)/);
-  assert.match(source, /shouldAutoApplyCategory\(categoryReadiness\.category,\s*\{\s*allowRuleFallback:\s*mode === "category" \|\| mode === "all"\s*\}\)/);
+  assert.match(source, /const ruleDecision = categoryDecisionForReadiness\(db,\s*categoryReadiness\.category/);
   assert.match(source, /let enrichmentReadiness = mode === "all" \? categoryReadiness : readiness/);
   assert.match(source, /const updatedReadiness = updatedListing \? getReadinessForListing\(db,\s*updatedListing\) : null/);
   assert.match(source, /function safeAiTranslateTitle/);
@@ -785,4 +1139,37 @@ test("draft category AI recomputes from source data instead of replaying the dra
   assert.match(source, /const aiFills = await callAiFill\(enrichmentReadiness\)/);
   assert.match(source, /resolveSheinKidsCategoryFallback/);
   assert.match(bucketSource, /resolveSheinKidsCategoryFallback/);
+});
+
+test("neutral products use all selected SKC images and expand into gender-specific draft inputs", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const groupStart = source.indexOf("function buildLiveAiCategoryGroup");
+  const groupEnd = source.indexOf("\nasync function resolveLiveAiDraftCategory", groupStart);
+  const groupSource = source.slice(groupStart, groupEnd);
+
+  assert.match(source, /planNeutralSkcDrafts/);
+  assert.match(source, /function expandNeutralSkcDraftInputs/);
+  assert.match(source, /skcCodes:\s*group\.skcCodes/);
+  assert.match(source, /categoryId:\s*group\.category\.categoryId/);
+  assert.match(source, /splitGroupKey:\s*`neutral-gender:/);
+  assert.match(source, /splitGender:\s*group\.gender/);
+  assert.match(source, /splitEvidenceBasis:\s*group\.evidenceBasis/);
+  assert.match(source, /selected_skc_codes:\s*input\.skcCodes/);
+  assert.match(source, /split_evidence_basis:\s*input\.splitEvidenceBasis/);
+  assert.match(source, /category_ai_skc_suggestions:\s*input\.aiSkcEvidence/);
+  assert.match(source, /split_group_key,\s*split_reason,/);
+  assert.match(source, /input\.splitPlanStatus === "NOT_APPLICABLE"\s*\?\s*undefined/);
+  assert.match(source, /body\.skc_codes_by_spu\?\.\[input\.spuCode\][\s\S]*readinessForDraftCreation/);
+  assert.match(groupSource, /skcCodes\?:\s*string\[\]/);
+  assert.match(groupSource, /selectedSkcCodes\.has\(normalizeText\(skc\.skc_code\)\)/);
+  assert.doesNotMatch(groupSource, /\.slice\(0,\s*8\)/);
+});
+
+test("neutral SKC uncertainty falls back to one unclassified review draft", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+
+  assert.match(source, /neutralReviewDecision/);
+  assert.match(source, /plan\.status !== "READY"/);
+  assert.match(source, /categoryDecision:\s*neutralReviewDecision/);
+  assert.match(source, /category_needs_review:\s*!categoryDecision\.apply/);
 });

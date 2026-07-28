@@ -86,6 +86,26 @@ export function uniqueStrings(values: unknown[]) {
   return Array.from(new Set(values.map(normalizeText).filter(Boolean)))
 }
 
+export function validateRequestedDraftSkcCodes(
+  requested: unknown,
+  available: unknown[],
+) {
+  if (requested === undefined) return undefined
+  if (!Array.isArray(requested)) {
+    throw new Error("款色选择格式无效")
+  }
+  const selected = uniqueStrings(requested)
+  if (selected.length === 0) {
+    throw new Error("请至少选择一个款色")
+  }
+  const availableCodes = new Set(uniqueStrings(available))
+  const unknownCodes = selected.filter((code) => !availableCodes.has(code))
+  if (unknownCodes.length > 0) {
+    throw new Error(`所选款色不属于当前商品：${unknownCodes.join("、")}`)
+  }
+  return selected
+}
+
 export function buildScopeKey({
   spuCode,
   skcCode,

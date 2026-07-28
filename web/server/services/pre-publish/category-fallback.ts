@@ -34,26 +34,37 @@ function inferKidsGender(row: CategoryFallbackRow, text = rowText(row)) {
   const hasMale = gender.includes("男") || /男童|男孩|\bboys?\b/i.test(text)
   const hasFemale = gender.includes("女") || /女童|女孩|\bgirls?\b/i.test(text)
 
-  if (hasExplicitBoth || (hasMale && hasFemale)) {
-    const lastMale = Math.max(text.lastIndexOf("男童"), text.toLowerCase().lastIndexOf("boy"))
-    const lastFemale = Math.max(text.lastIndexOf("女童"), text.toLowerCase().lastIndexOf("girl"))
-    return lastMale > lastFemale ? "male" : "female"
-  }
+  if (hasExplicitBoth || (hasMale && hasFemale)) return null
   if (hasMale) return "male"
   if (hasFemale) return "female"
   return null
 }
 
-function isSmallKidRow(row: CategoryFallbackRow, text: string) {
+function inferKidsAgeBucket(row: CategoryFallbackRow, text: string): "small" | "big" | null {
   const ageGroup = normalizeText(row.age_group_name)
-  if (ageGroup.includes("中童") || ageGroup.includes("大童") || text.includes("（大）")) return false
-  if (ageGroup.includes("幼童") || ageGroup.includes("婴童")) return true
-  return text.includes("幼童")
-    || text.includes("婴幼童")
-    || text.includes("宝宝")
-    || text.includes("小童")
-    || text.includes("（小）")
-    || /0?(73|80|90)\s*-\s*1[23]0/.test(text)
+  const ageSaysSmall = /幼童|婴童|小童/.test(ageGroup)
+  const ageSaysBig = /中童|大童/.test(ageGroup)
+  if (ageSaysSmall && ageSaysBig) return null
+  if (ageSaysSmall) return "small"
+  if (ageSaysBig) return "big"
+
+  const specRange = normalizeText(row.spec_range)
+  const sizeRange = specRange.match(/0?(\d{2,3})\D+0?(\d{2,3})/)
+  if (sizeRange) {
+    const start = Number(sizeRange[1])
+    const end = Number(sizeRange[2])
+    if (Number.isFinite(start) && Number.isFinite(end)) {
+      if (Math.max(start, end) <= 130) return "small"
+      if (Math.max(start, end) >= 150) return "big"
+    }
+  }
+
+  const textSaysSmall = /幼童|婴幼童|宝宝|小童|（小）/.test(text)
+  const textSaysBig = /中童|大童|（大）/.test(text)
+  if (textSaysSmall && textSaysBig) return null
+  if (textSaysSmall) return "small"
+  if (textSaysBig) return "big"
+  return null
 }
 
 function categoryResult({
@@ -99,7 +110,9 @@ function kidsTshirtFallbackCategory(row: CategoryFallbackRow): CategoryFallbackR
   if (!/t恤/i.test(text)) return null
   const gender = inferKidsGender(row, text)
   if (!gender) return null
-  const small = isSmallKidRow(row, text)
+  const ageBucket = inferKidsAgeBucket(row, text)
+  if (!ageBucket) return null
+  const small = ageBucket === "small"
   const category = KIDS_TSHIRT_CATEGORIES[gender][small ? "small" : "big"]
   return categoryResult({
     gender,
@@ -128,7 +141,9 @@ function kidsSweatshirtFallbackCategory(row: CategoryFallbackRow): CategoryFallb
   if (/套装/.test(text)) return null
   const gender = inferKidsGender(row, text)
   if (!gender) return null
-  const small = isSmallKidRow(row, text)
+  const ageBucket = inferKidsAgeBucket(row, text)
+  if (!ageBucket) return null
+  const small = ageBucket === "small"
   const category = KIDS_SWEATSHIRT_CATEGORIES[gender][small ? "small" : "big"]
   return categoryResult({
     gender,
@@ -157,7 +172,9 @@ function kidsOuterwearFallbackCategory(row: CategoryFallbackRow): CategoryFallba
   if (/套装/.test(text)) return null
   const gender = inferKidsGender(row, text)
   if (!gender) return null
-  const small = isSmallKidRow(row, text)
+  const ageBucket = inferKidsAgeBucket(row, text)
+  if (!ageBucket) return null
+  const small = ageBucket === "small"
   const category = KIDS_OUTERWEAR_CATEGORIES[gender][small ? "small" : "big"]
   return categoryResult({
     gender,
@@ -190,7 +207,9 @@ export function kidsPantsFallbackCategory(row: CategoryFallbackRow): CategoryFal
   const gender = inferKidsGender(row, text)
   if (!gender) return null
 
-  const small = isSmallKidRow(row, text)
+  const ageBucket = inferKidsAgeBucket(row, text)
+  if (!ageBucket) return null
+  const small = ageBucket === "small"
   const shorts = /短裤|shorts/i.test(text)
   const genderLabel = gender === "male" ? "男童" : "女童"
   const ageLabel = small ? "小" : "大"
@@ -213,8 +232,11 @@ export function kidsPantsFallbackCategory(row: CategoryFallbackRow): CategoryFal
 function kidsShirtFallbackCategory(row: CategoryFallbackRow): CategoryFallbackResult | null {
   const text = rowText(row)
   if (!text.includes("衬衫")) return null
-  const gender = inferKidsGender(row, text) ?? "female"
-  const small = isSmallKidRow(row, text)
+  const gender = inferKidsGender(row, text)
+  if (!gender) return null
+  const ageBucket = inferKidsAgeBucket(row, text)
+  if (!ageBucket) return null
+  const small = ageBucket === "small"
   const genderLabel = gender === "male" ? "男童" : "女童"
   const ageLabel = small ? "小" : "大"
   const category = `${genderLabel}（${ageLabel}）衬衫`
@@ -231,7 +253,10 @@ function kidsShirtFallbackCategory(row: CategoryFallbackRow): CategoryFallbackRe
 function kidsDressFallbackCategory(row: CategoryFallbackRow): CategoryFallbackResult | null {
   const text = rowText(row)
   if (!text.includes("连衣裙")) return null
-  const small = isSmallKidRow(row, text)
+  if (inferKidsGender(row, text) !== "female") return null
+  const ageBucket = inferKidsAgeBucket(row, text)
+  if (!ageBucket) return null
+  const small = ageBucket === "small"
   return {
     category_id: small ? 2063 : 2005,
     product_type_id: small ? 5926 : 5925,
@@ -245,7 +270,9 @@ function kidsDressFallbackCategory(row: CategoryFallbackRow): CategoryFallbackRe
 function kidsCardiganFallbackCategory(row: CategoryFallbackRow): CategoryFallbackResult | null {
   const text = rowText(row)
   if (!(text.includes("开襟") || text.includes("毛衫") || text.includes("毛衣"))) return null
-  const gender = inferKidsGender(row, text) ?? "female"
+  const gender = inferKidsGender(row, text)
+  if (!gender) return null
+  if (inferKidsAgeBucket(row, text) !== "small") return null
   const genderLabel = gender === "male" ? "男童" : "女童"
   return {
     category_id: gender === "male" ? 2499 : 2508,

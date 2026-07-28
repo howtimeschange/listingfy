@@ -30,6 +30,34 @@ export type PictureCapacityRule = {
   max_count: number
 }
 
+export type SheinImageAsset = {
+  id?: unknown
+  skc_code?: unknown
+  asset_type?: unknown
+  image_sort?: unknown
+  platform_url?: unknown
+  source_url?: unknown
+  local_path?: unknown
+}
+
+export type SheinImageInfoItem = {
+  image_sort: number
+  image_type: number
+  image_url: string
+}
+
+export type SheinImageInfo = {
+  image_info_list: SheinImageInfoItem[]
+}
+
+export type BuildSheinImageInfoInput = {
+  skcCode: unknown
+  skcImageUrl?: unknown
+  allowSourceImages?: boolean
+  allowLocalImages?: boolean
+  assets: SheinImageAsset[]
+}
+
 const MAIN_DETAIL_IMAGE_RULE = {
   dimension_rule: "1340 x 1785 px；或 1:1 且 900-2200 px",
   format_rule: "JPG / JPEG / PNG",
@@ -292,4 +320,89 @@ export function inferAssetTypeFromLibraryAsset(asset: Record<string, unknown>, r
   if (assetType.includes("BACK")) return "DETAIL_BACK"
   if (sourceKind.includes("DETAIL") || assetType.includes("DETAIL")) return "DETAIL"
   return requirement.asset_types[0] ?? "DETAIL"
+}
+
+function sheinAssetType(value: unknown) {
+  return normalizeText(value).toUpperCase()
+}
+
+function sheinImagePriority(asset: SheinImageAsset) {
+  const type = sheinAssetType(asset.asset_type)
+  if (type === "MAIN") return 0
+  if (type === "DETAIL" || type === "DETAIL_BACK") return 1
+  if (type === "SQUARE") return 2
+  if (type === "COLOR_BLOCK" || type === "COLOR") return 3
+  return 4
+}
+
+export function sheinImageType(assetType: unknown, options: { mainImage?: boolean } = {}) {
+  const type = sheinAssetType(assetType)
+  if (type === "SQUARE") return 5
+  if (type === "COLOR_BLOCK" || type === "COLOR") return 6
+  if (type === "MAIN") return options.mainImage === false ? 2 : 1
+  return 2
+}
+
+function sheinAssetUrl(asset: SheinImageAsset, options: { allowSourceImages: boolean; allowLocalImages: boolean }) {
+  return normalizeText(asset.platform_url)
+    || (options.allowSourceImages ? normalizeText(asset.source_url) : "")
+}
+
+function sheinAssetAvailable(asset: SheinImageAsset, options: { allowSourceImages: boolean; allowLocalImages: boolean }) {
+  return Boolean(
+    sheinAssetUrl(asset, options)
+    || (options.allowLocalImages && normalizeText(asset.local_path)),
+  )
+}
+
+export function buildSheinImageInfo(input: BuildSheinImageInfoInput): SheinImageInfo {
+  const skcCode = normalizeText(input.skcCode)
+  const allowSourceImages = Boolean(input.allowSourceImages)
+  const allowLocalImages = Boolean(input.allowLocalImages)
+  const fallbackImage = normalizeText(input.skcImageUrl)
+  const selectedAssets = input.assets
+    .filter((asset) => normalizeText(asset.skc_code) === skcCode)
+    .filter((asset) => sheinAssetAvailable(asset, { allowSourceImages, allowLocalImages }))
+    .sort((left, right) =>
+      sheinImagePriority(left) - sheinImagePriority(right)
+      || Number(left.image_sort ?? 0) - Number(right.image_sort ?? 0)
+      || Number(left.id ?? 0) - Number(right.id ?? 0),
+    )
+
+  const hasMainAsset = selectedAssets.some((asset) => sheinAssetType(asset.asset_type) === "MAIN")
+  const output: SheinImageInfoItem[] = []
+  if (!hasMainAsset && fallbackImage) {
+    output.push({ image_sort: 0, image_type: 1, image_url: fallbackImage })
+  }
+
+  let usedMain = false
+  for (const asset of selectedAssets) {
+    const type = sheinAssetType(asset.asset_type)
+    const isFirstMain = type === "MAIN" && !usedMain
+    if (type === "MAIN") usedMain = true
+    output.push({
+      image_sort: 0,
+      image_type: sheinImageType(type, { mainImage: isFirstMain }),
+      image_url: sheinAssetUrl(asset, { allowSourceImages, allowLocalImages }),
+    })
+  }
+
+  if (fallbackImage && !output.some((image) => Number(image.image_type) === 6)) {
+    output.push({ image_sort: 0, image_type: 6, image_url: fallbackImage })
+  }
+
+  return {
+    image_info_list: output.map((image, index) => ({
+      ...image,
+      image_sort: index + 1,
+    })),
+  }
+}
+
+export function sheinMainImageError(skcCode: unknown, imageInfo: SheinImageInfo | null | undefined) {
+  const count = Array.isArray(imageInfo?.image_info_list)
+    ? imageInfo.image_info_list.filter((image) => Number(image.image_type) === 1).length
+    : 0
+  if (count === 1) return null
+  return `${normalizeText(skcCode)} 有且只能有 1 张主图(type=1)，当前为 ${count} 张`
 }

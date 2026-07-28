@@ -155,7 +155,13 @@ interface SheinBucketFilters {
 interface CreateDraftResult {
   created_count: number
   missing: string[]
-  items: Array<{ listing_id: number; spu_code: string; version_no: number }>
+  items: Array<{
+    listing_id: number
+    spu_code: string
+    version_no: number
+    category_auto_selected?: boolean
+    category_needs_review?: boolean
+  }>
 }
 
 interface AiFillResult {
@@ -507,9 +513,14 @@ export default function SheinProductsPage() {
         platform: "SHEIN",
         spu_codes: selectedSpus,
         skc_codes_by_spu: selectedSkcCodesBySpu,
+        auto_select_category: true,
       }),
     onSuccess: (result) => {
-      toast.success(`已创建/更新 ${result.created_count} 个发布草稿`)
+      const autoSelectedCount = result.items.filter((item) => item.category_auto_selected).length
+      const categoryReviewCount = result.items.filter((item) => item.category_needs_review).length
+      toast.success(
+        `已创建 ${formatNumber(result.created_count)} 个发布草稿；自动选类目 ${formatNumber(autoSelectedCount)} 个；类目待确认 ${formatNumber(categoryReviewCount)} 个`,
+      )
       if (result.missing.length) toast.warning(`未处理款号：${result.missing.join("、")}`)
       const spuCodes = result.items.map((item) => item.spu_code).join("\n")
       navigate(`/pre-publish-validation?batch_search=${encodeURIComponent(spuCodes)}`)

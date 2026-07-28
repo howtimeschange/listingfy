@@ -128,7 +128,15 @@ interface DraftCategory {
 interface CreateDraftResult {
   created_count: number
   missing: string[]
-  items: Array<{ listing_id: number; spu_code: string; publish_unit_no?: string; version_no: number }>
+  items: Array<{
+    listing_id: number
+    spu_code: string
+    publish_unit_no?: string
+    version_no: number
+    category_auto_selected?: boolean
+    category_needs_review?: boolean
+    category_selection_message?: string
+  }>
 }
 
 interface BatchImagePackageResult {
@@ -265,10 +273,15 @@ export default function PrePublishValidationPage() {
       api.post<CreateDraftResult>("/pre-publish/drafts", {
         platform,
         spu_codes: spuCodes,
+        auto_select_category: true,
       }),
     onSuccess: async (result) => {
       const createdCount = result.items?.length ?? result.created_count ?? 0
-      toast.success(`已派生 ${formatNumber(createdCount)} 个新草稿`)
+      const autoSelectedCount = result.items?.filter((item) => item.category_auto_selected).length ?? 0
+      const categoryReviewCount = result.items?.filter((item) => item.category_needs_review).length ?? 0
+      toast.success(
+        `已派生 ${formatNumber(createdCount)} 个新草稿；自动选类目 ${formatNumber(autoSelectedCount)} 个；类目待确认 ${formatNumber(categoryReviewCount)} 个`,
+      )
       setSelectedDraftIds(new Set())
       setCreateDraftText("")
       await queryClient.invalidateQueries({ queryKey: ["pre-publish", "drafts"] })
@@ -501,7 +514,9 @@ export default function PrePublishValidationPage() {
               <DialogContent>
                 <DialogHeader>
                   <DialogTitle>新建 SHEIN 发布草稿</DialogTitle>
-                  <DialogDescription>输入 SHEIN 商品分桶中的款号；同一个款号可以重复派生多个独立草稿。</DialogDescription>
+                  <DialogDescription>
+                    输入 SHEIN 商品分桶中的款号；生成时会先用确认规则和确定性算法选类目，再对未命中的商品调用 AI。低置信或歧义结果会保留为待确认。
+                  </DialogDescription>
                 </DialogHeader>
                 <Textarea
                   value={createDraftText}

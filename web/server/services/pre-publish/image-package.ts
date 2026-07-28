@@ -90,7 +90,7 @@ export function packageImageAssignments(group: SheinImagePackageGroup, detailLim
       requirement_key: "SKC_SQUARE" as const,
       asset_type: "SQUARE" as const,
       image_sort: 1,
-      derivative: null,
+      derivative: "square-center-crop" as const,
     }] : []),
     ...(first ? [{
       entry: first,

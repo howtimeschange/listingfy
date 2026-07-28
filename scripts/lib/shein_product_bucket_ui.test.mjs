@@ -87,6 +87,10 @@ test("SHEIN product bucket drills into SKC rows and creates drafts from selected
   assert.match(page, /SKC 款色/);
   assert.match(page, /创建所选款色草稿/);
   assert.match(page, /skc_codes_by_spu/);
+  assert.match(page, /auto_select_category/);
+  assert.match(page, /category_auto_selected/);
+  assert.match(page, /自动选类目/);
+  assert.match(page, /类目待确认/);
 });
 
 test("SHEIN product bucket keeps product images square and previewable", async () => {

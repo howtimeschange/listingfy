@@ -20,7 +20,7 @@ function compactText(value, maxLength = 180) {
 
 function compactGroup(group) {
   const skcExamples = Array.isArray(group.skc_examples)
-    ? group.skc_examples.slice(0, 8).map((item) => ({
+    ? group.skc_examples.map((item) => ({
       spu_code: item.spu_code ?? "",
       skc_code: item.skc_code ?? "",
       color_code: item.color_code ?? "",
@@ -87,7 +87,11 @@ export function buildCategoryMatchPrompt({ groups, candidates }) {
               spu_code: "输入 examples.skc_examples[].spu_code",
               skc_code: "输入 examples.skc_examples[].skc_code",
               color_name: "输入 examples.skc_examples[].color_name",
-              model_gender: "从 TMALL 款色图判断：男童 | 女童 | 中性 | 未知",
+              model_present: "true=确认存在可判断性别的模特；false=确认没有足以判断性别的模特；null=有图片但无法确认是否有模特，或图片不可用",
+              model_gender: "只判断图中模特：男童 | 女童 | 未知；没有模特时必须为未知",
+              color_gender: "只判断颜色倾向：男童 | 女童 | 中性 | 未知",
+              resolved_gender: "最终性别：男童 | 女童 | 未知",
+              gender_basis: "最终判断证据：MODEL | COLOR | UNKNOWN",
               confidence: "0 到 1 的数字",
               primary: {
                 category_id: "该 SKC 建议的 SHEIN category_id",
@@ -116,6 +120,7 @@ export function buildCategoryMatchPrompt({ groups, candidates }) {
           ],
           reasons: ["短理由，说明使用了哪些 MDM/深绘/尺码信号"],
           risks: ["不确定点，例如中性性别、标题与尺码冲突"],
+          blocking_risks: ["只有会阻止自动按 SKC 分组建草稿的未解决风险；无阻断风险时必须返回空数组"],
         },
       ],
     },
@@ -124,15 +129,22 @@ export function buildCategoryMatchPrompt({ groups, candidates }) {
       "只能从候选 SHEIN 类目 candidates 中选择 primary 和 alternatives，不能编造 category_id 或 product_type_id。",
       "MDM 小类优先级高于深绘类目；深绘类目优先级高于标题关键词。",
       "同一个 SPU 下不同 SKC/款色可能需要映射到不同 SHEIN 类目，尤其是 MDM 性别为中性、男女童或空值时。",
-      "判断中性或男女分叉类目时，必须结合 examples.skc_examples 的 TMALL COLOR_BLOCK/COLOR 款色图和颜色；如果款色图显示女童模特，优先女童类目；显示男童模特，优先男童类目。",
+      "中性款必须为输入 examples.skc_examples 中的每个 SKC 返回且只返回一条 skc_suggestions，不能抽样、遗漏或合并。",
+      "性别证据优先级必须是模特性别优先于颜色倾向：仅当 model_present=true 且 model_gender 可明确判断为男童或女童时使用模特证据，颜色不得推翻该结论。",
+      "只有没有可识别模特时才允许使用颜色兜底：当 model_present=false 或 null 时允许根据颜色倾向判断性别并设置 gender_basis=COLOR；即使有图片，只要无法确认是否有模特，也可以采用颜色兜底。",
+      "若 model_present=true 但 model_gender=未知，必须进入人工确认，不能用颜色覆盖明确存在但性别不明的模特。",
+      "无模特时可把铁灰、深灰、卡其等低饱和中性色作为偏男童线索，把风信紫、粉紫等紫粉色作为偏女童线索；这只是兜底线索，颜色不明确时必须返回未知。",
+      "无法可靠识别模特性别且颜色也不明确时，resolved_gender 必须为未知、gender_basis 必须为 UNKNOWN，不得强行归类。",
       "当同一组合内 SKC 图片或颜色导致男女类目不同，应设置 split_by_skc=true，并在 skc_suggestions 中逐条给出 SKC 级建议。",
-      "如果 SKC 缺少 tmall_color_image_url，只能基于文字字段保守判断，并在 risks 或 skc_suggestions.reasons 中说明缺少 TMALL 款色图，不要给过高置信度。",
+      "如果 SKC 缺少 tmall_color_image_url，只能基于颜色文字保守判断，并在 skc_suggestions.reasons 中说明缺图；颜色结论明确时不要仅因缺图写入 blocking_risks。",
+      "risks 可记录说明性信息，例如中性款需要拆分、无模特时使用颜色兜底；这些预期业务事实本身不是阻断风险。",
+      "blocking_risks 只记录无法归组、图片与文字冲突、类目无法确认等真正阻止自动建草稿的问题；每个 SKC 均有可靠结论时必须为空数组。",
       "幼童且尺码范围覆盖 073-130 或 080-130 时，优先考虑 SHEIN 女童（小）/男童（小），不要默认选择女童（大）/男童（大）。",
       "不要因为标题包含“宝宝/婴儿”就直接选择婴儿根类目；只有年龄段、尺码范围、深绘类目共同支持时才把婴儿类目作为首选。",
       "性别为中性、男女童、空值时，如果 SHEIN 候选类目按男女分叉，status 应设为 AMBIGUOUS，并给出男女两侧候选。",
       "开襟毛衫/开襟毛衣应优先考虑开襟衫类目；没有开襟衫时再考虑毛衣或针织上衣。",
       "套装、牛仔、泳装、连体裤等细分类目只有输入字段明确出现时才能选择。",
-      "confidence >= 0.8 表示可批量确认；0.6-0.79 表示建议人工复核；低于 0.6 表示不建议自动确认。",
+      "一般 SPU 级类目自动选择必须 confidence >= 0.92；中性款逐 SKC 证据完整、类目对有效且 blocking_risks 为空时，自动分组门槛为 confidence >= 0.80；低于对应门槛必须进入人工确认。",
     ],
     groups: groups.map(compactGroup),
     candidates: candidates.map(compactCandidate),
@@ -143,22 +155,30 @@ export function buildCategoryMatchPrompt({ groups, candidates }) {
 
 export function buildCategoryMatchMessages({ groups, candidates }) {
   const prompt = buildCategoryMatchPrompt({ groups, candidates });
-  const seenUrls = new Set();
-  const imageParts = [];
+  const evidenceParts = [];
 
   for (const group of groups) {
     const skcExamples = Array.isArray(group.skc_examples) ? group.skc_examples : [];
     for (const example of skcExamples) {
       const url = compactText(example.tmall_color_image_url ?? example.tmall_model_image_url, 2000);
-      if (!url || seenUrls.has(url)) continue;
-      seenUrls.add(url);
-      imageParts.push({
+      const skcCode = compactText(example.skc_code, 160) ?? "UNKNOWN_SKC";
+      const colorName = compactText(example.color_name, 160) ?? "未提供颜色名";
+      if (!url) {
+        evidenceParts.push({
+          type: "text",
+          text: `SKC ${skcCode}｜颜色 ${colorName}｜没有可用款色图；仅可按颜色文字保守判断。`,
+        });
+        continue;
+      }
+      evidenceParts.push({
+        type: "text",
+        text: `下图只对应 SKC ${skcCode}｜颜色 ${colorName}。先判断是否有模特；可识别模特以模特性别为准，无法确认是否有模特时可按颜色兜底。`,
+      });
+      evidenceParts.push({
         type: "image_url",
         image_url: { url },
       });
-      if (imageParts.length >= 12) break;
     }
-    if (imageParts.length >= 12) break;
   }
 
   return [
@@ -166,7 +186,7 @@ export function buildCategoryMatchMessages({ groups, candidates }) {
       role: "user",
       content: [
         { type: "text", text: prompt },
-        ...imageParts,
+        ...evidenceParts,
       ],
     },
   ];
@@ -196,7 +216,11 @@ function normalizeSkcSuggestion(value) {
     spu_code: String(value.spu_code ?? "").trim(),
     skc_code: skcCode,
     color_name: String(value.color_name ?? "").trim(),
+    model_present: normalizeOptionalBoolean(value.model_present),
     model_gender: String(value.model_gender ?? "未知").trim() || "未知",
+    color_gender: String(value.color_gender ?? "未知").trim() || "未知",
+    resolved_gender: String(value.resolved_gender ?? "未知").trim() || "未知",
+    gender_basis: String(value.gender_basis ?? "UNKNOWN").trim().toUpperCase() || "UNKNOWN",
     confidence,
     primary,
     alternatives: Array.isArray(value.alternatives)
@@ -206,6 +230,11 @@ function normalizeSkcSuggestion(value) {
       ? value.reasons.map((item) => String(item)).filter(Boolean).slice(0, 6)
       : [],
   };
+}
+
+function normalizeOptionalBoolean(value) {
+  if (value == null || value === "") return null;
+  return normalizeBoolean(value);
 }
 
 function normalizeBoolean(value) {
@@ -256,6 +285,9 @@ function normalizeSuggestion(value) {
     risks: Array.isArray(value.risks)
       ? value.risks.map((item) => String(item)).filter(Boolean).slice(0, 8)
       : [],
+    blocking_risks: Array.isArray(value.blocking_risks)
+      ? value.blocking_risks.map((item) => String(item)).filter(Boolean).slice(0, 8)
+      : [],
   };
 }
 
@@ -299,22 +331,35 @@ export async function callAiCategoryMatcher({
   const prompt = buildCategoryMatchPrompt({ groups, candidates });
   const userMessages = buildCategoryMatchMessages({ groups, candidates });
 
-  const response = await callAiChatCompletion({
-    config,
-    fetchImpl,
-    errorLabel: "AI category matcher",
-    messages: [
-      {
-        role: "system",
-        content: "你是跨境电商商品类目映射专家，擅长根据 MDM、深绘内容包和平台类目树做保守匹配。",
-      },
-      ...userMessages,
-    ],
-  });
-  return {
-    suggestions: parseAiCategoryMatchResponse(response.content),
-    raw: response.raw,
-    prompt,
-    provider: response.provider,
-  };
+  for (let responseAttempt = 0; responseAttempt < 2; responseAttempt += 1) {
+    const response = await callAiChatCompletion({
+      config,
+      fetchImpl,
+      errorLabel: "AI category matcher",
+      messages: [
+        {
+          role: "system",
+          content: responseAttempt === 0
+            ? "你是跨境电商商品类目映射专家，擅长根据 MDM、深绘内容包和平台类目树做保守匹配。"
+            : "你是跨境电商商品类目映射专家。上一轮结构化输出无法解析；本轮必须返回完整、严格合法且没有尾随文字的 JSON。",
+        },
+        ...userMessages,
+      ],
+    });
+    try {
+      return {
+        suggestions: parseAiCategoryMatchResponse(response.content),
+        raw: response.raw,
+        prompt,
+        provider: response.provider,
+      };
+    } catch (error) {
+      const retryableResponse = error instanceof SyntaxError
+        || /^Invalid AI category/.test(String(error?.message ?? ""));
+      if (responseAttempt === 0 && retryableResponse) continue;
+      throw error;
+    }
+  }
+
+  throw new Error("AI category matcher failed after structured-response retry");
 }

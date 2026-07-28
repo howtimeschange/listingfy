@@ -24,16 +24,36 @@ import {
 } from "../services/publish/publish-job-service"
 import { canTransitionDraftStatus } from "../services/pre-publish/drafts"
 import { resolveSheinKidsCategoryFallback } from "../services/pre-publish/category-fallback"
-import { coerceFieldValues, normalizeMaterialValue, tariffValueCandidatesForContext } from "../services/pre-publish/field-fills"
+import {
+  categoryAutoSelectionDecision,
+  type CategoryAutoSelectionDecision,
+  type CategorySelectionCandidate,
+} from "../services/pre-publish/category-selection"
+import {
+  isNeutralProductGender,
+  planNeutralSkcDrafts,
+} from "../services/pre-publish/neutral-skc-draft-planner"
+import {
+  blockingAttributeMessages,
+  buildCompositionAttributeItems as buildCompositionPayloadItems,
+  categoryPairState,
+  coerceFieldValues,
+  contextualAttributeState,
+  normalizeMaterialValue,
+  tariffValueCandidatesForContext,
+} from "../services/pre-publish/field-fills"
 import {
   boolConfigValue,
   buildPictureRequirements,
+  buildSheinImageInfo,
   canAddImagesToRequirement,
   classifyImportedImage,
   imageCompliance,
   inferAssetTypeFromLibraryAsset,
   inferAssetTypeFromRequirement,
   pictureCapacityRules,
+  sheinImageType,
+  sheinMainImageError,
   type PictureConfigRow,
   type PictureRequirement,
 } from "../services/pre-publish/images"
@@ -50,7 +70,12 @@ import {
   responseCode,
   responseMessage,
 } from "../services/pre-publish/payload"
-import { transformOnlineImageToShein, uploadLocalImageToShein } from "../services/pre-publish/shein-api"
+import {
+  centerCropSquareImageBuffer,
+  transformOnlineImageToShein,
+  uploadLocalImageToShein,
+  uploadRemoteSquareImageToShein,
+} from "../services/pre-publish/shein-api"
 import {
   groupSheinImagePackageEntries,
   MAX_SHEIN_IMAGE_PACKAGE_ENTRIES,
@@ -74,6 +99,7 @@ import {
   readLimit,
   readOffset,
   uniqueStrings,
+  validateRequestedDraftSkcCodes,
 } from "../services/pre-publish/shared"
 import { createPublishVersion } from "../services/pre-publish/versions"
 
@@ -164,6 +190,7 @@ type ReadinessRow = {
     path: string | null
     source: string
     status: string
+    error?: string | null
   }
   skcs: SourceRow[]
   sku_count: number
@@ -203,6 +230,7 @@ type CategoryOverride = {
   path: string | null
   source?: string
   status?: string
+  error?: string | null
 }
 
 type CategoryReadinessOptions = {
@@ -224,9 +252,14 @@ type LiveAiDraftCategory = {
   productTypeId: number
   categoryName: string | null
   path: string | null
+  status: string
   confidence: number | null
+  splitBySkc: boolean
   reasons: string[]
   risks: string[]
+  blockingRisks: string[]
+  alternatives: unknown[]
+  skcSuggestions: unknown[]
 }
 
 function activeFillMap(db: ReturnType<typeof getDb>, spuCodes: string[]) {
@@ -645,172 +678,9 @@ function activeWeights(db: ReturnType<typeof getDb>) {
   return map
 }
 
-function kidsPantsFallbackCategory(row: SourceRow): CategoryOverride | null {
-  const text = [
-    row.middle_class_name,
-    row.subclass_name,
-    row.gender_name,
-    row.age_group_name,
-    row.deepdraw_category_name,
-    row.deepdraw_title,
-    row.spu_name,
-  ].map(normalizeText).join(" ")
-  if (!/(裤|下装|straight pants|pants|trousers)/i.test(text)) return null
-
-  const gender = normalizeText(row.gender_name)
-  const isMale = gender.includes("男") || /\bboys?\b/i.test(text)
-  const isFemale = gender.includes("女") || /\bgirls?\b/i.test(text)
-  if (!isMale && !isFemale) return null
-
-  const isSmallKid = text.includes("幼童")
-    || text.includes("宝宝")
-    || text.includes("小童")
-    || text.includes("（小）")
-  const isShorts = /短裤|shorts/i.test(text)
-  const category = isMale
-    ? isShorts
-      ? {
-        category_id: isSmallKid ? 2103 : 1995,
-        product_type_id: isSmallKid ? 1516 : 1494,
-        category_name: isSmallKid ? "男童（小）短裤" : "男童（大）短裤",
-        parent: isSmallKid ? "男童（小）下装" : "男童（大）下装",
-      }
-      : {
-        category_id: isSmallKid ? 2101 : 1993,
-        product_type_id: isSmallKid ? 9603 : 9600,
-        category_name: isSmallKid ? "男童（小）裤子" : "男童（大）裤子",
-        parent: isSmallKid ? "男童（小）下装" : "男童（大）下装",
-      }
-    : isShorts
-      ? {
-        category_id: isSmallKid ? 2120 : 2008,
-        product_type_id: isSmallKid ? 1518 : 1503,
-        category_name: isSmallKid ? "女童（小）短裤" : "女童（大）短裤",
-        parent: isSmallKid ? "女童（小）下装" : "女童（大）下装",
-      }
-      : isSmallKid
-        ? {
-          category_id: 2119,
-          product_type_id: 9602,
-          category_name: "女童（小）长裤",
-          parent: "女童（小）下装",
-        }
-        : {
-          category_id: 2007,
-          product_type_id: 9601,
-          category_name: "女童（大）长裤",
-          parent: "女童（大）下装",
-        }
-
-  const genderLabel = isMale ? "男童" : "女童"
-  const ageLabel = isSmallKid ? "小" : "大"
-  return {
-    category_id: category.category_id,
-    product_type_id: category.product_type_id,
-    category_name: category.category_name,
-    path: `儿童 > ${genderLabel}（${ageLabel}）服装 > ${category.parent} > ${category.category_name}`,
-    source: "RULE_FALLBACK",
-    status: "READY",
-  }
-}
-
 function fallbackCategory(row: SourceRow) {
   const sharedFallback = resolveSheinKidsCategoryFallback(row)
   if (sharedFallback) return sharedFallback
-
-  const text = [
-    row.middle_class_name,
-    row.subclass_name,
-    row.gender_name,
-    row.age_group_name,
-    row.deepdraw_category_name,
-    row.deepdraw_title,
-  ].map(normalizeText).join(" ")
-  const gender = normalizeText(row.gender_name)
-  const isMale = gender.includes("男")
-  const isFemale = gender.includes("女")
-  const isSmallKid = text.includes("幼童") || text.includes("宝宝") || text.includes("小童")
-  const pantsFallback = kidsPantsFallbackCategory(row)
-  if (pantsFallback) return pantsFallback
-  if (text.includes("套装")) {
-    const sweatshirt = text.includes("卫衣") || text.includes("连帽") || text.includes("针织")
-    if (isMale) {
-      return {
-        category_id: isSmallKid ? (sweatshirt ? 15254 : 2106) : (sweatshirt ? 15249 : 1998),
-        product_type_id: isSmallKid ? (sweatshirt ? 10935 : 9322) : (sweatshirt ? 10930 : 9316),
-        category_name: isSmallKid
-          ? (sweatshirt ? "男童（小）卫衣套装" : "男童（小）T恤套装")
-          : (sweatshirt ? "男童（大）卫衣套装" : "男童（大）T恤套装"),
-        path: isSmallKid
-          ? `儿童 > 男童（小）服装 > 男童（小）套装 > ${sweatshirt ? "男童（小）卫衣套装" : "男童（小）T恤套装"}`
-          : `儿童 > 男童（大）服装 > 男童（大）套装 > ${sweatshirt ? "男童（大）卫衣套装" : "男童（大）T恤套装"}`,
-        source: "RULE_FALLBACK",
-        status: "READY",
-      }
-    }
-    if (isFemale) {
-      return {
-        category_id: isSmallKid ? (sweatshirt ? 15269 : 2115) : (sweatshirt ? 15264 : 2014),
-        product_type_id: isSmallKid ? (sweatshirt ? 10957 : 9320) : (sweatshirt ? 10944 : 9318),
-        category_name: isSmallKid
-          ? (sweatshirt ? "女童（小）卫衣套装" : "女童（小）T恤套装")
-          : (sweatshirt ? "女童（大）卫衣套装" : "女童（大）T恤套装"),
-        path: isSmallKid
-          ? `儿童 > 女童（小）服装 > 女童（小）套装 > ${sweatshirt ? "女童（小）卫衣套装" : "女童（小）T恤套装"}`
-          : `儿童 > 女童（大）服装 > 女童（大）套装 > ${sweatshirt ? "女童（大）卫衣套装" : "女童（大）T恤套装"}`,
-        source: "RULE_FALLBACK",
-        status: "READY",
-      }
-    }
-  }
-  if (/t恤/i.test(text)) {
-    if (isMale || isFemale) {
-      const genderLabel = isMale ? "男童" : "女童"
-      const ageLabel = isSmallKid ? "小" : "大"
-      const categoryName = `${genderLabel}（${ageLabel}）T恤`
-      return {
-        category_id: isMale ? (isSmallKid ? 2105 : 1997) : (isSmallKid ? 2116 : 2013),
-        product_type_id: isMale ? (isSmallKid ? 9740 : 9736) : (isSmallKid ? 9739 : 9738),
-        category_name: categoryName,
-        path: `儿童 > ${genderLabel}（${ageLabel}）服装 > ${genderLabel}（${ageLabel}）上衣 > ${categoryName}`,
-        source: "RULE_FALLBACK",
-        status: "READY",
-      }
-    }
-  }
-  if (text.includes("衬衫")) {
-    return {
-      category_id: 2062,
-      product_type_id: 7403,
-      category_name: "女童（小）衬衫",
-      path: "儿童 > 女童（小）服装 > 女童（小）上衣 > 女童（小）衬衫",
-      source: "RULE_FALLBACK",
-      status: "READY",
-    }
-  }
-  if (text.includes("连衣裙")) {
-    return {
-      category_id: 2063,
-      product_type_id: 5926,
-      category_name: "女童（小）连衣裙",
-      path: "儿童 > 女童（小）服装 > 女童（小）连衣裙",
-      source: "RULE_FALLBACK",
-      status: "READY",
-    }
-  }
-  if (text.includes("开襟") || text.includes("毛衫") || text.includes("毛衣")) {
-    const male = gender.includes("男")
-    return {
-      category_id: male ? 2499 : 2508,
-      product_type_id: male ? 9343 : 9344,
-      category_name: male ? "男童（小）开襟衫" : "女童（小）开襟衫",
-      path: male
-        ? "儿童 > 男童（小）服装 > 男童（小）针织衫 > 男童（小）开襟衫"
-        : "儿童 > 女童（小）服装 > 女童（小）针织衫 > 女童（小）开襟衫",
-      source: "RULE_FALLBACK",
-      status: gender.includes("中性") ? "NEEDS_SKC_REVIEW" : "READY",
-    }
-  }
   return {
     category_id: null,
     product_type_id: null,
@@ -847,10 +717,7 @@ function resolveCategory(row: SourceRow) {
   return fallback
 }
 
-function readStoredCategoryOverride(
-  fills: Map<string, SourceRow>,
-  spuCode: string,
-): CategoryOverride | null {
+function readStoredCategoryOverride(fills: Map<string, SourceRow>, spuCode: string): CategoryOverride | null {
   const stored = getStoredFill(fills, spuCode, "category")
   if (!stored) return null
   const payload = parseJsonObject(stored.payload_json)
@@ -863,7 +730,7 @@ function readStoredCategoryOverride(
     category_name: normalizeText(payload.category_name) || normalizeText(stored.field_value) || null,
     path: normalizeText(payload.path) || null,
     source: normalizeText(stored.source) || "MANUAL_CATEGORY",
-    status: "READY",
+    status: normalizeText(payload.status) || "READY",
   }
 }
 
@@ -1038,12 +905,87 @@ function buildDimensionFieldGroups(fieldGroups: FieldGroup[]): DimensionFieldGro
   ]
 }
 
+function getCategoryPairMetadata(
+  db: ReturnType<typeof getDb>,
+  categoryId: number | null,
+  productTypeId: number | null,
+) {
+  if (!categoryId || !productTypeId) return null
+  const row = db.prepare(`
+    select category_id, product_type_id, category_name, path
+    from channel_category
+    where platform = 'SHEIN'
+      and category_id = ?
+      and product_type_id = ?
+      and coalesce(last_category, 0) = 1
+    limit 1
+  `).get(categoryId, productTypeId) as SourceRow | undefined
+  return row ?? null
+}
+
+function categoryPairMetadataState(
+  db: ReturnType<typeof getDb>,
+  categoryId: number | null,
+  productTypeId: number | null,
+) {
+  const metadata = getCategoryPairMetadata(db, categoryId, productTypeId)
+  if (metadata || !categoryId || !productTypeId) {
+    return { metadata, known: Boolean(metadata) }
+  }
+  const categoryKnown = Boolean(db.prepare(`
+    select 1
+    from channel_category
+    where platform = 'SHEIN'
+      and category_id = ?
+      and coalesce(last_category, 0) = 1
+    limit 1
+  `).get(categoryId))
+  const productTypeKnown = Boolean(db.prepare(`
+    select 1
+    from channel_category
+    where platform = 'SHEIN'
+      and product_type_id = ?
+      and coalesce(last_category, 0) = 1
+    limit 1
+  `).get(productTypeId))
+  return {
+    metadata: null,
+    known: categoryKnown && productTypeKnown,
+  }
+}
+
+function unverifiedCategoryPairMessage(categoryId: number | null, productTypeId: number | null) {
+  return `本地 SHEIN 元数据暂无法核验类目与 Product Type：${categoryId}/${productTypeId}，请先同步元数据`
+}
+
+function requiredAttributeCategoryId(
+  db: ReturnType<typeof getDb>,
+  categoryId: number | null,
+  productTypeId: number | null,
+) {
+  if (!productTypeId) return null
+  if (getCategoryPairMetadata(db, categoryId, productTypeId)) return categoryId
+  const candidates = db.prepare(`
+    select distinct category_id
+    from channel_category
+    where platform = 'SHEIN'
+      and product_type_id = ?
+      and coalesce(last_category, 0) = 1
+    order by category_id
+    limit 2
+  `).all(productTypeId) as SourceRow[]
+  if (candidates.length !== 1) return categoryId
+  return asPositiveNumber(candidates[0]?.category_id)
+}
+
 function getRequiredAttributes(
   db: ReturnType<typeof getDb>,
   categoryId: number | null,
   productTypeId: number | null,
 ) {
-  if (!categoryId || !productTypeId) return []
+  if (!productTypeId) return []
+  const attributeCategoryId = requiredAttributeCategoryId(db, categoryId, productTypeId)
+  if (!attributeCategoryId) return []
   const rows = db.prepare(`
     select
       req.platform,
@@ -1087,7 +1029,7 @@ function getRequiredAttributes(
     from channel_attribute attr
     where attr.platform = 'SHEIN'
       and attr.product_type_id = ?
-      and attr.attribute_type = 1
+      and (attr.attribute_type = 1 or attr.attribute_id in (58))
       and not exists (
         select 1
         from channel_required_attribute req
@@ -1097,7 +1039,13 @@ function getRequiredAttributes(
           and req.attribute_id = attr.attribute_id
       )
     order by attribute_type, attribute_id
-  `).all(categoryId, productTypeId, categoryId, productTypeId, categoryId) as SourceRow[]
+  `).all(
+    attributeCategoryId,
+    productTypeId,
+    attributeCategoryId,
+    productTypeId,
+    attributeCategoryId,
+  ) as SourceRow[]
 
   const valueStmt = db.prepare(`
     select attribute_value_id, attribute_value, attribute_value_en
@@ -1542,7 +1490,38 @@ function buildRow({
   const skcs = mdmSkcs.length ? mdmSkcs : getContentSkcs(db, row.content_package_id)
   const skus = mdmSkus.length ? mdmSkus : getContentSkus(db, row.content_package_id)
   const storedCategory = ignoreStoredCategory ? null : readStoredCategoryOverride(fills, spuCode)
-  const category = categoryOverride ?? storedCategory ?? resolveCategory(row)
+  const resolvedCategory = categoryOverride ?? storedCategory ?? resolveCategory(row)
+  const categoryMetadataState = categoryPairMetadataState(
+    db,
+    resolvedCategory.category_id,
+    resolvedCategory.product_type_id,
+  )
+  const categoryMetadata = categoryMetadataState.metadata
+  const categoryPair = categoryPairState({
+    categoryId: resolvedCategory.category_id,
+    productTypeId: resolvedCategory.product_type_id,
+    metadataMatch: Boolean(categoryMetadata),
+    metadataKnown: categoryMetadataState.known,
+  })
+  const category = categoryPair.status === "WARNING"
+    ? {
+      ...resolvedCategory,
+      status: categoryPair.status,
+      error: unverifiedCategoryPairMessage(
+        resolvedCategory.category_id,
+        resolvedCategory.product_type_id,
+      ),
+    }
+    : categoryPair.valid || !resolvedCategory.category_id || !resolvedCategory.product_type_id
+    ? resolvedCategory
+    : {
+      ...resolvedCategory,
+      category_name: normalizeText(categoryMetadata?.category_name) || resolvedCategory.category_name,
+      path: normalizeText(categoryMetadata?.path) || resolvedCategory.path,
+      source: "CATEGORY_PAIR_MISMATCH",
+      status: categoryPair.status,
+      error: categoryPair.error,
+    }
   const attrs = getRequiredAttributes(db, category.category_id, category.product_type_id)
   const sizeAttr = findSizeSaleAttribute(attrs)
   const priceConfig = getSheinPriceConfig(db)
@@ -1572,8 +1551,14 @@ function buildRow({
       label: "SHEIN 类目",
       value: category.category_name,
       source: category.source,
-      status: category.category_id ? (category.status === "READY" ? "READY" : "WARNING") : "MISSING",
-      note: category.path,
+      status: category.status === "READY"
+        ? "READY"
+        : category.status === "WARNING"
+          ? "WARNING"
+        : category.status === "MISSING" || !category.category_id || !category.product_type_id
+          ? "MISSING"
+          : "NEEDS_AI",
+      note: category.error || category.path,
     },
     { key: "title_cn", label: "中文标题", value: titleCn, source: storedTitleCn ? String(storedTitleCn.source ?? "MANUAL") : "DEEPDRAW", status: fieldStatus(titleCn) },
     {
@@ -1763,7 +1748,6 @@ function buildRow({
   if (deprecatedTariffMaterialField && !attributeFields.some((field) => field.attribute_id === DEPRECATED_TARIFF_MATERIAL_ATTRIBUTE_ID)) {
     attributeFields.push(deprecatedTariffMaterialField)
   }
-
   const contentFields: FillField[] = [
     {
       key: "composition_text",
@@ -1791,6 +1775,7 @@ function buildRow({
 
   for (const group of fieldGroups) {
     for (const field of group.fields) {
+      if (field.key === "category") continue
       const stored = getStoredFill(fills, spuCode, field.key)
       if (!stored) continue
       const storedValue = stored.field_value == null ? "" : String(stored.field_value)
@@ -1809,6 +1794,22 @@ function buildRow({
       field.confidence = stored.confidence == null ? field.confidence : Number(stored.confidence)
       field.note = storedFillNote(stored, field.note)
     }
+  }
+  const tariffField = attributeFields.find((field) => field.attribute_id === TARIFF_ATTRIBUTE_ID)
+  const materialField = attributeFields.find((field) => field.attribute_id === 160)
+  for (const field of attributeFields) {
+    const contextual = contextualAttributeState({
+      attributeId: field.attribute_id,
+      value: field.value,
+      tariffValue: tariffField?.value,
+      materialValue: materialField?.value,
+    })
+    if (!contextual) continue
+    field.status = contextual.status
+    if (!field.value) field.source = "SHEIN 关务条件属性"
+    field.note = contextual.required
+      ? "当前关税种类与材质组合触发平台关务规则，此属性必填。"
+      : "SHEIN 可能根据关税种类与材质组合将此属性设为必填，可提前填写。"
   }
 
   const allFields = fieldGroups.flatMap((group) => group.fields)
@@ -1933,17 +1934,37 @@ function getReadinessBySpu(db: ReturnType<typeof getDb>, spuCode: string) {
   return buildRow({ db, row, sizeConversions, discounts, weights, fills })
 }
 
-function listingCategoryOverride(listing: ListingRow): CategoryOverride | null {
+function listingCategoryOverride(
+  db: ReturnType<typeof getDb>,
+  listing: ListingRow,
+): CategoryOverride | null {
   const categoryId = asPositiveNumber(listing.platform_category_id)
   const productTypeId = asPositiveNumber(listing.product_type_id)
   if (!categoryId || !productTypeId) return null
+  const metadataState = categoryPairMetadataState(db, categoryId, productTypeId)
+  const metadata = metadataState.metadata
+  const pair = categoryPairState({
+    categoryId,
+    productTypeId,
+    metadataMatch: Boolean(metadata),
+    metadataKnown: metadataState.known,
+  })
   return {
     category_id: categoryId,
     product_type_id: productTypeId,
-    category_name: normalizeText(listing.platform_category_name) || null,
-    path: normalizeText(listing.platform_category_path) || null,
-    source: "LISTING_CATEGORY",
-    status: "READY",
+    category_name: normalizeText(metadata?.category_name)
+      || normalizeText(listing.platform_category_name)
+      || null,
+    path: normalizeText(metadata?.path) || normalizeText(listing.platform_category_path) || null,
+    source: pair.status === "WARNING"
+      ? "LISTING_CATEGORY_UNVERIFIED"
+      : pair.valid
+        ? "LISTING_CATEGORY"
+        : "LISTING_CATEGORY_MISMATCH",
+    status: pair.status,
+    error: pair.status === "WARNING"
+      ? unverifiedCategoryPairMessage(categoryId, productTypeId)
+      : pair.error,
   }
 }
 
@@ -1958,7 +1979,7 @@ function getReadinessForListing(
   const discounts = activeDiscounts(db)
   const weights = activeWeights(db)
   const fills = activeFillMap(db, [listing.spu_code])
-  const override = options.ignoreListingCategory ? null : listingCategoryOverride(listing)
+  const override = options.ignoreListingCategory ? null : listingCategoryOverride(db, listing)
   return buildRow({
     db,
     row,
@@ -2378,9 +2399,36 @@ function createDraft(
   sourceRow: SourceRow,
   platform = "SHEIN",
   skcCodes?: string[],
+  preparedCategoryDecision?: CategoryAutoSelectionDecision,
+  split?: {
+    groupKey?: string | null
+    reason?: string | null
+    gender?: string | null
+    evidenceBasis?: string | null
+    aiSkcEvidence?: unknown[]
+  },
 ) {
   const account = getDefaultChannelAccount(db, platform)
   const publishUnitNo = nextPublishUnitNo(db, platform, Number(account.id), row.product_spu_id)
+  const categoryDecision = preparedCategoryDecision ?? categoryDecisionForReadiness(db, row.category, {
+    allowRuleFallback: true,
+  })
+  const selectedCategory = categoryDecision.apply ? categoryDecision.category : null
+  const sourceSnapshot = {
+    ...row,
+    category_creation_decision: {
+      ...categoryDecision,
+      message: categoryDecisionMessage(categoryDecision.reason),
+    },
+    neutral_skc_split: split ? {
+      group_key: split.groupKey ?? null,
+      reason: split.reason ?? null,
+      gender: split.gender ?? null,
+      evidence_basis: split.evidenceBasis ?? null,
+      selected_skc_codes: skcCodes ?? [],
+      ai_skc_evidence: split.aiSkcEvidence ?? [],
+    } : null,
+  }
 
   const result = db.prepare(`
     insert into listing (
@@ -2391,6 +2439,8 @@ function createDraft(
       spu_code,
       listing_batch_no,
       publish_unit_no,
+      split_group_key,
+      split_reason,
       title,
       platform_category_id,
       product_type_id,
@@ -2404,7 +2454,7 @@ function createDraft(
       source_snapshot_json,
       created_by
     )
-    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'en', 'CNY', ?, ?, ?, ?, 'codex')
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'en', 'CNY', ?, ?, ?, ?, 'codex')
   `).run(
     platform,
     account.id,
@@ -2413,15 +2463,17 @@ function createDraft(
     row.spu_code,
     `PREPUB-${nowIso().slice(0, 10).replaceAll("-", "")}`,
     publishUnitNo,
+    normalizeText(split?.groupKey) || null,
+    normalizeText(split?.reason) || null,
     row.title_en || row.title_cn || row.spu_name,
-    row.category.category_id,
-    row.category.product_type_id,
-    row.category.category_name,
-    row.category.path,
+    selectedCategory?.categoryId ?? null,
+    selectedCategory?.productTypeId ?? null,
+    selectedCategory?.categoryName ?? null,
+    selectedCategory?.path ?? null,
     listingStatusFor(row),
     validationStatusFor(row),
     row.completeness,
-    JSON.stringify(row),
+    JSON.stringify(sourceSnapshot),
   )
   const listing = db.prepare("select * from listing where id = ?").get(result.lastInsertRowid) as ListingRow
   upsertListingChildren(db, listing.id, sourceRow, row)
@@ -2433,7 +2485,7 @@ function createDraft(
     readiness: row,
     changeSummary: "创建发布草稿",
   })
-  return { listing, version, created: true }
+  return { listing, version, created: true, categoryDecision }
 }
 
 function refreshListingAfterFill(db: ReturnType<typeof getDb>, listingId: number, changeSummary: string) {
@@ -2442,6 +2494,28 @@ function refreshListingAfterFill(db: ReturnType<typeof getDb>, listingId: number
   const sourceRow = getSourceProductRow(db, existing.spu_code)
   const readiness = getReadinessForListing(db, existing)
   if (!sourceRow || !readiness) return null
+  const categoryDecision = categoryDecisionForReadiness(db, readiness.category, {
+    allowRuleFallback: true,
+  })
+  const existingCategoryId = asPositiveNumber(existing.platform_category_id)
+  const existingProductTypeId = asPositiveNumber(existing.product_type_id)
+  const persistedCategory = categoryDecision.apply
+    ? categoryDecision.category
+    : existingCategoryId && existingProductTypeId
+      ? {
+        categoryId: existingCategoryId,
+        productTypeId: existingProductTypeId,
+        categoryName: normalizeText(existing.platform_category_name) || null,
+        path: normalizeText(existing.platform_category_path) || null,
+      }
+      : null
+  const existingSnapshot = parseJsonObject(existing.source_snapshot_json)
+  const sourceSnapshot = {
+    ...readiness,
+    ...(existingSnapshot.category_creation_decision
+      ? { category_creation_decision: existingSnapshot.category_creation_decision }
+      : {}),
+  }
   db.prepare(`
     update listing
     set title = ?,
@@ -2457,14 +2531,14 @@ function refreshListingAfterFill(db: ReturnType<typeof getDb>, listingId: number
     where id = ?
   `).run(
     readiness.title_en || readiness.title_cn || readiness.spu_name,
-    readiness.category.category_id,
-    readiness.category.product_type_id,
-    readiness.category.category_name,
-    readiness.category.path,
+    persistedCategory?.categoryId ?? null,
+    persistedCategory?.productTypeId ?? null,
+    persistedCategory?.categoryName ?? null,
+    persistedCategory?.path ?? null,
     listingStatusFor(readiness),
     validationStatusFor(readiness),
     readiness.completeness,
-    JSON.stringify(readiness),
+    JSON.stringify(sourceSnapshot),
     listingId,
   )
   upsertListingChildren(db, listingId, sourceRow, readiness)
@@ -3231,9 +3305,11 @@ function getListingDetail(db: ReturnType<typeof getDb>, listingId: number) {
     .filter((attr) => attr.attribute_type === 1)
 
   const selectedReadiness = displayReadinessForSelectedSkcs(readiness, skcs, readiness.skcs)
+  const sourceSnapshot = parseJsonObject(listing.source_snapshot_json)
   return {
     listing: summarizeListing(db, listing, { onlySelected: true }),
     readiness: selectedReadiness,
+    category_creation_decision: sourceSnapshot.category_creation_decision ?? null,
     dimension_field_groups: selectedReadiness.dimension_field_groups,
     skcs,
     skus,
@@ -3308,22 +3384,6 @@ async function safeAiTranslateTitle(row: ReadinessRow) {
   return callAiTranslateTitle(row).catch(() => heuristicEnglishTitle(row))
 }
 
-function shouldAutoApplyCategory(
-  category: ReadinessRow["category"],
-  options: { allowRuleFallback?: boolean } = {},
-) {
-  const source = normalizeText(category.source)
-  const blockedSources = options.allowRuleFallback
-    ? ["AI_CATEGORY", "MISSING"]
-    : ["AI_CATEGORY", "RULE_FALLBACK", "MISSING"]
-  return Boolean(
-    category.category_id
-    && category.product_type_id
-    && category.status === "READY"
-    && !blockedSources.includes(source),
-  )
-}
-
 function shouldAskLiveAiCategory(category: ReadinessRow["category"]) {
   const source = normalizeText(category.source)
   return Boolean(
@@ -3333,6 +3393,185 @@ function shouldAskLiveAiCategory(category: ReadinessRow["category"]) {
     || source === "AI_CATEGORY"
     || source === "MISSING",
   )
+}
+
+function categorySelectionCandidate(category: ReadinessRow["category"]): CategorySelectionCandidate {
+  return {
+    categoryId: category.category_id,
+    productTypeId: category.product_type_id,
+    categoryName: category.category_name,
+    path: category.path,
+    source: category.source,
+    status: category.status,
+  }
+}
+
+function liveAiSelectionCandidate(liveCategory: LiveAiDraftCategory) {
+  return {
+    categoryId: liveCategory.categoryId,
+    productTypeId: liveCategory.productTypeId,
+    categoryName: liveCategory.categoryName,
+    path: liveCategory.path,
+    source: "AI_CATEGORY_LIVE",
+    status: liveCategory.status,
+    confidence: liveCategory.confidence,
+    splitBySkc: liveCategory.splitBySkc,
+    risks: liveCategory.risks,
+  }
+}
+
+function verifiedCategorySelection(
+  db: ReturnType<typeof getDb>,
+  category: CategorySelectionCandidate | null | undefined,
+) {
+  return Boolean(getCategoryPairMetadata(
+    db,
+    asPositiveNumber(category?.categoryId),
+    asPositiveNumber(category?.productTypeId),
+  ))
+}
+
+function categoryDecisionForReadiness(
+  db: ReturnType<typeof getDb>,
+  category: ReadinessRow["category"],
+  options: {
+    allowRuleFallback?: boolean
+    liveAi?: LiveAiDraftCategory | null
+  } = {},
+) {
+  const selection = categorySelectionCandidate(category)
+  const liveAi = options.liveAi ? liveAiSelectionCandidate(options.liveAi) : null
+  return categoryAutoSelectionDecision({
+    category: selection,
+    metadataValid: verifiedCategorySelection(db, selection),
+    allowRuleFallback: options.allowRuleFallback,
+    liveAi,
+    liveAiMetadataValid: verifiedCategorySelection(db, liveAi),
+  })
+}
+
+function categoryDecisionMessage(reason: CategoryAutoSelectionDecision["reason"]) {
+  const messages: Record<CategoryAutoSelectionDecision["reason"], string> = {
+    RULE_READY: "已命中确认类目规则",
+    RULE_FALLBACK_READY: "性别、年龄段和品类均明确，已应用确定性类目算法",
+    AI_READY: "AI 建议达到自动应用门槛",
+    CATEGORY_MISSING: "没有可用类目候选，需要人工选择",
+    CATEGORY_PAIR_INVALID: "类目与 Product Type 未通过本地叶子类目校验",
+    CATEGORY_NEEDS_REVIEW: "现有类目建议尚未确认",
+    RULE_FALLBACK_DISABLED: "本次操作未允许自动应用 fallback 类目",
+    AI_STATUS_NOT_READY: "AI 判定为歧义或无匹配",
+    AI_LOW_CONFIDENCE: "AI 置信度未达到 0.92",
+    AI_SPLIT_BY_SKC: "同一 SPU 的不同 SKC 可能需要不同类目",
+    AI_HAS_RISKS: "AI 返回了需要人工核对的风险",
+    AI_HIGH_RISK_CATEGORY: "该细分类目必须人工确认",
+    AI_CATEGORY_PAIR_INVALID: "AI 类目未通过本地叶子类目校验",
+  }
+  return messages[reason]
+}
+
+function categoryOverrideFromSelection(
+  category: CategorySelectionCandidate,
+  options: {
+    source?: string
+    status?: string
+    error?: string | null
+  } = {},
+): CategoryOverride {
+  return {
+    category_id: asPositiveNumber(category.categoryId),
+    product_type_id: asPositiveNumber(category.productTypeId),
+    category_name: normalizeText(category.categoryName) || null,
+    path: normalizeText(category.path) || null,
+    source: options.source || normalizeText(category.source) || "CATEGORY_RULE",
+    status: options.status || normalizeText(category.status) || "READY",
+    error: options.error ?? null,
+  }
+}
+
+function buildReadinessWithCategoryOverride(
+  db: ReturnType<typeof getDb>,
+  sourceRow: SourceRow,
+  categoryOverride: CategoryOverride,
+) {
+  const spuCode = String(sourceRow.spu_code)
+  return buildRow({
+    db,
+    row: sourceRow,
+    sizeConversions: activeSizeConversions(db),
+    discounts: activeDiscounts(db),
+    weights: activeWeights(db),
+    fills: activeFillMap(db, [spuCode]),
+    categoryOverride,
+    ignoreStoredCategory: true,
+  })
+}
+
+async function readinessForDraftCreation(
+  db: ReturnType<typeof getDb>,
+  sourceRow: SourceRow,
+  readiness: ReadinessRow,
+  options: {
+    autoSelectCategory?: boolean
+    skcCodes?: string[]
+  } = {},
+) {
+  const neutralProduct = isNeutralProductGender(sourceRow.gender_name)
+  const initialDecision = categoryDecisionForReadiness(db, readiness.category, {
+    allowRuleFallback: true,
+  })
+  if (initialDecision.apply && !neutralProduct) {
+    return {
+      readiness,
+      decision: initialDecision,
+      liveAi: null,
+    }
+  }
+  if (
+    options.autoSelectCategory === false
+    || (!neutralProduct && !shouldAskLiveAiCategory(readiness.category))
+  ) {
+    return {
+      readiness,
+      decision: initialDecision,
+      liveAi: null,
+    }
+  }
+  const liveCategory = await safeResolveLiveAiDraftCategory(db, readiness, options.skcCodes)
+  if (!liveCategory) {
+    return {
+      readiness,
+      decision: initialDecision,
+      liveAi: null,
+    }
+  }
+
+  const decision = categoryDecisionForReadiness(db, readiness.category, {
+    allowRuleFallback: true,
+    liveAi: liveCategory,
+  })
+  const selectedCategory = decision.category ?? decision.suggestion
+  if (!selectedCategory) {
+    return {
+      readiness,
+      decision,
+      liveAi: liveCategory,
+    }
+  }
+  const categoryOverride = categoryOverrideFromSelection(selectedCategory, decision.apply
+    ? {
+      source: decision.source || "AI_CATEGORY_LIVE",
+      status: "READY",
+    }
+    : {
+      source: "AI_CATEGORY_LIVE_REVIEW",
+      status: "NEEDS_REVIEW",
+      error: categoryDecisionMessage(decision.reason),
+    })
+  return {
+    readiness: buildReadinessWithCategoryOverride(db, sourceRow, categoryOverride),
+    decision,
+    liveAi: liveCategory,
+  }
 }
 
 function liveAiCategoryKeywordText(row: ReadinessRow, sourceRow: SourceRow | null) {
@@ -3421,7 +3660,15 @@ function listLiveAiCategoryCandidates(
   })
 }
 
-function buildLiveAiCategoryGroup(row: ReadinessRow, sourceRow: SourceRow | null) {
+function buildLiveAiCategoryGroup(
+  row: ReadinessRow,
+  sourceRow: SourceRow | null,
+  skcCodes?: string[],
+) {
+  const selectedSkcCodes = new Set((skcCodes ?? []).map(normalizeText).filter(Boolean))
+  const selectedSkcs = selectedSkcCodes.size > 0
+    ? row.skcs.filter((skc) => selectedSkcCodes.has(normalizeText(skc.skc_code)))
+    : row.skcs
   return {
     match_key: `draft:${row.spu_code}`,
     mdm_middle_category_name: normalizeText(sourceRow?.middle_class_name),
@@ -3442,7 +3689,7 @@ function buildLiveAiCategoryGroup(row: ReadinessRow, sourceRow: SourceRow | null
     })),
     spus: [row.spu_code],
     spu_count: 1,
-    skc_examples: row.skcs.slice(0, 8).map((skc) => ({
+    skc_examples: selectedSkcs.map((skc) => ({
       spu_code: row.spu_code,
       skc_code: normalizeText(skc.skc_code),
       color_code: normalizeText(skc.color_code),
@@ -3457,19 +3704,23 @@ function buildLiveAiCategoryGroup(row: ReadinessRow, sourceRow: SourceRow | null
 async function resolveLiveAiDraftCategory(
   db: ReturnType<typeof getDb>,
   row: ReadinessRow,
+  skcCodes?: string[],
 ): Promise<LiveAiDraftCategory | null> {
   const sourceRow = getSourceProductRow(db, row.spu_code)
   const candidates = listLiveAiCategoryCandidates(db, row, sourceRow)
   if (candidates.length === 0) return null
 
-  const group = buildLiveAiCategoryGroup(row, sourceRow)
+  const group = buildLiveAiCategoryGroup(row, sourceRow, skcCodes)
   const result = await callAiCategoryMatcher({
     groups: [group],
     candidates,
   })
   const suggestion = result.suggestions.find((item: Record<string, unknown>) => normalizeText(item.match_key) === group.match_key)
     ?? result.suggestions[0]
-  if (!suggestion || normalizeText(suggestion.status) === "NO_MATCH" || !suggestion.primary) return null
+  const suggestionStatus = normalizeText(suggestion?.status).toUpperCase()
+  const confidence = Number(suggestion?.confidence)
+  const risks = Array.isArray(suggestion?.risks) ? suggestion.risks.map(normalizeText).filter(Boolean) : []
+  if (!suggestion || suggestionStatus === "NO_MATCH" || !suggestion.primary) return null
 
   const primary = suggestion.primary as Record<string, unknown>
   const categoryId = asPositiveNumber(primary.category_id)
@@ -3488,6 +3739,7 @@ async function resolveLiveAiDraftCategory(
     where platform = 'SHEIN'
       and category_id = ?
       and product_type_id = ?
+      and coalesce(last_category, 0) = 1
     limit 1
   `).get(categoryId, productTypeId) as CategoryCandidate | undefined
   if (!category) {
@@ -3499,22 +3751,166 @@ async function resolveLiveAiDraftCategory(
     productTypeId,
     categoryName: normalizeText(category.category_name) || normalizeText(candidate.category_name) || null,
     path: normalizeText(category.path) || normalizeText(candidate.path) || null,
-    confidence: Number.isFinite(Number(suggestion.confidence)) ? Number(suggestion.confidence) : null,
+    status: suggestionStatus,
+    confidence: Number.isFinite(confidence) ? confidence : null,
+    splitBySkc: suggestion.split_by_skc === true,
     reasons: Array.isArray(suggestion.reasons) ? suggestion.reasons.map(normalizeText).filter(Boolean) : [],
-    risks: Array.isArray(suggestion.risks) ? suggestion.risks.map(normalizeText).filter(Boolean) : [],
+    risks,
+    blockingRisks: Array.isArray(suggestion.blocking_risks)
+      ? suggestion.blocking_risks.map(normalizeText).filter(Boolean)
+      : [],
+    alternatives: Array.isArray(suggestion.alternatives) ? suggestion.alternatives : [],
+    skcSuggestions: Array.isArray(suggestion.skc_suggestions) ? suggestion.skc_suggestions : [],
   }
 }
 
 async function safeResolveLiveAiDraftCategory(
   db: ReturnType<typeof getDb>,
   row: ReadinessRow,
+  skcCodes?: string[],
 ): Promise<LiveAiDraftCategory | null> {
   try {
-    return await resolveLiveAiDraftCategory(db, row)
+    return await resolveLiveAiDraftCategory(db, row, skcCodes)
   } catch (error) {
     console.warn("Draft live AI category recommendation failed", error)
     return null
   }
+}
+
+function neutralReviewDecision(
+  decision: CategoryAutoSelectionDecision,
+): CategoryAutoSelectionDecision {
+  const suggestion = decision.category ?? decision.suggestion
+  return {
+    apply: false,
+    category: null,
+    suggestion,
+    source: suggestion?.source ? String(suggestion.source) : decision.source,
+    confidence: decision.confidence,
+    reason: "CATEGORY_NEEDS_REVIEW",
+  }
+}
+
+function expandNeutralSkcDraftInputs(
+  db: ReturnType<typeof getDb>,
+  input: {
+    spuCode: string
+    sourceRow: SourceRow
+    readiness: ReadinessRow
+    categoryDecision: CategoryAutoSelectionDecision
+    liveAi: LiveAiDraftCategory | null
+    skcCodes?: string[]
+  },
+) {
+  const selectedSkcCodes = new Set((input.skcCodes ?? []).map(normalizeText).filter(Boolean))
+  const selectedSkcs = selectedSkcCodes.size > 0
+    ? input.readiness.skcs.filter((skc) => selectedSkcCodes.has(normalizeText(skc.skc_code)))
+    : input.readiness.skcs
+  const targetSkcCodes = selectedSkcs.map((skc) => normalizeText(skc.skc_code)).filter(Boolean)
+  const aiEvidenceFor = (skcCodes: string[]) => {
+    const selected = new Set(skcCodes)
+    return (input.liveAi?.skcSuggestions ?? []).filter((suggestion) => {
+      const row = suggestion && typeof suggestion === "object"
+        ? suggestion as Record<string, unknown>
+        : null
+      return row ? selected.has(normalizeText(row.skc_code ?? row.skcCode)) : false
+    })
+  }
+  const plan = planNeutralSkcDrafts({
+    genderName: input.sourceRow.gender_name,
+    skcs: selectedSkcs.map((skc) => ({
+      skcCode: normalizeText(skc.skc_code),
+      colorName: normalizeText(skc.color_name),
+      imageUrl: normalizeText(skc.tmall_color_image_url)
+        || normalizeText(skc.tmall_color_url)
+        || normalizeText(skc.pic_url)
+        || null,
+    })),
+    liveAi: input.liveAi ? {
+      status: input.liveAi.status,
+      splitBySkc: input.liveAi.splitBySkc,
+      risks: input.liveAi.risks,
+      blockingRisks: input.liveAi.blockingRisks,
+      skcSuggestions: input.liveAi.skcSuggestions,
+    } : null,
+    resolveCategory: (categoryId, productTypeId) => {
+      const metadata = getCategoryPairMetadata(db, categoryId, productTypeId)
+      if (!metadata) return null
+      return {
+        categoryId: Number(metadata.category_id),
+        productTypeId: Number(metadata.product_type_id),
+        categoryName: normalizeText(metadata.category_name) || null,
+        path: normalizeText(metadata.path) || null,
+      }
+    },
+  })
+
+  if (plan.status === "NOT_APPLICABLE") {
+    return [{
+      ...input,
+      skcCodes: input.skcCodes,
+      splitGroupKey: null,
+      splitReason: null,
+      splitGender: null,
+      splitEvidenceBasis: null,
+      aiSkcEvidence: [],
+      splitPlanStatus: plan.status,
+      splitPlanReason: plan.reason,
+    }]
+  }
+  if (plan.status !== "READY") {
+    return [{
+      ...input,
+      skcCodes: targetSkcCodes,
+      categoryDecision: neutralReviewDecision(input.categoryDecision),
+      splitGroupKey: null,
+      splitReason: `中性款 SKC 性别证据待确认：${plan.reason}`,
+      splitGender: null,
+      splitEvidenceBasis: null,
+      aiSkcEvidence: aiEvidenceFor(targetSkcCodes),
+      splitPlanStatus: plan.status,
+      splitPlanReason: plan.reason,
+      unresolvedSkcCodes: plan.unresolvedSkcCodes,
+    }]
+  }
+
+  const splitToken = nowIso()
+  return plan.groups.map((group) => {
+    const category: CategorySelectionCandidate = {
+      categoryId: group.category.categoryId,
+      productTypeId: group.category.productTypeId,
+      categoryName: group.category.categoryName,
+      path: group.category.path,
+      source: "AI_CATEGORY_LIVE_SKC",
+      status: "READY",
+    }
+    const categoryDecision: CategoryAutoSelectionDecision = {
+      apply: true,
+      category,
+      suggestion: null,
+      source: "AI_CATEGORY_LIVE_SKC",
+      confidence: group.confidence,
+      reason: "AI_READY",
+    }
+    const categoryOverride = categoryOverrideFromSelection(category, {
+      source: "AI_CATEGORY_LIVE_SKC",
+      status: "READY",
+    })
+    return {
+      ...input,
+      readiness: buildReadinessWithCategoryOverride(db, input.sourceRow, categoryOverride),
+      categoryDecision,
+      skcCodes: group.skcCodes,
+      splitGroupKey: `neutral-gender:${input.readiness.spu_code}:${splitToken}`,
+      splitReason: `中性款按款色图 AI 判断拆分为${group.gender === "MALE" ? "男童" : "女童"}发布草稿`,
+      splitGender: group.gender,
+      splitEvidenceBasis: group.evidenceBasis,
+      aiSkcEvidence: aiEvidenceFor(group.skcCodes),
+      splitPlanStatus: plan.status,
+      splitPlanReason: plan.reason,
+      unresolvedSkcCodes: [],
+    }
+  })
 }
 
 function normalizeFillFieldValue(fieldKey: unknown, fieldLabel: unknown, value: unknown) {
@@ -3731,63 +4127,13 @@ function optionForFieldValue(field: FillField, value: string) {
   return findEnumOption(field.options ?? [], [value])
 }
 
-function compositionNeedles(value: string) {
-  if (/聚酯|涤纶/.test(value)) return ["聚酯纤维", "涤纶", "聚酯"]
-  if (/棉/.test(value)) return ["棉"]
-  if (/粘纤|粘胶/.test(value)) return ["粘纤", "粘胶纤维"]
-  if (/氨纶/.test(value)) return ["氨纶"]
-  if (/锦纶|尼龙/.test(value)) return ["锦纶", "尼龙"]
-  if (/腈纶/.test(value)) return ["腈纶"]
-  return [value]
-}
-
-function normalizeCompositionParts(parts: Array<{ name: string; value: number }>) {
-  const valid = parts.filter((part) => part.value > 0)
-  if (valid.length === 0) return []
-  const floors = valid.map((part) => ({ ...part, floor: Math.floor(part.value), fraction: part.value - Math.floor(part.value) }))
-  let remainder = 100 - floors.reduce((sum, part) => sum + part.floor, 0)
-  const sorted = [...floors].sort((a, b) => b.fraction - a.fraction)
-  for (const part of sorted) {
-    if (remainder <= 0) break
-    part.floor += 1
-    remainder -= 1
-  }
-  return floors.map((part) => ({ name: part.name, value: Math.max(1, part.floor) }))
-}
-
-function parseCompositionParts(value: unknown) {
-  const text = normalizeText(value)
-  if (!text) return []
-  const parsed: Array<{ name: string; value: number }> = []
-  const fragments = text.split(/[|｜;；\n]+/).map((item) => item.trim()).filter(Boolean)
-  for (const fragment of fragments) {
-    const number = asPositiveNumber(fragment.match(/\d+(?:\.\d+)?/)?.[0])
-    if (!number) continue
-    const needles = compositionNeedles(fragment)
-    if (needles.length === 0) continue
-    parsed.push({ name: needles[0], value: number })
-  }
-  return normalizeCompositionParts(parsed)
-}
-
 function buildCompositionAttributeItems(field: FillField, compositionSource: unknown) {
-  const parts = parseCompositionParts(compositionSource)
-  const output: Array<Record<string, unknown>> = []
-  for (const part of parts) {
-    const option = findEnumOption(field.options ?? [], compositionNeedles(part.name))
-    if (!option) continue
-    output.push({
-      attribute_id: field.attribute_id,
-      attribute_value_id: option.attribute_value_id,
-      attribute_extra_value: String(part.value),
-    })
-  }
-  if (output.length > 0) return output
-
-  const fallback = optionForFieldValue(field, normalizeText(field.value))
-  return fallback
-    ? [{ attribute_id: field.attribute_id, attribute_value_id: fallback.attribute_value_id, attribute_extra_value: "100" }]
-    : []
+  return buildCompositionPayloadItems({
+    attributeId: field.attribute_id,
+    compositionSource,
+    options: field.options ?? [],
+    fallbackValue: field.value,
+  })
 }
 
 function buildDependentAttributeItems(db: ReturnType<typeof getDb>, listing: ListingRow, currentItems: Array<Record<string, unknown>>) {
@@ -3880,14 +4226,6 @@ function buildProductAttributeList(db: ReturnType<typeof getDb>, listing: Listin
   return output
 }
 
-function sheinImageType(assetType: unknown, sort: number) {
-  const type = normalizeText(assetType)
-  if (type === "SQUARE") return 5
-  if (type === "COLOR_BLOCK" || type === "COLOR") return 6
-  if (type === "MAIN" || sort === 1) return 1
-  return 2
-}
-
 function ensureFallbackColorAssets(db: ReturnType<typeof getDb>, listingId: number) {
   const missing = db.prepare(`
     select
@@ -3978,7 +4316,7 @@ async function prepareListingImagesForPublish(db: ReturnType<typeof getDb>, list
     where id = ?
   `)
   for (const asset of assets) {
-    const imageType = sheinImageType(asset.asset_type, Number(asset.image_sort ?? 0))
+    const imageType = sheinImageType(asset.asset_type)
     const localPath = normalizeText(asset.local_path)
     const sourceUrl = normalizeText(asset.source_url)
     let prepared: { imageUrl: string; payload: unknown } | null = null
@@ -3994,7 +4332,9 @@ async function prepareListingImagesForPublish(db: ReturnType<typeof getDb>, list
         if (!fs.existsSync(localPath)) throw new Error(`本地图片不存在：${localPath}`)
         prepared = await uploadLocalImageToShein(localPath, imageType, credentials)
       } else if (sourceUrl) {
-        prepared = await transformOnlineImageToShein(sourceUrl, imageType, credentials)
+        prepared = imageType === 5
+          ? await uploadRemoteSquareImageToShein(sourceUrl, credentials)
+          : await transformOnlineImageToShein(sourceUrl, imageType, credentials)
       }
       if (!prepared) {
         db.prepare(`
@@ -4027,39 +4367,20 @@ function selectedImageInfo(
   assets: SourceRow[],
   options: { allowSourceImages?: boolean; allowLocalImages?: boolean } = {},
 ) {
-  const skcCode = normalizeText(skc.skc_code)
   const allowSourceImages = Boolean(options.allowSourceImages)
   const allowLocalImages = Boolean(options.allowLocalImages)
-  const selectedAssets = assets
-    .filter((asset) => normalizeText(asset.skc_code) === skcCode)
-    .filter((asset) =>
-      normalizeText(asset.platform_url)
-      || (allowSourceImages && normalizeText(asset.source_url))
-      || (allowLocalImages && normalizeText(asset.local_path)),
-    )
-    .sort((a, b) => Number(a.image_sort ?? 0) - Number(b.image_sort ?? 0))
-
-  const imageInfoList = selectedAssets.map((asset, index) => ({
-    image_sort: index + 1,
-    image_type: sheinImageType(asset.asset_type, index + 1),
-    image_url: normalizeText(asset.platform_url) || (allowSourceImages ? normalizeText(asset.source_url) : ""),
-  }))
-
-  const tmallImage = normalizeText(skc.image_url)
-  if (imageInfoList.length === 0 && tmallImage) {
-    imageInfoList.push(
-      { image_sort: 1, image_type: 1, image_url: tmallImage },
-      { image_sort: 2, image_type: 6, image_url: tmallImage },
-    )
-  } else if (tmallImage && !imageInfoList.some((image) => Number(image.image_type) === 6)) {
-    imageInfoList.push({
-      image_sort: imageInfoList.length + 1,
-      image_type: 6,
-      image_url: tmallImage,
-    })
-  }
-
-  return { image_info_list: imageInfoList }
+  const publishableAssets = assets.filter((asset) =>
+    normalizeText(asset.platform_url)
+    || (allowSourceImages && normalizeText(asset.source_url))
+    || (allowLocalImages && normalizeText(asset.local_path)),
+  )
+  return buildSheinImageInfo({
+    skcCode: skc.skc_code,
+    skcImageUrl: skc.image_url,
+    allowSourceImages,
+    allowLocalImages,
+    assets: publishableAssets,
+  })
 }
 
 function buildSupplierBarcodePayload(value: unknown, publishFields: Map<string, PublishFieldRule>) {
@@ -4437,11 +4758,33 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
   }
   const errors: string[] = []
   const warnings: string[] = []
+  const attributeFields = readiness.field_groups.find((group) => group.group === "商品属性")?.fields ?? []
+  errors.push(...blockingAttributeMessages(attributeFields))
 
   if (isSheinOpenApiUnsupportedSuitCategory(listing.platform_category_name, listing.platform_category_path)) {
     errors.push(sheinOpenApiSuitCategoryMessage(listing.platform_category_name))
   }
   if (!listing.platform_category_id || !listing.product_type_id) errors.push("缺 SHEIN 类目")
+  const categoryMetadataState = categoryPairMetadataState(
+    db,
+    asPositiveNumber(listing.platform_category_id),
+    asPositiveNumber(listing.product_type_id),
+  )
+  const categoryPair = categoryPairState({
+    categoryId: listing.platform_category_id,
+    productTypeId: listing.product_type_id,
+    metadataMatch: Boolean(categoryMetadataState.metadata),
+    metadataKnown: categoryMetadataState.known,
+  })
+  if (listing.platform_category_id && listing.product_type_id && categoryPair.error) {
+    errors.push(categoryPair.error)
+  }
+  if (listing.platform_category_id && listing.product_type_id && categoryPair.status === "WARNING") {
+    warnings.push(unverifiedCategoryPairMessage(
+      asPositiveNumber(listing.platform_category_id),
+      asPositiveNumber(listing.product_type_id),
+    ))
+  }
   if (skcs.length === 0) errors.push("未勾选发布 SKC")
   if (skus.length === 0) errors.push("未勾选发布 SKU")
   if (!colorAttr) errors.push("缺颜色销售属性元数据")
@@ -4526,16 +4869,19 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
       saleAttribute.custom_attribute_value = normalizeText(colorPayload.custom_attribute_value)
       saleAttribute.language = "zh-cn"
     }
+    const imageInfo = selectedImageInfo(skc, assets, {
+      allowSourceImages: Boolean(options?.allowSourceImages),
+      allowLocalImages: Boolean(options?.allowLocalImages),
+    })
+    const mainImageError = sheinMainImageError(skc.skc_code, imageInfo)
+    if (mainImageError) errors.push(mainImageError)
     return {
       supplier_code: normalizeText(skc.supplier_code) || normalizeText(skc.skc_code),
       ...(fieldShown(publishFields, "skc_title", true)
         ? { skc_title: normalizeText(skc.skc_title) || normalizeText(listing.title) || normalizeText(listing.spu_code) }
         : {}),
       sale_attribute: saleAttribute,
-      image_info: selectedImageInfo(skc, assets, {
-        allowSourceImages: Boolean(options?.allowSourceImages),
-        allowLocalImages: Boolean(options?.allowLocalImages),
-      }),
+      image_info: imageInfo,
       sku_list: skuList,
       shelf_way: "1",
       ...(fieldShown(publishFields, "shelf_require") ? { shelf_require: "0" } : {}),
@@ -4980,6 +5326,7 @@ function applyDraftCategorySelection({
     where platform = 'SHEIN'
       and category_id = ?
       and product_type_id = ?
+      and coalesce(last_category, 0) = 1
     limit 1
   `).get(categoryId, productTypeId) as SourceRow | undefined
   if (!category) {
@@ -5439,6 +5786,7 @@ prePublish.post("/drafts", async (c) => {
     spu_codes?: string[]
     skc_codes_by_spu?: Record<string, string[]>
     batch_search?: string
+    auto_select_category?: boolean
   }
   const platform = normalizeText(body.platform || "SHEIN").toUpperCase()
   if (platform !== "SHEIN") {
@@ -5452,27 +5800,106 @@ prePublish.post("/drafts", async (c) => {
     throw new HTTPException(400, { message: "请先勾选或输入款号" })
   }
 
+  const sourceInputs: Array<{
+    spuCode: string
+    sourceRow: SourceRow
+    readiness: ReadinessRow
+  }> = []
+  const draftInputs: Array<{
+    spuCode: string
+    sourceRow: SourceRow
+    readiness: ReadinessRow
+    categoryDecision: CategoryAutoSelectionDecision
+    liveAi: LiveAiDraftCategory | null
+    skcCodes?: string[]
+    splitGroupKey?: string | null
+    splitReason?: string | null
+    splitGender?: string | null
+    splitEvidenceBasis?: string | null
+    aiSkcEvidence?: unknown[]
+    splitPlanStatus?: string | null
+    splitPlanReason?: string | null
+    unresolvedSkcCodes?: string[]
+  }> = []
   const created: unknown[] = []
   const missing: string[] = []
+  for (const spuCode of spuCodes) {
+    const bucket = db.prepare(`
+      select *
+      from shein_product_bucket
+      where spu_code = ?
+        and bucket_status <> 'REMOVED'
+    `).get(spuCode) as SourceRow | undefined
+    if (!bucket) {
+      missing.push(spuCode)
+      continue
+    }
+    const sourceRow = getSourceProductRow(db, spuCode)
+    const readiness = getReadinessBySpu(db, spuCode)
+    if (!sourceRow || !readiness) {
+      missing.push(spuCode)
+      continue
+    }
+    sourceInputs.push({
+      spuCode,
+      sourceRow,
+      readiness,
+    })
+  }
+
+  const categoryAiConcurrency = 2
+  for (let index = 0; index < sourceInputs.length; index += categoryAiConcurrency) {
+    const prepared = await Promise.all(
+      sourceInputs.slice(index, index + categoryAiConcurrency).map(async (input) => {
+        let requestedSkcCodes: string[] | undefined
+        try {
+          requestedSkcCodes = validateRequestedDraftSkcCodes(
+            body.skc_codes_by_spu?.[input.spuCode],
+            input.readiness.skcs.map((skc) => skc.skc_code),
+          )
+        } catch (error) {
+          throw new HTTPException(400, {
+            message: error instanceof Error ? error.message : "款色选择无效",
+          })
+        }
+        const categoryPreparation = await readinessForDraftCreation(
+          db,
+          input.sourceRow,
+          input.readiness,
+          {
+            autoSelectCategory: body.auto_select_category !== false,
+            skcCodes: requestedSkcCodes,
+          },
+        )
+        return expandNeutralSkcDraftInputs(db, {
+          ...input,
+          ...categoryPreparation,
+          categoryDecision: categoryPreparation.decision,
+          skcCodes: requestedSkcCodes,
+        })
+      }),
+    )
+    draftInputs.push(...prepared.flat())
+  }
+
   const transaction = db.transaction(() => {
-    for (const spuCode of spuCodes) {
-      const bucket = db.prepare(`
-        select *
-        from shein_product_bucket
-        where spu_code = ?
-          and bucket_status <> 'REMOVED'
-      `).get(spuCode) as SourceRow | undefined
-      if (!bucket) {
-        missing.push(spuCode)
-        continue
-      }
-      const sourceRow = getSourceProductRow(db, spuCode)
-      const readiness = getReadinessBySpu(db, spuCode)
-      if (!sourceRow || !readiness) {
-        missing.push(spuCode)
-        continue
-      }
-      const result = createDraft(db, readiness, sourceRow, platform, body.skc_codes_by_spu?.[spuCode])
+    for (const input of draftInputs) {
+      const { sourceRow, readiness, categoryDecision, liveAi } = input
+      const result = createDraft(
+        db,
+        readiness,
+        sourceRow,
+        platform,
+        input.skcCodes,
+        categoryDecision,
+        input.splitPlanStatus === "NOT_APPLICABLE" ? undefined : {
+          groupKey: input.splitGroupKey,
+          reason: input.splitReason,
+          gender: input.splitGender,
+          evidenceBasis: input.splitEvidenceBasis,
+          aiSkcEvidence: input.aiSkcEvidence,
+        },
+      )
       created.push({
         listing_id: result.listing.id,
         spu_code: readiness.spu_code,
@@ -5480,6 +5907,25 @@ prePublish.post("/drafts", async (c) => {
         version_no: result.version.version_no,
         created: result.created,
         status: result.listing.status,
+        category_id: result.listing.platform_category_id,
+        product_type_id: result.listing.product_type_id,
+        category_auto_selected: categoryDecision.apply,
+        category_source: categoryDecision.source,
+        category_confidence: categoryDecision.confidence,
+        category_selection_reason: categoryDecision.reason,
+        category_selection_message: categoryDecisionMessage(categoryDecision.reason),
+        category_needs_review: !categoryDecision.apply,
+        category_ai_status: liveAi?.status ?? null,
+        category_ai_split_by_skc: liveAi?.splitBySkc ?? false,
+        category_ai_risks: liveAi?.risks ?? [],
+        category_ai_blocking_risks: liveAi?.blockingRisks ?? [],
+        split_gender: input.splitGender ?? null,
+        split_evidence_basis: input.splitEvidenceBasis ?? null,
+        split_group_key: input.splitGroupKey ?? null,
+        split_reason: input.splitReason ?? null,
+        selected_skc_codes: input.skcCodes ?? readiness.skcs.map((skc) => normalizeText(skc.skc_code)).filter(Boolean),
+        unresolved_skc_codes: input.unresolvedSkcCodes ?? [],
+        category_ai_skc_suggestions: input.aiSkcEvidence ?? [],
       })
       db.prepare(`
         update shein_product_bucket
@@ -5969,68 +6415,67 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
     : readiness
   let enrichmentReadiness = mode === "all" ? categoryReadiness : readiness
   const saved: Array<Record<string, unknown>> = []
+  let categorySelection: CategoryAutoSelectionDecision | null = null
 
   if (mode === "all" || mode === "category") {
-    if (shouldAutoApplyCategory(categoryReadiness.category, { allowRuleFallback: mode === "category" || mode === "all" })) {
+    const ruleDecision = categoryDecisionForReadiness(db, categoryReadiness.category, {
+      allowRuleFallback: true,
+    })
+    categorySelection = ruleDecision
+    if (ruleDecision.apply && ruleDecision.category) {
       applyDraftCategorySelection({
         db,
         listing,
         listingId,
-        categoryId: categoryReadiness.category.category_id,
-        productTypeId: categoryReadiness.category.product_type_id,
-        source: categoryReadiness.category.source || "CATEGORY_RULE",
-        confidence: categoryReadiness.category.source === "RULE_FALLBACK" ? 0.76 : 0.88,
-      })
-      saved.push({
-        field_key: "category",
-        field_label: "SHEIN 类目",
-        field_value: categoryReadiness.category.category_name,
-        source: categoryReadiness.category.source || "CATEGORY_RULE",
-      })
-    } else if (shouldAskLiveAiCategory(categoryReadiness.category)) {
-      const liveCategory = await safeResolveLiveAiDraftCategory(db, categoryReadiness)
-      if (liveCategory) {
-        applyDraftCategorySelection({
-          db,
-          listing,
-          listingId,
-          categoryId: liveCategory.categoryId,
-          productTypeId: liveCategory.productTypeId,
-          source: "AI_CATEGORY_LIVE",
-          confidence: liveCategory.confidence,
-          payload: {
-            reason: liveCategory.reasons.join("；"),
-            risks: liveCategory.risks,
-            selected_from: "draft_ai_enrich",
-          },
-        })
-        saved.push({
-          field_key: "category",
-          field_label: "SHEIN 类目",
-          field_value: liveCategory.categoryName || String(liveCategory.categoryId),
-          source: "AI_CATEGORY_LIVE",
-          confidence: liveCategory.confidence,
-        })
-      }
-    } else if (categoryReadiness.category.category_id && categoryReadiness.category.product_type_id) {
-      applyDraftCategorySelection({
-        db,
-        listing,
-        listingId,
-        categoryId: categoryReadiness.category.category_id,
-        productTypeId: categoryReadiness.category.product_type_id,
-        source: categoryReadiness.category.source || "CATEGORY_RULE",
-        confidence: 0.68,
+        categoryId: ruleDecision.category.categoryId,
+        productTypeId: ruleDecision.category.productTypeId,
+        source: ruleDecision.source || "CATEGORY_RULE",
+        confidence: ruleDecision.confidence,
         payload: {
-          selected_from: "draft_ai_enrich_existing_category",
+          selected_from: "draft_ai_enrich_rule",
+          decision_reason: ruleDecision.reason,
         },
       })
       saved.push({
         field_key: "category",
         field_label: "SHEIN 类目",
-        field_value: categoryReadiness.category.category_name,
-        source: categoryReadiness.category.source || "CATEGORY_RULE",
+        field_value: ruleDecision.category.categoryName,
+        source: ruleDecision.source || "CATEGORY_RULE",
+        confidence: ruleDecision.confidence,
       })
+    } else if (shouldAskLiveAiCategory(categoryReadiness.category)) {
+      const liveCategory = await safeResolveLiveAiDraftCategory(db, categoryReadiness)
+      if (liveCategory) {
+        const liveDecision = categoryDecisionForReadiness(db, categoryReadiness.category, {
+          allowRuleFallback: true,
+          liveAi: liveCategory,
+        })
+        categorySelection = liveDecision
+        if (liveDecision.apply && liveDecision.category) {
+          applyDraftCategorySelection({
+            db,
+            listing,
+            listingId,
+            categoryId: liveDecision.category.categoryId,
+            productTypeId: liveDecision.category.productTypeId,
+            source: "AI_CATEGORY_LIVE",
+            confidence: liveDecision.confidence,
+            payload: {
+              reason: liveCategory.reasons.join("；"),
+              risks: liveCategory.risks,
+              selected_from: "draft_ai_enrich",
+              decision_reason: liveDecision.reason,
+            },
+          })
+          saved.push({
+            field_key: "category",
+            field_label: "SHEIN 类目",
+            field_value: liveCategory.categoryName || String(liveCategory.categoryId),
+            source: "AI_CATEGORY_LIVE",
+            confidence: liveDecision.confidence,
+          })
+        }
+      }
     }
     if (saved.some((field) => field.field_key === "category")) {
       const updatedListing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
@@ -6098,7 +6543,18 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
   if (!refreshed) {
     throw new HTTPException(500, { message: "AI 丰富后刷新草稿失败" })
   }
-  return c.json({ ok: true, saved_count: saved.length, fills: saved, detail: getListingDetail(db, listingId) })
+  return c.json({
+    ok: true,
+    saved_count: saved.length,
+    fills: saved,
+    category_selection: categorySelection
+      ? {
+        ...categorySelection,
+        message: categoryDecisionMessage(categorySelection.reason),
+      }
+      : null,
+    detail: getListingDetail(db, listingId),
+  })
 })
 
 prePublish.post("/drafts/:id/ai-field", async (c) => {
@@ -6465,7 +6921,10 @@ async function preparePackageAssetsForListing(input: {
       }
       let bytes = sourceBytes
       let fileName = path.basename(assignment.entry.entry_path)
-      if (assignment.derivative === "color-square-80") {
+      if (assignment.derivative === "square-center-crop") {
+        bytes = await centerCropSquareImageBuffer(sourceBytes)
+        fileName = `${input.group.skc_code}_${assignment.entry.image_index}_square.jpg`
+      } else if (assignment.derivative === "color-square-80") {
         bytes = await sharp(sourceBytes)
           .rotate()
           .flatten({ background: "#ffffff" })

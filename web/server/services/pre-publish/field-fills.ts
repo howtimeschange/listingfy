@@ -1,4 +1,4 @@
-import { normalizeText, parseJsonList } from "./shared"
+import { asPositiveNumber, normalizeText, parseJsonList } from "./shared"
 
 export type FillFieldLike = {
   render_kind?: string | null
@@ -26,6 +26,186 @@ export function normalizeMaterialValue(value: unknown) {
     return "织物"
   }
   return text
+}
+
+const LINING_ATTRIBUTE_ID = 58
+const LINING_CUSTOMS_KINDS = /裤|裙|连衫|连体/
+
+export function contextualAttributeState(input: {
+  attributeId: unknown
+  value: unknown
+  tariffValue: unknown
+  materialValue: unknown
+}) {
+  if (Number(input.attributeId) !== LINING_ATTRIBUTE_ID) return null
+  const hasValue = Boolean(normalizeText(input.value))
+  const material = normalizeMaterialValue(input.materialValue)
+  const tariffValue = normalizeText(input.tariffValue)
+  const required = material === "织物" && LINING_CUSTOMS_KINDS.test(tariffValue)
+  return {
+    required,
+    status: hasValue ? "READY" as const : required ? "MISSING" as const : "WARNING" as const,
+  }
+}
+
+export function blockingAttributeMessages(fields: Array<{
+  label?: unknown
+  status?: unknown
+}>) {
+  return fields
+    .filter((field) => field.status === "MISSING" || field.status === "NEEDS_AI")
+    .map((field) => normalizeText(field.label))
+    .filter(Boolean)
+    .map((label) => `商品属性「${label}」未填写`)
+}
+
+export function categoryPairState(input: {
+  categoryId: unknown
+  productTypeId: unknown
+  metadataMatch: unknown
+  metadataKnown?: unknown
+}) {
+  const categoryId = asPositiveNumber(input.categoryId)
+  const productTypeId = asPositiveNumber(input.productTypeId)
+  if (!categoryId || !productTypeId) {
+    return {
+      valid: false,
+      status: "MISSING" as const,
+      error: "缺 SHEIN 类目",
+    }
+  }
+  if (input.metadataMatch) {
+    return {
+      valid: true,
+      status: "READY" as const,
+      error: null,
+    }
+  }
+  if (input.metadataKnown === false) {
+    return {
+      valid: true,
+      status: "WARNING" as const,
+      error: null,
+    }
+  }
+  return {
+    valid: false,
+    status: "MISSING" as const,
+    error: `SHEIN 类目与 Product Type 不匹配：${categoryId}/${productTypeId}，请重新选择叶子类目`,
+  }
+}
+
+export function normalizePercentageParts<T extends { value: number }>(parts: T[]): T[] {
+  const valid = parts.filter((part) => Number.isFinite(part.value) && part.value > 0)
+  const total = valid.reduce((sum, part) => sum + part.value, 0)
+  if (total <= 0) return []
+  const scaled = valid.map((part, index) => {
+    const exact = (part.value / total) * 100
+    return {
+      part,
+      index,
+      value: Math.floor(exact),
+      fraction: exact - Math.floor(exact),
+    }
+  })
+  let remainder = 100 - scaled.reduce((sum, part) => sum + part.value, 0)
+  for (const part of [...scaled].sort((left, right) => right.fraction - left.fraction || left.index - right.index)) {
+    if (remainder <= 0) break
+    part.value += 1
+    remainder -= 1
+  }
+  return scaled.map(({ part, value }) => ({ ...part, value }))
+}
+
+type CompositionAttributeOption = {
+  attribute_value_id: number
+  attribute_value: string
+}
+
+function compositionNeedles(value: string) {
+  if (/聚酯|涤纶/.test(value)) return ["聚酯纤维", "涤纶", "聚酯"]
+  if (/棉/.test(value)) return ["棉"]
+  if (/粘纤|粘胶/.test(value)) return ["粘纤", "粘胶纤维"]
+  if (/氨纶/.test(value)) return ["氨纶"]
+  if (/锦纶|尼龙/.test(value)) return ["锦纶", "尼龙"]
+  if (/腈纶/.test(value)) return ["腈纶"]
+  return [value]
+}
+
+function compositionOption(
+  options: CompositionAttributeOption[],
+  needles: string[],
+) {
+  const normalized = needles.map(normalizeText).filter(Boolean)
+  for (const needle of normalized) {
+    const numericId = Number(needle)
+    if (Number.isFinite(numericId)) {
+      const exactId = options.find((option) => Number(option.attribute_value_id) === numericId)
+      if (exactId) return exactId
+    }
+  }
+  for (const needle of normalized) {
+    const exact = options.find((option) => normalizeText(option.attribute_value) === needle)
+    if (exact) return exact
+  }
+  for (const needle of normalized) {
+    const contains = options.find((option) => normalizeText(option.attribute_value).includes(needle))
+    if (contains) return contains
+  }
+  return null
+}
+
+function rawCompositionParts(value: unknown) {
+  const text = normalizeText(value)
+  if (!text) return []
+  const parsed: Array<{ name: string; value: number }> = []
+  const fragments = text.split(/[|｜;；\n]+/).map((item) => item.trim()).filter(Boolean)
+  for (const fragment of fragments) {
+    const value = asPositiveNumber(fragment.match(/\d+(?:\.\d+)?/)?.[0])
+    if (!value) continue
+    const [name] = compositionNeedles(fragment)
+    if (!name) continue
+    parsed.push({ name, value })
+  }
+  return parsed
+}
+
+export function buildCompositionAttributeItems(input: {
+  attributeId: number | null | undefined
+  compositionSource: unknown
+  options: CompositionAttributeOption[]
+  fallbackValue?: unknown
+}) {
+  const matchedByValueId = new Map<number, {
+    attribute_id: number | null | undefined
+    attribute_value_id: number
+    value: number
+  }>()
+  for (const part of rawCompositionParts(input.compositionSource)) {
+    const option = compositionOption(input.options, compositionNeedles(part.name))
+    if (!option) continue
+    const existing = matchedByValueId.get(option.attribute_value_id)
+    matchedByValueId.set(option.attribute_value_id, {
+      attribute_id: input.attributeId,
+      attribute_value_id: option.attribute_value_id,
+      value: (existing?.value ?? 0) + part.value,
+    })
+  }
+  const output = normalizePercentageParts(Array.from(matchedByValueId.values())).map((item) => ({
+    attribute_id: item.attribute_id,
+    attribute_value_id: item.attribute_value_id,
+    attribute_extra_value: String(item.value),
+  }))
+  if (output.length > 0) return output
+
+  const fallback = compositionOption(input.options, [normalizeText(input.fallbackValue)])
+  return fallback
+    ? [{
+      attribute_id: input.attributeId,
+      attribute_value_id: fallback.attribute_value_id,
+      attribute_extra_value: "100",
+    }]
+    : []
 }
 
 const UNSPECIFIED_TARIFF_VALUE = "未列明关税种类"

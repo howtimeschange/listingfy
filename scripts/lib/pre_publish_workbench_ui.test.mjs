@@ -203,6 +203,9 @@ test("pre publish validation page is now a draft list after selection moved to S
   assert.match(page, /categoryFilter/);
   assert.match(page, /useDraftCategories/);
   assert.match(page, /SHEIN 类目筛选/);
+  assert.match(page, /category_auto_selected/);
+  assert.match(page, /自动选类目/);
+  assert.match(page, /类目待确认/);
   assert.doesNotMatch(page, /usePrePublishReadiness/);
   assert.doesNotMatch(page, /勾选发布商品/);
   assert.doesNotMatch(page, /Tabs/);
