@@ -366,16 +366,21 @@ test("multi-image upload surfaces text errors and reports partial success", asyn
   assert.doesNotMatch(detailPage, /const body = await response\.json\(\)\.catch/);
 });
 
-test("pre publish AI calls handle reasoning responses and transient provider failures", async () => {
-  const [route, aiClient] = await Promise.all([
+test("pre publish AI calls use scenario routing while legacy responses remain compatible", async () => {
+  const [route, aiClient, aiRouter] = await Promise.all([
     readFile(ROUTE_FILE, "utf8"),
     readFile(path.join(PROJECT_ROOT, "scripts/lib/ai_chat_client.mjs"), "utf8"),
+    readFile(path.join(PROJECT_ROOT, "scripts/lib/ai_scenario_router.mjs"), "utf8"),
   ]);
 
-  assert.match(route, /callAiChatJson/);
+  assert.match(route, /getDefaultAiScenarioRouter/);
+  assert.match(route, /scenario:\s*"title_translation"/);
+  assert.match(route, /scenario:\s*"shein_attribute"/);
   assert.doesNotMatch(route, /function retryableAiError/);
   assert.match(aiClient, /reasoning_content/);
   assert.match(aiClient, /retryableAiError/);
   assert.match(aiClient, /for \(let attempt = 0; attempt < 2; attempt \+= 1\)/);
   assert.match(aiClient, /response\.status === 429 \|\| response\.status >= 500/);
+  assert.match(aiRouter, /if \(httpStatus === 429\)/);
+  assert.match(aiRouter, /invokeProviderWithRetry/);
 });

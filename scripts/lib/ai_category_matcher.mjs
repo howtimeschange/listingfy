@@ -3,6 +3,7 @@ import {
   extractAiJsonText,
   resolveAiConfig,
 } from "./ai_chat_client.mjs";
+import { withAiRoutingHashes } from "./ai_routing_context.mjs";
 
 export {
   DEFAULT_AI_BASE_URL,
@@ -310,6 +311,65 @@ function extractSuggestions(json) {
   return looksLikeSuggestionObject(json) ? [json] : null;
 }
 
+function categoryCandidateAllowed(value, candidates) {
+  if (!value || typeof value !== "object" || candidates.length === 0) return true;
+  const categoryId = Number(value.category_id);
+  const productTypeId = Number(value.product_type_id);
+  const sameCategory = candidates.filter((candidate) =>
+    Number(candidate.category_id) === categoryId,
+  );
+  return sameCategory.some((candidate) =>
+    Number(candidate.product_type_id) === productTypeId,
+  ) || sameCategory.length === 1;
+}
+
+function validCategoryResponse(json, candidates) {
+  try {
+    const suggestions = extractSuggestions(json);
+    if (!Array.isArray(suggestions)) return false;
+    const normalized = suggestions.map(normalizeSuggestion);
+    return normalized.every((suggestion) => {
+      if (
+        suggestion.primary
+        && !categoryCandidateAllowed(suggestion.primary, candidates)
+      ) {
+        return false;
+      }
+      return [
+        ...suggestion.alternatives,
+        ...suggestion.skc_suggestions.flatMap((item) => [
+          item.primary,
+          ...item.alternatives,
+        ]),
+      ].filter(Boolean).every((candidate) =>
+        categoryCandidateAllowed(candidate, candidates),
+      );
+    });
+  } catch {
+    return false;
+  }
+}
+
+export function resolveAiCategoryScenario(groups) {
+  const neutral = groups.some((group) =>
+    /中性|男女|unisex|neutral/i.test(String(group?.gender_name ?? "")),
+  );
+  return neutral ? "neutral_skc" : "shein_category";
+}
+
+function partitionAiCategoryGroups(groups) {
+  const ordinary = [];
+  const neutral = [];
+  for (const group of groups) {
+    const scenario = resolveAiCategoryScenario([group]);
+    (scenario === "neutral_skc" ? neutral : ordinary).push(group);
+  }
+  return [
+    { scenario: "shein_category", groups: ordinary },
+    { scenario: "neutral_skc", groups: neutral },
+  ].filter((partition) => partition.groups.length > 0);
+}
+
 export function parseAiCategoryMatchResponse(text) {
   const json = JSON.parse(extractAiJsonText(text));
   const suggestions = extractSuggestions(json);
@@ -324,37 +384,134 @@ export async function callAiCategoryMatcher({
   candidates,
   config = resolveAiConfig(),
   fetchImpl = globalThis.fetch,
+  router = null,
 }) {
-  if (!config.apiKey) {
+  if (!router && !config.apiKey) {
     throw new Error("Missing required env: AI_API_KEY");
   }
   const prompt = buildCategoryMatchPrompt({ groups, candidates });
+  const partitions = router ? partitionAiCategoryGroups(groups) : [];
+  if (partitions.length > 1) {
+    const completed = [];
+    const skippedGroups = [];
+    for (const partition of partitions) {
+      try {
+        completed.push({
+          scenario: partition.scenario,
+          result: await callAiCategoryMatcher({
+            groups: partition.groups,
+            candidates,
+            config,
+            fetchImpl,
+            router,
+          }),
+        });
+      } catch (error) {
+        const disabledNeutral = partition.scenario === "neutral_skc"
+          && String(error?.message ?? "") === "AI scenario is disabled: neutral_skc";
+        if (!disabledNeutral) throw error;
+        skippedGroups.push({
+          scenario: partition.scenario,
+          matchKeys: partition.groups
+            .map((group) => String(group?.match_key ?? "").trim())
+            .filter(Boolean),
+          reason: "SCENARIO_DISABLED",
+        });
+      }
+    }
+    if (completed.length === 0) {
+      throw new Error("No AI category scenario was available for this batch");
+    }
+    const primaryResult = completed[0].result;
+    return {
+      suggestions: completed.flatMap(({ result }) => result.suggestions),
+      raw: primaryResult.raw,
+      prompt,
+      provider: primaryResult.provider,
+      routing: {
+        scenario: "category_batch",
+        mode: "partitioned",
+        partitions: completed.map(({ scenario, result }) => ({
+          scenario,
+          routing: result.routing,
+        })),
+        skippedGroups,
+      },
+      skippedGroups,
+    };
+  }
   const userMessages = buildCategoryMatchMessages({ groups, candidates });
+  const scenario = resolveAiCategoryScenario(groups);
 
   for (let responseAttempt = 0; responseAttempt < 2; responseAttempt += 1) {
-    const response = await callAiChatCompletion({
-      config,
-      fetchImpl,
-      errorLabel: "AI category matcher",
-      messages: [
-        {
-          role: "system",
-          content: responseAttempt === 0
-            ? "你是跨境电商商品类目映射专家，擅长根据 MDM、深绘内容包和平台类目树做保守匹配。"
-            : "你是跨境电商商品类目映射专家。上一轮结构化输出无法解析；本轮必须返回完整、严格合法且没有尾随文字的 JSON。",
-        },
-        ...userMessages,
-      ],
-    });
+    const messages = [
+      {
+        role: "system",
+        content: responseAttempt === 0
+          ? "你是跨境电商商品类目映射专家，擅长根据 MDM、深绘内容包和平台类目树做保守匹配。"
+          : "你是跨境电商商品类目映射专家。上一轮结构化输出无法解析；本轮必须返回完整、严格合法且没有尾随文字的 JSON。",
+      },
+      ...userMessages,
+    ];
     try {
+      const response = router
+        ? await router.callJson(withAiRoutingHashes({
+          scenario,
+          promptVersion: "shein-category-match-v1",
+          messages,
+          validate: (json) => validCategoryResponse(json, candidates),
+          auditValue: (json) => ({
+            suggestions: (extractSuggestions(json) ?? []).map((suggestion) => ({
+              match_key: suggestion?.match_key,
+              status: suggestion?.status,
+              confidence: suggestion?.confidence,
+              primary: suggestion?.primary
+                ? {
+                  category_id: suggestion.primary.category_id,
+                  product_type_id: suggestion.primary.product_type_id,
+                }
+                : null,
+              split_by_skc: suggestion?.split_by_skc,
+              skc_suggestions: Array.isArray(suggestion?.skc_suggestions)
+                ? suggestion.skc_suggestions.map((item) => ({
+                  skc_code: item?.skc_code,
+                  model_present: item?.model_present,
+                  resolved_gender: item?.resolved_gender,
+                  gender_basis: item?.gender_basis,
+                  confidence: item?.confidence,
+                  primary: item?.primary
+                    ? {
+                      category_id: item.primary.category_id,
+                      product_type_id: item.primary.product_type_id,
+                    }
+                    : null,
+                }))
+                : [],
+            })),
+          }),
+        }, {
+          input: groups,
+          candidates,
+        }))
+        : await callAiChatCompletion({
+          config,
+          fetchImpl,
+          errorLabel: "AI category matcher",
+          messages,
+        });
+      const responseText = response.content
+        ?? JSON.stringify(response.json ?? {});
       return {
-        suggestions: parseAiCategoryMatchResponse(response.content),
+        suggestions: parseAiCategoryMatchResponse(responseText),
         raw: response.raw,
         prompt,
         provider: response.provider,
+        routing: response.routing,
       };
     } catch (error) {
       const retryableResponse = error instanceof SyntaxError
+        || error?.code === "SCHEMA_INVALID"
+        || error?.fallbackReason === "SCHEMA_INVALID"
         || /^Invalid AI category/.test(String(error?.message ?? ""));
       if (responseAttempt === 0 && retryableResponse) continue;
       throw error;

@@ -6,6 +6,7 @@ import {
   buildCategoryMatchPrompt,
   callAiCategoryMatcher,
   parseAiCategoryMatchResponse,
+  resolveAiCategoryScenario,
   resolveAiConfig,
 } from "./ai_category_matcher.mjs";
 
@@ -475,4 +476,163 @@ test("callAiCategoryMatcher retries one malformed structured response", async ()
 
   assert.equal(calls, 2);
   assert.equal(result.suggestions[0].primary.category_id, 2713);
+});
+
+test("category matcher routes neutral SKC vision separately from ordinary category review", () => {
+  assert.equal(
+    resolveAiCategoryScenario([{ gender_name: "中性" }]),
+    "neutral_skc",
+  );
+  assert.equal(
+    resolveAiCategoryScenario([{ gender_name: "UNISEX" }]),
+    "neutral_skc",
+  );
+  assert.equal(
+    resolveAiCategoryScenario([{ gender_name: "男" }]),
+    "shein_category",
+  );
+});
+
+test("category matcher sends versioned hashed input through the injected scenario router", async () => {
+  const calls = [];
+  const responseJson = {
+    suggestions: [{
+      match_key: "衬衫|男|幼童",
+      status: "READY",
+      confidence: 0.95,
+      primary: {
+        category_id: 1001,
+        product_type_id: 2001,
+        category_name: "男童衬衫",
+        path: "儿童 > 男童（小） > 衬衫",
+      },
+    }],
+  };
+  const router = {
+    async callJson(input) {
+      calls.push(input);
+      return {
+        content: JSON.stringify(responseJson),
+        json: responseJson,
+        raw: { id: "routed-response" },
+        provider: { key: "legacy", model: "legacy-model" },
+      };
+    },
+  };
+  const groups = [{ match_key: "衬衫|男|幼童", gender_name: "男" }];
+  const candidates = [{
+    category_id: 1001,
+    product_type_id: 2001,
+    category_name: "男童衬衫",
+    path: "儿童 > 男童（小） > 衬衫",
+  }];
+
+  const result = await callAiCategoryMatcher({
+    groups,
+    candidates,
+    router,
+  });
+
+  assert.equal(result.suggestions[0].primary.category_id, 1001);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].scenario, "shein_category");
+  assert.equal(calls[0].promptVersion, "shein-category-match-v1");
+  assert.match(calls[0].inputHash, /^[a-f0-9]{64}$/);
+  assert.match(calls[0].candidateHash, /^[a-f0-9]{64}$/);
+  assert.equal(calls[0].validate(responseJson), true);
+});
+
+test("neutral category matching is delegated to the disabled neutral_skc policy", async () => {
+  const calls = [];
+  const router = {
+    async callJson(input) {
+      calls.push(input);
+      throw new Error(`AI scenario is disabled: ${input.scenario}`);
+    },
+  };
+
+  await assert.rejects(
+    () => callAiCategoryMatcher({
+      groups: [{ match_key: "长裤|中性", gender_name: "中性" }],
+      candidates: [],
+      router,
+    }),
+    /AI scenario is disabled: neutral_skc/,
+  );
+  assert.equal(calls[0].scenario, "neutral_skc");
+});
+
+test("mixed category batches keep ordinary groups running when neutral AI is disabled", async () => {
+  const calls = [];
+  const responseJson = {
+    suggestions: [{
+      match_key: "衬衫|男|幼童",
+      status: "READY",
+      confidence: 0.95,
+      primary: {
+        category_id: 1001,
+        product_type_id: 2001,
+        category_name: "男童衬衫",
+        path: "儿童 > 男童（小） > 衬衫",
+      },
+    }],
+  };
+  const router = {
+    async callJson(input) {
+      calls.push(input);
+      if (input.scenario === "neutral_skc") {
+        throw new Error("AI scenario is disabled: neutral_skc");
+      }
+      return {
+        content: JSON.stringify(responseJson),
+        json: responseJson,
+        raw: { id: "ordinary-response" },
+        provider: { key: "legacy", model: "legacy-model" },
+        routing: { scenario: input.scenario },
+      };
+    },
+  };
+  const groups = [
+    {
+      match_key: "长裤|中性|幼童",
+      gender_name: "中性",
+      skc_examples: [{
+        skc_code: "neutral-skc-1",
+        tmall_color_image_url: "https://example.test/neutral-private.jpg",
+      }],
+    },
+    {
+      match_key: "衬衫|男|幼童",
+      gender_name: "男",
+    },
+  ];
+
+  const result = await callAiCategoryMatcher({
+    groups,
+    candidates: [{
+      category_id: 1001,
+      product_type_id: 2001,
+      category_name: "男童衬衫",
+      path: "儿童 > 男童（小） > 衬衫",
+    }],
+    router,
+  });
+
+  assert.deepEqual(calls.map((call) => call.scenario), [
+    "shein_category",
+    "neutral_skc",
+  ]);
+  assert.doesNotMatch(
+    JSON.stringify(calls[0].messages),
+    /长裤\|中性|neutral-private\.jpg/,
+  );
+  assert.deepEqual(
+    result.suggestions.map((suggestion) => suggestion.match_key),
+    ["衬衫|男|幼童"],
+  );
+  assert.deepEqual(result.skippedGroups, [{
+    scenario: "neutral_skc",
+    matchKeys: ["长裤|中性|幼童"],
+    reason: "SCENARIO_DISABLED",
+  }]);
 });

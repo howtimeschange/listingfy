@@ -13,7 +13,10 @@ import {
   getDeepdrawProduct,
   resolveDeepdrawConfig,
 } from "../../../scripts/lib/deepdraw_client.mjs"
-import { resolveAiConfig } from "../../../scripts/lib/ai_category_matcher.mjs"
+import {
+  getDefaultAiScenarioRouter,
+  withAiRoutingHashes,
+} from "../../../scripts/lib/ai_routing_context.mjs"
 
 type JsonRecord = Record<string, unknown>
 
@@ -121,6 +124,11 @@ interface SubmitOptions {
 
 interface AiFillOptions {
   fetchImpl?: typeof fetch
+  router?: {
+    callJson: (input: Record<string, unknown>) => Promise<{
+      json: Record<string, unknown>
+    }>
+  }
 }
 
 interface SourceImportInput {
@@ -2082,33 +2090,6 @@ function sanitizeDeepdrawLogPayload(value: unknown): unknown {
   return output
 }
 
-function extractJsonText(text: string) {
-  const trimmed = text.trim()
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
-  if (fenced) return fenced[1].trim()
-  const firstBrace = trimmed.indexOf("{")
-  const lastBrace = trimmed.lastIndexOf("}")
-  if (firstBrace >= 0 && lastBrace > firstBrace) return trimmed.slice(firstBrace, lastBrace + 1)
-  return trimmed
-}
-
-function responseMessageContent(body: unknown) {
-  const message = (body as { choices?: Array<{ message?: Record<string, unknown> }> })?.choices?.[0]?.message
-  const values = [message?.content, message?.reasoning_content, message?.reasoning]
-  for (const value of values) {
-    if (Array.isArray(value)) {
-      const text = value
-        .map((part) => typeof part === "string" ? part : stringValue((part as JsonRecord)?.text ?? (part as JsonRecord)?.content))
-        .join("\n")
-        .trim()
-      if (text) return text
-    } else if (typeof value === "string" && value.trim()) {
-      return value
-    }
-  }
-  return ""
-}
-
 function fieldOptionText(option: unknown, keys: string[]) {
   if (!option || typeof option !== "object") return stringValue(option)
   const record = option as JsonRecord
@@ -2679,38 +2660,69 @@ function buildDeepdrawAiFillPrompt(input: {
   }, null, 2)
 }
 
-async function callDeepdrawAiFill(prompt: string, options: AiFillOptions = {}) {
-  const config = resolveAiConfig()
-  if (!config.apiKey) return []
-  const fetchImpl = options.fetchImpl ?? fetch
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), config.timeoutMs)
-  try {
-    const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: config.model,
-        temperature: 0.1,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: "你是深绘商品建档字段专家，负责在给定枚举值里做保守选择。" },
-          { role: "user", content: prompt },
-        ],
-      }),
-      signal: controller.signal,
-    })
-    const payload = await response.json().catch(() => null)
-    if (!response.ok) throw new Error(`DeepDraw AI fill failed: HTTP ${response.status}`)
-    const text = responseMessageContent(payload)
-    const json = JSON.parse(extractJsonText(text))
-    return Array.isArray(json.fills) ? json.fills as JsonRecord[] : []
-  } finally {
-    clearTimeout(timeout)
-  }
+async function callDeepdrawAiFill(
+  db: SyncPostgresDatabase,
+  prompt: string,
+  fields: ProductArchiveAiFillCandidate[],
+  options: AiFillOptions = {},
+) {
+  const allowedFields = new Map(fields.map((field) => [field.id, field]))
+  const messages = [
+    { role: "system", content: "你是深绘商品建档字段专家，负责在给定枚举值里做保守选择。" },
+    { role: "user", content: prompt },
+  ]
+  const router = options.router ?? getDefaultAiScenarioRouter({
+    db,
+    fetchImpl: options.fetchImpl ?? fetch,
+  })
+  const response = await router.callJson(withAiRoutingHashes({
+    scenario: "deepdraw_field_fill",
+    promptVersion: "deepdraw-field-fill-v1",
+    messages,
+    validate: (json: { fills?: unknown }) => (
+      Array.isArray(json?.fills)
+      && json.fills.every((fill) => {
+        if (!fill || typeof fill !== "object") return false
+        const row = fill as JsonRecord
+        const field = allowedFields.get(Number(row.field_id))
+        if (!field) return false
+        const normalized = normalizeProductArchiveAiFillValue(
+          field.fieldName,
+          field.currentValue,
+          row.field_value,
+          field.options,
+        )
+        return Boolean(
+          normalized
+          && productArchiveFieldValueMatchesOptions(normalized, field.options),
+        )
+      })
+    ),
+    auditValue: (json: { fills?: unknown }) => ({
+      fills: Array.isArray(json?.fills)
+        ? json.fills.map((fill) => {
+          const row = fill && typeof fill === "object"
+            ? fill as JsonRecord
+            : {}
+          return {
+            field_id: Number(row.field_id),
+            field_value: stringValue(row.field_value),
+            confidence: Number(row.confidence),
+          }
+        })
+        : [],
+    }),
+  }, {
+    input: JSON.parse(prompt),
+    candidates: fields.map((field) => ({
+      field_id: field.id,
+      field_name: field.fieldName,
+      options: field.options,
+    })),
+  }))
+  return Array.isArray(response.json.fills)
+    ? response.json.fills as JsonRecord[]
+    : []
 }
 
 function draftById(db: SyncPostgresDatabase, draftId: number) {
@@ -3955,7 +3967,8 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
   }
 
   const prompt = buildDeepdrawAiFillPrompt({ draft, fields: candidates, skus })
-  const aiFills = await callDeepdrawAiFill(prompt, options).catch(() => [] as JsonRecord[])
+  const aiFills = await callDeepdrawAiFill(db, prompt, candidates, options)
+    .catch(() => [] as JsonRecord[])
   const aiById = new Map(aiFills.map((fill) => [Number(fill.field_id), fill]))
   const now = nowIso()
   const saved: Array<{ field_id: number; field_name: string; field_value: string; source: string; confidence: number | null }> = []
@@ -4082,38 +4095,75 @@ function buildSizeChartAiRecommendationPrompt(input: {
   }, null, 2)
 }
 
-async function callDeepdrawSizeChartAiRecommendation(prompt: string, options: AiFillOptions = {}) {
-  const config = resolveAiConfig()
-  if (!config.apiKey) return []
-  const fetchImpl = options.fetchImpl ?? fetch
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), config.timeoutMs)
-  try {
-    const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: config.model,
-        temperature: 0.1,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: "你是深绘商品尺码表字段映射专家，负责保守推荐 PLM 测量点到深绘尺码表字段的关系。" },
-          { role: "user", content: prompt },
-        ],
-      }),
-      signal: controller.signal,
-    })
-    const payload = await response.json().catch(() => null)
-    if (!response.ok) throw new Error(`DeepDraw size-chart AI recommendation failed: HTTP ${response.status}`)
-    const text = responseMessageContent(payload)
-    const json = JSON.parse(extractJsonText(text))
-    return Array.isArray(json.mappings) ? json.mappings as JsonRecord[] : []
-  } finally {
-    clearTimeout(timeout)
-  }
+async function callDeepdrawSizeChartAiRecommendation(
+  db: SyncPostgresDatabase,
+  prompt: string,
+  options: AiFillOptions = {},
+) {
+  const input = JSON.parse(prompt) as JsonRecord
+  const measurementPoints = new Set(arrayValue(input.measurement_points).map(stringValue).filter(Boolean))
+  const fieldNames = new Set(
+    arrayValue(input.generated_previews)
+      .map((preview) => stringValue(recordValue(preview).fieldName))
+      .filter(Boolean),
+  )
+  const messages = [
+    {
+      role: "system",
+      content: "你是深绘商品尺码表字段映射专家，负责保守推荐 PLM 测量点到深绘尺码表字段的关系。",
+    },
+    { role: "user", content: prompt },
+  ]
+  const router = options.router ?? getDefaultAiScenarioRouter({
+    db,
+    fetchImpl: options.fetchImpl ?? fetch,
+  })
+  const response = await router.callJson(withAiRoutingHashes({
+    scenario: "size_mapping",
+    promptVersion: "deepdraw-size-mapping-v1",
+    messages,
+    validate: (json: { mappings?: unknown }) => (
+      Array.isArray(json?.mappings)
+      && json.mappings.every((mapping) => {
+        if (!mapping || typeof mapping !== "object") return false
+        const row = mapping as JsonRecord
+        const fieldName = stringValue(row.fieldName ?? row.field_name)
+        const sourcePoint = stringValue(row.sourcePoint ?? row.source_point)
+        return Boolean(
+          fieldName
+          && (fieldNames.size === 0 || fieldNames.has(fieldName))
+          && (!sourcePoint || measurementPoints.has(sourcePoint)),
+        )
+      })
+    ),
+    auditValue: (json: { mappings?: unknown }) => ({
+      mappings: Array.isArray(json?.mappings)
+        ? json.mappings.map((mapping) => {
+          const row = mapping && typeof mapping === "object"
+            ? mapping as JsonRecord
+            : {}
+          return {
+            fieldName: stringValue(row.fieldName ?? row.field_name),
+            targetField: stringValue(row.targetField ?? row.target_field),
+            sourcePoint: stringValue(row.sourcePoint ?? row.source_point),
+            confidence: stringValue(row.confidence),
+          }
+        })
+        : [],
+    }),
+  }, {
+    input: {
+      product: input.product,
+      rule_mappings: input.rule_mappings,
+      generated_previews: input.generated_previews,
+    },
+    candidates: {
+      measurement_points: input.measurement_points,
+    },
+  }))
+  return Array.isArray(response.json.mappings)
+    ? response.json.mappings as JsonRecord[]
+    : []
 }
 
 function normalizeSizeChartMappingSuggestion(mapping: JsonRecord, fallbackSource = "rule_fallback") {
@@ -4144,7 +4194,8 @@ export async function recommendProductArchiveSizeChartMappings(
     previews: ruleRecommendation.previews,
     sourceRows,
   })
-  const aiMappings = await callDeepdrawSizeChartAiRecommendation(prompt, options).catch(() => [] as JsonRecord[])
+  const aiMappings = await callDeepdrawSizeChartAiRecommendation(db, prompt, options)
+    .catch(() => [] as JsonRecord[])
   const mappings = aiMappings.length > 0
     ? aiMappings.map((mapping) => normalizeSizeChartMappingSuggestion({ ...mapping, source: "ai" }, "ai"))
     : ruleMappings.map((mapping) => ({ ...mapping, source: mapping.source === "rule" ? "rule_fallback" : mapping.source }))

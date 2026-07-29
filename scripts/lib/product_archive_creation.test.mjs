@@ -1350,7 +1350,9 @@ test("product archive size-chart mapping AI routes and review services are wired
 
   assert.match(service, /export async function recommendProductArchiveSizeChartMappings/);
   assert.match(service, /export function saveProductArchiveSizeChartMappings/);
-  assert.match(service, /resolveAiConfig/);
+  assert.match(service, /getDefaultAiScenarioRouter/);
+  assert.match(service, /scenario:\s*"size_mapping"/);
+  assert.match(service, /promptVersion:\s*"deepdraw-size-mapping-v1"/);
   assert.match(service, /rule_fallback/);
   assert.match(service, /sizeChartMappings = sizeChartMappingsForDraft\(db, draft\)\.map\(serializeSizeChartMapping\)/);
   assert.match(service, /sizeChartMappings,/);
