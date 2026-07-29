@@ -15,6 +15,11 @@ export type LiveAiCategorySelectionCandidate = CategorySelectionCandidate & {
   risks?: unknown[]
 }
 
+export type AiCategoryCandidate = Record<string, unknown> & {
+  category_id?: unknown
+  product_type_id?: unknown
+}
+
 export type CategoryAutoSelectionDecision = {
   apply: boolean
   category: CategorySelectionCandidate | null
@@ -40,6 +45,71 @@ export type CategoryAutoSelectionDecision = {
 function positiveInteger(value: unknown) {
   const number = Number(value)
   return Number.isInteger(number) && number > 0 ? number : null
+}
+
+export function normalizeAiCategoryCandidate<T extends AiCategoryCandidate>(
+  raw: unknown,
+  candidates: readonly T[],
+): T | null {
+  if (!raw || typeof raw !== "object") return null
+  const value = raw as Record<string, unknown>
+  const categoryId = positiveInteger(value.category_id)
+  const productTypeId = positiveInteger(value.product_type_id)
+  if (!categoryId || !productTypeId) return null
+
+  const exact = candidates.find((candidate) =>
+    positiveInteger(candidate.category_id) === categoryId
+    && positiveInteger(candidate.product_type_id) === productTypeId,
+  )
+  if (exact) return exact
+
+  const sameCategory = candidates.filter((candidate) =>
+    positiveInteger(candidate.category_id) === categoryId,
+  )
+  return sameCategory.length === 1 ? sameCategory[0] : null
+}
+
+export function normalizedAiCategoryPayload(
+  raw: unknown,
+  candidate: AiCategoryCandidate,
+) {
+  const value = raw && typeof raw === "object"
+    ? raw as Record<string, unknown>
+    : {}
+  return {
+    ...value,
+    category_id: positiveInteger(candidate.category_id),
+    product_type_id: positiveInteger(candidate.product_type_id),
+    category_name: String(candidate.category_name ?? "").trim(),
+    path: String(candidate.path ?? "").trim(),
+  }
+}
+
+export function normalizeLiveAiSkcCategorySuggestions<T extends AiCategoryCandidate>(
+  suggestions: unknown,
+  candidates: readonly T[],
+) {
+  if (!Array.isArray(suggestions)) return []
+  return suggestions.map((item) => {
+    if (!item || typeof item !== "object") return item
+    const suggestion = item as Record<string, unknown>
+    const primary = normalizeAiCategoryCandidate(suggestion.primary, candidates)
+    const alternatives = Array.isArray(suggestion.alternatives)
+      ? suggestion.alternatives
+        .map((alternative) => {
+          const candidate = normalizeAiCategoryCandidate(alternative, candidates)
+          return candidate ? normalizedAiCategoryPayload(alternative, candidate) : null
+        })
+        .filter((candidate) => candidate !== null)
+      : []
+    return {
+      ...suggestion,
+      primary: primary
+        ? normalizedAiCategoryPayload(suggestion.primary, primary)
+        : null,
+      alternatives,
+    }
+  })
 }
 
 function normalizedCandidate(candidate: CategorySelectionCandidate | null | undefined) {

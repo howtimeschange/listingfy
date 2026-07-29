@@ -36,6 +36,126 @@ function decide(overrides = {}) {
   });
 }
 
+function aiCandidate(overrides = {}) {
+  return {
+    category_id: 2713,
+    product_type_id: 575,
+    category_name: "男童（小）卫裤",
+    path: "儿童 > 男童（小）服装 > 男童（小）下装 > 男童（小）卫裤",
+    ...overrides,
+  };
+}
+
+test("AI category pair corrects a product type mismatch when the category has one candidate", () => {
+  assert.equal(typeof policy.normalizeAiCategoryCandidate, "function");
+  const candidate = aiCandidate();
+
+  assert.deepEqual(
+    policy.normalizeAiCategoryCandidate(
+      aiCandidate({ product_type_id: 573 }),
+      [candidate],
+    ),
+    candidate,
+  );
+});
+
+test("AI category pair preserves an exact candidate match", () => {
+  const candidate = aiCandidate();
+
+  assert.deepEqual(
+    policy.normalizeAiCategoryCandidate(candidate, [candidate]),
+    candidate,
+  );
+});
+
+test("AI category pair does not guess when one category has multiple product types", () => {
+  assert.equal(
+    policy.normalizeAiCategoryCandidate(
+      aiCandidate({ product_type_id: 573 }),
+      [
+        aiCandidate({ product_type_id: 575 }),
+        aiCandidate({ product_type_id: 576, category_name: "男童（小）休闲裤" }),
+      ],
+    ),
+    null,
+  );
+});
+
+test("AI category pair rejects categories outside the candidate set", () => {
+  assert.equal(
+    policy.normalizeAiCategoryCandidate(
+      aiCandidate({ category_id: 9999, product_type_id: 573 }),
+      [aiCandidate()],
+    ),
+    null,
+  );
+});
+
+test("SKC AI suggestions normalize their primary and discard invalid alternatives", () => {
+  assert.equal(typeof policy.normalizeLiveAiSkcCategorySuggestions, "function");
+  const male = aiCandidate();
+  const female = aiCandidate({
+    category_id: 2712,
+    product_type_id: 574,
+    category_name: "女童（小）卫裤",
+    path: "儿童 > 女童（小）服装 > 女童（小）下装 > 女童（小）卫裤",
+  });
+
+  assert.deepEqual(
+    policy.normalizeLiveAiSkcCategorySuggestions(
+      [{
+        skc_code: "23032610820270641",
+        evidence_basis: "COLOR",
+        primary: {
+          category_id: 2712,
+          product_type_id: 573,
+          confidence: 0.82,
+        },
+        alternatives: [
+          { category_id: 2713, product_type_id: 573 },
+          { category_id: 9999, product_type_id: 1 },
+        ],
+      }],
+      [male, female],
+    ),
+    [{
+      skc_code: "23032610820270641",
+      evidence_basis: "COLOR",
+      primary: {
+        category_id: 2712,
+        product_type_id: 574,
+        category_name: "女童（小）卫裤",
+        path: "儿童 > 女童（小）服装 > 女童（小）下装 > 女童（小）卫裤",
+        confidence: 0.82,
+      },
+      alternatives: [{
+        category_id: 2713,
+        product_type_id: 575,
+        category_name: "男童（小）卫裤",
+        path: "儿童 > 男童（小）服装 > 男童（小）下装 > 男童（小）卫裤",
+      }],
+    }],
+  );
+});
+
+test("SKC AI suggestions never retain a primary outside the supplied candidates", () => {
+  assert.deepEqual(
+    policy.normalizeLiveAiSkcCategorySuggestions(
+      [{
+        skc_code: "OUTSIDE",
+        primary: { category_id: 9999, product_type_id: 1 },
+        alternatives: [],
+      }],
+      [aiCandidate()],
+    ),
+    [{
+      skc_code: "OUTSIDE",
+      primary: null,
+      alternatives: [],
+    }],
+  );
+});
+
 test("confirmed category rules and deterministic fallbacks auto-select valid SHEIN pairs", () => {
   const ruleDecision = decide();
   assert.equal(ruleDecision.apply, true);

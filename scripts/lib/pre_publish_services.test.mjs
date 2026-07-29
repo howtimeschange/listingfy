@@ -1132,13 +1132,49 @@ test("draft category AI recomputes from source data instead of replaying the dra
   assert.match(source, /const storedCategory = ignoreStoredCategory\s*\?\s*null\s*:\s*readStoredCategoryOverride\(fills,\s*spuCode\)/);
   assert.match(source, /getReadinessForListing\(db,\s*listing,\s*\{\s*ignoreListingCategory:\s*true,\s*ignoreStoredCategory:\s*true,\s*\}\)/);
   assert.match(source, /const ruleDecision = categoryDecisionForReadiness\(db,\s*categoryReadiness\.category/);
-  assert.match(source, /let enrichmentReadiness = mode === "all" \? categoryReadiness : readiness/);
+  assert.match(source, /function selectedReadinessForListing/);
+  assert.match(source, /displayReadinessForSelectedSkcs\(readiness,\s*selectedSkcs,\s*readiness\.skcs\)/);
+  assert.match(source, /let enrichmentReadiness = selectedReadinessForListing\(db,\s*listingId,\s*readiness\)/);
   assert.match(source, /const updatedReadiness = updatedListing \? getReadinessForListing\(db,\s*updatedListing\) : null/);
+  assert.match(source, /if \(updatedReadiness\) enrichmentReadiness = selectedReadinessForListing\(db,\s*listingId,\s*updatedReadiness\)/);
   assert.match(source, /function safeAiTranslateTitle/);
   assert.match(source, /const titleEn = await safeAiTranslateTitle\(enrichmentReadiness\)/);
   assert.match(source, /const aiFills = await callAiFill\(enrichmentReadiness\)/);
   assert.match(source, /resolveSheinKidsCategoryFallback/);
   assert.match(bucketSource, /resolveSheinKidsCategoryFallback/);
+});
+
+test("SHEIN AI fill avoids unsupported composition guesses and handles conditional lining", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+
+  assert.match(source, /function compositionSourceForReadiness/);
+  assert.match(source, /const deepdrawCompositionText = materialEvidenceFromDeepDraw\(fields\)/);
+  assert.match(source, /const mdmCompositionText = normalizeText\(row\.composition\)[\s\S]+normalizeText\(row\.wash_label_ingr\)[\s\S]+normalizeText\(row\.fabric\)/);
+  assert.match(source, /const compositionTextSource = deepdrawCompositionText \? "DEEPDRAW" : mdmCompositionText \? "MDM" : "MDM\/DEEPDRAW"/);
+  assert.match(source, /isCompositionAttributeField\(field\)\s*&&\s*!compositionSourceForReadiness\(row\)\)\s*return ""/);
+  assert.match(source, /normalizeText\(attr\.attribute_name\)\.includes\("成分"\) && !compositionText/);
+  assert.match(source, /note:\s*"缺少 MDM\/深绘成分来源，禁止 AI 猜测成分枚举。"/);
+  assert.match(source, /function shouldIncludeFieldInAiFill/);
+  assert.match(source, /field\.status === "MISSING"[\s\S]+includes\("里衬"\)/);
+  assert.match(source, /manual_fields:\s*attributeFields\.filter\(shouldIncludeFieldInAiFill\)/);
+  assert.match(source, /field\.label\.includes\("里衬"\)\)\s*return pick\(\["无内衬"\]\)/);
+  assert.match(source, /function inferredAttributeSource/);
+  assert.match(source, /if \(normalizeText\(materialEvidenceFromDeepDraw\(fields\)\)\) return "DEEPDRAW"/);
+  assert.match(source, /normalizeText\(row\.fabric_type_name\)[\s\S]+return "MDM"/);
+});
+
+test("SHEIN title fallback names pants instead of generic clothing", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+
+  assert.match(source, /function selectedSkcsForTitle/);
+  assert.match(source, /selected_for_publish \?\? 1/);
+  assert.match(source, /const colorText = selectedSkcsForTitle\(row\)/);
+  assert.match(source, /const genderPrefix = category\.includes\("女童"\) \? "Girls"/);
+  assert.match(source, /category\.includes\("卫裤"\)[\s\S]+productName = `\$\{genderPrefix\} Sweatpants`/);
+  assert.match(source, /title\.includes\("裤"\)[\s\S]+productName = `\$\{genderPrefix\} Pants`/);
+  assert.match(source, /colors:\s*selectedSkcsForTitle\(row\)\.map/);
+  assert.match(source, /const selectedReadiness = selectedReadinessForListing\(db,\s*listingId,\s*readiness\)/);
+  assert.match(source, /generateSingleAiField\(selectedReadiness,\s*fieldKey\)/);
 });
 
 test("neutral products use all selected SKC images and expand into gender-specific draft inputs", async () => {

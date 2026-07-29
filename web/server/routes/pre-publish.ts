@@ -31,6 +31,9 @@ import { canTransitionDraftStatus } from "../services/pre-publish/drafts"
 import { resolveSheinKidsCategoryFallback } from "../services/pre-publish/category-fallback"
 import {
   categoryAutoSelectionDecision,
+  normalizeAiCategoryCandidate,
+  normalizedAiCategoryPayload,
+  normalizeLiveAiSkcCategorySuggestions,
   type CategoryAutoSelectionDecision,
   type CategorySelectionCandidate,
 } from "../services/pre-publish/category-selection"
@@ -1312,6 +1315,8 @@ function existingSalePayloadIsValid(payload: Record<string, unknown>, attr: Requ
 
 function inferMaterialValue(attr: RequiredAttribute, context: string) {
   const needles: string[] = []
+  const isCompositionAttribute = normalizeText(attr.attribute_name).includes("成分")
+  if (!isCompositionAttribute && /针织|梭织|卫裤|长裤|裤/.test(context)) needles.push("织物")
   if (/卫衣/.test(context)) needles.push("织物", "棉", "聚酯纤维")
   if (/棉混纺|棉混/.test(context)) needles.push("织物")
   if (/棉/.test(context)) needles.push("织物", "棉布", "棉")
@@ -1421,6 +1426,36 @@ function inferAttributeValue({
     return findEnumValue(attr.values, ["细针", "粗针", "其他"])
   }
   return ""
+}
+
+function materialEvidenceFromDeepDraw(fields: Map<string, string>) {
+  return firstField(fields, ["材质成分", "25面料成分", "材质", "面料", "详情页面料"])
+}
+
+function inferredAttributeSource({
+  attr,
+  row,
+  fields,
+}: {
+  attr: RequiredAttribute
+  row: SourceRow
+  fields: Map<string, string>
+}) {
+  const name = normalizeText(attr.attribute_name)
+  if (name.includes("织造方式")) return "MDM"
+  if (name.includes("成分") || name.includes("材质")) {
+    if (normalizeText(materialEvidenceFromDeepDraw(fields))) return "DEEPDRAW"
+    if (
+      normalizeText(row.composition)
+      || normalizeText(row.fabric_type_name)
+      || normalizeText(row.middle_class_name)
+      || normalizeText(row.subclass_name)
+    ) {
+      return "MDM"
+    }
+    return "RULE"
+  }
+  return "RULE"
 }
 
 function fieldStatus(value: unknown, fallback: FillField["status"] = "READY") {
@@ -1540,7 +1575,12 @@ function buildRow({
   const titleCn = normalizeText(storedTitleCn?.field_value) || normalizeText(row.deepdraw_title) || normalizeText(row.listing_title_cn) || normalizeText(row.spu_name)
   const storedTitleEn = getStoredFill(fills, spuCode, "title_en")
   const titleEn = normalizeText(storedTitleEn?.field_value) || normalizeText(row.listing_title_en)
-  const compositionText = firstField(fields, ["材质成分", "25面料成分", "详情页面料", "材质"])
+  const deepdrawCompositionText = materialEvidenceFromDeepDraw(fields)
+  const mdmCompositionText = normalizeText(row.composition)
+    || normalizeText(row.wash_label_ingr)
+    || normalizeText(row.fabric)
+  const compositionText = deepdrawCompositionText || mdmCompositionText
+  const compositionTextSource = deepdrawCompositionText ? "DEEPDRAW" : mdmCompositionText ? "MDM" : "MDM/DEEPDRAW"
   const weightCoverage = skus.filter((sku) => resolveSkuWeightRecord(weights, sku)).length
   const sizeCoverage = skus.filter((sku) => {
     const sizeRule = sizeConversionForSku(sizeConversions, sku)
@@ -1656,16 +1696,11 @@ function buildRow({
       if (!storedValid) {
         const inferred = inferAttributeValue({ attr, row, fields })
         if (inferred) {
-          const source = attr.attribute_name.includes("织造方式")
-            ? "MDM"
-            : attr.attribute_name.includes("成分") || attr.attribute_name.includes("材质")
-              ? "DEEPDRAW"
-              : "RULE"
           return {
             key,
             label: attr.attribute_name,
             value: inferred,
-            source,
+            source: inferredAttributeSource({ attr, row, fields }),
             status: "READY",
             confidence: 0.72,
             note: "已忽略旧类目下失效的枚举值，按当前类目重新推荐。",
@@ -1713,18 +1748,25 @@ function buildRow({
       }
     }
 
+    if (normalizeText(attr.attribute_name).includes("成分") && !compositionText) {
+      return {
+        key,
+        label: attr.attribute_name,
+        value: null,
+        source: compositionTextSource,
+        status: "MISSING",
+        note: "缺少 MDM/深绘成分来源，禁止 AI 猜测成分枚举。",
+        ...attributeFillMeta(attr),
+      }
+    }
+
     const inferred = inferAttributeValue({ attr, row, fields })
     if (inferred) {
-      const source = attr.attribute_name.includes("织造方式")
-        ? "MDM"
-        : attr.attribute_name.includes("成分") || attr.attribute_name.includes("材质")
-          ? "DEEPDRAW"
-          : "RULE"
       return {
         key,
         label: attr.attribute_name,
         value: inferred,
-        source,
+        source: inferredAttributeSource({ attr, row, fields }),
         status: "READY",
         confidence: 0.72,
         ...attributeFillMeta(attr),
@@ -1758,8 +1800,9 @@ function buildRow({
       key: "composition_text",
       label: "成分来源",
       value: compactText(compositionText, 120),
-      source: "DEEPDRAW",
+      source: compositionTextSource,
       status: compositionText ? "READY" : "MISSING",
+      note: compositionText ? null : "MDM composition/wash_label_ingr/fabric 与深绘材质成分字段均为空。",
     },
     {
       key: "size_chart",
@@ -1845,7 +1888,7 @@ function buildRow({
     needs_ai_count: needsAi,
     field_groups: fieldGroups,
     dimension_field_groups: buildDimensionFieldGroups(fieldGroups),
-    manual_fields: attributeFields.filter((field) => field.status === "NEEDS_AI"),
+    manual_fields: attributeFields.filter(shouldIncludeFieldInAiFill),
     blocking_issues: blockingIssues,
   }
 }
@@ -2732,6 +2775,21 @@ function displayReadinessForSelectedSkcs(readiness: ReadinessRow, selectedSkcs: 
   }
 }
 
+function selectedReadinessForListing(
+  db: ReturnType<typeof getDb>,
+  listingId: number,
+  readiness: ReadinessRow,
+) {
+  const selectedSkcs = db.prepare(`
+    select skc.*
+    from listing_skc skc
+    where skc.listing_id = ?
+      ${selectedListingSkcWhere("skc", { onlySelected: true })}
+    order by skc.skc_code
+  `).all(listingId) as SourceRow[]
+  return displayReadinessForSelectedSkcs(readiness, selectedSkcs, readiness.skcs)
+}
+
 function summarizeListings(
   db: ReturnType<typeof getDb>,
   listings: SourceRow[],
@@ -3334,21 +3392,29 @@ function getListingDetail(db: ReturnType<typeof getDb>, listingId: number) {
   }
 }
 
+function selectedSkcsForTitle(row: ReadinessRow) {
+  const selected = row.skcs.filter((skc) => Number(skc.selected_for_publish ?? 1) !== 0)
+  return selected.length ? selected : row.skcs
+}
+
 function heuristicEnglishTitle(row: ReadinessRow) {
   const title = normalizeText(row.title_cn || row.spu_name)
   const category = normalizeText(row.category.category_name)
-  const colorText = row.skcs.map((skc) => englishColorName(skc.color_name)).filter(Boolean).slice(0, 3).join("/")
+  const colorText = selectedSkcsForTitle(row).map((skc) => englishColorName(skc.color_name)).filter(Boolean).slice(0, 3).join("/")
   const brand = englishBrandName(row.brand_name)
   let productName = "Kids Clothing"
-  if (category.includes("衬衫") || title.includes("衬衫")) productName = "Girls Long Sleeve Shirt"
-  else if (category.includes("连衣裙") || title.includes("连衣裙") || title.includes("裙")) productName = "Girls Dress"
+  const genderPrefix = category.includes("女童") ? "Girls" : category.includes("男童") ? "Boys" : "Kids"
+  if (category.includes("衬衫") || title.includes("衬衫")) productName = `${genderPrefix} Long Sleeve Shirt`
+  else if (category.includes("连衣裙") || title.includes("连衣裙") || title.includes("裙")) productName = `${genderPrefix} Dress`
   else if (category.includes("卫衣套装") || title.includes("连帽") || title.includes("卫衣")) {
-    productName = category.includes("女童") ? "Girls Hooded Two-Piece Sweatshirt Set" : "Boys Hooded Two-Piece Sweatshirt Set"
+    productName = `${genderPrefix} Hooded Two-Piece Sweatshirt Set`
   }
   else if (category.includes("套装") || title.includes("套装")) {
-    productName = category.includes("女童") ? "Girls Two-Piece Outfit Set" : "Boys Two-Piece Outfit Set"
+    productName = `${genderPrefix} Two-Piece Outfit Set`
   }
   else if (category.includes("开襟") || title.includes("毛衫") || title.includes("毛衣")) productName = "Kids Cardigan Sweater"
+  else if (category.includes("卫裤") || title.includes("卫裤")) productName = `${genderPrefix} Sweatpants`
+  else if (category.includes("长裤") || category.includes("下装") || title.includes("长裤") || title.includes("裤")) productName = `${genderPrefix} Pants`
 
   const season = title.includes("夏") ? "Summer" : title.includes("春") ? "Spring" : ""
   return [brand, productName, season, colorText].filter(Boolean).join(" ")
@@ -3376,7 +3442,7 @@ async function callAiTranslateTitle(row: ReadinessRow) {
           brand: row.brand_name,
           title_cn: row.title_cn,
           category: row.category,
-          colors: row.skcs.map((skc) => skc.color_name).filter(Boolean),
+          colors: selectedSkcsForTitle(row).map((skc) => skc.color_name).filter(Boolean),
         },
       }),
     },
@@ -3397,7 +3463,7 @@ async function callAiTranslateTitle(row: ReadinessRow) {
         brand: row.brand_name,
         title_cn: row.title_cn,
         category: row.category,
-        colors: row.skcs.map((skc) => skc.color_name).filter(Boolean),
+        colors: selectedSkcsForTitle(row).map((skc) => skc.color_name).filter(Boolean),
       },
     }),
   )
@@ -3753,12 +3819,12 @@ async function resolveLiveAiDraftCategory(
   const productTypeId = asPositiveNumber(primary.product_type_id)
   if (!categoryId || !productTypeId) return null
 
-  const candidate = candidates.find((item) =>
-    Number(item.category_id) === categoryId && Number(item.product_type_id) === productTypeId,
-  )
+  const candidate = normalizeAiCategoryCandidate(primary, candidates)
   if (!candidate) {
     throw new HTTPException(422, { message: `AI 返回了候选集之外的 SHEIN 类目：${categoryId}/${productTypeId}` })
   }
+  const normalizedCategoryId = Number(candidate.category_id)
+  const normalizedProductTypeId = Number(candidate.product_type_id)
   const category = db.prepare(`
     select category_id, product_type_id, category_name, path
     from channel_category
@@ -3767,14 +3833,14 @@ async function resolveLiveAiDraftCategory(
       and product_type_id = ?
       and coalesce(last_category, 0) = 1
     limit 1
-  `).get(categoryId, productTypeId) as CategoryCandidate | undefined
+  `).get(normalizedCategoryId, normalizedProductTypeId) as CategoryCandidate | undefined
   if (!category) {
-    throw new HTTPException(404, { message: `AI 返回的 SHEIN 类目不存在：${categoryId}/${productTypeId}` })
+    throw new HTTPException(404, { message: `AI 返回的 SHEIN 类目不存在：${normalizedCategoryId}/${normalizedProductTypeId}` })
   }
 
   return {
-    categoryId,
-    productTypeId,
+    categoryId: normalizedCategoryId,
+    productTypeId: normalizedProductTypeId,
     categoryName: normalizeText(category.category_name) || normalizeText(candidate.category_name) || null,
     path: normalizeText(category.path) || normalizeText(candidate.path) || null,
     status: suggestionStatus,
@@ -3785,8 +3851,20 @@ async function resolveLiveAiDraftCategory(
     blockingRisks: Array.isArray(suggestion.blocking_risks)
       ? suggestion.blocking_risks.map(normalizeText).filter(Boolean)
       : [],
-    alternatives: Array.isArray(suggestion.alternatives) ? suggestion.alternatives : [],
-    skcSuggestions: Array.isArray(suggestion.skc_suggestions) ? suggestion.skc_suggestions : [],
+    alternatives: Array.isArray(suggestion.alternatives)
+      ? suggestion.alternatives
+        .map((alternative) => {
+          const alternativeCandidate = normalizeAiCategoryCandidate(alternative, candidates)
+          return alternativeCandidate
+            ? normalizedAiCategoryPayload(alternative, alternativeCandidate)
+            : null
+        })
+        .filter((alternative) => alternative !== null)
+      : [],
+    skcSuggestions: normalizeLiveAiSkcCategorySuggestions(
+      suggestion.skc_suggestions,
+      candidates,
+    ),
   }
 }
 
@@ -3844,6 +3922,15 @@ function expandNeutralSkcDraftInputs(
   }
   const plan = planNeutralSkcDrafts({
     genderName: input.sourceRow.gender_name,
+    productText: [
+      input.sourceRow.middle_class_name,
+      input.sourceRow.subclass_name,
+      input.sourceRow.deepdraw_category_name,
+      input.sourceRow.deepdraw_trade_path,
+      input.readiness.spu_name,
+      input.readiness.title_cn,
+      input.readiness.title_en,
+    ].map(normalizeText).filter(Boolean).join(" "),
     skcs: selectedSkcs.map((skc) => ({
       skcCode: normalizeText(skc.skc_code),
       colorName: normalizeText(skc.color_name),
@@ -3931,7 +4018,7 @@ function expandNeutralSkcDraftInputs(
       splitReason: `中性款按款色图 AI 判断拆分为${group.gender === "MALE" ? "男童" : "女童"}发布草稿`,
       splitGender: group.gender,
       splitEvidenceBasis: group.evidenceBasis,
-      aiSkcEvidence: aiEvidenceFor(group.skcCodes),
+      aiSkcEvidence: group.skcEvidence,
       splitPlanStatus: plan.status,
       splitPlanReason: plan.reason,
       unresolvedSkcCodes: [],
@@ -3948,8 +4035,32 @@ function normalizeFillFieldValue(fieldKey: unknown, fieldLabel: unknown, value: 
   return normalizeText(value)
 }
 
+function compositionSourceForReadiness(row: ReadinessRow) {
+  return normalizeText(readinessFieldValue(row, "composition_text"))
+}
+
+function isCompositionAttributeField(field: FillField) {
+  return field.key.startsWith("attr:") && normalizeText(field.label).includes("成分")
+}
+
+function safeAutomaticAttributeFillValue(field: FillField, row: ReadinessRow, aiFill?: Record<string, unknown>) {
+  if (isCompositionAttributeField(field) && !compositionSourceForReadiness(row)) return ""
+  const candidateValue = normalizeFillFieldValue(field.key, field.label, aiFill?.field_value)
+  const validValues = new Set((field.options ?? []).map((option) => option.attribute_value))
+  if (candidateValue && (validValues.size === 0 || validValues.has(candidateValue))) return candidateValue
+  return heuristicAiValue(field, row)
+}
+
+function shouldIncludeFieldInAiFill(field: FillField) {
+  if (field.status === "NEEDS_AI") return true
+  return field.key.startsWith("attr:")
+    && field.status === "MISSING"
+    && normalizeText(field.label).includes("里衬")
+}
+
 function heuristicAiValue(field: FillField, row: ReadinessRow) {
   if (field.key === "title_en") return heuristicEnglishTitle(row)
+  if (isCompositionAttributeField(field) && !compositionSourceForReadiness(row)) return ""
 
   const optionValues = (field.options ?? []).map((item) => item.attribute_value)
   const text = [
@@ -3966,6 +4077,7 @@ function heuristicAiValue(field: FillField, row: ReadinessRow) {
 
   if (field.label.includes("图案")) return pick(["纯色", "条纹", "格子"]) || optionValues[0] || ""
   if (field.label.includes("风格") || field.label.includes("企划")) return pick(["Casual休闲", "休闲"]) || optionValues[0] || ""
+  if (field.label.includes("里衬")) return pick(["无内衬"])
   if (field.label.includes("透明")) return pick(["否"])
   if (field.label.includes("加绒")) return pick(["否"])
   if (field.label.includes("撞色")) return pick([text.includes("撞色") ? "是" : "否"])
@@ -4119,11 +4231,7 @@ async function generateSingleAiField(readiness: ReadinessRow, fieldKey: string) 
   const aiFills = await callAiFill(scopedReadiness)
     .catch(() => [] as Array<Record<string, unknown>>) as Array<Record<string, unknown>>
   const aiFill = aiFills.find((fill) => normalizeText(fill.field_key) === field.key)
-  const candidateValue = normalizeFillFieldValue(field.key, field.label, aiFill?.field_value)
-  const validValues = new Set((field.options ?? []).map((option) => option.attribute_value))
-  const fieldValue = candidateValue && (validValues.size === 0 || validValues.has(candidateValue))
-    ? candidateValue
-    : heuristicAiValue(field, readiness)
+  const fieldValue = safeAutomaticAttributeFillValue(field, readiness, aiFill)
   if (!fieldValue) {
     throw new HTTPException(400, { message: "AI 未生成可用字段值" })
   }
@@ -6485,12 +6593,12 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
     throw new HTTPException(404, { message: "商品档案不存在" })
   }
   const categoryReadiness = mode === "all" || mode === "category"
-    ? getReadinessForListing(db, listing, {
+    ? selectedReadinessForListing(db, listingId, getReadinessForListing(db, listing, {
         ignoreListingCategory: true,
         ignoreStoredCategory: true,
-      }) ?? readiness
-    : readiness
-  let enrichmentReadiness = mode === "all" ? categoryReadiness : readiness
+      }) ?? readiness)
+    : selectedReadinessForListing(db, listingId, readiness)
+  let enrichmentReadiness = selectedReadinessForListing(db, listingId, readiness)
   const saved: Array<Record<string, unknown>> = []
   let categorySelection: CategoryAutoSelectionDecision | null = null
 
@@ -6557,7 +6665,7 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
     if (saved.some((field) => field.field_key === "category")) {
       const updatedListing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
       const updatedReadiness = updatedListing ? getReadinessForListing(db, updatedListing) : null
-      if (updatedReadiness) enrichmentReadiness = updatedReadiness
+      if (updatedReadiness) enrichmentReadiness = selectedReadinessForListing(db, listingId, updatedReadiness)
     }
   }
 
@@ -6588,11 +6696,7 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
     const byKey = new Map(aiFills.map((fill) => [String(fill.field_key), fill]))
     for (const field of enrichmentReadiness.manual_fields) {
       const aiFill = byKey.get(field.key)
-      const candidateValue = normalizeFillFieldValue(field.key, field.label, aiFill?.field_value)
-      const validValues = new Set((field.options ?? []).map((option) => option.attribute_value))
-      const fieldValue = candidateValue && validValues.has(candidateValue)
-        ? candidateValue
-        : heuristicAiValue(field, enrichmentReadiness)
+      const fieldValue = safeAutomaticAttributeFillValue(field, enrichmentReadiness, aiFill)
       if (!fieldValue) continue
       const confidence = Number(aiFill?.confidence)
       persistFill({
@@ -6651,10 +6755,11 @@ prePublish.post("/drafts/:id/ai-field", async (c) => {
   if (!readiness) {
     throw new HTTPException(404, { message: "商品档案不存在" })
   }
-  const generated = await generateSingleAiField(readiness, fieldKey)
+  const selectedReadiness = selectedReadinessForListing(db, listingId, readiness)
+  const generated = await generateSingleAiField(selectedReadiness, fieldKey)
   persistFill({
     db,
-    spuCode: readiness.spu_code,
+    spuCode: selectedReadiness.spu_code,
     fieldKey: generated.field.key,
     fieldLabel: generated.field.label,
     fieldValue: generated.fieldValue,
@@ -8424,11 +8529,7 @@ prePublish.post("/ai-fill", async (c) => {
     const byKey = new Map(aiFills.map((fill) => [String(fill.field_key), fill]))
     for (const field of fieldsToFill) {
       const aiFill = byKey.get(field.key)
-      const candidateValue = normalizeText(aiFill?.field_value)
-      const validValues = new Set((field.options ?? []).map((option) => option.attribute_value))
-      const fieldValue = candidateValue && validValues.has(candidateValue)
-        ? candidateValue
-        : heuristicAiValue(field, row)
+      const fieldValue = safeAutomaticAttributeFillValue(field, row, aiFill)
       if (!fieldValue) continue
 
       const confidence = Number(aiFill?.confidence)
