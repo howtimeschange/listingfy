@@ -2,7 +2,7 @@
 
 日期：2026-07-28
 
-状态：30 SPU 离线专项评测已完成；部分低风险场景可进入 Shadow，尚未授权切换生产配置
+状态：30 SPU 离线专项评测已完成；阶段 0 代码已实现，尚未授权切换生产配置
 
 适用范围：Listingify 深绘建档与平台级 AI 调用基础设施
 
@@ -35,6 +35,32 @@
    海外额度转移，1xm 只在明确准入的场景作为用户自费最终兜底。
 10. 本轮结论只授权后续 Shadow/受保护改造，不修改生产 `AI_*` 配置，
     不写 SHEIN 或 DeepDraw 业务草稿。
+
+### 1.1 阶段 0 实施结果（2026-07-29）
+
+本地分支已完成以下基础改造，默认配置仍保持原生产路径：
+
+1. 新增统一场景路由、OpenAI-compatible 与 Anthropic-compatible adapter、
+   provider 级密钥、场景白名单和固定 fallback 顺序。
+2. 新增 PostgreSQL 调用审计、`provider + model` 运行状态和 1xm 日用量表。
+   审计只保存路由元数据、脱敏后的业务结果投影和输入/候选哈希，不保存 prompt、
+   messages、Authorization、图片 URL 或 base64。
+3. 429 不在原模型重试；明确日额度耗尽时以 `QUOTA_EXHAUSTED` 记录并只熔断
+   对应模型到下一 UTC 日期边界。网络、超时和 5xx 最多重试一次，连续失败达到
+   阈值后按模型熔断。
+4. 1xm Guarded fallback 必须显式设置合法的正数日请求预算；缺少、非法或非正数
+   预算时默认关闭，并同时记录请求量与 token 用量。
+5. 已迁移英文标题、SHEIN 枚举属性、普通 SHEIN 类目、DeepDraw 字段补全和
+   DeepDraw 尺码映射。相同 `scenario + input_hash + candidate_hash + prompt_version`
+   在进程内复用成功结果。
+6. 普通 SHEIN 类目中的 DeepSeek 只接 text-only Shadow；中性 SKC 视觉和
+   DeepDraw `trade` 仍由代码硬限制为 `disabled`。普通/中性混合批次会按场景
+   隔离，普通组继续执行，中性组明确记录为禁用跳过，且图片不会进入普通类目请求。
+7. `AI_ROUTING_ENABLED=false` 时继续执行原 `AI_*` 路径；开启后的默认模式仍是
+   Shadow，新供应商结果不会替换业务结果。Guarded 需后续独立授权和环境配置。
+
+本实施结果不代表生产已启用 Shadow 或 Guarded，也没有在实现过程中调用真实模型、
+切换生产密钥或写入 SHEIN/DeepDraw 业务草稿。
 
 ## 2. 背景与当前实现
 

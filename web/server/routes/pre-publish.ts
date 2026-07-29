@@ -6,7 +6,12 @@ import sharp from "sharp"
 import unzipper, { type CentralDirectory, type File as ZipFile } from "unzipper"
 import { DATA_DIR, getDb } from "../db"
 import { callAiCategoryMatcher } from "../../../scripts/lib/ai_category_matcher.mjs"
-import { callAiChatJson, resolveAiConfig } from "../../../scripts/lib/ai_chat_client.mjs"
+import { resolveAiConfig } from "../../../scripts/lib/ai_chat_client.mjs"
+import {
+  getDefaultAiScenarioRouter,
+  withAiRoutingHashes,
+} from "../../../scripts/lib/ai_routing_context.mjs"
+import { resolveAiScenarioPolicy } from "../../../scripts/lib/ai_scenario_router.mjs"
 import { refreshBucketProduct } from "./shein-products"
 import { requirePermission } from "../lib/auth"
 import { assertLocalImageFile } from "../lib/local-path-guard"
@@ -3351,31 +3356,51 @@ function heuristicEnglishTitle(row: ReadinessRow) {
 
 async function callAiTranslateTitle(row: ReadinessRow) {
   const config = resolveAiConfig()
-  if (!config.apiKey) return heuristicEnglishTitle(row)
-  const response = await callAiChatJson({
-    config,
-    errorLabel: "AI translate",
-    messages: [
-      {
-        role: "system",
-        content: "你是跨境童装英文标题编辑，只输出适合 SHEIN 发品的简洁英文标题。",
+  const policy = resolveAiScenarioPolicy("title_translation")
+  if (policy.mode === "disabled") return heuristicEnglishTitle(row)
+  if (policy.mode !== "guarded" && !config.apiKey) {
+    return heuristicEnglishTitle(row)
+  }
+  const messages = [
+    {
+      role: "system",
+      content: "你是跨境童装英文标题编辑，只输出适合 SHEIN 发品的简洁英文标题。",
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        task: "把中文商品标题翻译成英文标题，保留品牌、性别、品类和季节，不要堆砌关键词。",
+        output_schema: { title_en: "英文标题" },
+        product: {
+          spu_code: row.spu_code,
+          brand: row.brand_name,
+          title_cn: row.title_cn,
+          category: row.category,
+          colors: row.skcs.map((skc) => skc.color_name).filter(Boolean),
+        },
+      }),
+    },
+  ]
+  const response = await getDefaultAiScenarioRouter({ db: getDb() }).callJson(
+    withAiRoutingHashes({
+      scenario: "title_translation",
+      promptVersion: "title-translation-v1",
+      messages,
+      validate: (json: { title_en?: unknown }) =>
+        typeof json?.title_en === "string" && Boolean(normalizeText(json.title_en)),
+      auditValue: (json: { title_en?: unknown }) => ({
+        title_en: normalizeText(json?.title_en),
+      }),
+    }, {
+      input: {
+        spu_code: row.spu_code,
+        brand: row.brand_name,
+        title_cn: row.title_cn,
+        category: row.category,
+        colors: row.skcs.map((skc) => skc.color_name).filter(Boolean),
       },
-      {
-        role: "user",
-        content: JSON.stringify({
-          task: "把中文商品标题翻译成英文标题，保留品牌、性别、品类和季节，不要堆砌关键词。",
-          output_schema: { title_en: "英文标题" },
-          product: {
-            spu_code: row.spu_code,
-            brand: row.brand_name,
-            title_cn: row.title_cn,
-            category: row.category,
-            colors: row.skcs.map((skc) => skc.color_name).filter(Boolean),
-          },
-        }),
-      },
-    ],
-  })
+    }),
+  )
   const parsed = response.json as { title_en?: string }
   return normalizeText(parsed.title_en) || heuristicEnglishTitle(row)
 }
@@ -3714,6 +3739,7 @@ async function resolveLiveAiDraftCategory(
   const result = await callAiCategoryMatcher({
     groups: [group],
     candidates,
+    router: getDefaultAiScenarioRouter({ db }),
   })
   const suggestion = result.suggestions.find((item: Record<string, unknown>) => normalizeText(item.match_key) === group.match_key)
     ?? result.suggestions[0]
@@ -3994,21 +4020,72 @@ function aiPrompt(row: ReadinessRow) {
 
 async function callAiFill(row: ReadinessRow) {
   const config = resolveAiConfig()
-  if (!config.apiKey || row.manual_fields.length === 0) return []
-  const response = await callAiChatJson({
-    config,
-    errorLabel: "AI fill",
-    messages: [
-      {
-        role: "system",
-        content: "你是跨境童装 SHEIN 发品属性专家，负责在给定枚举里做保守选择。",
+  const policy = resolveAiScenarioPolicy("shein_attribute")
+  if (row.manual_fields.length === 0 || policy.mode === "disabled") return []
+  if (policy.mode !== "guarded" && !config.apiKey) return []
+  const prompt = aiPrompt(row)
+  const messages = [
+    {
+      role: "system",
+      content: "你是跨境童装 SHEIN 发品属性专家，负责在给定枚举里做保守选择。",
+    },
+    {
+      role: "user",
+      content: prompt,
+    },
+  ]
+  const allowedValues = new Map(row.manual_fields.map((field) => [
+    field.key,
+    new Set((field.options ?? []).map((option) => option.attribute_value)),
+  ]))
+  const response = await getDefaultAiScenarioRouter({ db: getDb() }).callJson(
+    withAiRoutingHashes({
+      scenario: "shein_attribute",
+      promptVersion: "shein-enum-attribute-v1",
+      messages,
+      validate: (json: { fills?: unknown }) => (
+        Array.isArray(json?.fills)
+        && json.fills.every((fill) => {
+          if (!fill || typeof fill !== "object") return false
+          const value = fill as Record<string, unknown>
+          const fieldKey = normalizeText(value.field_key)
+          const fieldValue = normalizeText(value.field_value)
+          const options = allowedValues.get(fieldKey)
+          return Boolean(options && fieldValue && options.has(fieldValue))
+        })
+      ),
+      auditValue: (json: { fills?: unknown }) => ({
+        fills: Array.isArray(json?.fills)
+          ? json.fills.map((fill) => {
+            const value = fill && typeof fill === "object"
+              ? fill as Record<string, unknown>
+              : {}
+            return {
+              field_key: normalizeText(value.field_key),
+              field_value: normalizeText(value.field_value),
+              confidence: Number(value.confidence),
+            }
+          })
+          : [],
+      }),
+    }, {
+      input: {
+        spu_code: row.spu_code,
+        spu_name: row.spu_name,
+        title_cn: row.title_cn,
+        title_en: row.title_en,
+        category: row.category,
+        skcs: row.skcs.map((skc) => ({
+          skc_code: skc.skc_code,
+          color_name: skc.color_name,
+        })),
       },
-      {
-        role: "user",
-        content: aiPrompt(row),
-      },
-    ],
-  })
+      candidates: row.manual_fields.map((field) => ({
+        field_key: field.key,
+        options: (field.options ?? []).map((option) => option.attribute_value),
+      })),
+    }),
+  )
   const json = response.json as { fills?: unknown }
   return Array.isArray(json.fills) ? json.fills : []
 }
@@ -8314,11 +8391,33 @@ prePublish.post("/ai-fill", async (c) => {
     const titleNeedsAi = row.field_groups
       .flatMap((group) => group.fields)
       .find((field) => field.key === "title_en" && field.status === "NEEDS_AI")
-    const fieldsToFill = [
-      ...(titleNeedsAi ? [titleNeedsAi] : []),
-      ...row.manual_fields,
-    ]
-    if (fieldsToFill.length === 0) continue
+    const fieldsToFill = row.manual_fields
+    if (!titleNeedsAi && fieldsToFill.length === 0) continue
+    if (titleNeedsAi) {
+      const titleValue = await safeAiTranslateTitle(row)
+      if (titleValue) {
+        persistFill({
+          db,
+          spuCode: row.spu_code,
+          fieldKey: titleNeedsAi.key,
+          fieldLabel: titleNeedsAi.label,
+          fieldValue: titleValue,
+          source: "AI_TRANSLATED",
+          confidence: 0.78,
+          payload: {
+            title_cn: row.title_cn,
+            category: row.category,
+            context: "batch_ai_fill",
+          },
+        })
+        saved.push({
+          spu_code: row.spu_code,
+          field_key: titleNeedsAi.key,
+          field_label: titleNeedsAi.label,
+          field_value: titleValue,
+        })
+      }
+    }
     const aiFills = await callAiFill(row)
       .catch(() => [] as Array<Record<string, unknown>>) as Array<Record<string, unknown>>
 
@@ -8327,9 +8426,7 @@ prePublish.post("/ai-fill", async (c) => {
       const aiFill = byKey.get(field.key)
       const candidateValue = normalizeText(aiFill?.field_value)
       const validValues = new Set((field.options ?? []).map((option) => option.attribute_value))
-      const fieldValue = field.key === "title_en" && candidateValue
-        ? candidateValue
-        : candidateValue && validValues.has(candidateValue)
+      const fieldValue = candidateValue && validValues.has(candidateValue)
         ? candidateValue
         : heuristicAiValue(field, row)
       if (!fieldValue) continue

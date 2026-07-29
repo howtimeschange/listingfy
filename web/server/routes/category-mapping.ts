@@ -9,6 +9,7 @@ import {
   buildCategoryMatchPrompt,
   callAiCategoryMatcher,
 } from "../../../scripts/lib/ai_category_matcher.mjs"
+import { getDefaultAiScenarioRouter } from "../../../scripts/lib/ai_routing_context.mjs"
 
 const categoryMapping = new Hono()
 categoryMapping.use("*", routePermissionGuard("RULE_READ", "RULE_WRITE"))
@@ -556,7 +557,11 @@ async function generateCategoryAiSuggestions({
     }
   }
 
-  const result = await callAiCategoryMatcher({ groups, candidates: candidates.slice(0, AI_CATEGORY_CANDIDATE_LIMIT) })
+  const result = await callAiCategoryMatcher({
+    groups,
+    candidates: candidates.slice(0, AI_CATEGORY_CANDIDATE_LIMIT),
+    router: getDefaultAiScenarioRouter({ db }),
+  })
   const suggestions = enrichSuggestions({
     groups,
     suggestions: result.suggestions as unknown as Array<Record<string, unknown>>,
@@ -815,7 +820,11 @@ async function runCategoryAiSuggestionJob(jobId: string) {
       return
     }
 
-    const result = await callAiCategoryMatcher({ groups, candidates: candidates.slice(0, AI_CATEGORY_CANDIDATE_LIMIT) })
+    const result = await callAiCategoryMatcher({
+      groups,
+      candidates: candidates.slice(0, AI_CATEGORY_CANDIDATE_LIMIT),
+      router: getDefaultAiScenarioRouter({ db }),
+    })
     const suggestions = enrichSuggestions({
       groups,
       suggestions: result.suggestions as unknown as Array<Record<string, unknown>>,
