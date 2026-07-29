@@ -2,24 +2,39 @@
 
 日期：2026-07-28
 
-状态：设计已确认，待实施计划
+状态：30 SPU 离线专项评测已完成；部分低风险场景可进入 Shadow，尚未授权切换生产配置
 
 适用范围：Listingify 深绘建档与平台级 AI 调用基础设施
 
 ## 1. 决策摘要
 
-本次采用“确定性规则判断 + AI 独立判断 + AI 分歧裁判 + 本地硬护栏”的组合方案，不以单一大模型替换现有 DeepDraw `trade` 类目规则。
+“确定性规则判断 + AI 独立判断 + AI 分歧裁判 + 本地硬护栏”仍是目标架构，
+但 2026-07-29 的 30 SPU 盲测表明：当前没有任何模型通过 DeepDraw `trade` 场景准入，
+因此目标架构暂不进入生产路由，更不能让 AI 裁判自动覆盖规则结果。
 
 核心决策如下：
 
-1. 本地规则继续负责候选召回、租户优先级、第三方平台覆盖、类目合法性和硬性门禁。
-2. AI 选择器在不知道规则结论的前提下独立选择候选，避免被规则推荐锚定。
-3. 规则与 AI 选择器不一致时，使用不同模型家族的 AI 裁判比较双方证据。
-4. AI 裁判可以选择规则结果、AI 结果、其他合法候选或转人工，但不能绕过本地硬护栏。
-5. Guarded automation 阶段中，只有规则与 AI 一致、满足高置信自动条件并通过本地复验时才自动应用并完成系统确认；中置信一致结果可以沿用现状写入推荐类目，但仍须人工确认。
-6. AI 不可用时不得阻断深绘建档：系统退化到现有确定性规则语义，高置信结果保持现状，中置信结果继续写入推荐类目并待人工确认，歧义结果要求人工选择。
-7. 新海外 `gemini-3-flash-preview` 作为 DeepDraw AI 选择器首选，`gpt-5.6-sol` 作为分歧裁判；新海外模型发生 429、超时或网关故障时，1xm `gemini-3-flash-preview` 作为付费最终兜底。
-8. 国内 `deepseek-v4-pro` 与 `kimi-k2.7-code` 在本次 DeepDraw 专项评测中越过人工门禁，Kimi 还出现平台覆盖违规，因此不得进入该场景的生产路由。
+1. DeepDraw `trade` 继续由本地规则负责候选召回、租户优先级、第三方平台覆盖、
+   类目合法性、最终决策和人工门禁；AI 只保留在离线实验，不进入生产 Shadow 候选。
+2. 普通 SHEIN 类目仍以最新本地元数据、确定性映射和人工确认为主。
+   国内 `deepseek-v4-pro` 只通过 text-only Shadow 门槛，不得自动写入
+   `category_id/product_type_id`。
+3. 中性款 SKC 暂无合格视觉模型。新海外 Gemini 与 Sol 对儿童商品图片稳定拒答；
+   1xm 的准确率、unsafe 和稳定性均未达标。现阶段不得由 AI 自动拆稿。
+4. 英文标题的首选是新海外 `gpt-5.6-terra`，同网关不同模型的备选是
+   `gpt-5.6-sol`；两者都失败或供应商不可用时保留原结果并转人工，而不是调用未准入模型。
+5. DeepDraw 尺码映射首选国内 `kimi-k2.7-code`，跨供应商备选
+   `gpt-5.6-sol`，最终付费兜底为 1xm；三者均通过本场景 Guarded 候选门槛。
+6. SHEIN 枚举属性首选新海外 `gemini-3-flash-preview`，国内
+   `deepseek-v4-pro` 作为无海外日额度限制的跨供应商备选，1xm 作为付费最终兜底。
+7. DeepDraw 通用字段首选国内 `kimi-k2.7-code`，跨供应商备选
+   `gpt-5.6-sol`；1xm 与 DeepSeek 均在鞋类字段出现高置信错误，不得作为自动 fallback。
+8. 任何场景只允许 fallback 到同场景已经准入的模型。全部合格模型失败时，
+   必须退回本地规则、保留原值或转人工，不能为了“有结果”调用 NO_GO 模型。
+9. 新海外 429 按 provider + model 隔离，原模型不重试；国内模型用于消化批量任务和
+   海外额度转移，1xm 只在明确准入的场景作为用户自费最终兜底。
+10. 本轮结论只授权后续 Shadow/受保护改造，不修改生产 `AI_*` 配置，
+    不写 SHEIN 或 DeepDraw 业务草稿。
 
 ## 2. 背景与当前实现
 
@@ -63,7 +78,8 @@ AI_TIMEOUT_MS
 
 ### 3.1 目标
 
-1. 把 DeepDraw `trade` 类目 AI 选择和分歧裁判定义为正式 AI 场景。
+1. 把 DeepDraw `trade` 类目 AI 选择和分歧裁判保留为独立离线专项场景；
+   只有重新通过准入后，才注册为可进入生产 Shadow 的正式 AI 场景。
 2. 在不削弱本地业务护栏的前提下，提高中置信、近义类目和细分类目争议的判断质量。
 3. 引入多供应商、多协议、场景级模型路由和自动 fallback。
 4. 同时兼顾正确度、稳定性、延迟、海外模型日额度和 1xm 自费成本。
@@ -105,9 +121,14 @@ AI_TIMEOUT_MS
 
 缺点：实现和审计复杂度高；分歧链路延迟更长；AI 裁判仍可能犯错。
 
-采用方案 C，并规定 guarded automation 阶段的裁判结果只用于人工推荐，不直接自动写入。
+方案 C 仅作为未来重新准入后的目标架构；当前仍采用 `rules_only`。
+即使未来进入 guarded automation，裁判结果也只用于人工推荐，不直接自动写入。
 
 ## 5. 总体架构
+
+本节描述 DeepDraw `trade` 的目标架构，不代表已经准入或启用。当前运行策略是
+`rules_only`：不调用 selector/arbiter，不让任何模型参与最终 `trade_id` 决策。
+只有后续新一轮人工金标评测通过 Shadow 和 Guarded 硬门槛后，才允许按本节实施。
 
 ### 5.1 组件边界
 
@@ -264,6 +285,10 @@ Guarded automation 阶段中，裁判 schema 的 `requires_human_confirmation` �
 
 ## 7. 自动应用与人工门禁
 
+本节的 AI 自动应用条件目前全部处于关闭状态。2026-07-29 专项评测中没有
+DeepDraw `trade` 模型达到 Shadow 候选门槛，因此生产只执行 7.2 中的规则与人工边界；
+7.1 仅作为未来重新准入后的验收契约。
+
 ### 7.1 允许自动应用并完成系统确认
 
 同时满足以下条件时，规则与 AI 一致结果可以自动应用：
@@ -306,6 +331,9 @@ AI 超时、429、网关不可用或所有合格模型失败时：
 - 不得为了追求自动化而调用本场景未通过安全门槛的模型。
 
 这样可保证接入 AI 后的可用性不低于当前规则基线。
+
+当前没有合格的 DeepDraw `trade` AI 模型，因此“AI 不可用”不是异常降级，而是
+`rules_only` 的常态。不得把 1xm 或其他场景通过的模型直接借用到该场景。
 
 ## 8. 状态、快照与审计
 
@@ -415,7 +443,7 @@ type DeepdrawTradeModelDecision = {
 | `semir_overseas_openai` | OpenAI-compatible | `https://ai-aigw.semir.com/overseas-openai-vip/v1` | 海外 GPT、Gemini、Claude OpenAI 路由 |
 | `semir_overseas_anthropic` | Anthropic-compatible | `https://ai-aigw.semir.com/overseas-anthropic-vip` | Claude 原生协议兼容验证 |
 | `semir_domestic_openai` | OpenAI-compatible | `https://ai-aigw.semir.com/bailian-codingplan/v1` | 国内模型 |
-| `current_1xm` | OpenAI-compatible | `https://api.1xm.ai/v1` | 当前自费生产基线与最终兜底 |
+| `current_1xm` | OpenAI-compatible | `https://api.1xm.ai/v1` | 现有自费供应商；仅在同场景通过准入且预算允许时作为最终兜底 |
 
 密钥只通过环境变量或平台密钥管理读取。Spec、Git、数据库审计和日志中均不保存真实密钥。即使多个端点当前共用同一 key，也必须使用 provider 级 `secret_ref`，便于以后独立轮换。
 
@@ -473,29 +501,34 @@ title_translation
 shein_enum_attribute_fill
 ```
 
-DeepDraw trade 初始路由：
+DeepDraw trade 当前路由：
 
-| 场景 | 首选 | 失败后 | 最终行为 |
+| 场景 | 当前模式 | AI 模型 | 最终行为 |
 | --- | --- | --- | --- |
-| `deepdraw_trade_selector` | 新海外 `gemini-3-flash-preview` | 1xm `gemini-3-flash-preview` | 两者都失败则按规则降级 |
-| `deepdraw_trade_arbiter` | 新海外 `gpt-5.6-sol` | 1xm `gemini-3-flash-preview` | 兜底裁判只提供人工建议 |
+| `deepdraw_trade_selector` | `disabled` | 无准入模型 | 本地规则决定推荐或转人工 |
+| `deepdraw_trade_arbiter` | `disabled` | 无准入模型 | 规则歧义或分歧直接人工确认 |
 
-选择器和裁判使用不同模型家族，降低同源语义错误。若裁判降级到与选择器相同的 Gemini 家族，则该结论不具备独立裁判资格，只能作为人工参考。
+未来重新准入时，选择器和裁判必须使用不同模型家族，降低同源语义错误；但不得提前
+预设 Gemini 或 Sol 一定担任某个角色。模型角色必须由当期同场景金标结果决定。
 
 其他已有 AI 场景不得直接继承 DeepDraw 路由。它们必须按各自评测和业务护栏建立白名单。
 
 ### 9.4 现有场景接入边界
 
-| 场景 | 新供应商初始角色 | 生产切换边界 |
-| --- | --- | --- |
-| DeepDraw `trade` | Gemini 选择器、GPT-5.6 Sol 裁判 | 按本 Spec 的 shadow 和 guarded automation 准入 |
-| 有可辨识模特的中性款拆稿 | 新海外 Gemini 第一候选，GPT-5.6 Sol 第二意见 | 完成 base64 适配和真实草稿 shadow 后切换；1xm 最终兜底 |
-| 无模特或无法确认模特 | AI 只提供复核 | 确定性颜色规则优先，模型不得覆盖颜色硬规则 |
-| 普通 SHEIN 类目 | 新模型 shadow | 当前测试样本不足，保持现有生产路由直到扩充真实金标 |
-| SHEIN 枚举属性 | 新模型 shadow | 必须按字段枚举约束专项准入 |
-| 英文标题 | 新模型 shadow | 可按延迟和费用优化，但需独立自然度抽检 |
-| DeepDraw 尺码映射 | 新模型 shadow | 当前只有一个固定样本，不能据此生产切换 |
-| DeepDraw 通用字段补全 | 新模型 shadow | 尚未完成专项评测，保持当前人工确认边界 |
+| 场景 | 本轮角色与顺序 | 失败后的安全行为 | 当前准入 |
+| --- | --- | --- | --- |
+| DeepDraw `trade` | 本地规则，不调用 AI | 规则歧义直接人工 | `rules_only` |
+| 有可辨识模特的中性款拆稿 | 无合格视觉模型 | 人工确认每个 SKC 模特性别 | `NO_GO` |
+| 无模特或无法确认模特 | 人工确认“无可辨识模特”后使用本地颜色规则 | 颜色也不明确则人工 | `rules_only` |
+| 普通 SHEIN 类目 | 最新元数据/本地规则；DeepSeek text-only 只做影子复核 | 规则不确定或 AI 分歧转人工 | `SHADOW_CANDIDATE` |
+| SHEIN 枚举属性 | 新海外 Gemini → 国内 DeepSeek → 1xm | 全部失败则保留空值并人工补齐 | 三者 `GUARDED_CANDIDATE` |
+| 英文标题 | Terra → Sol | 两个海外模型或供应商均不可用时保留原值并人工 | 两者 `GUARDED_CANDIDATE` |
+| DeepDraw 尺码映射 | 国内 Kimi → 新海外 Sol → 1xm | 全部失败走现有规则 fallback/人工 | 三者 `GUARDED_CANDIDATE` |
+| DeepDraw 通用字段补全 | 国内 Kimi → 新海外 Sol | 全部失败保留未填字段并人工 | 两者 `GUARDED_CANDIDATE` |
+
+表中的 `GUARDED_CANDIDATE` 是离线资格，不是生产已切换。由于每个场景只有
+4–10 个独立 SPU 金标，实施后必须先运行 Shadow，并验证现网 prompt 与本轮 prompt
+一致，才能启用受保护写入。
 
 平台级综合排名只用于筛选候选模型，不能代替场景级准入。
 
@@ -547,99 +580,105 @@ MISCONFIGURED
 
 ### 10.3 额度和费用策略
 
-1. 新海外模型每日额度预留 20% 给人工复核、高风险视觉和 DeepDraw 分歧裁判。
-2. 批量标题和低风险枚举属性不得消耗预留额度。
-3. 1xm 是用户自费最终兜底，每个场景必须设置 `allow_user_paid_fallback`、日调用上限、批次上限和预算告警。
+1. 每个新海外模型按自身额度单独计数；达到 70% 时把可延迟批量任务转移到已准入的
+   国内模型，达到 90% 时只保留交互请求和跨供应商故障备援，429 或 100% 时熔断到重置窗口。
+2. 不为当前 NO_GO 的视觉或 DeepDraw `trade` 场景预留额度；任何离线复测使用独立评测预算。
+3. 1xm 只有在目标场景自身通过准入时，才可作为用户自费最终兜底；允许使用的场景必须
+   设置 `allow_user_paid_fallback`、日调用上限、批次上限和预算告警。
 4. 同一 `scenario + input_hash + candidate_hash + prompt_version` 复用成功结果，避免刷新页面或任务重试重复计费。
 5. 只有规则与选择器分歧时才调用裁判。
 6. provider 路由必须同时考虑场景准入、健康状态、当日额度、延迟预算和付费预算，不能只按固定顺序盲目调用。
+7. 本轮没有统一价格表，不能声称某模型金额更低；费用决策只采用“国内/新供应商额度优先、
+   同场景已准入的 1xm 最后付费兜底”的保守顺序，并持续记录 token 与实际账单。
 
-## 11. 模型评测结论
+## 11. 30 SPU 离线专项评测结论
 
-### 11.1 平台级正式评测
+### 11.1 数据、盲标与评分口径
 
-正式评测覆盖 13 个新供应商模型、6 个代表场景、每场景 3 次，共 234 次请求；另有 Gemini/Claude 协议补测。以下数据是 2026-07-28 的评测快照：
+本轮使用本地 Docker PostgreSQL 只读抽取的 30 个唯一真实 SPU：
 
-| 模型 | 成功率 | 业务正确度 | 护栏安全率 | 语义稳定性 | p95 | 综合分 | 准入 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `gpt-5.5` | 100% | 98.00% | 88.89% | 94.44% | 62.11s | 0.9325 | NO_GO |
-| `gpt-5.6-sol` | 100% | 96.18% | 100% | 94.44% | 58.42s | 0.9277 | PRODUCTION_READY |
-| `gpt-5.6-terra` | 100% | 91.77% | 83.33% | 94.44% | 64.32s | 0.9025 | NO_GO |
-| `gpt-5.6-luna` | 100% | 93.49% | 83.33% | 88.89% | 64.50s | 0.8989 | NO_GO |
-| `deepseek-v4-pro` | 100% | 89.33% | 88.89% | 100% | 84.20s | 0.8790 | NO_GO |
-| `qwen3.7-plus` | 100% | 92.42% | 77.78% | 94.44% | 98.35s | 0.8745 | NO_GO |
-| `claude-opus-4-8` | 94.44% | 81.91% | 100% | 94.44% | 80.01s | 0.8244 | NO_GO |
-| `kimi-k2.7-code` | 88.89% | 87.08% | 100% | 100% | 125.57s | 0.8141 | NO_GO |
-| `claude-sonnet-5` | 94.44% | 85.80% | 100% | 88.89% | 129.83s | 0.8000 | NO_GO |
-| `glm-5.2` | 94.44% | 86.02% | 88.89% | 80.56% | 119.34s | 0.7738 | NO_GO |
-| `gemini-3.5-flash` | 66.67% | 66.67% | 100% | 66.67% | 11.29s | 0.6989 | NO_GO |
-| `gemini-3.1-pro-preview` | 66.67% | 66.67% | 100% | 66.67% | 16.64s | 0.6940 | NO_GO |
-| `qwen3.8-max-preview` | 61.11% | 61.11% | 100% | 66.67% | 159.90s | 0.5611 | NO_GO |
+- 性别覆盖男 6、女 9、中性 15；年龄覆盖婴童 6、幼童 12、中童 12。
+- 28 个 SPU 有图，75/75 张原始图片可访问。
+- 七个场景的独立金标数分别为：标题 4、尺码 5、DeepDraw `trade` 10、
+  SHEIN 类目 4、SHEIN 属性 4、中性 SKC 8、DeepDraw 字段 5。
+- 模型输入与 `gold.private.json` 物理隔离，不包含 SHEIN 目标 pair、历史应用
+  `trade_id`、规则推荐、规则分数或预期答案。
+- 金标版本为 `blind-v2`，是单次盲审和证据完整性校验，不是双人人工裁决。
 
-结论：
+本轮共纳入 474 次可追溯评分记录：新供应商文本/结构化 174 次、1xm 同口径 90 次、
+海外视觉硬停止 24 次、DeepDraw `trade` 复用真实结果 150 次、标题 fallback 定向补测
+36 次。所有完整 run 的结果数必须与 manifest 计划数一致；半截 run 会拒绝生成汇总。
 
-1. `gpt-5.6-sol` 是初始 13 个模型中唯一满足全部正式生产硬门槛的新供应商模型。
-2. `gpt-5.5` 综合分最高，但高置信错误使护栏安全率只有 88.89%，不能因综合排名高而准入高风险自动化。
-3. 国内模型可用于后续按场景专项评测，但本轮没有任何国内模型取得全局生产准入。
-4. Anthropic 原生路由存在认证 header 降级，Claude 的生产接入必须独立验证协议，不能仅凭模型名切换。
+Shadow 硬门槛为 transport/JSON/schema ≥ 95%、候选约束 100%、业务正确度 ≥ 85%、
+unsafe = 0、语义稳定性 ≥ 90%、p95 ≤ 120 秒且没有 429 遗留跳过。Guarded 还要求
+Safe auto usable ≥ 85%，人工门禁召回 100%。
 
-### 11.2 新海外 Gemini 与 1xm 同模型对照
+### 11.2 场景级关键结果
 
-后续补测的新海外 `gemini-3-flash-preview` 使用 base64 图片适配，18/18 成功并通过生产门槛：
+| 场景与模型 | 业务正确度 | Unsafe | 稳定性 | p95 | 准入 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 标题：新海外 Terra | 100% | 0% | 100% | 2.93s | Guarded 候选 |
+| 标题：新海外 Sol | 100% | 0% | 100% | 5.27s | Guarded 候选 |
+| 标题：1xm Gemini | 91.67% | 0% | 91.67% | 8.04s | NO_GO，JSON 仅 91.67% |
+| 尺码：国内 Kimi | 100% | 0% | 100% | 16.90s | Guarded 候选 |
+| 尺码：新海外 Sol | 100% | 0% | 100% | 12.28s | Guarded 候选 |
+| 尺码：1xm Gemini | 100% | 0% | 100% | 5.84s | Guarded 候选 |
+| SHEIN 属性：新海外 Gemini | 100% | 0% | 100% | 3.51s | Guarded 候选 |
+| SHEIN 属性：国内 DeepSeek | 100% | 0% | 100% | 27.12s | Guarded 候选 |
+| SHEIN 属性：1xm Gemini | 100% | 0% | 100% | 3.77s | Guarded 候选 |
+| DeepDraw 字段：国内 Kimi | 100% | 0% | 100% | 15.85s | Guarded 候选 |
+| DeepDraw 字段：新海外 Sol | 100% | 0% | 100% | 7.73s | Guarded 候选 |
+| DeepDraw 字段：1xm Gemini | 97.00% | 20.00% | 100% | 4.06s | NO_GO |
+| SHEIN 类目：国内 DeepSeek text-only | 100% | 0% | 100% | 56.48s | Shadow 候选 |
+| SHEIN 类目：1xm Gemini vision | 80.83% | 16.67% | 91.67% | 13.54s | NO_GO |
+| 中性 SKC：1xm Gemini vision | 83.54% | 16.67% | 87.50% | 14.57s | NO_GO |
+| DeepDraw `trade`：新海外 Gemini | 84.00% | 0% | 100% | 7.04s | NO_GO |
 
-| 指标 | 新海外 Gemini 3 Flash | 1xm Gemini 3 Flash |
-| --- | ---: | ---: |
-| 请求成功率 | 100% | 100% |
-| JSON/schema/候选约束 | 100% | 100% |
-| 业务正确度 | 98.23% | 99.86% |
-| 视觉正确度 | 94.69% | 99.58% |
-| 护栏安全率 | 100% | 100% |
-| 语义稳定性 | 94.44% | 100% |
-| p50 | 5.60s | 4.18s |
-| p95 | 22.31s | 51.95s |
-| 综合分 | 0.9697 | 0.9612 |
-| 准入 | PRODUCTION_READY | PRODUCTION_READY |
+新海外 Gemini 与 Sol 的视觉链路虽然 24/24 得到 HTTP 200，但对 SHEIN 图片类目和
+中性 SKC 统一返回“很抱歉，我无法回答您的问题”，JSON/schema/业务正确度均为 0。
+这属于当前网关/安全策略能力边界，不应通过改写提示词规避。
 
-新海外 Gemini 长尾更低；1xm 整体正确度和稳定性更高。两者适合形成“新海外优先、1xm 付费兜底”，而不是简单淘汰任一供应商。
+DeepSeek 的 SHEIN 类目 12/12 pair 正确，但只有 25% 达到自动可用条件；它没有读取
+图片，且部分响应主动保留图片/性别风险。因此只能做 text-only Shadow 复核。
 
-新海外 Gemini 的远程图片 URL 会返回 400，必须在 provider adapter 中转换为受控大小的 base64 data URL，不能假定所有 OpenAI-compatible 网关都支持远程图片。
+### 11.3 DeepDraw `trade` 结论
 
-### 11.3 DeepDraw trade 专项评测
+10 SPU × 5 模型 × 3 轮的 150 次真实结果全部重新按 `blind-v2` 评分，五个模型均
+`NO_GO`：
 
-专项评测使用本地 Docker PostgreSQL 只读数据：
+| 模型 | 业务正确度 | Unsafe | 人工门禁召回 | 稳定性 | p95 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 新海外 Gemini | 84.00% | 0% | 100% | 100% | 7.04s |
+| 1xm Gemini | 84.00% | 3.33% | 100% | 96.67% | 6.14s |
+| 新海外 Sol | 76.00% | 23.33% | 80% | 96.67% | 22.97s |
+| 国内 DeepSeek | 70.67% | 30.00% | 60% | 86.67% | 71.36s |
+| 国内 Kimi | 65.33% | 36.67% | 60% | 93.33% | 63.32s |
 
-- 10 个真实 SPU。
-- 6 个可选类目样本，4 个应转人工样本。
-- 每款 24–27 个合法候选。
-- 5 个模型 × 10 款 × 3 轮，共 150 次。
-- 150/150 请求成功；JSON、schema 和候选约束均为 100%；本轮没有触发 429。
-- 模型输入不含历史应用类目、规则推荐、规则分数或评测标签。
+所以“规则判断 + AI 独立判断 + AI 评判哪一个更合理”在架构上可行，但当前没有模型
+达到上线门槛。生产继续 `rules_only`；规则不确定时人工确认。AI 只能留在离线实验，
+不能把低于 Shadow 门槛的模型包装成“只提供复核”后进入业务链路。
 
-| 模型 | 人工门禁召回 | 错误强选 | 平台约束 | 语义稳定性 | p95 | 结论 |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| 新海外 Gemini 3 Flash | 100% | 0% | 100% | 100% | 7.0s | DeepDraw 选择器首选 |
-| 1xm Gemini 3 Flash | 100% | 0% | 100% | 90% | 6.1s | 429/故障兜底 |
-| 新海外 GPT-5.6 Sol | 100% | 0% | 100% | 90% | 23.0s | 分歧裁判 |
-| 国内 DeepSeek V4 Pro | 75% | 25% | 100% | 70% | 71.4s | 不准入 |
-| 国内 Kimi K2.7 Code | 75% | 25% | 94.74% | 80% | 63.3s | 不准入 |
+### 11.4 争议样本与覆盖限制
 
-专项结论：
-
-1. 新海外 Gemini 在人工门禁、平台约束、稳定性和延迟之间表现最好，适合作为选择器。
-2. GPT-5.6 Sol 的延迟更高，但安全门禁通过，适合作为不同模型家族的第二意见。
-3. DeepSeek 和 Kimi 均把部分应转人工样本高置信强选；Kimi 还选择过缺少所需平台覆盖的候选。
-4. 本地规则对冻结回归标签为 6/6 可选样本一致、4/4 人工门禁正确，但只有 2/6 为高置信自动状态；AI 的主要价值是中置信重排和冲突审校。
-5. 当前数据库没有 `human_confirmed` 或 `human_adjusted` 金标。除 `208326105214 → trade 68` 有较强 DeepDraw 创建证据外，其余可选标签主要来自历史应用和语义复核。
-6. 因此不能声称本次 AI 已证明提升最终真实正确率；只能确认其具备进入 shadow 和受护栏接入的资格。
-
-### 11.4 评测覆盖限制
-
-1. 平台级评测每个文本能力只有一个固定代表样本。
-2. 视觉金标准只有款号 16 和 20。
-3. 每个场景仅重复三次，不能替代 7–14 天线上 SLA。
-4. 本轮未获得统一价格表，token 用量只能辅助成本比较，不能直接得出金额结论。
-5. DeepDraw 专项缺少人工确认金标，历史应用类目不等于绝对正确。
-6. 本轮 0 次 429 不能证明日额度稳定，429 切换必须通过故障注入和长期 shadow 验证。
+1. `208326105104` 的 SHEIN 类目经商品主数据、上市计划、元数据和原图独立复核，
+   继续保留 `1990/9341 男童（大）外套`。`2519/1354 男童（大）夹克` 有视觉合理性，
+   因此该样本在结论中标为有争议，但不因模型多数意见改标签。
+2. `204326141197` 的 DeepDraw 字段 `shoe_type=皮鞋` 经官方、唯品、抖音发布类目和
+   原图复核后保留；1xm 与 DeepSeek 的“休闲鞋”是高置信证据优先级错误。
+3. 同一 SPU 的 DeepDraw `trade` 原金标从历史应用 `543 通用皮鞋` 改为
+   `manual_required`：`10172 男童皮鞋` 也有语义依据，且“男/公主鞋/休闲鞋”来源冲突。
+   150 条模型结果只重评分、不重调，五个模型仍全部 NO_GO。
+4. 场景金标只有 4–10 个 SPU；通过只代表进入 Shadow/Guarded 候选，不是直接生产切换。
+5. 英文标题评分覆盖品牌、受众、品类、季节和稳定性，尚未完成独立双语文案自然度盲审。
+6. 现网旧批量 `ai-fill` 的 `title_en` prompt 与本轮标题 prompt 不完全同构；
+   切换前必须统一入口或做同 prompt Shadow。
+7. 后台 MDM 未映射组合的类目候选分布比本轮 4 个 SHEIN 类目样本更宽，不能外推为
+   全量映射任务已准入。
+8. 不同供应商图片协议不同：新海外要求完整 data URL，1xm 当前要求同源远程 URL，
+   国内模型本轮明确 text-only。不同网络路径的绝对延迟不能全部归因于模型。
+9. 474 次记录中没有 429，不代表日额度已验证；需故障注入和至少 7–14 天 Shadow。
+10. 没有统一价格表，不能给出金额成本排名；1xm 仅按“用户自费最终兜底”治理。
+11. 本轮没有切换生产配置，没有写 SHEIN/DeepDraw 草稿。
 
 ## 12. 上线阶段
 
@@ -647,35 +686,49 @@ MISCONFIGURED
 
 1. 建立 provider registry、adapter、场景路由、审计和模型状态。
 2. 将现有 AI 场景逐步迁移到统一 client，但保持生产模型和业务行为不变。
-3. 接入 DeepDraw selector/arbiter prompt、schema 和本地 validator。
-4. 使用冻结测试集重复当前 150 次专项评测。
+3. 先接入已通过 Guarded 候选门槛的标题、尺码、SHEIN 属性和 DeepDraw 字段路由；
+   SHEIN 类目只接 text-only Shadow。
+4. DeepDraw `trade` selector/arbiter 与中性 SKC 视觉保持 `disabled`，只保留离线 harness。
+5. 为 429、供应商故障、NO_GO 模型排除、1xm 预算和全模型失败转人工补确定性测试。
 
 ### 阶段 1：Shadow
 
-持续 7–14 天，至少覆盖 100 条可人工复核的真实草稿：
+持续 7–14 天，至少覆盖 100 条可人工复核的真实任务：
 
-- 规则仍是实际写入来源。
-- AI 选择器和裁判只记录结论。
-- 页面向人工展示规则结论、AI 结论、裁判建议和证据。
-- 人工确认或调整形成第一批正式金标。
+- 生产现有路径仍是实际写入来源，新路由只记录结论。
+- 仅运行本 Spec 已列为 Guarded/Shadow 候选的模型；DeepDraw `trade` 和中性视觉不运行。
+- 页面或审计中展示新旧结果、validator 结论和 fallback 原因。
+- 人工确认或调整形成第一批正式金标，并单独记录现网 prompt 版本。
 - 验证成功率、p95、429、fallback、费用和错误门禁。
 
 ### 阶段 2：Guarded automation
 
-满足准入条件后：
+低风险场景满足准入条件后：
 
-- 规则与 AI 高置信一致且本地复验通过时自动应用。
-- 分歧时调用裁判，但统一进入人工确认。
-- AI 全部失败时按现有规则降级。
+- 标题、尺码、枚举属性和 DeepDraw 字段按场景白名单启用受保护结果。
+- SHEIN 类目继续 Shadow，不自动写入。
+- DeepDraw `trade` 与中性 SKC 继续 rules/manual，不进入本阶段。
+- AI 全部失败时按本场景的规则、保留原值或人工边界降级。
 - 单独提供功能开关，可按租户和批次快速回退到 rules-only。
 
 ### 阶段 3：裁判自动化评估
 
-积累 100–300 条 `human_confirmed` / `human_adjusted` 金标后，单独评估是否允许特定低风险类目中的裁判结论自动写入。该能力不属于本 Spec 的默认上线行为，需要新的业务批准和准入报告。
+DeepDraw `trade` 积累 100–300 条 `human_confirmed` / `human_adjusted` 金标后，
+重新评估 selector 和 arbiter。只有模型先通过 Shadow 和 Guarded 门槛，才讨论特定
+低风险类目的裁判自动化；该能力不属于本 Spec 默认上线行为，需要新的业务批准和准入报告。
 
 ## 13. 准入与验收标准
 
-### 13.1 DeepDraw 业务准入
+### 13.1 通用场景离线准入
+
+1. Shadow 候选必须同时满足：transport/JSON/schema ≥ 95%、候选约束 100%、
+   业务正确度 ≥ 85%、unsafe = 0、稳定性 ≥ 90%、p95 ≤ 120 秒且无 429 遗留跳过。
+2. Guarded 候选还必须满足 Safe auto usable ≥ 85%、人工门禁召回 100%。
+3. 候选资格按 `scenario + provider + model + prompt_version` 计算，不存在“模型全局通过”
+   后自动继承到其他场景。
+4. 少于 10 个独立 SPU 的场景必须先 Shadow；离线 Guarded 候选不直接授权生产写入。
+
+### 13.2 DeepDraw `trade` 业务准入
 
 1. 候选约束、叶子约束和平台覆盖约束通过率必须为 100%。
 2. 应转人工样本的门禁召回必须为 100%。
@@ -685,7 +738,7 @@ MISCONFIGURED
 6. 人工已确认或调整类目被自动覆盖的次数必须为 0。
 7. 规则与 AI 一致的自动样本在人工抽检中准确率不低于 98%。
 
-### 13.2 路由与故障验收
+### 13.3 路由与故障验收
 
 1. 注入 429 后，当前请求不等待原模型重试并成功切到合格的下一供应商。
 2. 日额度耗尽只熔断对应 provider/model，不影响同供应商其他模型。
@@ -694,7 +747,7 @@ MISCONFIGURED
 5. 相同输入命中幂等缓存，不重复消耗模型额度。
 6. 审计日志不包含密钥、Authorization header、图片 base64 或完整敏感 prompt。
 
-### 13.3 回归验证
+### 13.4 回归验证
 
 实现完成后至少执行：
 
@@ -708,8 +761,9 @@ npm run web:build
 并使用隔离测试数据库验证：
 
 1. 创建草稿、刷新来源和详情读取复用同一 AI 编排入口。
-2. 规则与 AI 一致时的自动应用。
-3. 规则与 AI 分歧时的裁判建议和人工门禁。
+2. 仅针对已获 Guarded 批准的低风险场景，验证规则与 AI 一致时的受保护应用。
+3. DeepDraw `trade` 的规则/AI 分歧、裁判建议和人工门禁只在离线 harness 验证；
+   未重新准入前不得接入生产调用链。
 4. 人工确认、人工调整和来源刷新后的状态保持。
 5. AI 不可用时与现有 rules-only 结果一致。
 6. 不触发真实 DeepDraw 创建、SHEIN 发布或生产数据库写入。
@@ -742,10 +796,12 @@ npm run web:build
 1. 通用 provider adapter、registry 和场景级路由。
 2. 模型健康、429 冷却、额度和 1xm 预算控制。
 3. 通用调用审计与幂等缓存。
-4. DeepDraw 候选冻结、AI 选择器、AI 裁判和本地 validator。
-5. 草稿快照、详情接口和人工确认 UI 扩展。
-6. shadow 数据采集、评测报告和 guarded automation 开关。
-7. 现有 DeepDraw 字段补全、尺码映射等直接模型调用迁移到统一路由。
+4. 现有标题、SHEIN 属性、DeepDraw 字段与尺码映射迁移到统一路由，先保持 Shadow。
+5. SHEIN 类目 text-only Shadow、草稿快照和人工确认 UI 扩展。
+6. 低风险场景的 Shadow 数据采集、评测报告和 guarded automation 开关。
+7. DeepDraw `trade` 候选冻结、selector/arbiter 和 validator 只在离线实验实现；
+   未重新准入前不得接入生产调用链。
+8. 中性 SKC 视觉模型继续离线评测，生产只保留人工确认与颜色规则。
 
 每个单元均需保持 PostgreSQL-first、route 薄层和 service 复用原则。数据库 schema 通过新增顺序迁移实现，不改写已应用迁移。
 
@@ -762,5 +818,14 @@ npm run web:build
 - `tmp/deepdraw-trade-ai-experiment-20260728/deliverables/deepdraw-trade-ai-evaluation-20260728/model-summary.csv`
 - `tmp/deepdraw-trade-ai-experiment-20260728/deliverables/deepdraw-trade-ai-evaluation-20260728/case-summary.csv`
 - `tmp/deepdraw-trade-ai-experiment-20260728/deliverables/deepdraw-trade-ai-evaluation-20260728/methodology.md`
+- `tmp/ai-provider-specialized-evaluation-20260729/dataset/coverage.json`
+- `tmp/ai-provider-specialized-evaluation-20260729/specialized/gold.private.json`
+- `tmp/ai-provider-specialized-evaluation-20260729/specialized/scoring-rules.md`
+- `tmp/ai-provider-specialized-evaluation-20260729/specialized/runs/20260729T-specialized-new-provider-text-formal-v3/summary.json`
+- `tmp/ai-provider-specialized-evaluation-20260729/specialized/runs/20260729T-specialized-1xm-formal-v2/summary.json`
+- `tmp/ai-provider-specialized-evaluation-20260729/specialized/runs/20260729T-specialized-overseas-vision-hard-stop-v2/summary.json`
+- `tmp/ai-provider-specialized-evaluation-20260729/specialized/runs/20260729T-specialized-trade-reused-v2/summary.json`
+- `tmp/ai-provider-specialized-evaluation-20260729/specialized/runs/20260729T-specialized-title-fallback-tiebreak-v2/summary.json`
+- `tmp/ai-provider-specialized-evaluation-20260729/specialized/runs/20260729T-specialized-title-cross-provider-fallback-v2/summary.json`
 
 评测产物位于 `tmp/`，是本地证据，不作为运行时配置或生产准入开关。
