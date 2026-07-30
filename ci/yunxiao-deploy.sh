@@ -10,6 +10,11 @@ PUBLIC_ORIGIN="${LISTINGIFY_PUBLIC_ORIGIN:-https://listingify.semirapp.com}"
 RUN_SEED_IMPORT_VALUE="${RUN_SEED_IMPORT:-0}"
 DEEPDRAW_M2_DIR="${DEEPDRAW_M2_DIR:-$APP_DIR/.m2}"
 DEEPDRAW_MAVEN_MIRROR_URL_VALUE="${DEEPDRAW_MAVEN_MIRROR_URL:-https://maven.aliyun.com/repository/public}"
+DEPLOY_RUN_ID="${CI_COMMIT_SHA:-manual-$(date +%Y%m%d%H%M%S)}"
+DEPLOY_RUN_ID="$(printf '%s' "$DEPLOY_RUN_ID" | tr -c 'A-Za-z0-9._-' '-')"
+RELEASE_WORK_ROOT="${LISTINGIFY_RELEASE_WORK_ROOT:-/opt/listingfy-release/prepared}"
+PREPARED_DIR="${LISTINGIFY_PREPARED_DIR:-$RELEASE_WORK_ROOT/$DEPLOY_RUN_ID}"
+NPM_CACHE_DIR="${LISTINGIFY_NPM_CACHE_DIR:-$APP_DIR/.npm-cache}"
 
 if [ -z "$DATABASE_URL_VALUE" ]; then
   echo "ERROR: PROD_DATABASE_URL is required. Configure it as a Yunxiao secret variable."
@@ -21,15 +26,32 @@ if [ -z "${LISTINGIFY_CREDENTIAL_SECRET:-}" ]; then
   exit 11
 fi
 
+if [ -z "$PREPARED_DIR" ] || [ "$PREPARED_DIR" = "/" ]; then
+  echo "ERROR: unsafe prepared release directory: $PREPARED_DIR"
+  exit 12
+fi
+
+case "$PREPARED_DIR/" in
+  "$APP_DIR"/*)
+    echo "ERROR: LISTINGIFY_PREPARED_DIR must not be inside APP_DIR."
+    exit 13
+    ;;
+esac
+
 echo "===== Listingify Yunxiao deploy ====="
 echo "SRC_DIR=$SRC_DIR"
 echo "APP_DIR=$APP_DIR"
+echo "PREPARED_DIR=$PREPARED_DIR"
 test -f "$SRC_DIR/package.json"
 test -d "$SRC_DIR/web"
 
-mkdir -p "$APP_DIR"
+mkdir -p "$APP_DIR" "$RELEASE_WORK_ROOT" "$NPM_CACHE_DIR" "$DEEPDRAW_M2_DIR"
+rm -rf "$PREPARED_DIR"
+mkdir -p "$PREPARED_DIR"
 
-rsync -a --delete "$SRC_DIR"/ "$APP_DIR"/ \
+echo "===== Prepare release workspace ====="
+rsync -a --delete "$SRC_DIR"/ "$PREPARED_DIR"/ \
+  --exclude='.env' \
   --exclude='.env.local' \
   --exclude='data/*.sqlite' \
   --exclude='data/*.sqlite-*' \
@@ -39,8 +61,8 @@ rsync -a --delete "$SRC_DIR"/ "$APP_DIR"/ \
   --exclude='node_modules' \
   --exclude='web/node_modules'
 
-cd "$APP_DIR"
-mkdir -p "$APP_DIR/data/listing-assets"
+cd "$PREPARED_DIR"
+mkdir -p "$APP_DIR/data/listing-assets" "$PREPARED_DIR/data"
 
 echo "===== Write production env ====="
 {
@@ -84,6 +106,15 @@ echo "===== Write production env ====="
 } > .env.local
 chmod 600 .env.local
 
+export npm_config_fetch_retries="${NPM_FETCH_RETRIES:-5}"
+export npm_config_fetch_retry_factor="${NPM_FETCH_RETRY_FACTOR:-2}"
+export npm_config_fetch_retry_mintimeout="${NPM_FETCH_RETRY_MINTIMEOUT:-10000}"
+export npm_config_fetch_retry_maxtimeout="${NPM_FETCH_RETRY_MAXTIMEOUT:-120000}"
+export npm_config_cache="$NPM_CACHE_DIR"
+if [ -n "${NPM_REGISTRY_URL:-}" ]; then
+  export npm_config_registry="$NPM_REGISTRY_URL"
+fi
+
 echo "===== Check runtime ====="
 HOST_NODE_MAJOR=0
 if command -v node >/dev/null 2>&1; then
@@ -96,10 +127,10 @@ if [ "$HOST_NODE_MAJOR" -ge 24 ]; then
   export DEEPDRAW_M2_REPOSITORY="${DEEPDRAW_M2_REPOSITORY:-$DEEPDRAW_M2_DIR/repository}"
   export DEEPDRAW_MAVEN_MIRROR_URL="$DEEPDRAW_MAVEN_MIRROR_URL_VALUE"
   echo "===== Prepare DeepDraw SDK runtime on host ====="
-  node scripts/deepdraw_sdk_prepare.mjs "$APP_DIR"
+  node scripts/deepdraw_sdk_prepare.mjs "$PREPARED_DIR"
 
   echo "===== Install dependencies on host ====="
-  npm --prefix web ci --include=dev
+  npm --prefix web ci --include=dev --prefer-offline
 
   echo "===== Build web on host ====="
   npm --prefix web run build
@@ -112,15 +143,6 @@ if [ "$HOST_NODE_MAJOR" -ge 24 ]; then
   else
     echo "===== Skip seed import; set RUN_SEED_IMPORT=1 to enable ====="
   fi
-
-  echo "===== Restart API with pm2 ====="
-  if ! command -v pm2 >/dev/null 2>&1; then
-    npm install -g pm2
-  fi
-
-  pm2 delete listingfy-api || true
-  pm2 start ./web/node_modules/.bin/tsx --name listingfy-api -- web/server/index.ts
-  pm2 save
 else
   echo "Host Node >=24 is unavailable; deploying with Docker Node runtime."
   if ! command -v docker >/dev/null 2>&1; then
@@ -132,6 +154,17 @@ else
   NODE_IMAGE="${LISTINGIFY_NODE_IMAGE:-node:24-bookworm}"
   MAVEN_IMAGE="${LISTINGIFY_MAVEN_IMAGE:-maven:3.9-eclipse-temurin-17}"
   RUNTIME_IMAGE="${LISTINGIFY_RUNTIME_IMAGE:-listingfy-node-java:24-bookworm}"
+  DOCKER_NPM_ENV=(
+    -e "npm_config_fetch_retries=$npm_config_fetch_retries"
+    -e "npm_config_fetch_retry_factor=$npm_config_fetch_retry_factor"
+    -e "npm_config_fetch_retry_mintimeout=$npm_config_fetch_retry_mintimeout"
+    -e "npm_config_fetch_retry_maxtimeout=$npm_config_fetch_retry_maxtimeout"
+    -e "npm_config_cache=/root/.npm"
+  )
+  if [ -n "${npm_config_registry:-}" ]; then
+    DOCKER_NPM_ENV+=(-e "npm_config_registry=$npm_config_registry")
+  fi
+
   echo "Using Docker base image: $NODE_IMAGE"
   echo "Using Java/Maven toolchain image: $MAVEN_IMAGE"
   echo "Preparing Docker runtime image: $RUNTIME_IMAGE"
@@ -139,7 +172,7 @@ else
     --build-arg NODE_IMAGE="$NODE_IMAGE" \
     --build-arg MAVEN_IMAGE="$MAVEN_IMAGE" \
     -t "$RUNTIME_IMAGE" \
-    -f - "$APP_DIR" <<'DOCKERFILE'
+    -f - "$PREPARED_DIR" <<'DOCKERFILE'
 ARG NODE_IMAGE=node:24-bookworm
 ARG MAVEN_IMAGE=maven:3.9-eclipse-temurin-17
 FROM ${MAVEN_IMAGE} AS java_toolchain
@@ -152,41 +185,21 @@ ENV PATH="/opt/java/openjdk/bin:/usr/share/maven/bin:${PATH}"
 RUN java -version && javac -version && mvn -version
 DOCKERFILE
 
-  mkdir -p "$DEEPDRAW_M2_DIR"
   docker run --rm --network host \
-    -v "$APP_DIR:/app" \
+    -v "$PREPARED_DIR:/app" \
     -v "$DEEPDRAW_M2_DIR:/app/.m2" \
+    -v "$NPM_CACHE_DIR:/root/.npm" \
     -w /app \
-    --env-file "$APP_DIR/.env.local" \
+    --env-file "$PREPARED_DIR/.env.local" \
     -e DEEPDRAW_M2_REPOSITORY=/app/.m2/repository \
     -e RUN_SEED_IMPORT="$RUN_SEED_IMPORT_VALUE" \
+    "${DOCKER_NPM_ENV[@]}" \
     "$RUNTIME_IMAGE" \
-    bash -c 'set -e; node -v; npm -v; java -version; javac -version; npm --prefix web ci --include=dev; node scripts/deepdraw_sdk_prepare.mjs /app; npm --prefix web run build; npm run db:migrate; if [ "${RUN_SEED_IMPORT:-0}" = "1" ]; then echo "===== Import seed data in Docker ====="; npm run seed:import; else echo "===== Skip seed import; set RUN_SEED_IMPORT=1 to enable ====="; fi'
-
-  echo "===== Restart API container ====="
-  docker rm -f listingfy-api >/dev/null 2>&1 || true
-  docker run -d \
-    --name listingfy-api \
-    --restart unless-stopped \
-    --network host \
-    -v "$APP_DIR:/app" \
-    -v "$DEEPDRAW_M2_DIR:/app/.m2" \
-    -w /app \
-    --env-file "$APP_DIR/.env.local" \
-    -e DEEPDRAW_M2_REPOSITORY=/app/.m2/repository \
-    "$RUNTIME_IMAGE" \
-    bash -c 'java -version >/dev/null && ./web/node_modules/.bin/tsx web/server/index.ts'
+    bash -c 'set -e; node -v; npm -v; java -version; javac -version; npm --prefix web ci --include=dev --prefer-offline; node scripts/deepdraw_sdk_prepare.mjs /app; npm --prefix web run build; npm run db:migrate; if [ "${RUN_SEED_IMPORT:-0}" = "1" ]; then echo "===== Import seed data in Docker ====="; npm run seed:import; else echo "===== Skip seed import; set RUN_SEED_IMPORT=1 to enable ====="; fi'
 fi
 
-echo "===== Health check ====="
-sleep 3
-curl -fsS "http://127.0.0.1:${PORT:-3001}/api/health"
-echo
-
-echo "===== Restart web container ====="
-if command -v docker >/dev/null 2>&1; then
-  test -f "$APP_DIR/web/dist/index.html"
-  cat > "$APP_DIR/nginx.conf" <<'NGINXEOF'
+echo "===== Write web server config ====="
+cat > "$PREPARED_DIR/nginx.conf" <<'NGINXEOF'
 map $http_x_forwarded_proto $listingify_forwarded_proto {
     default $http_x_forwarded_proto;
     "" $scheme;
@@ -240,6 +253,59 @@ server {
     }
 }
 NGINXEOF
+
+echo "===== Verify prepared release ====="
+test -x "$PREPARED_DIR/web/node_modules/.bin/tsx"
+test -f "$PREPARED_DIR/web/dist/index.html"
+test -f "$PREPARED_DIR/nginx.conf"
+
+echo "===== Publish prepared release ====="
+rsync -a --delete "$PREPARED_DIR"/ "$APP_DIR"/ \
+  --exclude='data/*.sqlite' \
+  --exclude='data/*.sqlite-*' \
+  --exclude='data/*.db' \
+  --exclude='data/*.db-*' \
+  --exclude='data/listing-assets' \
+  --exclude='.m2' \
+  --exclude='.npm-cache' \
+  --exclude='/node_modules'
+mkdir -p "$APP_DIR/data/listing-assets"
+
+cd "$APP_DIR"
+
+echo "===== Restart API ====="
+if [ "$HOST_NODE_MAJOR" -ge 24 ]; then
+  if ! command -v pm2 >/dev/null 2>&1; then
+    npm install -g pm2
+  fi
+
+  pm2 delete listingfy-api || true
+  pm2 start ./web/node_modules/.bin/tsx --name listingfy-api -- web/server/index.ts
+  pm2 save
+else
+  docker rm -f listingfy-api >/dev/null 2>&1 || true
+  docker run -d \
+    --name listingfy-api \
+    --restart unless-stopped \
+    --network host \
+    -v "$APP_DIR:/app" \
+    -v "$DEEPDRAW_M2_DIR:/app/.m2" \
+    -w /app \
+    --env-file "$APP_DIR/.env.local" \
+    -e DEEPDRAW_M2_REPOSITORY=/app/.m2/repository \
+    "$RUNTIME_IMAGE" \
+    bash -c 'java -version >/dev/null && ./web/node_modules/.bin/tsx web/server/index.ts'
+fi
+
+echo "===== Health check ====="
+sleep 3
+curl -fsS "http://127.0.0.1:${PORT:-3001}/api/health"
+echo
+
+echo "===== Restart web container ====="
+if command -v docker >/dev/null 2>&1; then
+  test -f "$APP_DIR/web/dist/index.html"
+  test -f "$APP_DIR/nginx.conf"
 
   docker rm -f listingfy-web >/dev/null 2>&1 || true
   docker run -d \

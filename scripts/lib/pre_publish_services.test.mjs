@@ -1075,6 +1075,27 @@ test("deployment preserves runtime listing image uploads outside release sync", 
   assert.match(deployScript, /mkdir -p "\$APP_DIR\/data\/listing-assets"/);
 });
 
+test("deployment prepares a complete release before publishing to the live app directory", async () => {
+  const deployScript = await readFile(path.join(PROJECT_ROOT, "ci/yunxiao-deploy.sh"), "utf8");
+  const publishBlock = deployScript.slice(deployScript.indexOf("===== Publish prepared release ====="));
+
+  assert.doesNotMatch(deployScript, /rsync -a --delete "\$SRC_DIR"\/ "\$APP_DIR"\//);
+  assert.match(deployScript, /PREPARED_DIR/);
+  assert.match(deployScript, /===== Prepare release workspace =====/);
+  assert.match(deployScript, /rsync -a --delete "\$SRC_DIR"\/ "\$PREPARED_DIR"\//);
+  assert.match(deployScript, /npm --prefix web ci --include=dev --prefer-offline/);
+  assert.match(deployScript, /test -x "\$PREPARED_DIR\/web\/node_modules\/\.bin\/tsx"/);
+  assert.match(deployScript, /test -f "\$PREPARED_DIR\/web\/dist\/index\.html"/);
+  assert.match(deployScript, /test -f "\$PREPARED_DIR\/nginx\.conf"/);
+  assert.match(deployScript, /===== Publish prepared release =====/);
+  assert.match(deployScript, /rsync -a --delete "\$PREPARED_DIR"\/ "\$APP_DIR"\//);
+  assert.match(deployScript, /LISTINGIFY_NPM_CACHE_DIR/);
+  assert.match(deployScript, /npm_config_fetch_retries/);
+  assert.match(deployScript, /-v "\$NPM_CACHE_DIR:\/root\/\.npm"/);
+  assert.doesNotMatch(publishBlock, /--exclude='web\/node_modules'/);
+  assert.match(publishBlock, /--exclude='\/node_modules'/);
+});
+
 test("deployment prepares the DeepDraw Java SDK runtime for production publishing", async () => {
   const deployScript = await readFile(path.join(PROJECT_ROOT, "ci/yunxiao-deploy.sh"), "utf8");
 
