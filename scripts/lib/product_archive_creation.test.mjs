@@ -2274,16 +2274,36 @@ test("product archive AI fallback chooses semantic template options for invalid 
     { value: "阻燃", label: "阻燃" },
     { value: "其他", label: "其他" },
   ], ""), "其他");
+  assert.equal(service.chooseProductArchiveAiFallbackOption("原产国(AKC)", "", [
+    { value: "黑山", label: "黑山" },
+    { value: "中国", label: "中国" },
+  ], ""), "中国");
+  assert.equal(service.chooseProductArchiveAiFallbackOption("原产国(AKC)", "", [
+    { value: "黑山", label: "黑山" },
+    { value: "越南", label: "越南" },
+  ], ""), "");
 });
 
 test("product archive service normalizes source values into DeepDraw enum options", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
+  assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("原产国(AKC)", {
+    spu: {},
+    skus: [],
+  }), { valueText: "中国", valueJson: {} });
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("25柔软指数", "偏硬", [
     { value: "硬" },
     { value: "微硬" },
     { value: "适中" },
   ]), "微硬");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("原产国(AKC)", "中国", [
+    { value: "黑山" },
+    { value: "中国" },
+  ]), "中国");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("原产国(AKC)", "China", [
+    { value: "黑山" },
+    { value: "中国大陆" },
+  ]), "中国大陆");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("发货方式", "快递", [
     { value: "快递发货" },
     { value: "无需快递" },

@@ -1050,6 +1050,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (key === "袖长") return "长袖"
   if (key === "衣长") return "常规"
   if (key === "腰型" || key === "裤长" || key === "裤门襟") return "不适用"
+  if (isProductArchiveOriginCountryField(fieldName)) return "中国"
   if (key === "童装产地多选") return "中国大陆"
   if (key === "适用场合") return "日常"
   if (key === "退款规则") return "支持7天无理由退货"
@@ -1071,6 +1072,9 @@ export function buildProductArchiveMdmDerivedFieldValue(fieldName: string, input
   dateText?: string
 }) {
   const key = compactFieldKey(fieldName)
+  if (isProductArchiveOriginCountryField(fieldName)) {
+    return { valueText: "中国", valueJson: {} }
+  }
   if (key === "货号" || key === "款号") {
     return { valueText: stringValue(input.spu.spu_code), valueJson: {} }
   }
@@ -2340,6 +2344,23 @@ function normalizeMaterialMultiChoiceValue(value: unknown, options: unknown[]) {
   return values.length ? uniqueTextValues(values).join(";") : stringValue(value)
 }
 
+function isProductArchiveOriginCountryField(fieldName: unknown) {
+  const key = compactFieldKey(fieldName)
+  return key === "原产国"
+    || key.startsWith("原产国")
+    || key === "产地"
+}
+
+function productArchiveChinaOriginOption(options: unknown[]) {
+  return pickOption(options, [
+    (option) => option === "中国",
+    (option) => option === "中国大陆",
+    (option) => option === "中国（大陆）",
+    (option) => option === "中华人民共和国",
+    (option) => /^中国(?:[（(]|大陆|$)/.test(option),
+  ])
+}
+
 export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, value: unknown, options: unknown[]) {
   const text = stringValue(value)
   const key = compactFieldKey(fieldName)
@@ -2347,6 +2368,9 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
   if (!text || !options.length) return text
   const exact = pickOption(options, [(option) => option === text])
   if (exact) return exact
+  if (isProductArchiveOriginCountryField(fieldName) && /中国|china/i.test(text)) {
+    return productArchiveChinaOriginOption(options) || text
+  }
   if (key === "材质成分" || key === "京东材质成分") return normalizeMaterialCompositionValue(text, options)
   if (key === "面料多选" || key === "材质多选" || key === "材质成分多选" || key === "里料材质成分含量多选") {
     return normalizeMaterialMultiChoiceValue(text, options)
@@ -2511,6 +2535,9 @@ export function chooseProductArchiveAiFallbackOption(
 ) {
   if (isUnsupportedAiFillField(fieldName)) return ""
   if (compactFieldKey(fieldName).includes("颜色")) return ""
+  if (isProductArchiveOriginCountryField(fieldName)) {
+    return productArchiveChinaOriginOption(options) || ""
+  }
   const evidenceText = `${stringValue(currentValue)} ${contextText}`
   const pick = (needles: string[]) => {
     for (const needle of needles) {
@@ -4571,7 +4598,8 @@ function isUnsupportedAiFillField(fieldName: unknown) {
 
 function isStaleUnsupportedAiFillField(fieldName: unknown, field: JsonRecord) {
   const sourceType = stringValue(field.source_type)
-  return isUnsupportedAiFillField(fieldName) && (sourceType === "ai" || sourceType === "ai_rule_fallback")
+  return (isUnsupportedAiFillField(fieldName) || isProductArchiveOriginCountryField(fieldName))
+    && (sourceType === "ai" || sourceType === "ai_rule_fallback")
 }
 
 export function productArchivePayloadFieldValue(field: JsonRecord) {
