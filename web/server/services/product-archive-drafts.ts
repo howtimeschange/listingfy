@@ -3004,7 +3004,8 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     const rule = ruleByName.get(fieldName) ?? {}
     const template = fieldTemplateByName.get(fieldName) ?? {}
     const existing = existingByName.get(fieldName) ?? {}
-    const ruleSourceType = stringValue(rule.source_type) || "manual"
+    const originCountryField = isProductArchiveOriginCountryField(fieldName)
+    const ruleSourceType = stringValue(rule.source_type) || (originCountryField ? "fixed" : "manual")
     const existingManual = Boolean(existing.manual_override) && !isStaleUnsupportedAiFillField(fieldName, existing)
     const sourceValueText = readSourceValue(spu, rule, sourceRows, fieldName)
     const sizeChartDerived = !existingManual && compactFieldKey(fieldName).includes("尺码表")
@@ -3041,13 +3042,14 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     })
     const blocking = required
     const missing = blocking && fieldSourceType !== "skip" && !hasValue(valueText) && !hasValue(valueJson)
+    const ruleSourceRef = stringValue(rule.mapped_field || rule.source_field || rule.field_source || rule.source_table) || null
     return {
       fieldName,
       fieldId: stringValue(template.field_id) || null,
       sourceType: fieldSourceType,
       sourceRef: hasSizeChartValue
         ? "PLM尺码表"
-        : stringValue(rule.mapped_field || rule.source_field || rule.field_source || rule.source_table) || null,
+        : ruleSourceRef || (originCountryField ? "中国" : null),
       valueText: valueText || null,
       valueJson,
       required,

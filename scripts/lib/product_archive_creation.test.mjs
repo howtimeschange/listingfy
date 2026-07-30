@@ -2401,6 +2401,14 @@ test("product archive service normalizes source values into DeepDraw enum option
   ]), "balabala/巴拉巴拉");
 });
 
+test("product archive origin-country fields default to a fixed China source", async () => {
+  const service = await readFile(files.draftService, "utf8");
+
+  assert.match(service, /const originCountryField = isProductArchiveOriginCountryField\(fieldName\)/);
+  assert.match(service, /const ruleSourceType = stringValue\(rule\.source_type\) \|\| \(originCountryField \? "fixed" : "manual"\)/);
+  assert.match(service, /ruleSourceRef \|\| \(originCountryField \? "中国" : null\)/);
+});
+
 test("product archive payload date keeps the launch-plan source date for SDK product date", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
