@@ -1340,6 +1340,8 @@ test("product archive AI fill skips fields that already have JSON values", async
   assert.match(service, /!hasValue\(recordValue\(field\.value_json\)\)/);
   assert.match(service, /rebuildProductArchiveDraftFields\(db, draftId\)/);
   assert.match(service, /fillProductArchiveDraftFieldsWithAi/);
+  assert.match(service, /isStaleUnsupportedAiFillField/);
+  assert.match(service, /existing\.manual_override\) && !isStaleUnsupportedAiFillField\(fieldName, existing\)/);
 });
 
 test("product archive size-chart mapping AI routes and review services are wired", async () => {
@@ -1829,6 +1831,42 @@ test("product archive service fills material composition text fields from copywr
   assert.equal(compositionValue, "100%棉（配料除外）");
 });
 
+test("product archive service derives down and platform text fields before AI fill", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const spu = {
+    spu_code: "208426120216",
+    spu_name: "婴儿外出连体衣",
+    brand_code: "20",
+    brand_name: "巴拉巴拉",
+    filler: "160g/85#绒子",
+  };
+  const sourceRows = [
+    {
+      source_type: "copywriting",
+      row_json: {
+        "款号": "208426120216",
+        "名称": "婴童羽绒连体衣",
+        "内容平台标题": "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖",
+        "面料成分": "面料：100%锦纶\n里料：100%锦纶\n填充物\n大身/袖子：白鸭绒\n绒子含量：85%\n其余部位：100%聚酯纤维",
+      },
+    },
+  ];
+  const derive = (fieldName) => service.buildProductArchiveSourceDerivedFieldValue(fieldName, {
+    spu,
+    sourceRows,
+  });
+
+  assert.equal(derive("品牌"), "巴拉巴拉");
+  assert.equal(derive("生产企业名称"), "浙江森马服饰股份有限公司");
+  assert.equal(derive("充绒量(文本)"), "160g");
+  assert.equal(derive("含绒量(文本)"), "85%");
+  assert.equal(derive("绒子含量(文本)"), "85%");
+  assert.equal(derive("里料成分含量"), "100%锦纶");
+  assert.equal(derive("里料材质成分含量(多选)"), "聚酰胺纤维");
+  assert.equal(derive("快手标题"), "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖");
+  assert.equal(derive("拼多多标题"), "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖");
+});
+
 test("product archive service maps every main-fabric component for 208326105206-TEST", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const sourceRows = [
@@ -2127,6 +2165,16 @@ test("product archive AI fill skips structural multi-platform size fields", asyn
       options_json: [{ value: "得物" }, { value: "京东" }],
     },
     {
+      id: 303,
+      field_name: "淘宝尺码表",
+      source_type: "manual",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [{ value: "身高" }, { value: "衣长" }],
+    },
+    {
       id: 302,
       field_name: "适用季节",
       source_type: "manual",
@@ -2141,6 +2189,9 @@ test("product archive AI fill skips structural multi-platform size fields", asyn
   assert.deepEqual(candidates.map((field) => field.fieldName), ["适用季节"]);
   assert.equal(service.chooseProductArchiveAiFallbackOption("多平台尺码", "", [
     { value: "得物", label: "得物" },
+  ]), "");
+  assert.equal(service.chooseProductArchiveAiFallbackOption("淘宝尺码表", "", [
+    { value: "身高", label: "身高" },
   ]), "");
 });
 
@@ -2216,6 +2267,15 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "聚酯纤维（涤纶）" },
     { value: "棉" },
   ]), "聚酯纤维（涤纶）");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("里料材质成分含量(多选)", "100%锦纶", [
+    { value: "聚酰胺纤维" },
+    { value: "聚酯纤维" },
+  ]), "聚酰胺纤维");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("衣门襟", "系扣", [
+    { value: "魔术贴" },
+    { value: "肩开扣" },
+    { value: "纽扣" },
+  ]), "纽扣");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("面料(多选)", "面料：100%聚酯纤维", [
     { value: "聚酯纤维" },
     { value: "梭织布" },

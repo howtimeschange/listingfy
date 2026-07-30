@@ -506,7 +506,7 @@ function sourceAliases(sourceField: string) {
     尺码段: ["尺码段", "尺码范围", "尺码区间", "尺码"],
     上市时间: ["上市时间", "内容上市时间", "搜索上市时间"],
     对应日期: ["内容上市时间", "搜索上市时间", "上市时间"],
-    搜索标题: ["搜索标题", "商品标题", "标题"],
+    搜索标题: ["搜索标题", "商品标题", "标题", "内容平台标题", "内容标题", "天猫标题"],
     内容平台标题: ["内容平台标题", "内容标题"],
     细节文案: ["细节文案", "细节文案（不限定8个字，细节数量3-4个）"],
     材质成分: ["材质成分", "面料成分"],
@@ -731,6 +731,7 @@ function normalizeMaterialName(value: unknown) {
     .trim()
   if (/^(?:纯棉|全棉)$/.test(text)) return "棉"
   if (/^(?:涤纶|涤纶[（(]聚酯纤维[）)]|聚酯纤维[（(]涤纶[）)])$/.test(text)) return "聚酯纤维"
+  if (/^(?:锦纶|尼龙|聚酰胺纤维|锦纶[（(]聚酰胺纤维[）)]|聚酰胺纤维[（(]锦纶[）)])$/.test(text)) return "聚酰胺纤维"
   return text
 }
 
@@ -790,6 +791,71 @@ function materialComponentsFromText(value: unknown): MaterialComponent[] {
 function materialCompositionSourceText(sourceRows: JsonRecord[]) {
   return copywritingValue(sourceRows, "面料成分")
     || copywritingValue(sourceRows, "材质成分")
+}
+
+function sectionTextFromMaterialSource(sourceRows: JsonRecord[], labels: string[]) {
+  const sourceText = materialCompositionSourceText(sourceRows)
+    .replace(/\u00a0/g, " ")
+    .replace(/％/g, "%")
+    .replace(/\r/g, "")
+  if (!sourceText) return ""
+  const labelPattern = labels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")
+  const labelMatch = new RegExp(`(?:^|\\n|\\s)(?:${labelPattern})\\s*[:：]\\s*`).exec(sourceText)
+  if (!labelMatch) return ""
+  const afterLabel = sourceText.slice(labelMatch.index + labelMatch[0].length)
+  const nextLabel = new RegExp(`(?:^|\\n|\\s)(?:${SECONDARY_MATERIAL_SECTION}|主面料|大身面料|面料)\\s*(?:[:：]|\\n|$)`)
+  const nextIndex = afterLabel.search(nextLabel)
+  return (nextIndex >= 0 ? afterLabel.slice(0, nextIndex) : afterLabel)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("；")
+}
+
+function liningCompositionText(sourceRows: JsonRecord[]) {
+  return sectionTextFromMaterialSource(sourceRows, ["里料", "衬里"])
+}
+
+function downMaterialText(spu: JsonRecord, sourceRows: JsonRecord[]) {
+  return stringValue(spu.filler) || sectionTextFromMaterialSource(sourceRows, ["填充物", "填充料"])
+}
+
+function downFillWeightText(spu: JsonRecord, sourceRows: JsonRecord[]) {
+  const text = downMaterialText(spu, sourceRows)
+  const match = text.match(/(\d+(?:\.\d+)?)\s*(?:g|克)\b/i)
+  return match ? `${formatMaterialPercent(match[1])}g` : ""
+}
+
+function downContentPercentText(spu: JsonRecord, sourceRows: JsonRecord[]) {
+  const sourceText = `${downMaterialText(spu, sourceRows)}\n${materialCompositionSourceText(sourceRows)}`
+    .replace(/％/g, "%")
+  const labeled = sourceText.match(/(?:绒子含量|含绒量)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%?/)
+  if (labeled) return `${formatMaterialPercent(labeled[1])}%`
+  const filler = sourceText.match(/(\d+(?:\.\d+)?)\s*#\s*绒子/)
+  if (filler) return `${formatMaterialPercent(filler[1])}%`
+  return ""
+}
+
+function copywritingTitleValue(spu: JsonRecord, sourceRows: JsonRecord[]) {
+  return copywritingValue(sourceRows, "搜索标题")
+    || copywritingValue(sourceRows, "内容平台标题")
+    || copywritingValue(sourceRows, "天猫标题")
+    || copywritingValue(sourceRows, "商品标题")
+    || copywritingValue(sourceRows, "标题")
+    || stringValue(spu.listing_title_cn)
+    || stringValue(spu.spu_name)
+}
+
+function productionEnterpriseName(spu: JsonRecord) {
+  const rawPayload = recordValue(spu.raw_payload_json)
+  const explicit = stringValue(rawPayload.productionEnterpriseName)
+    || stringValue(rawPayload.manufacturer)
+    || stringValue(rawPayload.producerName)
+    || stringValue(rawPayload.factoryName)
+  if (explicit) return explicit
+  const brandText = `${stringValue(spu.brand_name)} ${stringValue(spu.brand_code)}`
+  if (/巴拉巴拉|森马|balabala|semir/i.test(brandText)) return "浙江森马服饰股份有限公司"
+  return ""
 }
 
 function primaryMaterialComponents(sourceRows: JsonRecord[]) {
@@ -951,6 +1017,12 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (key === "厚薄") return copywritingValue(sourceRows, "厚薄")
   if (key === "分类" || key === "类型") return "外套"
   if (key === "品牌单选") return stringValue(input.spu.brand_name) || "巴拉巴拉"
+  if (key === "品牌" || key === "品牌文本") return stringValue(input.spu.brand_name) || copywritingValue(sourceRows, "品牌") || "巴拉巴拉"
+  if (key === "生产企业名称" || key === "生产经销厂家" || key === "生产经销企业") return productionEnterpriseName(input.spu)
+  if (key === "充绒量文本") return downFillWeightText(input.spu, sourceRows)
+  if (key === "含绒量文本" || key === "绒子含量文本") return downContentPercentText(input.spu, sourceRows)
+  if (key === "里料成分含量") return liningCompositionText(sourceRows)
+  if (key === "里料材质成分含量多选") return normalizeMaterialName(liningCompositionText(sourceRows).replace(/^\d+(?:\.\d+)?\s*%/, ""))
   if (key === "功能多选") return copywritingValue(sourceRows, "面料三个关键词") || copywritingValue(sourceRows, "推荐理由")
   if (key === "安全等级" || key === "安全等级多选") return "A类"
   if (key === "尺码表") return ""
@@ -966,7 +1038,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (key === "商品描述") return ""
   if (key === "微信视频小店副标题" || key === "快手商品卖点") return copywritingValue(sourceRows, "推荐理由") || copyTextBlock(sourceRows)
   if (key === "微信视频小店标题" || key === "抖音标题") return copywritingValue(sourceRows, "内容平台标题") || copywritingValue(sourceRows, "搜索标题")
-  if (key === "快手标题" || key === "拼多多标题") return copywritingValue(sourceRows, "搜索标题")
+  if (key === "快手标题" || key === "拼多多标题") return copywritingTitleValue(input.spu, sourceRows)
   if (key === "计量单位") return stringValue(input.spu.unit_name) || "件"
   if (key === "是否跨境出口专供货源" || key === "是否加绒" || key === "是否可开档" || key === "是否开裆") return "否"
   if (key === "是否可定制") return "不可定制"
@@ -2219,7 +2291,7 @@ function multiAgeOptionValue(text: string, options: unknown[]) {
 }
 
 function normalizeMaterialOptionValue(value: unknown, options: unknown[]) {
-  const text = normalizeMaterialName(value)
+  const text = normalizeMaterialName(stringValue(value).replace(/^\d+(?:\.\d+)?\s*%/, ""))
   if (!text) return ""
   if (!options.length) return text
   if (text === "聚酯纤维") {
@@ -2236,6 +2308,13 @@ function normalizeMaterialOptionValue(value: unknown, options: unknown[]) {
       (option) => option === "纯棉",
       (option) => option === "纯棉(棉含量100%)",
       (option) => option.includes("棉"),
+    ]) || text
+  }
+  if (text === "聚酰胺纤维") {
+    return pickOption(options, [
+      (option) => option === "聚酰胺纤维",
+      (option) => option === "锦纶",
+      (option) => option.includes("聚酰胺纤维") || option.includes("锦纶") || option.includes("尼龙"),
     ]) || text
   }
   return pickOption(options, [
@@ -2269,8 +2348,15 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
   const exact = pickOption(options, [(option) => option === text])
   if (exact) return exact
   if (key === "材质成分" || key === "京东材质成分") return normalizeMaterialCompositionValue(text, options)
-  if (key === "面料多选" || key === "材质多选" || key === "材质成分多选") {
+  if (key === "面料多选" || key === "材质多选" || key === "材质成分多选" || key === "里料材质成分含量多选") {
     return normalizeMaterialMultiChoiceValue(text, options)
+  }
+  if (key.includes("门襟") && /系扣/.test(text)) {
+    return pickOption(options, [
+      (option) => option === "纽扣",
+      (option) => option === "系扣",
+      (option) => option.includes("扣"),
+    ]) || text
   }
   if (key.includes("颜色")) {
     const values = text.split(/[;；]/).map((part) => part.trim()).filter(Boolean)
@@ -2423,7 +2509,7 @@ export function chooseProductArchiveAiFallbackOption(
   options: Array<{ value: string; label: string }>,
   contextText = "",
 ) {
-  if (isUnsupportedScalarProductPayloadField(fieldName)) return ""
+  if (isUnsupportedAiFillField(fieldName)) return ""
   if (compactFieldKey(fieldName).includes("颜色")) return ""
   const evidenceText = `${stringValue(currentValue)} ${contextText}`
   const pick = (needles: string[]) => {
@@ -2572,7 +2658,7 @@ export function buildProductArchiveAiFillCandidateFields(
 ): ProductArchiveAiFillCandidate[] {
   const colorIssueValues = skuColorIssueValues(issues, skus)
   return fields
-    .filter((field) => !isUnsupportedScalarProductPayloadField(field.field_name))
+    .filter((field) => !isUnsupportedAiFillField(field.field_name))
     .map((field) => {
       const valueText = stringValue(field.value_text)
       const valueJson = recordValue(field.value_json)
@@ -2733,20 +2819,60 @@ function draftById(db: SyncPostgresDatabase, draftId: number) {
 
 function fieldOptionsLookup(db: SyncPostgresDatabase, draft: JsonRecord) {
   const rows = db.prepare(`
-    select field_name, options_json, required
+    select field_name, field_id, options_json, required, sale_prop, raw_payload_json
     from deepdraw_trade_field_cache
     where tenant_name = ?
       and merchant_id = ?
       and trade_id = ?
+    order by required desc, sale_prop desc, field_id
   `).all(draft.tenant_name, draft.merchant_id, draft.trade_id) as JsonRecord[]
-  const lookup = new Map<string, { options: unknown[]; required: boolean }>()
+  const lookup = new Map<string, { options: unknown[]; required: boolean; rawPayload: JsonRecord }>()
   for (const row of rows) {
-    lookup.set(stringValue(row.field_name), {
+    const fieldName = stringValue(row.field_name)
+    if (!fieldName || lookup.has(fieldName)) continue
+    lookup.set(fieldName, {
       options: arrayValue(row.options_json),
       required: Boolean(row.required),
+      rawPayload: recordValue(row.raw_payload_json),
     })
   }
   return lookup
+}
+
+function primaryTemplateFieldsByName(tradeFields: JsonRecord[]) {
+  const ordered = [...tradeFields].sort((left, right) => {
+    const requiredDelta = Number(Boolean(right.required)) - Number(Boolean(left.required))
+    if (requiredDelta) return requiredDelta
+    const saleDelta = Number(Boolean(right.sale_prop)) - Number(Boolean(left.sale_prop))
+    if (saleDelta) return saleDelta
+    return stringValue(left.field_id).localeCompare(stringValue(right.field_id))
+  })
+  const lookup = new Map<string, JsonRecord>()
+  for (const field of ordered) {
+    const fieldName = stringValue(field.field_name)
+    if (fieldName && !lookup.has(fieldName)) lookup.set(fieldName, field)
+  }
+  return lookup
+}
+
+function childFieldRequirement(input: { rawPayload?: unknown }) {
+  const attributes = recordValue(recordValue(input.rawPayload).attributes)
+  const isChildAttr = attributes.isChildAttr === true || stringValue(attributes.isChildAttr).toLowerCase() === "true"
+  const parentValue = stringValue(attributes.parentAttrValue)
+  const parentAttrs = uniqueTextValues(arrayValue(attributes.parentAttr).flatMap((value) => stringValue(value).split(/[;；,，]/)))
+  if (!isChildAttr || !parentValue || parentAttrs.length === 0) return null
+  return { parentAttrs, parentValue }
+}
+
+function templateChildRequirementActive(template: JsonRecord, fields: JsonRecord[]) {
+  const requirement = childFieldRequirement({ rawPayload: template.raw_payload_json ?? template.rawPayload })
+  if (!requirement) return true
+  for (const parentName of requirement.parentAttrs) {
+    const parent = fields.find((field) => stringValue(field.field_name) === parentName)
+    const value = stringValue(parent?.value_text)
+    if (value === requirement.parentValue) return true
+  }
+  return false
 }
 
 function tradeFieldsForDraft(db: SyncPostgresDatabase, draft: JsonRecord, tradeId = stringValue(draft.trade_id)) {
@@ -2843,7 +2969,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
   for (const field of tradeFields) fieldNames.add(stringValue(field.field_name))
   for (const rule of rules) fieldNames.add(stringValue(rule.deepdraw_field))
 
-  const fieldTemplateByName = new Map(tradeFields.map((field) => [stringValue(field.field_name), field]))
+  const fieldTemplateByName = primaryTemplateFieldsByName(tradeFields)
   const ruleByName = new Map(rules.map((rule) => [stringValue(rule.deepdraw_field), rule]))
   const existingByName = new Map(existingFields.map((field) => [stringValue(field.field_name), field]))
 
@@ -2852,7 +2978,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     const template = fieldTemplateByName.get(fieldName) ?? {}
     const existing = existingByName.get(fieldName) ?? {}
     const ruleSourceType = stringValue(rule.source_type) || "manual"
-    const existingManual = Boolean(existing.manual_override)
+    const existingManual = Boolean(existing.manual_override) && !isStaleUnsupportedAiFillField(fieldName, existing)
     const sourceValueText = readSourceValue(spu, rule, sourceRows, fieldName)
     const sizeChartDerived = !existingManual && compactFieldKey(fieldName).includes("尺码表")
       ? buildProductArchiveSizeChartFieldValue({
@@ -2879,7 +3005,8 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
       : hasSizeChartValue
         ? "size_chart"
         : ruleSourceType
-    const required = isProductArchiveFieldLocallyRequired(fieldName, {
+    const childRequirementActive = templateChildRequirementActive(template, existingFields)
+    const required = childRequirementActive && isProductArchiveFieldLocallyRequired(fieldName, {
       templateRequired: template.required,
       templatePresent: hasValue(template.field_name) || hasValue(template.field_id),
       ruleBlocking: rule.blocking,
@@ -4316,7 +4443,10 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
     const fieldName = stringValue(field.field_name)
     const value = stringValue(field.value_text) || recordValue(field.value_json)
     const template = templateLookup.get(fieldName)
-    const required = isProductArchiveFieldLocallyRequired(fieldName, {
+    const childRequirementActive = template
+      ? templateChildRequirementActive({ rawPayload: template.rawPayload }, fields)
+      : true
+    const required = childRequirementActive && isProductArchiveFieldLocallyRequired(fieldName, {
       templateRequired: template?.required,
       templatePresent: Boolean(template),
       ruleBlocking: Boolean(field.blocking) || Boolean(field.required),
@@ -4429,6 +4559,16 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
 
 function isUnsupportedScalarProductPayloadField(fieldName: unknown) {
   return compactFieldKey(fieldName) === "多平台尺码"
+}
+
+function isUnsupportedAiFillField(fieldName: unknown) {
+  const key = compactFieldKey(fieldName)
+  return isUnsupportedScalarProductPayloadField(fieldName) || key.includes("尺码表")
+}
+
+function isStaleUnsupportedAiFillField(fieldName: unknown, field: JsonRecord) {
+  const sourceType = stringValue(field.source_type)
+  return isUnsupportedAiFillField(fieldName) && (sourceType === "ai" || sourceType === "ai_rule_fallback")
 }
 
 function productPayloadFieldValue(field: JsonRecord) {
