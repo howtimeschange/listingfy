@@ -4557,13 +4557,16 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
   return { status, summary, issues, detail: serializeDraftDetail(db, draftId) }
 }
 
-function isUnsupportedScalarProductPayloadField(fieldName: unknown) {
-  return compactFieldKey(fieldName) === "多平台尺码"
+function isStructuredProductPayloadField(field: JsonRecord) {
+  const key = compactFieldKey(field.field_name)
+  const fieldType = stringValue(field.field_type).toUpperCase()
+  const isStructuredType = !fieldType || fieldType === "MULTI_TEXT"
+  return isStructuredType && (key === "多平台尺码" || key.includes("尺码表"))
 }
 
 function isUnsupportedAiFillField(fieldName: unknown) {
   const key = compactFieldKey(fieldName)
-  return isUnsupportedScalarProductPayloadField(fieldName) || key.includes("尺码表")
+  return key === "多平台尺码" || key.includes("尺码表")
 }
 
 function isStaleUnsupportedAiFillField(fieldName: unknown, field: JsonRecord) {
@@ -4572,10 +4575,8 @@ function isStaleUnsupportedAiFillField(fieldName: unknown, field: JsonRecord) {
 }
 
 export function productArchivePayloadFieldValue(field: JsonRecord) {
-  if (isUnsupportedScalarProductPayloadField(field.field_name)) return null
-  const key = compactFieldKey(field.field_name)
   const jsonValue = recordValue(field.value_json)
-  if (key.includes("尺码表")) return hasValue(jsonValue) ? jsonValue : null
+  if (isStructuredProductPayloadField(field)) return hasValue(jsonValue) ? jsonValue : null
   const text = stringValue(field.value_text)
   if (text) return text
   return hasValue(jsonValue) ? jsonValue : null
@@ -4590,6 +4591,7 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
     .map((field) => ({
       id: stringValue(field.field_id) || undefined,
       name: stringValue(field.field_name),
+      fieldType: stringValue(field.field_type) || undefined,
       value: productArchivePayloadFieldValue(field),
     }))
     .filter((field) => hasValue(field.value))

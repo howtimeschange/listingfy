@@ -262,6 +262,7 @@ test("buildDeepdrawSdkProductInput omits unsupported scalar size payload fields"
       fields: [
         { name: "多平台尺码", value: "得物" },
         { name: "抖音尺码表", value: "只需要填身高体重" },
+        { name: "22Q4-童鞋尺码表", fieldType: "SINGLE_CHOICE", value: "篮球鞋" },
         { name: "适用季节", value: "春秋" },
       ],
       skus: [],
@@ -270,6 +271,7 @@ test("buildDeepdrawSdkProductInput omits unsupported scalar size payload fields"
 
   assert.equal(Object.hasOwn(input.product.fields, "多平台尺码"), false);
   assert.equal(Object.hasOwn(input.product.fields, "抖音尺码表"), false);
+  assert.equal(input.product.fields["22Q4-童鞋尺码表"], "篮球鞋");
   assert.equal(input.product.fields["适用季节"], "春秋");
 });
 

@@ -1635,9 +1635,22 @@ test("product archive create payload omits scalar size-chart fields", async () =
   }), null);
   assert.deepEqual(service.productArchivePayloadFieldValue({
     field_name: "尺码表",
+    field_type: "MULTI_TEXT",
     value_text: "只需要填身高体重",
     value_json: { title: "身高,衣长", "80cm": "80,38" },
   }), { title: "身高,衣长", "80cm": "80,38" });
+  assert.equal(service.productArchivePayloadFieldValue({
+    field_name: "22Q4-童鞋尺码表",
+    field_type: "SINGLE_CHOICE",
+    value_text: "篮球鞋",
+    value_json: {},
+  }), "篮球鞋");
+  assert.deepEqual(service.productArchivePayloadFieldValue({
+    field_name: "多平台尺码",
+    field_type: "MULTI_TEXT",
+    value_text: "得物",
+    value_json: { title: "平台,尺码", "80cm": "得物,80" },
+  }), { title: "平台,尺码", "80cm": "得物,80" });
   assert.equal(service.productArchivePayloadFieldValue({
     field_name: "颜色",
     value_text: "卡其,贝壳卡50230",

@@ -71,10 +71,19 @@ function normalizeSdkFieldName(name) {
   return compactKey(name) === "商家sku" ? "商家SKU" : stringValue(name);
 }
 
-function isUnsupportedScalarSdkField(name, value) {
+function fieldType(field) {
+  if (!field || typeof field !== "object") return "";
+  return stringValue(field.fieldType ?? field.field_type ?? field.type).toUpperCase();
+}
+
+function isStructuredSizePayloadField(name, type) {
   const key = compactKey(name);
-  return (key === "多平台尺码" || key.includes("尺码表"))
-    && (!value || typeof value !== "object" || Array.isArray(value));
+  const structuredType = !type || type === "MULTI_TEXT";
+  return structuredType && (key === "多平台尺码" || key.includes("尺码表"));
+}
+
+function isUnsupportedScalarSdkField(name, value, type = "") {
+  return isStructuredSizePayloadField(name, type) && (!value || typeof value !== "object" || Array.isArray(value));
 }
 
 function fieldValue(field) {
@@ -228,12 +237,13 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
   for (const field of payloadFields) {
     const name = normalizeSdkFieldName(fieldName(field));
     const value = fieldValue(field);
+    const type = fieldType(field);
     if (!name || !hasValue(value)) continue;
-    if (isUnsupportedScalarSdkField(name, value)) continue;
+    if (isUnsupportedScalarSdkField(name, value, type)) continue;
     const key = compactKey(name);
     fields[name] = key === "商家sku"
       ? normalizeMerchantSkuField(value)
-      : key.includes("尺码表")
+      : isStructuredSizePayloadField(name, type)
         ? normalizeSizeTableField(value)
         : value;
   }
