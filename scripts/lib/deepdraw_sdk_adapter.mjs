@@ -72,7 +72,9 @@ function normalizeSdkFieldName(name) {
 }
 
 function isUnsupportedScalarSdkField(name, value) {
-  return compactKey(name) === "多平台尺码" && (!value || typeof value !== "object" || Array.isArray(value));
+  const key = compactKey(name);
+  return (key === "多平台尺码" || key.includes("尺码表"))
+    && (!value || typeof value !== "object" || Array.isArray(value));
 }
 
 function fieldValue(field) {

@@ -245,7 +245,7 @@ test("buildDeepdrawSdkProductInput omits empty optional fields for blank-value u
   assert.equal(input.product.fields["商品详情"], "推荐理由");
 });
 
-test("buildDeepdrawSdkProductInput omits unsupported scalar multi-platform size fields", () => {
+test("buildDeepdrawSdkProductInput omits unsupported scalar size payload fields", () => {
   const input = buildDeepdrawSdkProductInput({
     config: {
       baseUrl: "http://open.deepdraw.cn",
@@ -261,6 +261,7 @@ test("buildDeepdrawSdkProductInput omits unsupported scalar multi-platform size 
       retailPrice: 299,
       fields: [
         { name: "多平台尺码", value: "得物" },
+        { name: "抖音尺码表", value: "只需要填身高体重" },
         { name: "适用季节", value: "春秋" },
       ],
       skus: [],
@@ -268,6 +269,7 @@ test("buildDeepdrawSdkProductInput omits unsupported scalar multi-platform size 
   });
 
   assert.equal(Object.hasOwn(input.product.fields, "多平台尺码"), false);
+  assert.equal(Object.hasOwn(input.product.fields, "抖音尺码表"), false);
   assert.equal(input.product.fields["适用季节"], "春秋");
 });
 

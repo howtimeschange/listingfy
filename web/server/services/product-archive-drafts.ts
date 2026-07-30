@@ -4571,11 +4571,13 @@ function isStaleUnsupportedAiFillField(fieldName: unknown, field: JsonRecord) {
   return isUnsupportedAiFillField(fieldName) && (sourceType === "ai" || sourceType === "ai_rule_fallback")
 }
 
-function productPayloadFieldValue(field: JsonRecord) {
+export function productArchivePayloadFieldValue(field: JsonRecord) {
   if (isUnsupportedScalarProductPayloadField(field.field_name)) return null
+  const key = compactFieldKey(field.field_name)
+  const jsonValue = recordValue(field.value_json)
+  if (key.includes("尺码表")) return hasValue(jsonValue) ? jsonValue : null
   const text = stringValue(field.value_text)
   if (text) return text
-  const jsonValue = recordValue(field.value_json)
   return hasValue(jsonValue) ? jsonValue : null
 }
 
@@ -4588,7 +4590,7 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
     .map((field) => ({
       id: stringValue(field.field_id) || undefined,
       name: stringValue(field.field_name),
-      value: productPayloadFieldValue(field),
+      value: productArchivePayloadFieldValue(field),
     }))
     .filter((field) => hasValue(field.value))
   return {

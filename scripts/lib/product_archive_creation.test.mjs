@@ -1625,6 +1625,26 @@ test("product archive size-chart validation checks size keys and column counts",
   ]);
 });
 
+test("product archive create payload omits scalar size-chart fields", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(service.productArchivePayloadFieldValue({
+    field_name: "抖音尺码表",
+    value_text: "只需要填身高体重",
+    value_json: {},
+  }), null);
+  assert.deepEqual(service.productArchivePayloadFieldValue({
+    field_name: "尺码表",
+    value_text: "只需要填身高体重",
+    value_json: { title: "身高,衣长", "80cm": "80,38" },
+  }), { title: "身高,衣长", "80cm": "80,38" });
+  assert.equal(service.productArchivePayloadFieldValue({
+    field_name: "颜色",
+    value_text: "卡其,贝壳卡50230",
+    value_json: {},
+  }), "卡其,贝壳卡50230");
+});
+
 test("product archive field mapping applies product-line domains only to matching MDM goods", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
