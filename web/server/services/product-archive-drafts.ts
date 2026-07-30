@@ -84,6 +84,7 @@ export type TradeSelectionReasonCode =
   | "source_category_conflict"
   | "missing_source_category"
   | "missing_platform_coverage"
+  | "missing_size_template_coverage"
   | "missing_semantic_match"
   | "ambiguous_match"
   | "applied_trade_mismatch"
@@ -460,7 +461,10 @@ function merchantSkuFieldValue(spu: JsonRecord, skus: JsonRecord[], dateText = "
 const SIZE_TABLE_TITLE = "身高,衣长,胸围,袖长"
 
 function sizeTableValue(skus: JsonRecord[]) {
-  const sizes = uniqueTextValues(skus.map((sku) => deepdrawSizeValue(sku.size_name)))
+  const sizes = uniqueTextValues(skus.flatMap((sku) => [
+    deepdrawSizeValue(sku.size_name),
+    deepdrawSizeValue(sku.size_code),
+  ]))
   if (!sizes.length) return {}
   const output: JsonRecord = { title: SIZE_TABLE_TITLE }
   for (const size of sizes) {
@@ -468,6 +472,16 @@ function sizeTableValue(skus: JsonRecord[]) {
     output[size] = [height, "0", "0", "0"].join(",")
   }
   return output
+}
+
+function isProductArchiveStructuredSizeFieldName(fieldName: unknown) {
+  const key = compactFieldKey(fieldName)
+  return key === "多平台尺码" || key.includes("尺码表")
+}
+
+function isProductArchiveSkuSizeTemplateFieldName(fieldName: unknown) {
+  const text = stringValue(fieldName)
+  return /尺码|尺寸|规格|size/i.test(text) && !isProductArchiveStructuredSizeFieldName(text)
 }
 
 function baseColorName(value: unknown) {
@@ -632,7 +646,8 @@ export function isProductArchiveBusinessBlankField(fieldName: string, spu: JsonR
 
 function isProductArchiveDocumentOptionalField(fieldName: string) {
   const key = businessRuleFieldKey(fieldName)
-  return PRODUCT_ARCHIVE_ALWAYS_BLANK_FIELDS.has(key)
+  return isProductArchiveStructuredSizeFieldName(fieldName)
+    || PRODUCT_ARCHIVE_ALWAYS_BLANK_FIELDS.has(key)
     || PRODUCT_ARCHIVE_SHOE_CONTEXT_FIELDS.has(key)
     || PRODUCT_ARCHIVE_BRA_CONTEXT_FIELDS.has(key)
     || PRODUCT_ARCHIVE_CUP_CONTEXT_FIELDS.has(key)
@@ -1199,7 +1214,7 @@ export function validateProductArchiveSizeChartValue(input: {
   const titles = stringValue(valueJson.title).split(",").map((item) => item.trim()).filter(Boolean)
   if (titles.length === 0) {
     return [{
-      severity: "blocker",
+      severity: "warning",
       issueType: "size_chart_title_missing",
       fieldName: input.fieldName,
       message: "尺码表缺少表头",
@@ -1213,7 +1228,7 @@ export function validateProductArchiveSizeChartValue(input: {
     const values = stringValue(rawValues).split(",")
     if (values.length !== titles.length) {
       issues.push({
-        severity: "blocker",
+        severity: "warning",
         issueType: "size_chart_column_count_mismatch",
         fieldName: input.fieldName,
         message: `尺码表 ${size} 行的值数量与表头不一致`,
@@ -1221,7 +1236,7 @@ export function validateProductArchiveSizeChartValue(input: {
     }
     if (allowedSizes.size > 0 && !allowedSizes.has(size)) {
       issues.push({
-        severity: "blocker",
+        severity: "warning",
         issueType: "size_chart_size_not_in_sku",
         fieldName: input.fieldName,
         message: `尺码表 ${size} 不在草稿 SKU 尺码中`,
@@ -1491,6 +1506,27 @@ function tradeLeaf(value: string) {
   return parts[parts.length - 1] ?? normalized
 }
 
+function officialCategoryLeaf(value: string) {
+  const text = stringValue(value)
+    .replace(/[＞〉》]/g, ">")
+    .replace(/>+/g, ">")
+  const parts = text.split(">").map((part) => part.trim()).filter(Boolean)
+  return parts[parts.length - 1] ?? text.trim()
+}
+
+function normalizeOfficialTradeSearchText(value: unknown) {
+  return stringValue(value).replace(/\s+/g, "").toLowerCase()
+}
+
+function officialCategoryLeafTerms(value: string) {
+  return uniqueTextValues(
+    value
+      .split(/[/／,，;；、]/)
+      .map((part) => normalizeOfficialTradeSearchText(part))
+      .filter((part) => part.length >= 2),
+  )
+}
+
 function launchPlanCategoryValues(sourceRows: JsonRecord[]) {
   const values: Array<{ field: string; value: string }> = []
   const seen = new Set<string>()
@@ -1698,6 +1734,113 @@ function tradePathDepth(trade: JsonRecord) {
   return normalizeTradeText(stringValue(trade.trade_path) || stringValue(trade.trade_name)).split(">").filter(Boolean).length
 }
 
+function sizeMatchKeys(value: unknown) {
+  const text = stringValue(value)
+  if (!text) return []
+  const normalized = deepdrawSizeValue(text)
+  const numberText = normalized.match(/^(\d+)cm$/i)?.[1] ?? ""
+  return uniqueTextValues([
+    text,
+    normalized,
+    numberText,
+    numberText ? numberText.padStart(3, "0") : "",
+  ].map((item) => item.replace(/\s+/g, "").toLowerCase()))
+}
+
+function skuSizeRequirements(skus: JsonRecord[] = []) {
+  const sizes: string[] = []
+  const seen = new Set<string>()
+  for (const sku of skus) {
+    const size = deepdrawSizeValue(sku.size_name) || deepdrawSizeValue(sku.size_code)
+    const key = sizeMatchKeys(size)[0]
+    if (!size || !key || seen.has(key)) continue
+    seen.add(key)
+    sizes.push(size)
+  }
+  return sizes
+}
+
+function tradeSizeTemplateOptions(trade: JsonRecord) {
+  return uniqueTextValues([
+    ...arrayValue(trade.size_options_json),
+    ...arrayValue(trade.size_options),
+    ...arrayValue(trade.sizeOptions),
+  ].flatMap(optionTextCandidates))
+}
+
+function tradeSizeTemplateCompatibility(trade: JsonRecord, requiredSizes: string[]) {
+  if (requiredSizes.length === 0) return { checked: false, compatible: true, missingSizes: [] as string[] }
+  const options = tradeSizeTemplateOptions(trade)
+  if (options.length === 0) return { checked: false, compatible: true, missingSizes: [] as string[] }
+  const allowedKeys = new Set(options.flatMap(sizeMatchKeys))
+  const missingSizes = requiredSizes.filter((size) => !sizeMatchKeys(size).some((key) => allowedKeys.has(key)))
+  return {
+    checked: true,
+    compatible: missingSizes.length === 0,
+    missingSizes,
+  }
+}
+
+function tradeMatchesRequiredSizes(trade: JsonRecord, requiredSizes: string[]) {
+  return tradeSizeTemplateCompatibility(trade, requiredSizes).compatible
+}
+
+function scoreOfficialCategoryLeafSearch(trade: JsonRecord, category: { field: string; value: string }) {
+  if (!category.field.includes("官方")) return 0
+  const leaf = officialCategoryLeaf(category.value)
+  const leafText = normalizeOfficialTradeSearchText(leaf)
+  const candidatePathText = normalizeOfficialTradeSearchText(stringValue(trade.trade_path))
+  const candidateNameText = normalizeOfficialTradeSearchText(stringValue(trade.trade_name))
+  const candidateText = `${candidatePathText}${candidateNameText}`
+  if (!leafText || !candidateText) return 0
+  if (candidateNameText === leafText) return 1400
+  if (candidatePathText.includes(leafText)) return 1360
+  const leafTerms = officialCategoryLeafTerms(leaf)
+  if (leafTerms.length > 0 && leafTerms.every((term) => candidateText.includes(term))) {
+    return 1320 + leafTerms.length
+  }
+  return 0
+}
+
+function bestOfficialCategoryLeafTradeMatch(
+  tier: DeepdrawTradePriorityTier,
+  categories: Array<{ field: string; value: string }>,
+  requiredSizes: string[] = [],
+) {
+  if (tier.key === "default" || tier.key === "fallback") return { best: null, tied: false, sizeIncompatible: false }
+  const officialCategories = categories.filter((category) => category.field.includes("官方"))
+  if (officialCategories.length === 0) return { best: null, tied: false, sizeIncompatible: false }
+  let best: NonNullable<ReturnType<typeof bestDeepdrawTradeMatch>["best"]> | null = null
+  let tied = false
+  let sizeIncompatible = false
+  for (const candidate of tier.candidates) {
+    if (isBrandPrivateDeepdrawTrade(candidate.trade)) continue
+    let score = 0
+    let matchedCategory: { field: string; value: string } | null = null
+    for (const category of officialCategories) {
+      const categoryScore = scoreOfficialCategoryLeafSearch(candidate.trade, category)
+      if (categoryScore <= 0) continue
+      if (categoryScore > score) {
+        score = categoryScore
+        matchedCategory = category
+      }
+    }
+    if (!matchedCategory) continue
+    if (!tradeMatchesRequiredSizes(candidate.trade, requiredSizes)) {
+      sizeIncompatible = true
+      continue
+    }
+    const pathDepth = tradePathDepth(candidate.trade)
+    if (!best || score > best.score || (score === best.score && pathDepth < best.pathDepth)) {
+      best = { candidate, category: matchedCategory, score, matchScore: score, pathDepth }
+      tied = false
+    } else if (score === best.score && pathDepth === best.pathDepth) {
+      tied = true
+    }
+  }
+  return { best, tied, sizeIncompatible }
+}
+
 function bestDeepdrawTradeMatch(
   candidates: PrioritizedDeepdrawTrade[],
   categories: Array<{ field: string; value: string }>,
@@ -1754,6 +1897,7 @@ function manualTradeSelectionDecision(input: {
   reasonCode: Extract<TradeSelectionReasonCode,
     | "missing_source_category"
     | "missing_platform_coverage"
+    | "missing_size_template_coverage"
     | "missing_semantic_match"
     | "ambiguous_match">
   reason: string
@@ -1787,6 +1931,7 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
     appliedTrade?: TradeSelectionDecision["appliedTrade"]
     evaluatedAt?: string
     allowUnspecifiedPlatformMetadata?: boolean
+    skus?: JsonRecord[]
   } = {},
 ): TradeSelectionDecision {
   const categories = launchPlanCategoryValues(sourceRows)
@@ -1809,13 +1954,34 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
   const selectableCandidates = candidateTiers.flatMap((tier) => tier.candidates)
   const hasPlatformMetadata = selectableCandidates.some((candidate) => hasTradePlatformMetadata(candidate.trade))
   const allowUnspecifiedPlatformMetadata = input.allowUnspecifiedPlatformMetadata === true && !hasPlatformMetadata
+  const requiredSizes = skuSizeRequirements(input.skus ?? [])
   let selected: {
     tier: DeepdrawTradePriorityTier
     best: NonNullable<ReturnType<typeof bestDeepdrawTradeMatch>["best"]>
   } | null = null
   let foundPlatformEligibleTrade = false
+  let foundSizeIncompatibleTrade = false
   for (const tier of candidateTiers) {
-    const eligibleCandidates = allowUnspecifiedPlatformMetadata
+    const officialLeafMatch = bestOfficialCategoryLeafTradeMatch(tier, categories, requiredSizes)
+    if (officialLeafMatch.sizeIncompatible) foundSizeIncompatibleTrade = true
+    if (officialLeafMatch.tied) {
+      return manualTradeSelectionDecision({
+        reasonCode: "ambiguous_match",
+        reason: tier.label
+          ? `${tier.label}存在多个官方最末级类目搜索结果，无法自动确定，需要人工选择。`
+          : "存在多个官方最末级类目搜索结果，无法自动确定，需要人工选择。",
+        appliedTrade,
+        requiredPlatforms,
+        sourceConflict,
+        evaluatedAt,
+      })
+    }
+    if (officialLeafMatch.best) {
+      selected = { tier, best: officialLeafMatch.best }
+      break
+    }
+
+    const platformEligibleCandidates = allowUnspecifiedPlatformMetadata
       ? tier.candidates
       : hasPlatformMetadata
         ? tier.candidates.filter((candidate) => (
@@ -1823,6 +1989,11 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
             && tradeCoversPlatformGroups(candidate.trade, platformGroups)
           ))
         : []
+    const eligibleCandidates = platformEligibleCandidates.filter((candidate) => {
+      const compatible = tradeMatchesRequiredSizes(candidate.trade, requiredSizes)
+      if (!compatible) foundSizeIncompatibleTrade = true
+      return compatible
+    })
     if (eligibleCandidates.length === 0) continue
     foundPlatformEligibleTrade = true
     const match = bestDeepdrawTradeMatch(eligibleCandidates, categories)
@@ -1844,8 +2015,14 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
   }
   if (!selected) {
     return manualTradeSelectionDecision({
-      reasonCode: foundPlatformEligibleTrade ? "missing_semantic_match" : "missing_platform_coverage",
-      reason: foundPlatformEligibleTrade
+      reasonCode: foundSizeIncompatibleTrade
+        ? "missing_size_template_coverage"
+        : foundPlatformEligibleTrade
+          ? "missing_semantic_match"
+          : "missing_platform_coverage",
+      reason: foundSizeIncompatibleTrade
+        ? "匹配到的深绘类目尺码模板不能覆盖草稿 SKU 尺码，需要同步或选择覆盖尺码的深绘类目。"
+        : foundPlatformEligibleTrade
         ? "覆盖所需平台的深绘类目中没有找到语义匹配，需要人工选择深绘类目。"
         : "没有深绘类目同时覆盖上市计划表涉及的平台，需要人工选择深绘类目。",
       appliedTrade,
@@ -2028,23 +2205,67 @@ export function listDeepdrawTradeSelectionCandidates(
   `).all(tenantName, merchantId) as JsonRecord[]
 }
 
+function deepdrawTradeSizeOptionsById(
+  db: SyncPostgresDatabase,
+  tenantName: string,
+  merchantId: string,
+) {
+  const rows = db.prepare(`
+    select trade_id, field_name, options_json
+    from deepdraw_trade_field_cache
+    where tenant_name = ?
+      and merchant_id = ?
+    order by trade_id, required desc, sale_prop desc, field_id
+  `).all(tenantName, merchantId) as JsonRecord[]
+  const byTradeId = new Map<string, string[]>()
+  for (const row of rows) {
+    if (!isProductArchiveSkuSizeTemplateFieldName(row.field_name)) continue
+    const tradeId = stringValue(row.trade_id)
+    if (!tradeId) continue
+    const current = byTradeId.get(tradeId) ?? []
+    current.push(...arrayValue(row.options_json).flatMap(optionTextCandidates))
+    byTradeId.set(tradeId, uniqueTextValues(current))
+  }
+  return byTradeId
+}
+
+function enrichDeepdrawTradeCandidatesWithSizeOptions(
+  trades: JsonRecord[],
+  sizeOptionsByTradeId: Map<string, string[]>,
+) {
+  return trades.map((trade) => {
+    if (tradeSizeTemplateOptions(trade).length > 0) return trade
+    const sizeOptions = sizeOptionsByTradeId.get(stringValue(trade.trade_id)) ?? []
+    return sizeOptions.length > 0 ? { ...trade, size_options: sizeOptions } : trade
+  })
+}
+
 function inferDeepdrawTradeSelectionFromLaunchPlan(db: SyncPostgresDatabase, input: {
   tenantName: string
   merchantId: string
   sourceRows: JsonRecord[]
+  skus?: JsonRecord[]
   appliedTrade?: TradeSelectionDecision["appliedTrade"]
   evaluatedAt?: string
   tradeCandidates?: JsonRecord[]
 }) {
-  const trades = input.tradeCandidates ?? listDeepdrawTradeSelectionCandidates(
-    db,
-    input.tenantName,
-    input.merchantId,
-  )
+  const rawTrades = input.tradeCandidates
+    ?? listDeepdrawTradeSelectionCandidates(
+      db,
+      input.tenantName,
+      input.merchantId,
+    )
+  const trades = input.tradeCandidates
+    ? rawTrades
+    : enrichDeepdrawTradeCandidatesWithSizeOptions(
+        rawTrades,
+        deepdrawTradeSizeOptionsById(db, input.tenantName, input.merchantId),
+      )
   return evaluateDeepdrawTradeSelectionFromLaunchPlanRows(input.sourceRows, trades, {
     tenantName: input.tenantName,
     appliedTrade: input.appliedTrade,
     evaluatedAt: input.evaluatedAt,
+    skus: input.skus,
   })
 }
 
@@ -2057,6 +2278,15 @@ function appliedTradeForDraft(draft: JsonRecord): TradeSelectionDecision["applie
   }
 }
 
+function draftSkusForDraft(db: SyncPostgresDatabase, draftId: number) {
+  return db.prepare(`
+    select *
+    from product_archive_draft_sku
+    where draft_id = ?
+    order by skc_code, size_code, sku_code
+  `).all(draftId) as JsonRecord[]
+}
+
 function currentTradeSelectionDecision(db: SyncPostgresDatabase, draft: JsonRecord) {
   const tenantName = stringValue(draft.tenant_name)
   const merchantId = stringValue(draft.merchant_id)
@@ -2064,6 +2294,7 @@ function currentTradeSelectionDecision(db: SyncPostgresDatabase, draft: JsonReco
     tenantName,
     merchantId,
     sourceRows: referenceSourceRowsForDraft(db, draft),
+    skus: draftSkusForDraft(db, numberValue(draft.id) ?? 0),
     appliedTrade: appliedTradeForDraft(draft),
   })
   return mergeTradeSelectionHumanState(
@@ -3006,7 +3237,9 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     const existing = existingByName.get(fieldName) ?? {}
     const originCountryField = isProductArchiveOriginCountryField(fieldName)
     const ruleSourceType = stringValue(rule.source_type) || (originCountryField ? "fixed" : "manual")
-    const existingManual = Boolean(existing.manual_override) && !isStaleUnsupportedAiFillField(fieldName, existing)
+    const existingManual = Boolean(existing.manual_override)
+      && !isStaleUnsupportedAiFillField(fieldName, existing)
+      && !isStaleSizeChartScalarOverride(fieldName, existing)
     const sourceValueText = readSourceValue(spu, rule, sourceRows, fieldName)
     const sizeChartDerived = !existingManual && compactFieldKey(fieldName).includes("尺码表")
       ? buildProductArchiveSizeChartFieldValue({
@@ -3334,6 +3567,7 @@ export function refreshDraftTradeSelectionFromLaunchPlan(
     tenantName,
     merchantId,
     sourceRows: referenceSourceRowsForDraft(db, draft),
+    skus: draftSkusForDraft(db, draftId),
     appliedTrade: appliedTradeForDraft(draft),
     tradeCandidates: options.tradeCandidates,
   })
@@ -3754,6 +3988,7 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
     tenantName,
     merchantId,
     sourceRows,
+    skus: skuRows,
     evaluatedAt: now,
   })
   const selectedTrade = input.tradeId
@@ -4509,7 +4744,7 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
     .filter(([name]) => /颜色|色$|color/i.test(name))
     .flatMap(([, template]) => template.options.map(optionText).filter(Boolean))
   const sizeOptions = Array.from(templateLookup.entries())
-    .filter(([name]) => /尺码|尺寸|规格|size/i.test(name))
+    .filter(([name]) => isProductArchiveSkuSizeTemplateFieldName(name))
     .flatMap(([, template]) => template.options.map(optionText).filter(Boolean))
   const allowedColors = new Set(colorOptions)
   const allowedSizes = new Set(sizeOptions)
@@ -4602,6 +4837,13 @@ function isStaleUnsupportedAiFillField(fieldName: unknown, field: JsonRecord) {
   const sourceType = stringValue(field.source_type)
   return (isUnsupportedAiFillField(fieldName) || isProductArchiveOriginCountryField(fieldName))
     && (sourceType === "ai" || sourceType === "ai_rule_fallback")
+}
+
+function isStaleSizeChartScalarOverride(fieldName: unknown, field: JsonRecord) {
+  const key = compactFieldKey(fieldName)
+  return key.includes("尺码表")
+    && !hasValue(recordValue(field.value_json))
+    && hasValue(stringValue(field.value_text))
 }
 
 export function productArchivePayloadFieldValue(field: JsonRecord) {
@@ -4783,6 +5025,7 @@ export async function checkDuplicateProductArchiveDraft(db: SyncPostgresDatabase
 }
 
 export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftId: number, options: SubmitOptions = {}) {
+  refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
   const validation = validateProductArchiveDraft(db, draftId)
   const payload = productPayload(db, draftId)
   const summary = { fieldCount: payload.fields.length, skuCount: payload.skus.length }

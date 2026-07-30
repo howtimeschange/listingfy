@@ -232,7 +232,7 @@ function deepdrawChild(tradeId, parentTradeId, tradeName, tradePath) {
   };
 }
 
-function evaluateBalaTrade(service, category, trades) {
+function evaluateBalaTrade(service, category, trades, options = {}) {
   return service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
     {
       source_type: "launch_plan",
@@ -241,6 +241,7 @@ function evaluateBalaTrade(service, category, trades) {
   ], trades, {
     tenantName: "电商巴拉巴拉",
     evaluatedAt: "2026-07-16T00:00:00.000Z",
+    ...options,
   });
 }
 
@@ -287,6 +288,88 @@ test("Bala DeepDraw priority uses blbl&mini only as the final fallback", async (
 
   assert.equal(decision.recommendedTrade?.tradeId, "9631001");
   assert.match(decision.reason, /兜底优先级.*blbl&mini/);
+});
+
+test("Bala DeepDraw priority searches the official leaf before falling back to blbl&mini", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sourceRows = [
+    {
+      source_type: "launch_plan",
+      row_json: {
+        "官方发布类目": "童装/婴儿装/亲子装>>连身衣/爬服/哈衣",
+        "发布类目 (唯品)": "哈衣/爬服/连体服",
+        "主款式 （唯品四级品类）": "长袖连体衣",
+        "发布类目 (抖音)": "服饰内衣>服饰>童装 >婴儿连身衣/爬服/哈衣",
+      },
+    },
+  ];
+  const trades = [
+    deepdrawRoot("7", "童装婴幼儿服装"),
+    deepdrawChild("10114", "7", "儿童家居服", "童装婴幼儿服装 / 儿童家居服"),
+    deepdrawChild("9596", "10114", "家居服连体衣", "童装婴幼儿服装 / 儿童家居服 / 家居服连体衣"),
+    deepdrawRoot("9483", "寝具服饰"),
+    deepdrawChild("9490", "9483", "连身衣/爬服/哈衣", "寝具服饰 / 连身衣/爬服/哈衣"),
+    deepdrawRoot("9631", "blbl&mini"),
+    deepdrawChild("16949", "9631", "睡袋/防踢被(VIP连体服)", "blbl&mini / 睡袋/防踢被(VIP连体服)"),
+  ].map((trade) => ({
+    ...trade,
+    third_platforms: trade.trade_id === "9490"
+      ? "ALIBABA,TAOBAO,VIP"
+      : "ALIBABA,PDD,TAOBAO,KUAISHOU,VIP,DOUYINXSG",
+  }));
+
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows(sourceRows, trades, {
+    tenantName: "电商巴拉巴拉",
+    evaluatedAt: "2026-07-30T00:00:00.000Z",
+  });
+
+  assert.equal(decision.recommendedTrade?.tradeId, "9490");
+  assert.equal(decision.matchedField, "官方发布类目");
+  assert.equal(decision.matchedValue, "童装/婴儿装/亲子装>>连身衣/爬服/哈衣");
+  assert.match(decision.reason, /第一优先级.*寝具服饰/);
+});
+
+test("Bala DeepDraw priority skips category candidates whose size template cannot cover SKU sizes", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const decision = evaluateBalaTrade(service, "童装 > 普通外套", [
+    deepdrawRoot("7", "童装婴幼儿服装"),
+    {
+      ...deepdrawChild("7001", "7", "普通外套", "童装婴幼儿服装 / 普通外套"),
+      size_options: ["70cm", "75cm"],
+    },
+    {
+      ...deepdrawChild("7002", "7", "外套", "童装婴幼儿服装 / 外套"),
+      size_options: ["66cm", "73cm"],
+    },
+    deepdrawRoot("9631", "blbl&mini"),
+    {
+      ...deepdrawChild("9631001", "9631", "普通外套", "blbl&mini / 普通外套"),
+      size_options: ["70cm", "75cm"],
+    },
+  ], {
+    skus: [{ size_name: "066", size_code: "066" }, { size_name: "073", size_code: "073" }],
+  });
+
+  assert.equal(decision.recommendedTrade?.tradeId, "7002");
+  assert.equal(decision.status, "pending_confirmation");
+  assert.match(decision.reason, /第一优先级.*童装婴幼儿服装/);
+});
+
+test("trade selection explains when every matching category has an incompatible size template", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const decision = evaluateBalaTrade(service, "童装 > 普通外套", [
+    deepdrawRoot("7", "童装婴幼儿服装"),
+    {
+      ...deepdrawChild("7001", "7", "普通外套", "童装婴幼儿服装 / 普通外套"),
+      size_options: ["70cm", "75cm"],
+    },
+  ], {
+    skus: [{ size_name: "066", size_code: "066" }],
+  });
+
+  assert.equal(decision.status, "manual_selection_required");
+  assert.equal(decision.reasonCode, "missing_size_template_coverage");
+  assert.match(decision.reason, /尺码模板不能覆盖/);
 });
 
 test("Bala DeepDraw priority does not bypass a first-tier ambiguity", async () => {
@@ -1341,7 +1424,7 @@ test("product archive AI fill skips fields that already have JSON values", async
   assert.match(service, /rebuildProductArchiveDraftFields\(db, draftId\)/);
   assert.match(service, /fillProductArchiveDraftFieldsWithAi/);
   assert.match(service, /isStaleUnsupportedAiFillField/);
-  assert.match(service, /existing\.manual_override\) && !isStaleUnsupportedAiFillField\(fieldName, existing\)/);
+  assert.match(service, /Boolean\(existing\.manual_override\)[\s\S]*!isStaleUnsupportedAiFillField\(fieldName, existing\)[\s\S]*!isStaleSizeChartScalarOverride\(fieldName, existing\)/);
 });
 
 test("product archive size-chart mapping AI routes and review services are wired", async () => {
@@ -1550,6 +1633,14 @@ test("product archive service derives core sales fields from MDM master data", a
     "80cm": "80,0,0,0",
     "90cm": "90,0,0,0",
   });
+  const codeOnlySizeTable = service.buildProductArchiveMdmDerivedFieldValue("尺码表", {
+    spu,
+    skus: [{ size_name: "", size_code: "066" }],
+  });
+  assert.deepEqual(codeOnlySizeTable.valueJson, {
+    title: "身高,衣长,胸围,袖长",
+    "66cm": "66,0,0,0",
+  });
   assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("上市时间", { spu, skus, dateText: "2026-07-08" }), {
     valueText: "2026-07-08",
     valueJson: {},
@@ -1623,6 +1714,7 @@ test("product archive size-chart validation checks size keys and column counts",
     "size_chart_column_count_mismatch",
     "size_chart_size_not_in_sku",
   ]);
+  assert.deepEqual(issues.map((issue) => issue.severity), ["warning", "warning"]);
 });
 
 test("product archive create payload omits scalar size-chart fields", async () => {
@@ -2063,6 +2155,8 @@ test("product archive service does not locally block document-approved empty Dee
   assert.equal(service.isProductArchiveFieldLocallyRequired("商品详情", { templateRequired: true }), true);
   assert.equal(service.isProductArchiveFieldLocallyRequired("安全等级", { templateRequired: true }), true);
   assert.equal(service.isProductArchiveFieldLocallyRequired("适用年龄", { templateRequired: true }), true);
+  assert.equal(service.isProductArchiveFieldLocallyRequired("尺码表", { templateRequired: true, ruleBlocking: true }), false);
+  assert.equal(service.isProductArchiveFieldLocallyRequired("多平台尺码", { templateRequired: true, ruleBlocking: true }), false);
   assert.equal(
     service.isProductArchiveFieldLocallyRequired("是否有腰带", { templatePresent: false, templateRequired: false, ruleBlocking: true }),
     false,

@@ -252,7 +252,8 @@ test("draft detail field fill tab highlights validation issues and can jump betw
   for (const label of ["状态", "阻断问题", "警告", "深绘 productId", "草稿编号", "商户 ID", "吊牌价", "字段数", "最近校验", "更新时间", "深绘类目", "款号"]) {
     assert.match(draftDetailPage, new RegExp(label));
   }
-  assert.match(draftDetailPage, /Tabs defaultValue="fields"/);
+  assert.match(draftDetailPage, /const \[activeTab, setActiveTab\] = useState\("fields"\)/);
+  assert.match(draftDetailPage, /Tabs value=\{activeTab\} onValueChange=\{setActiveTab\}/);
   assert.doesNotMatch(draftDetailPage, /Tabs defaultValue="overview"/);
   assert.doesNotMatch(draftDetailPage, /TabsTrigger value="overview"/);
   assert.doesNotMatch(draftDetailPage, /TabsContent value="overview"/);
@@ -268,6 +269,15 @@ test("draft detail field fill tab highlights validation issues and can jump betw
   assert.match(draftDetailPage, /fieldIssueMap/);
   assert.match(draftDetailPage, /fieldRowRefs/);
   assert.match(draftDetailPage, /pageScrollRef/);
+  assert.match(draftDetailPage, /isProductArchiveSizeChartField/);
+  assert.match(draftDetailPage, /setActiveTab\("size-chart"\)/);
+  assert.match(draftDetailPage, /配置尺码表/);
+  assert.match(draftDetailPage, /isChoiceFieldType/);
+  assert.match(draftDetailPage, /isMultiChoiceFieldType/);
+  assert.match(draftDetailPage, /isLongTextFieldType/);
+  assert.match(draftDetailPage, /deepdrawFieldType/);
+  assert.match(draftDetailPage, /<Checkbox/);
+  assert.match(draftDetailPage, /<Textarea/);
   assert.match(draftDetailPage, /validationLocatorRef/);
   assert.match(draftDetailPage, /activeIssueIndex/);
   assert.match(draftDetailPage, /scrollToFieldIssue/);
@@ -281,8 +291,15 @@ test("draft detail field fill tab highlights validation issues and can jump betw
   assert.match(draftDetailPage, /\{formatNumber\(fieldIssueNames\.length\)\}/);
   assert.match(draftDetailPage, /bg-\[#d45656\]/);
   assert.match(draftDetailPage, /data-validation-locator-bar/);
-  assert.match(draftDetailPage, /top-\[-1\.5rem\]/);
-  assert.match(draftDetailPage, /md:top-\[-2rem\]/);
+  assert.match(
+    draftDetailPage,
+    /<TabsContent value="fields" className="min-w-0">\s*<Card className="min-w-0 overflow-visible">/,
+  );
+  const validationLocatorIndex = draftDetailPage.indexOf('data-validation-locator-bar="true"');
+  assert.notEqual(validationLocatorIndex, -1, "expected validation locator bar markup");
+  const validationLocatorMarkup = draftDetailPage.slice(validationLocatorIndex, validationLocatorIndex + 320);
+  assert.match(validationLocatorMarkup, /className="sticky top-\[-1\.5rem\] z-30/);
+  assert.match(validationLocatorMarkup, /md:top-\[-2rem\]/);
   assert.match(draftDetailPage, /hasValidationIssues/);
   assert.match(draftDetailPage, /所有字段校验通过/);
   assert.doesNotMatch(draftDetailPage, /当前字段填充没有未解决字段问题/);

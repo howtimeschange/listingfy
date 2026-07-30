@@ -28,6 +28,7 @@ import {
   patchProductArchiveDraftFields,
   readbackProductArchiveDraft,
   recommendProductArchiveSizeChartMappings,
+  refreshDraftTradeSelectionFromLaunchPlan,
   refreshProductArchiveDraftsFromSourceBatch,
   saveProductArchiveSizeChartMappings,
   submitProductArchiveDraft,
@@ -824,6 +825,7 @@ productArchiveDrafts.post("/:draftId/validate", (c) => {
   requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const db = getDb()
   const draftId = readId(c.req.param("draftId"))
+  const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
   const result = validateProductArchiveDraft(db, draftId)
   auditFromContext(c, {
     action: "draft.validated",
@@ -831,7 +833,7 @@ productArchiveDrafts.post("/:draftId/validate", (c) => {
     entityType: "product_archive_draft",
     entityId: draftId,
     summary: `校验深绘建档草稿 ${draftId}`,
-    metadata: result.summary,
+    metadata: { ...result.summary, tradeSelectionAutoApplied: tradeRefresh.autoApplied },
   })
   return c.json(result)
 })

@@ -12,6 +12,7 @@ import { PageHeader } from "@/components/layout/page-header"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   Dialog,
@@ -40,6 +41,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Textarea } from "@/components/ui/textarea"
 
 interface Draft {
   id: number
@@ -65,6 +67,7 @@ interface DraftField {
   source_type: string
   value_text: string | null
   value_json?: unknown
+  field_type?: string | null
   required: boolean
   blocking: boolean
   manual_override: boolean
@@ -80,6 +83,7 @@ interface DraftSku {
   barcode: string | null
   color_name: string | null
   size_name: string | null
+  size_code?: string | null
   price: number | null
   seller_code: string | null
 }
@@ -120,7 +124,7 @@ interface DraftDetail {
 interface TradeSelectionDecision {
   status: "auto_applied" | "pending_confirmation" | "manual_selection_required" | "human_confirmed" | "human_adjusted"
   confidence: "high" | "medium" | "none"
-  reasonCode: "unique_high_confidence" | "medium_confidence" | "source_category_conflict" | "missing_source_category" | "missing_platform_coverage" | "missing_semantic_match" | "ambiguous_match" | "applied_trade_mismatch" | "legacy_backfill_confirmation_required" | "human_confirmed" | "human_adjusted"
+  reasonCode: "unique_high_confidence" | "medium_confidence" | "source_category_conflict" | "missing_source_category" | "missing_platform_coverage" | "missing_size_template_coverage" | "missing_semantic_match" | "ambiguous_match" | "applied_trade_mismatch" | "legacy_backfill_confirmation_required" | "human_confirmed" | "human_adjusted"
   recommendedTrade: { tradeId: string; tradePath: string } | null
   appliedTrade: { tradeId: string; tradePath: string } | null
   matchedField: string | null
@@ -182,6 +186,7 @@ interface SizeChartPreviewItem {
   fieldId: number
   fieldName: string
   valueJson: Record<string, unknown>
+  persistedValueJson: Record<string, unknown>
   rows: Array<{ size: string; values: string[] }>
   titles: string[]
 }
@@ -300,6 +305,38 @@ function fieldOptions(field: DraftField): FieldOption[] {
   return deduped
 }
 
+function deepdrawFieldType(field: DraftField) {
+  return String(field.field_type ?? "").trim().toUpperCase()
+}
+
+function isChoiceFieldType(field: DraftField) {
+  const type = deepdrawFieldType(field)
+  if (!type) return fieldOptions(field).length > 0
+  if (["SINGLE_CHOICE", "SINGLE_SELECT", "SELECT", "RADIO", "ENUM"].includes(type)) return true
+  if (["MULTI_CHOICE", "MULTIPLE_CHOICE", "MULTI_SELECT", "CHECKBOX"].includes(type)) return true
+  return false
+}
+
+function isMultiChoiceFieldType(field: DraftField) {
+  return ["MULTI_CHOICE", "MULTIPLE_CHOICE", "MULTI_SELECT", "CHECKBOX"].includes(deepdrawFieldType(field))
+}
+
+function isLongTextFieldType(field: DraftField) {
+  return ["TEXTAREA", "LONG_TEXT", "RICH_TEXT", "MULTI_TEXT"].includes(deepdrawFieldType(field))
+}
+
+function splitMultiFieldValue(value: string) {
+  return value.split(/[;；]/).map((part) => part.trim()).filter(Boolean)
+}
+
+function toggleMultiFieldValue(value: string, optionValue: string, checked: boolean) {
+  const values = splitMultiFieldValue(value)
+  const nextValues = checked
+    ? [...values, optionValue]
+    : values.filter((item) => item !== optionValue)
+  return Array.from(new Set(nextValues)).join(";")
+}
+
 function recordValue(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>
   if (typeof value === "string" && value.trim()) {
@@ -317,6 +354,18 @@ function compactFieldKey(value: string) {
   return value.replace(/\s+/g, "").replace(/[()（）]/g, "").toLowerCase()
 }
 
+function isProductArchiveSizeChartField(fieldName: string) {
+  return compactFieldKey(fieldName).includes("尺码表")
+}
+
+function deepdrawSizeValue(value: unknown) {
+  const text = String(value ?? "").trim()
+  if (!text) return ""
+  if (/cm$/i.test(text)) return text
+  const match = text.match(/^0*(\d{2,3})$/)
+  return match ? `${Number(match[1])}cm` : text
+}
+
 function sizeChartRows(valueJson: unknown) {
   const record = recordValue(valueJson)
   const titles = String(record.title ?? "").split(",").map((item) => item.trim()).filter(Boolean)
@@ -324,6 +373,27 @@ function sizeChartRows(valueJson: unknown) {
     .filter(([key]) => key !== "title")
     .map(([size, value]) => ({ size, values: String(value ?? "").split(",").map((item) => item.trim()) }))
   return { titles, rows }
+}
+
+function sizeChartTemplateTitles(field: DraftField) {
+  const titles = fieldOptions(field).map((option) => option.label || option.value).filter(Boolean)
+  if (titles.length > 0) return titles
+  return ["身高", "衣长", "胸围", "袖长"]
+}
+
+function defaultSizeChartValueJson(field: DraftField, skus: DraftSku[]) {
+  const titles = sizeChartTemplateTitles(field)
+  const sizes = Array.from(new Set(skus.flatMap((sku) => [
+    deepdrawSizeValue(sku.size_name),
+    deepdrawSizeValue(sku.size_code),
+  ]).filter(Boolean)))
+  if (!titles.length || !sizes.length) return {}
+  const output: Record<string, string> = { title: titles.join(",") }
+  for (const size of sizes) {
+    const height = size.match(/^(\d+)/)?.[1] ?? "0"
+    output[size] = titles.map((title) => (/身高/.test(title) ? height : "0")).join(",")
+  }
+  return output
 }
 
 function sizeChartCellKey(fieldName: string, size: string, title: string) {
@@ -345,10 +415,6 @@ function sizeChartValueJson(preview: SizeChartPreviewItem, edits: Record<string,
       .join(",")
   }
   return output
-}
-
-function normalizedSizeChartValueJson(preview: SizeChartPreviewItem) {
-  return sizeChartValueJson(preview, {})
 }
 
 function sortSizeLabels(values: string[]) {
@@ -433,6 +499,7 @@ export default function ProductArchiveDraftDetailPage() {
   const [sizeChartSourcePinned, setSizeChartSourcePinned] = useState(false)
   const [sizeChartRecommendation, setSizeChartRecommendation] = useState<SizeChartRecommendationResponse | null>(null)
   const [sizeChartCellValues, setSizeChartCellValues] = useState<Record<string, string>>({})
+  const [activeTab, setActiveTab] = useState("fields")
   const [tradeSearch, setTradeSearch] = useState("")
   const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null)
   const [activeIssueIndex, setActiveIssueIndex] = useState(0)
@@ -501,19 +568,26 @@ export default function ProductArchiveDraftDetailPage() {
       recordValue(preview.valueJson),
     ]))
     return (detail.data?.fields ?? [])
-      .filter((field) => compactFieldKey(field.field_name).includes("尺码表"))
+      .filter((field) => isProductArchiveSizeChartField(field.field_name))
       .map((field) => {
-        const valueJson = recommendationPreviews.get(field.field_name) ?? recordValue(field.value_json)
+        const persistedValueJson = recordValue(field.value_json)
+        const recommendedValueJson = recommendationPreviews.get(field.field_name)
+        const valueJson = recommendedValueJson && Object.keys(recommendedValueJson).length > 0
+          ? recommendedValueJson
+          : Object.keys(persistedValueJson).length > 0
+            ? persistedValueJson
+            : defaultSizeChartValueJson(field, detail.data?.skus ?? [])
         const parsed = sizeChartRows(valueJson)
         return {
           fieldId: field.id,
           fieldName: field.field_name,
           valueJson,
+          persistedValueJson,
           rows: parsed.rows,
           titles: parsed.titles,
         }
       })
-  }, [detail.data?.fields, sizeChartRecommendation?.previews])
+  }, [detail.data?.fields, detail.data?.skus, sizeChartRecommendation?.previews])
   const activeSizeChartMappings = sizeChartRecommendation?.mappings ?? detail.data?.sizeChartMappings ?? []
   const sizeChartImportedMatrix = useMemo(() => (
     sizeChartSourceMatrix(detail.data?.sizeChartSourceRows ?? [])
@@ -522,7 +596,7 @@ export default function ProductArchiveDraftDetailPage() {
     return sizeChartPreview
       .map((preview) => {
         const nextValueJson = sizeChartValueJson(preview, sizeChartCellValues)
-        const currentValueJson = normalizedSizeChartValueJson(preview)
+        const currentValueJson = preview.persistedValueJson
         if (JSON.stringify(nextValueJson) === JSON.stringify(currentValueJson)) return null
         return {
           id: preview.fieldId,
@@ -1001,7 +1075,7 @@ export default function ProductArchiveDraftDetailPage() {
         </dl>
       </section>
 
-      <Tabs defaultValue="fields" className="min-h-0 min-w-0">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="min-h-0 min-w-0">
         <TabsList>
           <TabsTrigger value="fields" className={cn(fieldIssueNames.length > 0 && "pr-5")}>
             字段填充
@@ -1022,7 +1096,7 @@ export default function ProductArchiveDraftDetailPage() {
         </TabsList>
 
         <TabsContent value="fields" className="min-w-0">
-              <Card className="min-w-0 overflow-hidden">
+              <Card className="min-w-0 overflow-visible">
             <CardHeader>
               <div>
                 <CardTitle>字段填充</CardTitle>
@@ -1145,6 +1219,11 @@ export default function ProductArchiveDraftDetailPage() {
                     {detail.data?.fields.map((field) => {
                       const options = fieldOptions(field)
                       const value = fieldValues[field.id] ?? field.value_text ?? ""
+                      const isSizeChartField = isProductArchiveSizeChartField(field.field_name)
+                      const hasPersistedSizeChart = Object.keys(recordValue(field.value_json)).length > 0
+                      const isChoiceField = isChoiceFieldType(field)
+                      const isMultiChoiceField = isMultiChoiceFieldType(field)
+                      const selectedMultiValues = new Set(splitMultiFieldValue(value))
                       const fieldIssues = fieldIssueMap.get(field.field_name) ?? []
                       const hasFieldIssue = fieldIssues.length > 0
                       const isActiveIssueField = activeIssueFieldName === field.field_name
@@ -1181,7 +1260,7 @@ export default function ProductArchiveDraftDetailPage() {
                             </TableCell>
                             <TableCell>{field.source_type}</TableCell>
                             <TableCell className={cn("max-w-[280px] truncate", hasFieldIssue && issueToneClass)}>
-                              {field.value_text || "-"}
+                              {isSizeChartField ? (hasPersistedSizeChart ? "已生成表格" : "待配置") : field.value_text || "-"}
                             </TableCell>
                             <TableCell>{field.required ? "必填" : "可选"}</TableCell>
                             <TableCell>
@@ -1190,7 +1269,32 @@ export default function ProductArchiveDraftDetailPage() {
                               </Badge>
                             </TableCell>
                             <TableCell className="min-w-[220px]">
-                              {options.length > 0 ? (
+                              {isSizeChartField ? (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => setActiveTab("size-chart")}
+                                >
+                                  <ClipboardCheck className="size-4" />
+                                  配置尺码表
+                                </Button>
+                              ) : isChoiceField && isMultiChoiceField && options.length > 0 ? (
+                                <div className="grid max-h-36 min-w-[220px] gap-2 overflow-y-auto rounded-md border bg-background p-2">
+                                  {options.map((option) => (
+                                    <label key={option.value} className="flex min-w-0 items-center gap-2 text-sm">
+                                      <Checkbox
+                                        checked={selectedMultiValues.has(option.value)}
+                                        onCheckedChange={(checked) => setFieldValues((current) => ({
+                                          ...current,
+                                          [field.id]: toggleMultiFieldValue(value, option.value, checked === true),
+                                        }))}
+                                      />
+                                      <span className="truncate">{option.label}</span>
+                                    </label>
+                                  ))}
+                                </div>
+                              ) : isChoiceField && options.length > 0 ? (
                                 <Select
                                   value={value}
                                   onValueChange={(nextValue) => setFieldValues((current) => ({ ...current, [field.id]: nextValue }))}
@@ -1206,6 +1310,13 @@ export default function ProductArchiveDraftDetailPage() {
                                     ))}
                                   </SelectContent>
                                 </Select>
+                              ) : isLongTextFieldType(field) ? (
+                                <Textarea
+                                  value={value}
+                                  onChange={(event) => setFieldValues((current) => ({ ...current, [field.id]: event.target.value }))}
+                                  placeholder="填写目标值"
+                                  className="min-h-20 min-w-[260px]"
+                                />
                               ) : (
                                 <Input
                                   value={value}
@@ -1437,10 +1548,16 @@ export default function ProductArchiveDraftDetailPage() {
                             表头 {formatNumber(preview.titles.length)} 项，尺码 {formatNumber(preview.rows.length)} 行
                           </div>
                         </div>
-                        <Badge variant="outline">{Object.keys(preview.valueJson).length > 0 ? "已生成" : "未生成"}</Badge>
+                        <Badge variant="outline">
+                          {Object.keys(preview.persistedValueJson).length > 0
+                            ? "已保存"
+                            : Object.keys(preview.valueJson).length > 0
+                              ? "待保存"
+                              : "未生成"}
+                        </Badge>
                       </div>
                       {preview.rows.length > 0 ? (
-                            <Table className="w-max min-w-full">
+                        <Table className="w-max min-w-full">
                           <TableHeader>
                             <TableRow>
                               <TableHead className="w-24 align-top">尺码</TableHead>
