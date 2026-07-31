@@ -1734,7 +1734,28 @@ test("product archive size-chart validation checks size keys and column counts",
     "size_chart_column_count_mismatch",
     "size_chart_size_not_in_sku",
   ]);
-  assert.deepEqual(issues.map((issue) => issue.severity), ["warning", "warning"]);
+  assert.deepEqual(issues.map((issue) => issue.severity), ["blocker", "blocker"]);
+});
+
+test("product archive SKU size field validation blocks values inconsistent with draft SKUs", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const issues = service.validateProductArchiveSkuSizeFieldValue({
+    fieldName: "尺码",
+    valueText: "48cm",
+    skus: [
+      { size_name: "066", size_code: "066" },
+      { size_name: "073", size_code: "073" },
+      { size_name: "080", size_code: "080" },
+    ],
+  });
+
+  assert.deepEqual(issues.map((issue) => issue.issueType), [
+    "sku_size_field_missing_sku",
+    "sku_size_field_extra",
+  ]);
+  assert.deepEqual(issues.map((issue) => issue.severity), ["blocker", "blocker"]);
+  assert.match(issues[0].message, /66cm/);
+  assert.match(issues[1].message, /48cm/);
 });
 
 test("product archive create payload omits scalar size-chart fields", async () => {
@@ -1742,8 +1763,16 @@ test("product archive create payload omits scalar size-chart fields", async () =
 
   assert.equal(service.productArchivePayloadFieldValue({
     field_name: "抖音尺码表",
+    field_type: "MULTI_TEXT",
     value_text: "只需要填身高体重",
     value_json: {},
+  }), null);
+  assert.equal(service.productArchivePayloadFieldValue({
+    field_name: "尺码表",
+    field_type: null,
+    field_id: null,
+    value_text: "",
+    value_json: { title: "身高,衣长", "80cm": "80,38" },
   }), null);
   assert.deepEqual(service.productArchivePayloadFieldValue({
     field_name: "尺码表",
@@ -2331,6 +2360,16 @@ test("product archive AI fill skips structural multi-platform size fields", asyn
       validation_message: "必填字段缺失",
       options_json: [{ value: "春秋" }],
     },
+    {
+      id: 304,
+      field_name: "尺码",
+      source_type: "manual",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [{ value: "48cm" }, { value: "66cm" }],
+    },
   ], [], []);
 
   assert.deepEqual(candidates.map((field) => field.fieldName), ["适用季节"]);
@@ -2339,6 +2378,10 @@ test("product archive AI fill skips structural multi-platform size fields", asyn
   ]), "");
   assert.equal(service.chooseProductArchiveAiFallbackOption("淘宝尺码表", "", [
     { value: "身高", label: "身高" },
+  ]), "");
+  assert.equal(service.chooseProductArchiveAiFallbackOption("尺码", "", [
+    { value: "48cm", label: "48cm" },
+    { value: "66cm", label: "66cm" },
   ]), "");
 });
 

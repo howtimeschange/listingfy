@@ -484,6 +484,11 @@ function isProductArchiveSkuSizeTemplateFieldName(fieldName: unknown) {
   return /尺码|尺寸|规格|size/i.test(text) && !isProductArchiveStructuredSizeFieldName(text)
 }
 
+function isProductArchiveSkuSizeFieldName(fieldName: unknown) {
+  const key = compactFieldKey(fieldName)
+  return key === "尺码" || key === "尺寸" || key === "规格" || key === "size"
+}
+
 function baseColorName(value: unknown) {
   const text = stringValue(value)
   if (/卡其|贝壳卡|卡色/.test(text)) return "卡其"
@@ -1214,7 +1219,7 @@ export function validateProductArchiveSizeChartValue(input: {
   const titles = stringValue(valueJson.title).split(",").map((item) => item.trim()).filter(Boolean)
   if (titles.length === 0) {
     return [{
-      severity: "warning",
+      severity: "blocker",
       issueType: "size_chart_title_missing",
       fieldName: input.fieldName,
       message: "尺码表缺少表头",
@@ -1228,7 +1233,7 @@ export function validateProductArchiveSizeChartValue(input: {
     const values = stringValue(rawValues).split(",")
     if (values.length !== titles.length) {
       issues.push({
-        severity: "warning",
+        severity: "blocker",
         issueType: "size_chart_column_count_mismatch",
         fieldName: input.fieldName,
         message: `尺码表 ${size} 行的值数量与表头不一致`,
@@ -1236,12 +1241,64 @@ export function validateProductArchiveSizeChartValue(input: {
     }
     if (allowedSizes.size > 0 && !allowedSizes.has(size)) {
       issues.push({
-        severity: "warning",
+        severity: "blocker",
         issueType: "size_chart_size_not_in_sku",
         fieldName: input.fieldName,
         message: `尺码表 ${size} 不在草稿 SKU 尺码中`,
       })
     }
+  }
+  return issues
+}
+
+function issueValueList(values: string[]) {
+  const visible = values.slice(0, 8).join("、")
+  return values.length > 8 ? `${visible} 等 ${values.length} 个` : visible
+}
+
+function sizeValueKeySet(values: unknown[]) {
+  const keys = new Set<string>()
+  for (const value of values) {
+    for (const key of sizeMatchKeys(value)) keys.add(key)
+  }
+  return keys
+}
+
+function draftSkuSizeValues(skus: JsonRecord[] = []) {
+  return uniqueTextValues(skus.flatMap((sku) => [
+    deepdrawSizeValue(sku.size_name),
+    deepdrawSizeValue(sku.size_code),
+  ]))
+}
+
+export function validateProductArchiveSkuSizeFieldValue(input: {
+  fieldName: string
+  valueText: unknown
+  skus: JsonRecord[]
+}) {
+  const skuSizes = draftSkuSizeValues(input.skus)
+  if (skuSizes.length === 0) return []
+  const fieldSizes = uniqueTextValues(stringValue(input.valueText).split(/[;；,，]/).map((size) => deepdrawSizeValue(size)))
+  const fieldKeys = sizeValueKeySet(fieldSizes)
+  const skuKeys = sizeValueKeySet(skuSizes)
+  const issues: Array<{ severity: string; issueType: string; fieldName?: string | null; skuCode?: string | null; message: string }> = []
+  const missingSkuSizes = skuSizes.filter((size) => !sizeMatchKeys(size).some((key) => fieldKeys.has(key)))
+  if (missingSkuSizes.length > 0) {
+    issues.push({
+      severity: "blocker",
+      issueType: "sku_size_field_missing_sku",
+      fieldName: input.fieldName,
+      message: `${input.fieldName} 字段缺少草稿 SKU 尺码：${issueValueList(missingSkuSizes)}`,
+    })
+  }
+  const extraFieldSizes = fieldSizes.filter((size) => !sizeMatchKeys(size).some((key) => skuKeys.has(key)))
+  if (extraFieldSizes.length > 0) {
+    issues.push({
+      severity: "blocker",
+      issueType: "sku_size_field_extra",
+      fieldName: input.fieldName,
+      message: `${input.fieldName} 字段包含非草稿 SKU 尺码：${issueValueList(extraFieldSizes)}`,
+    })
   }
   return issues
 }
@@ -3306,6 +3363,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     const template = fieldTemplateByName.get(fieldName) ?? {}
     const existing = existingByName.get(fieldName) ?? {}
     const originCountryField = isProductArchiveOriginCountryField(fieldName)
+    const skuSizeField = isProductArchiveSkuSizeFieldName(fieldName)
     const ruleSourceType = stringValue(rule.source_type) || (originCountryField ? "fixed" : "manual")
     const existingManual = Boolean(existing.manual_override)
       && !isStaleUnsupportedAiFillField(fieldName, existing)
@@ -3328,14 +3386,18 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
         : buildProductArchiveMdmDerivedFieldValue(fieldName, { spu, skus: mdmSkus, dateText })
     const rawValueText = existingManual
       ? stringValue(existing.value_text)
-      : sourceValueText || mdmDerived.valueText
+      : skuSizeField
+        ? mdmDerived.valueText || sourceValueText
+        : sourceValueText || mdmDerived.valueText
     const valueText = normalizeProductArchiveDeepdrawFieldValue(fieldName, rawValueText, arrayValue(template.options_json))
     const valueJson = existingManual ? recordValue(existing.value_json) : mdmDerived.valueJson
     const fieldSourceType = existingManual
       ? (stringValue(existing.source_type) || "manual")
       : hasSizeChartValue
         ? "size_chart"
-        : ruleSourceType
+        : skuSizeField && mdmDerived.valueText
+          ? "mdm"
+          : ruleSourceType
     const childRequirementActive = templateChildRequirementActive(template, existingFields)
     const required = childRequirementActive && isProductArchiveFieldLocallyRequired(fieldName, {
       templateRequired: template.required,
@@ -4735,17 +4797,8 @@ export function saveProductArchiveSizeChartMappings(db: SyncPostgresDatabase, dr
   return { draftId, saved }
 }
 
-function sizeChartAllowedSizes(fields: JsonRecord[], skus: JsonRecord[]) {
-  const fieldSizes = fields
-    .filter((field) => ["尺码", "尺寸"].includes(compactFieldKey(field.field_name)))
-    .flatMap((field) => stringValue(field.value_text).split(/[;；,，]/))
-    .map((size) => deepdrawSizeValue(size))
-    .filter(Boolean)
-  if (fieldSizes.length > 0) return uniqueTextValues(fieldSizes)
-  return uniqueTextValues(skus.flatMap((sku) => [
-    deepdrawSizeValue(sku.size_name),
-    deepdrawSizeValue(sku.size_code),
-  ]))
+function sizeChartAllowedSizes(_fields: JsonRecord[], skus: JsonRecord[]) {
+  return draftSkuSizeValues(skus)
 }
 
 export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: number) {
@@ -4822,6 +4875,17 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
 
   for (const field of fields) {
     const fieldName = stringValue(field.field_name)
+    if (!isProductArchiveSkuSizeFieldName(fieldName)) continue
+    if (!hasValue(field.value_text)) continue
+    issues.push(...validateProductArchiveSkuSizeFieldValue({
+      fieldName,
+      valueText: field.value_text,
+      skus,
+    }))
+  }
+
+  for (const field of fields) {
+    const fieldName = stringValue(field.field_name)
     if (!compactFieldKey(fieldName).includes("尺码表")) continue
     issues.push(...validateProductArchiveSizeChartValue({
       fieldName,
@@ -4894,13 +4958,13 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
 function isStructuredProductPayloadField(field: JsonRecord) {
   const key = compactFieldKey(field.field_name)
   const fieldType = stringValue(field.field_type).toUpperCase()
-  const isStructuredType = !fieldType || fieldType === "MULTI_TEXT"
+  const isStructuredType = fieldType === "MULTI_TEXT" || (!fieldType && Boolean(stringValue(field.field_id)))
   return isStructuredType && (key === "多平台尺码" || key.includes("尺码表"))
 }
 
 function isUnsupportedAiFillField(fieldName: unknown) {
   const key = compactFieldKey(fieldName)
-  return key === "多平台尺码" || key.includes("尺码表")
+  return key === "多平台尺码" || key.includes("尺码表") || isProductArchiveSkuSizeFieldName(fieldName)
 }
 
 function isStaleUnsupportedAiFillField(fieldName: unknown, field: JsonRecord) {
@@ -4918,7 +4982,11 @@ function isStaleSizeChartScalarOverride(fieldName: unknown, field: JsonRecord) {
 
 export function productArchivePayloadFieldValue(field: JsonRecord) {
   const jsonValue = recordValue(field.value_json)
-  if (isStructuredProductPayloadField(field)) return hasValue(jsonValue) ? jsonValue : null
+  if (isProductArchiveStructuredSizeFieldName(field.field_name)) {
+    const fieldType = stringValue(field.field_type).toUpperCase()
+    if (hasValue(jsonValue)) return isStructuredProductPayloadField(field) ? jsonValue : null
+    if (!fieldType || fieldType === "MULTI_TEXT") return null
+  }
   const text = stringValue(field.value_text)
   if (text) return text
   return hasValue(jsonValue) ? jsonValue : null
@@ -5096,6 +5164,7 @@ export async function checkDuplicateProductArchiveDraft(db: SyncPostgresDatabase
 
 export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftId: number, options: SubmitOptions = {}) {
   refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
+  rebuildProductArchiveDraftFields(db, draftId)
   const validation = validateProductArchiveDraft(db, draftId)
   const payload = productPayload(db, draftId)
   const summary = { fieldCount: payload.fields.length, skuCount: payload.skus.length }
