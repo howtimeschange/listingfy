@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, ClipboardCheck, ListTree, Loader2, Pin, PinOff, RefreshCw, Save, Search, Send, Sparkles } from "lucide-react"
 import { toast } from "sonner"
-import { api } from "@/lib/api-client"
+import { api, ApiError } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { cn } from "@/lib/utils"
@@ -221,6 +221,16 @@ function useDraftDetail(draftId: string | undefined) {
     enabled: Boolean(draftId),
     queryFn: () => api.get<DraftDetail>(`/product-archive-drafts/${draftId}`),
   })
+}
+
+function draftDetailFallbackDescription(detail: ReturnType<typeof useDraftDetail>) {
+  if (detail.isLoading) return "正在加载草稿详情"
+  if (detail.error instanceof ApiError && detail.error.status === 404) return "草稿不存在"
+  if (detail.isError) {
+    const message = detail.error instanceof Error ? detail.error.message : ""
+    return message ? `草稿详情加载失败：${message}` : "草稿详情加载失败，请稍后重试"
+  }
+  return "草稿不存在"
 }
 
 function statusClass(status: string) {
@@ -777,7 +787,7 @@ export default function ProductArchiveDraftDetailPage() {
   if (!draft) {
     return (
       <PageContainer>
-        <PageHeader title="深绘建档草稿" description={detail.isLoading ? "正在加载草稿详情" : "草稿不存在"} />
+        <PageHeader title="深绘建档草稿" description={draftDetailFallbackDescription(detail)} />
       </PageContainer>
     )
   }

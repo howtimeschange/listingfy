@@ -243,6 +243,20 @@ test("draft detail renders backend trade selection conclusion and human confirma
   assert.match(draftDetailPage, /tradeSelectionDecision\.appliedTrade/);
 });
 
+test("draft detail distinguishes backend load failures from missing drafts", async () => {
+  const draftDetailPage = await readFile(files.draftDetailPage, "utf8");
+
+  assert.match(draftDetailPage, /import \{ api, ApiError \} from "@\/lib\/api-client"/);
+  assert.match(draftDetailPage, /function draftDetailFallbackDescription/);
+  assert.match(draftDetailPage, /detail\.error instanceof ApiError && detail\.error\.status === 404/);
+  assert.match(draftDetailPage, /草稿详情加载失败/);
+  assert.match(draftDetailPage, /description=\{draftDetailFallbackDescription\(detail\)\}/);
+  assert.doesNotMatch(
+    draftDetailPage,
+    /description=\{detail\.isLoading \? "正在加载草稿详情" : "草稿不存在"\}/,
+  );
+});
+
 test("draft detail field fill tab highlights validation issues and can jump between problem fields", async () => {
   const draftDetailPage = await readFile(files.draftDetailPage, "utf8");
 

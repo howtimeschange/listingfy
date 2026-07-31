@@ -2209,22 +2209,37 @@ function deepdrawTradeSizeOptionsById(
   db: SyncPostgresDatabase,
   tenantName: string,
   merchantId: string,
+  tradeIds: string[],
 ) {
-  const rows = db.prepare(`
-    select trade_id, field_name, options_json
-    from deepdraw_trade_field_cache
-    where tenant_name = ?
-      and merchant_id = ?
-    order by trade_id, required desc, sale_prop desc, field_id
-  `).all(tenantName, merchantId) as JsonRecord[]
+  const candidateTradeIds = uniqueTextValues(tradeIds)
+  if (candidateTradeIds.length === 0) return new Map<string, string[]>()
   const byTradeId = new Map<string, string[]>()
-  for (const row of rows) {
-    if (!isProductArchiveSkuSizeTemplateFieldName(row.field_name)) continue
-    const tradeId = stringValue(row.trade_id)
-    if (!tradeId) continue
-    const current = byTradeId.get(tradeId) ?? []
-    current.push(...arrayValue(row.options_json).flatMap(optionTextCandidates))
-    byTradeId.set(tradeId, uniqueTextValues(current))
+  const fieldNamePatterns = ["%尺码%", "%尺寸%", "%规格%", "%size%"]
+  for (let index = 0; index < candidateTradeIds.length; index += 100) {
+    const chunk = candidateTradeIds.slice(index, index + 100)
+    const placeholders = chunk.map(() => "?").join(", ")
+    const rows = db.prepare(`
+      select trade_id, field_name, options_json
+      from deepdraw_trade_field_cache
+      where tenant_name = ?
+        and merchant_id = ?
+        and trade_id in (${placeholders})
+        and (
+          field_name ilike ?
+          or field_name ilike ?
+          or field_name ilike ?
+          or field_name ilike ?
+        )
+      order by trade_id, required desc, sale_prop desc, field_id
+    `).all(tenantName, merchantId, ...chunk, ...fieldNamePatterns) as JsonRecord[]
+    for (const row of rows) {
+      if (!isProductArchiveSkuSizeTemplateFieldName(row.field_name)) continue
+      const tradeId = stringValue(row.trade_id)
+      if (!tradeId) continue
+      const current = byTradeId.get(tradeId) ?? []
+      current.push(...arrayValue(row.options_json).flatMap(optionTextCandidates))
+      byTradeId.set(tradeId, uniqueTextValues(current))
+    }
   }
   return byTradeId
 }
@@ -2257,10 +2272,18 @@ function inferDeepdrawTradeSelectionFromLaunchPlan(db: SyncPostgresDatabase, inp
     )
   const trades = input.tradeCandidates
     ? rawTrades
-    : enrichDeepdrawTradeCandidatesWithSizeOptions(
-        rawTrades,
-        deepdrawTradeSizeOptionsById(db, input.tenantName, input.merchantId),
-      )
+    : (() => {
+        const sizeCandidateTradeIds = relevantDeepdrawTradeIdsForSizeOptions({
+          tenantName: input.tenantName,
+          sourceRows: input.sourceRows,
+          trades: rawTrades,
+          appliedTrade: input.appliedTrade,
+        })
+        return enrichDeepdrawTradeCandidatesWithSizeOptions(
+          rawTrades,
+          deepdrawTradeSizeOptionsById(db, input.tenantName, input.merchantId, sizeCandidateTradeIds),
+        )
+      })()
   return evaluateDeepdrawTradeSelectionFromLaunchPlanRows(input.sourceRows, trades, {
     tenantName: input.tenantName,
     appliedTrade: input.appliedTrade,
@@ -2285,6 +2308,53 @@ function draftSkusForDraft(db: SyncPostgresDatabase, draftId: number) {
     where draft_id = ?
     order by skc_code, size_code, sku_code
   `).all(draftId) as JsonRecord[]
+}
+
+function relevantDeepdrawTradeIdsForSizeOptions(input: {
+  tenantName: string
+  sourceRows: JsonRecord[]
+  trades: JsonRecord[]
+  appliedTrade?: TradeSelectionDecision["appliedTrade"]
+}) {
+  const categories = launchPlanCategoryValues(input.sourceRows)
+  if (categories.length === 0) return []
+  const candidateTiers = deepdrawTradePriorityTiers(stringValue(input.tenantName), input.trades)
+  const selectableCandidates = candidateTiers.flatMap((tier) => tier.candidates)
+  const hasPlatformMetadata = selectableCandidates.some((candidate) => hasTradePlatformMetadata(candidate.trade))
+  const platformGroups = requiredLaunchPlanPlatformGroups(categories)
+  const officialCategories = categories.filter((category) => category.field.includes("官方"))
+  const tradeIds = new Set<string>()
+
+  const addTrade = (trade: JsonRecord) => {
+    if (tradeSizeTemplateOptions(trade).length > 0) return
+    const tradeId = stringValue(trade.trade_id)
+    if (tradeId) tradeIds.add(tradeId)
+  }
+
+  for (const tier of candidateTiers) {
+    for (const candidate of tier.candidates) {
+      const trade = candidate.trade
+      const officialLeafRelevant = tier.key !== "default"
+        && tier.key !== "fallback"
+        && !isBrandPrivateDeepdrawTrade(trade)
+        && officialCategories.some((category) => scoreOfficialCategoryLeafSearch(trade, category) > 0)
+      if (officialLeafRelevant) {
+        addTrade(trade)
+        continue
+      }
+
+      const semanticRelevant = categories.some((category) => scoreTradeMatch(trade, category) > 0)
+      if (!semanticRelevant) continue
+      const platformEligible = platformGroups.length === 0
+        || !hasPlatformMetadata
+        || (hasTradePlatformMetadata(trade) && tradeCoversPlatformGroups(trade, platformGroups))
+      if (platformEligible) addTrade(trade)
+    }
+  }
+
+  const appliedTradeId = stringValue(input.appliedTrade?.tradeId)
+  if (appliedTradeId) tradeIds.add(appliedTradeId)
+  return Array.from(tradeIds)
 }
 
 function currentTradeSelectionDecision(db: SyncPostgresDatabase, draft: JsonRecord) {

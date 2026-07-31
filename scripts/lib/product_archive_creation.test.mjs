@@ -372,6 +372,26 @@ test("trade selection explains when every matching category has an incompatible 
   assert.match(decision.reason, /尺码模板不能覆盖/);
 });
 
+test("trade selection loads size template options only for relevant candidate trades", async () => {
+  const service = await readText(files.draftService);
+  const sizeLookupStart = service.indexOf("function deepdrawTradeSizeOptionsById");
+  const sizeLookupEnd = service.indexOf("function enrichDeepdrawTradeCandidatesWithSizeOptions", sizeLookupStart);
+  const sizeLookup = service.slice(sizeLookupStart, sizeLookupEnd);
+  const inferStart = service.indexOf("function inferDeepdrawTradeSelectionFromLaunchPlan");
+  const inferEnd = service.indexOf("function appliedTradeForDraft", inferStart);
+  const infer = service.slice(inferStart, inferEnd);
+
+  assert.match(service, /function relevantDeepdrawTradeIdsForSizeOptions/);
+  assert.match(sizeLookup, /tradeIds:\s*string\[\]/);
+  assert.match(sizeLookup, /trade_id in \(\$\{placeholders\}\)/);
+  assert.doesNotMatch(
+    sizeLookup,
+    /where tenant_name = \?\s+and merchant_id = \?\s+order by trade_id, required desc, sale_prop desc, field_id/,
+  );
+  assert.match(infer, /const sizeCandidateTradeIds = relevantDeepdrawTradeIdsForSizeOptions/);
+  assert.match(infer, /deepdrawTradeSizeOptionsById\(db, input\.tenantName, input\.merchantId, sizeCandidateTradeIds\)/);
+});
+
 test("Bala DeepDraw priority does not bypass a first-tier ambiguity", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const decision = evaluateBalaTrade(service, "童装 > 外套", [
