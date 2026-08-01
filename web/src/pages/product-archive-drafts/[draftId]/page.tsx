@@ -364,8 +364,10 @@ function compactFieldKey(value: string) {
   return value.replace(/\s+/g, "").replace(/[()（）]/g, "").toLowerCase()
 }
 
-function isProductArchiveSizeChartField(fieldName: string) {
-  return compactFieldKey(fieldName).includes("尺码表")
+function isProductArchiveSizeChartField(field: DraftField) {
+  if (!compactFieldKey(field.field_name).includes("尺码表")) return false
+  const fieldType = String(field.field_type ?? "").toUpperCase()
+  return fieldType === "MULTI_TEXT" || !fieldType
 }
 
 function deepdrawSizeValue(value: unknown) {
@@ -376,13 +378,32 @@ function deepdrawSizeValue(value: unknown) {
   return match ? `${Number(match[1])}cm` : text
 }
 
+const SIZE_CHART_METADATA_KEYS = new Set([
+  "ai_fill",
+  "aifill",
+  "confidence",
+  "fallback",
+  "mappings",
+  "reason",
+  "source",
+  "unmatchedtargets",
+])
+
 function sizeChartRows(valueJson: unknown) {
   const record = recordValue(valueJson)
   const titles = String(record.title ?? "").split(",").map((item) => item.trim()).filter(Boolean)
   const rows = Object.entries(record)
-    .filter(([key]) => key !== "title")
+    .filter(([key, value]) => {
+      const compactKey = compactFieldKey(key)
+      return compactKey !== "title" && !SIZE_CHART_METADATA_KEYS.has(compactKey) && String(value ?? "").trim()
+    })
     .map(([size, value]) => ({ size, values: String(value ?? "").split(",").map((item) => item.trim()) }))
   return { titles, rows }
+}
+
+function hasStructuredSizeChartValue(valueJson: unknown) {
+  const parsed = sizeChartRows(valueJson)
+  return parsed.titles.length > 0 && parsed.rows.length > 0
 }
 
 function sizeChartTemplateTitles(field: DraftField) {
@@ -578,13 +599,13 @@ export default function ProductArchiveDraftDetailPage() {
       recordValue(preview.valueJson),
     ]))
     return (detail.data?.fields ?? [])
-      .filter((field) => isProductArchiveSizeChartField(field.field_name))
+      .filter((field) => isProductArchiveSizeChartField(field))
       .map((field) => {
         const persistedValueJson = recordValue(field.value_json)
         const recommendedValueJson = recommendationPreviews.get(field.field_name)
         const valueJson = recommendedValueJson && Object.keys(recommendedValueJson).length > 0
           ? recommendedValueJson
-          : Object.keys(persistedValueJson).length > 0
+          : hasStructuredSizeChartValue(persistedValueJson)
             ? persistedValueJson
             : defaultSizeChartValueJson(field, detail.data?.skus ?? [])
         const parsed = sizeChartRows(valueJson)
@@ -1229,8 +1250,8 @@ export default function ProductArchiveDraftDetailPage() {
                     {detail.data?.fields.map((field) => {
                       const options = fieldOptions(field)
                       const value = fieldValues[field.id] ?? field.value_text ?? ""
-                      const isSizeChartField = isProductArchiveSizeChartField(field.field_name)
-                      const hasPersistedSizeChart = Object.keys(recordValue(field.value_json)).length > 0
+                      const isSizeChartField = isProductArchiveSizeChartField(field)
+                      const hasPersistedSizeChart = hasStructuredSizeChartValue(field.value_json)
                       const isChoiceField = isChoiceFieldType(field)
                       const isMultiChoiceField = isMultiChoiceFieldType(field)
                       const selectedMultiValues = new Set(splitMultiFieldValue(value))

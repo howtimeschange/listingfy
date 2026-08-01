@@ -1136,6 +1136,34 @@ function sizeChartTitleOptions(valueJson: unknown) {
     .filter(Boolean)
 }
 
+const SIZE_CHART_METADATA_KEYS = new Set([
+  "ai_fill",
+  "aifill",
+  "confidence",
+  "fallback",
+  "mappings",
+  "reason",
+  "source",
+  "unmatchedtargets",
+])
+
+function sizeChartDataEntries(valueJson: unknown) {
+  return Object.entries(recordValue(valueJson)).filter(([rawKey, rawValue]) => {
+    const key = compactFieldKey(rawKey)
+    return key !== "title" && !SIZE_CHART_METADATA_KEYS.has(key) && hasValue(rawValue)
+  })
+}
+
+function sizeChartLooksLikeTable(valueJson: unknown) {
+  const titles = sizeChartTitleOptions(valueJson)
+  if (titles.length > 0) return true
+  return sizeChartDataEntries(valueJson).some(([rawSize]) => sizeMatchKeys(rawSize).length > 0)
+}
+
+function hasProductArchiveSizeChartTableValue(valueJson: unknown) {
+  return sizeChartTitleOptions(valueJson).length > 0 && sizeChartDataEntries(valueJson).length > 0
+}
+
 function sizeChartTemplateOptionsForField(templateOptions: unknown, existingValueJson: unknown, fieldName: string) {
   const options = arrayValue(templateOptions)
   if (options.length > 0) return options
@@ -1213,13 +1241,16 @@ export function validateProductArchiveSizeChartValue(input: {
   fieldName: string
   valueJson: unknown
   allowedSizes: unknown[]
+  blocking?: boolean
 }) {
   const valueJson = recordValue(input.valueJson)
   if (!hasValue(valueJson)) return []
+  if (!sizeChartLooksLikeTable(valueJson)) return []
+  const severity = input.blocking === false ? "warning" : "blocker"
   const titles = stringValue(valueJson.title).split(",").map((item) => item.trim()).filter(Boolean)
   if (titles.length === 0) {
     return [{
-      severity: "blocker",
+      severity,
       issueType: "size_chart_title_missing",
       fieldName: input.fieldName,
       message: "尺码表缺少表头",
@@ -1227,13 +1258,12 @@ export function validateProductArchiveSizeChartValue(input: {
   }
   const allowedSizes = new Set(uniqueTextValues(input.allowedSizes.map((size) => deepdrawSizeValue(size))))
   const issues: Array<{ severity: string; issueType: string; fieldName?: string | null; skuCode?: string | null; message: string }> = []
-  for (const [rawSize, rawValues] of Object.entries(valueJson)) {
-    if (rawSize === "title") continue
+  for (const [rawSize, rawValues] of sizeChartDataEntries(valueJson)) {
     const size = deepdrawSizeValue(rawSize)
     const values = stringValue(rawValues).split(",")
     if (values.length !== titles.length) {
       issues.push({
-        severity: "blocker",
+        severity,
         issueType: "size_chart_column_count_mismatch",
         fieldName: input.fieldName,
         message: `尺码表 ${size} 行的值数量与表头不一致`,
@@ -1241,7 +1271,7 @@ export function validateProductArchiveSizeChartValue(input: {
     }
     if (allowedSizes.size > 0 && !allowedSizes.has(size)) {
       issues.push({
-        severity: "blocker",
+        severity,
         issueType: "size_chart_size_not_in_sku",
         fieldName: input.fieldName,
         message: `尺码表 ${size} 不在草稿 SKU 尺码中`,
@@ -4887,10 +4917,12 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
   for (const field of fields) {
     const fieldName = stringValue(field.field_name)
     if (!compactFieldKey(fieldName).includes("尺码表")) continue
+    if (!isStructuredProductPayloadField(field)) continue
     issues.push(...validateProductArchiveSizeChartValue({
       fieldName,
       valueJson: field.value_json,
       allowedSizes: allowedSizeChartSizes,
+      blocking: Boolean(field.blocking) || Boolean(field.required),
     }))
   }
 
@@ -4984,7 +5016,7 @@ export function productArchivePayloadFieldValue(field: JsonRecord) {
   const jsonValue = recordValue(field.value_json)
   if (isProductArchiveStructuredSizeFieldName(field.field_name)) {
     const fieldType = stringValue(field.field_type).toUpperCase()
-    if (hasValue(jsonValue)) return isStructuredProductPayloadField(field) ? jsonValue : null
+    if (hasProductArchiveSizeChartTableValue(jsonValue)) return isStructuredProductPayloadField(field) ? jsonValue : null
     if (!fieldType || fieldType === "MULTI_TEXT") return null
   }
   const text = stringValue(field.value_text)

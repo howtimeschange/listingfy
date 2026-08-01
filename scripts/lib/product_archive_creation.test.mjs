@@ -1737,6 +1737,37 @@ test("product archive size-chart validation checks size keys and column counts",
   assert.deepEqual(issues.map((issue) => issue.severity), ["blocker", "blocker"]);
 });
 
+test("product archive size-chart validation ignores AI metadata and downgrades optional malformed tables", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.deepEqual(service.validateProductArchiveSizeChartValue({
+    fieldName: "唯品会尺码表",
+    valueJson: {
+      source: "AI_RULE_FALLBACK",
+      ai_fill: { fallback: true },
+    },
+    allowedSizes: ["80cm"],
+    blocking: false,
+  }), []);
+
+  const optionalIssues = service.validateProductArchiveSizeChartValue({
+    fieldName: "唯品会尺码表",
+    valueJson: { "80cm": "80,38" },
+    allowedSizes: ["80cm"],
+    blocking: false,
+  });
+  assert.deepEqual(optionalIssues.map((issue) => issue.issueType), ["size_chart_title_missing"]);
+  assert.deepEqual(optionalIssues.map((issue) => issue.severity), ["warning"]);
+
+  const blockingIssues = service.validateProductArchiveSizeChartValue({
+    fieldName: "尺码表",
+    valueJson: { "80cm": "80,38" },
+    allowedSizes: ["80cm"],
+    blocking: true,
+  });
+  assert.deepEqual(blockingIssues.map((issue) => issue.severity), ["blocker"]);
+});
+
 test("product archive SKU size field validation blocks values inconsistent with draft SKUs", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const issues = service.validateProductArchiveSkuSizeFieldValue({
@@ -1773,6 +1804,15 @@ test("product archive create payload omits scalar size-chart fields", async () =
     field_id: null,
     value_text: "",
     value_json: { title: "身高,衣长", "80cm": "80,38" },
+  }), null);
+  assert.equal(service.productArchivePayloadFieldValue({
+    field_name: "唯品会尺码表",
+    field_type: "MULTI_TEXT",
+    value_text: "号型",
+    value_json: {
+      source: "AI_RULE_FALLBACK",
+      ai_fill: { fallback: true },
+    },
   }), null);
   assert.deepEqual(service.productArchivePayloadFieldValue({
     field_name: "尺码表",
