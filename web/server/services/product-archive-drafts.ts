@@ -1,3 +1,4 @@
+import fs from "node:fs"
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import {
   normalizeProductArchiveSourceRows,
@@ -130,6 +131,22 @@ interface AiFillOptions {
       json: Record<string, unknown>
     }>
   }
+}
+
+interface ProductArchiveDraftImageInput {
+  draftId: number
+  spuCode: string
+  sourceType: "manual_upload" | "batch_upload"
+  sourceRef?: string | null
+  localPath: string
+  fileName: string
+  originalFileName?: string | null
+  mimeType?: string | null
+  fileSize?: number | null
+  width?: number | null
+  height?: number | null
+  uploadedBy?: number | null
+  rawPayload?: JsonRecord
 }
 
 interface SourceImportInput {
@@ -752,6 +769,7 @@ function normalizeMaterialName(value: unknown) {
   if (/^(?:纯棉|全棉)$/.test(text)) return "棉"
   if (/^(?:涤纶|涤纶[（(]聚酯纤维[）)]|聚酯纤维[（(]涤纶[）)])$/.test(text)) return "聚酯纤维"
   if (/^(?:锦纶|尼龙|聚酰胺纤维|锦纶[（(]聚酰胺纤维[）)]|聚酰胺纤维[（(]锦纶[）)])$/.test(text)) return "聚酰胺纤维"
+  if (/^(?:粘纤|黏纤|粘胶|黏胶|粘胶纤维|黏胶纤维|粘胶纤维[（(]粘纤[）)]|黏胶纤维[（(]黏纤[）)])$/.test(text)) return "粘胶纤维"
   return text
 }
 
@@ -773,8 +791,8 @@ function primaryMaterialRawSection(value: unknown) {
 function primaryMaterialSection(value: unknown) {
   return primaryMaterialRawSection(value)
     .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line && !/(?:除外|不含)/.test(line))
+    .map((line) => line.replace(/[（(][^）)]*(?:除外|不含)[）)]/g, "").trim())
+    .filter(Boolean)
     .join(" ")
     .trim()
 }
@@ -2709,6 +2727,13 @@ function normalizeMaterialOptionValue(value: unknown, options: unknown[]) {
       (option) => option.includes("聚酰胺纤维") || option.includes("锦纶") || option.includes("尼龙"),
     ]) || text
   }
+  if (text === "粘胶纤维") {
+    return pickOption(options, [
+      (option) => option === "粘胶纤维",
+      (option) => option === "黏胶纤维",
+      (option) => option.includes("粘胶") || option.includes("黏胶") || option.includes("粘纤") || option.includes("黏纤"),
+    ]) || text
+  }
   return pickOption(options, [
     (option) => option === text,
     (option) => option.includes(text) || text.includes(option),
@@ -2716,6 +2741,16 @@ function normalizeMaterialOptionValue(value: unknown, options: unknown[]) {
 }
 
 function normalizeMaterialCompositionValue(value: unknown, options: unknown[]) {
+  const parsedComponents = materialComponentsFromText(value)
+  if (parsedComponents.length > 0) {
+    const values = parsedComponents
+      .map((component) => {
+        const name = normalizeMaterialOptionValue(component.name, options)
+        return name && component.percent ? `${name},${component.percent}` : ""
+      })
+      .filter(Boolean)
+    if (values.length > 0) return values.join(";")
+  }
   const values = semicolonTextValues(value).map((item) => {
     const [rawName, ...rawPercent] = item.split(/[,，]/).map((part) => part.trim())
     const name = normalizeMaterialOptionValue(rawName, options)
@@ -2726,10 +2761,39 @@ function normalizeMaterialCompositionValue(value: unknown, options: unknown[]) {
 }
 
 function normalizeMaterialMultiChoiceValue(value: unknown, options: unknown[]) {
-  const values = semicolonTextValues(value)
-    .map((item) => normalizeMaterialOptionValue(item.split(/[,，]/)[0], options))
+  const parsedComponents = materialComponentsFromText(value)
+  const sourceValues = parsedComponents.length > 0
+    ? parsedComponents.map((component) => component.name)
+    : semicolonTextValues(value).map((item) => item.split(/[,，]/)[0])
+  const values = sourceValues
+    .map((item) => normalizeMaterialOptionValue(item, options))
     .filter(Boolean)
   return values.length ? uniqueTextValues(values).join(";") : stringValue(value)
+}
+
+function normalizeMaterialSummaryOptionValue(value: unknown, options: unknown[]) {
+  const components = materialComponentsFromText(value)
+  if (components.length === 1) return normalizeMaterialOptionValue(components[0].name, options)
+  if (components.length > 1) {
+    const dominant = [...components].sort((left, right) => Number(right.percent) - Number(left.percent))[0]
+    const dominantName = normalizeMaterialName(dominant.name)
+    const exactComposition = components
+      .map((component) => `${normalizeMaterialName(component.name)}${component.percent}%`)
+      .join("+")
+    const reverseComposition = components
+      .map((component) => `${component.percent}%${normalizeMaterialName(component.name)}`)
+      .join("+")
+    return pickOption(options, [
+      (option) => option === exactComposition || option === reverseComposition,
+      (option) => components.every((component) => option.includes(normalizeMaterialName(component.name)))
+        && components.every((component) => option.includes(`${component.percent}%`) || option.includes(`${Number(component.percent)}%`)),
+      (option) => option === `${dominantName}混纺`,
+      (option) => option.includes(`${dominantName}混纺`),
+      (option) => option === "混纺",
+      (option) => option.includes("混纺") && option.includes(dominantName),
+    ]) || normalizeMaterialOptionValue(dominantName, options)
+  }
+  return normalizeMaterialOptionValue(value, options)
 }
 
 function isProductArchiveOriginCountryField(fieldName: unknown) {
@@ -2891,6 +2955,8 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
     }
   }
   if (/材质|面料/.test(fieldName)) {
+    const materialOption = normalizeMaterialSummaryOptionValue(text, options)
+    if (materialOption && productArchiveFieldValueMatchesOptions(materialOption, options)) return materialOption
     if (/棉/.test(text)) {
       return pickOption(options, [
         (option) => option === "纯棉(棉含量100%)",
@@ -2913,60 +2979,6 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
   }
   if (productArchiveFieldValueMatchesOptions(text, options)) return text
   return text
-}
-
-export function chooseProductArchiveAiFallbackOption(
-  fieldName: string,
-  currentValue: unknown,
-  options: Array<{ value: string; label: string }>,
-  contextText = "",
-) {
-  if (isUnsupportedAiFillField(fieldName)) return ""
-  if (compactFieldKey(fieldName).includes("颜色")) return ""
-  if (isProductArchiveOriginCountryField(fieldName)) {
-    return productArchiveChinaOriginOption(options) || ""
-  }
-  const evidenceText = `${stringValue(currentValue)} ${contextText}`
-  const pick = (needles: string[]) => {
-    for (const needle of needles) {
-      const option = options.find((item) => item.value.includes(needle) || item.label.includes(needle))
-      if (option) return option.value
-    }
-    return ""
-  }
-  if (/材质|面料/.test(fieldName)) {
-    if (/棉/.test(evidenceText)) return pick(["纯棉(棉含量100%)", "棉100%", "纯棉", "棉"])
-    if (/聚酯纤维|涤纶/.test(evidenceText)) return pick(["聚酯纤维", "涤纶"])
-  }
-  if (/功能/.test(fieldName)) {
-    const functionNeedles: Array<[RegExp, string[]]> = [
-      [/防风/, ["防风"]],
-      [/防水|防泼水/, ["防水", "防泼水"]],
-      [/透气|透湿/, ["透气"]],
-      [/抗皱/, ["抗皱"]],
-      [/抗起球/, ["抗起球"]],
-      [/凉感/, ["凉感"]],
-      [/保暖/, ["保暖"]],
-      [/速干/, ["速干"]],
-      [/吸汗/, ["吸汗"]],
-      [/抗菌/, ["抗菌"]],
-      [/防晒|防紫外线/, ["防晒", "防紫外线"]],
-    ]
-    for (const [pattern, needles] of functionNeedles) {
-      if (pattern.test(evidenceText)) return pick(needles)
-    }
-    return pick(["其他"])
-  }
-  if (/是否|有无|支持|加绒|撞色|透明|防水|防晒/.test(fieldName)) return pick(["否", "不支持", "无"]) || options[0]?.value || ""
-  if (/风格|企划/.test(fieldName)) return pick(["休闲", "日常", "基础"]) || options[0]?.value || ""
-  if (/年龄|适用人群|人群/.test(fieldName)) return pick(["儿童", "中大童", "婴幼儿", "幼童"]) || options[0]?.value || ""
-  if (/季节/.test(fieldName)) {
-    if (/羽绒|棉服|毛衣|加绒/.test(evidenceText)) return pick(["冬", "秋冬"])
-    if (/短袖|凉感|夏/.test(evidenceText)) return pick(["夏", "春夏"])
-    return pick(["春秋", "四季"]) || options[0]?.value || ""
-  }
-  if (/单位/.test(fieldName)) return pick(["件", "条", "双", "套"]) || options[0]?.value || ""
-  return options[0]?.value || ""
 }
 
 function semicolonTextValues(value: unknown) {
@@ -3009,7 +3021,10 @@ export function normalizeProductArchiveAiFillValue(
   if (compactFieldKey(fieldName).includes("颜色")) {
     return normalizeProductArchiveAiColorFillValue(currentValue, aiValue, options)
   }
-  return optionValueForAiChoice(options, aiValue)
+  const exact = optionValueForAiChoice(options, aiValue)
+  if (exact) return exact
+  const normalized = normalizeProductArchiveDeepdrawFieldValue(fieldName, aiValue, options)
+  return productArchiveFieldValueMatchesOptions(normalized, options) ? normalized : ""
 }
 
 export function productArchiveSkuColorMatchesOptions(
@@ -3042,13 +3057,136 @@ export function productArchiveSkuColorMatchesOptions(
   return false
 }
 
-type ProductArchiveAiFillCandidate = {
+export type ProductArchiveAiFillCandidate = {
   id: number
   fieldName: string
   currentValue: string
   validationStatus: string
   validationMessage: string
   options: Array<{ value: string; label: string }>
+}
+
+const AI_FILL_MIN_CONFIDENCE = 0.7
+const AI_FILL_REFERENCE_IMAGE_LIMIT = 4
+const AI_FILL_REFERENCE_IMAGE_MAX_BYTES = 4 * 1024 * 1024
+
+function compactAiText(value: unknown, maxLength = 240) {
+  const text = typeof value === "object" && value !== null
+    ? JSON.stringify(value)
+    : stringValue(value)
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
+}
+
+function pickAiContextFields(record: JsonRecord, patterns: RegExp[], maxFields = 40) {
+  const output: JsonRecord = {}
+  for (const [key, value] of Object.entries(record)) {
+    if (Object.keys(output).length >= maxFields) break
+    if (!patterns.some((pattern) => pattern.test(key))) continue
+    const text = compactAiText(value)
+    if (text) output[key] = text
+  }
+  return output
+}
+
+function buildMdmMasterAiContext(draft: JsonRecord, mdmSpu: JsonRecord = {}) {
+  const snapshotSpu = recordValue(recordValue(draft.source_snapshot_json).spu)
+  const merged = { ...snapshotSpu, ...mdmSpu }
+  return pickAiContextFields(merged, [
+    /spu|款号|货号|商品|名称|标题|brand|品牌/i,
+    /category|class|类目|品类|产品线|季|season|year|年份/i,
+    /gender|性别|年龄|age|尺码段|size/i,
+    /price|吊牌|零售价|filler|填充|材质|面料|成分/i,
+  ])
+}
+
+function isAiRuleFallbackField(field: JsonRecord) {
+  if (stringValue(field.source_type) !== "ai_rule_fallback") return false
+  const metadata = recordValue(field.value_json)
+  return stringValue(metadata.source) === "AI_RULE_FALLBACK" || recordValue(metadata.ai_fill).fallback === true
+}
+
+function buildFilledFieldAiContext(fields: JsonRecord[], candidates: ProductArchiveAiFillCandidate[]) {
+  const candidateIds = new Set(candidates.map((field) => field.id))
+  return fields
+    .filter((field) => !candidateIds.has(Number(field.id)))
+    .filter((field) => !isAiRuleFallbackField(field))
+    .filter((field) => hasValue(stringValue(field.value_text)) || hasValue(recordValue(field.value_json)))
+    .slice(0, 120)
+    .map((field) => ({
+      field_name: stringValue(field.field_name),
+      value: stringValue(field.value_text) || compactAiText(recordValue(field.value_json), 240),
+      source_type: stringValue(field.source_type),
+      validation_status: stringValue(field.validation_status),
+    }))
+}
+
+function buildSourceRowsAiContext(sourceRows: JsonRecord[]) {
+  return sourceRows.slice(0, 12).map((row) => ({
+    source_type: stringValue(row.source_type),
+    skc_code: stringValue(row.skc_code) || undefined,
+    row: pickAiContextFields(recordValue(row.row_json), [
+      /款号|货号|名称|标题|类目|品类|季|性别|年龄|尺码段|颜色|属性/,
+      /材质|面料|成分|填充|绒|厚薄|弹性|功能|风格|元素|工艺/,
+      /推荐|FAB|卖点|文案|吊牌|洗唛|执行|安全|等级/,
+    ], 35),
+  })).filter((row) => Object.keys(row.row).length > 0)
+}
+
+function buildReferenceImageAiContext(referenceImages: JsonRecord[]) {
+  return referenceImages.slice(0, 12).map((image) => ({
+    id: Number(image.id),
+    file_name: stringValue(image.original_file_name) || stringValue(image.file_name),
+    source_type: stringValue(image.source_type),
+    source_ref: stringValue(image.source_ref) || undefined,
+    width: numberValue(image.width) || undefined,
+    height: numberValue(image.height) || undefined,
+    file_size: numberValue(image.file_size) || undefined,
+  }))
+}
+
+function productArchiveDraftImageDataUrl(image: JsonRecord) {
+  const localPath = stringValue(image.local_path)
+  if (!localPath || !fs.existsSync(localPath)) return null
+  const stat = fs.statSync(localPath)
+  if (!stat.isFile() || stat.size <= 0 || stat.size > AI_FILL_REFERENCE_IMAGE_MAX_BYTES) return null
+  const mimeType = stringValue(image.mime_type) || "image/jpeg"
+  if (!/^image\/(?:jpeg|png|webp)$/i.test(mimeType)) return null
+  const data = fs.readFileSync(localPath).toString("base64")
+  return `data:${mimeType};base64,${data}`
+}
+
+function buildDeepdrawAiFillMessages(prompt: string, referenceImages: JsonRecord[] = []) {
+  const imageParts: JsonRecord[] = []
+  for (const image of referenceImages.slice(0, AI_FILL_REFERENCE_IMAGE_LIMIT)) {
+    const dataUrl = productArchiveDraftImageDataUrl(image)
+    if (!dataUrl) continue
+    const imageName = stringValue(image.original_file_name) || stringValue(image.file_name) || `参考图${image.id}`
+    imageParts.push({
+      type: "text",
+      text: `SPU 参考图：${imageName}。用于判断款式、版型、面料观感、颜色和细节元素；仍然只能在有明确视觉证据时填写。`,
+    })
+    imageParts.push({
+      type: "image_url",
+      image_url: { url: dataUrl },
+    })
+  }
+  const systemMessage = { role: "system", content: "你是深绘商品建档字段专家，负责在给定枚举值里做保守选择。" }
+  if (imageParts.length === 0) {
+    return [
+      systemMessage,
+      { role: "user", content: prompt },
+    ]
+  }
+  return [
+    systemMessage,
+    {
+      role: "user",
+      content: [
+        { type: "text", text: prompt },
+        ...imageParts,
+      ],
+    },
+  ]
 }
 
 function skuColorIssueValues(issues: JsonRecord[], skus: JsonRecord[]) {
@@ -3077,13 +3215,16 @@ export function buildProductArchiveAiFillCandidateFields(
     .map((field) => {
       const valueText = stringValue(field.value_text)
       const valueJson = recordValue(field.value_json)
-      const emptyValue = !hasValue(valueText) && !hasValue(recordValue(field.value_json))
+      const aiRuleFallback = isAiRuleFallbackField(field)
+      const emptyValue = !hasValue(valueText) && (!hasValue(valueJson) || aiRuleFallback)
       const validationStatus = stringValue(field.validation_status)
       const invalidValue = validationStatus === "invalid"
       const colorNeedsAiFill = compactFieldKey(field.field_name).includes("颜色") && colorIssueValues.length > 0
       const currentValue = colorNeedsAiFill
         ? colorIssueValues.join(";")
-        : valueText || (hasValue(valueJson) ? JSON.stringify(valueJson) : "")
+        : aiRuleFallback
+          ? valueText
+          : valueText || (hasValue(valueJson) ? JSON.stringify(valueJson) : "")
       return {
         id: Number(field.id),
         fieldName: stringValue(field.field_name),
@@ -3112,10 +3253,73 @@ export function buildProductArchiveAiFillCandidateFields(
     }))
 }
 
+function trustedMaterialEvidenceText(field: JsonRecord, candidateIds: Set<number>) {
+  const fieldId = Number(field.id)
+  if (candidateIds.has(fieldId)) return ""
+  if (isAiRuleFallbackField(field)) return ""
+  const fieldName = stringValue(field.field_name)
+  const key = compactFieldKey(fieldName)
+  if (!/(材质|面料|成分)/.test(fieldName)) return ""
+  if (!key.includes("文本") && !key.includes("成分") && !key.includes("面料") && !key.includes("材质")) return ""
+  const valueText = stringValue(field.value_text)
+  if (!valueText) return ""
+  if (materialComponentsFromText(valueText).length > 0) return valueText
+  if (semicolonTextValues(valueText).some((item) => normalizeMaterialName(item.split(/[,，]/)[0]))) return valueText
+  return ""
+}
+
+function materialEvidenceTextsForAiFill(
+  fields: JsonRecord[],
+  candidates: ProductArchiveAiFillCandidate[],
+  sourceRows: JsonRecord[] = [],
+) {
+  const candidateIds = new Set(candidates.map((field) => field.id))
+  return uniqueTextValues([
+    ...fields.map((field) => trustedMaterialEvidenceText(field, candidateIds)),
+    materialCompositionSourceText(sourceRows),
+  ].filter(Boolean))
+}
+
+export function buildProductArchiveMaterialEvidenceFills(
+  fields: JsonRecord[],
+  candidates: ProductArchiveAiFillCandidate[],
+  sourceRows: JsonRecord[] = [],
+) {
+  const evidenceTexts = materialEvidenceTextsForAiFill(fields, candidates, sourceRows)
+  if (evidenceTexts.length === 0) return []
+  const fills: Array<{
+    field_id: number
+    field_name: string
+    field_value: string
+    confidence: number
+    reason: string
+  }> = []
+  for (const field of candidates) {
+    if (!/材质|面料/.test(field.fieldName)) continue
+    for (const evidenceText of evidenceTexts) {
+      const fieldValue = normalizeProductArchiveDeepdrawFieldValue(field.fieldName, evidenceText, field.options)
+      if (!fieldValue || !productArchiveFieldValueMatchesOptions(fieldValue, field.options)) continue
+      fills.push({
+        field_id: field.id,
+        field_name: field.fieldName,
+        field_value: fieldValue,
+        confidence: 0.92,
+        reason: "根据已识别的成分含量按深绘模板选项归一化",
+      })
+      break
+    }
+  }
+  return fills
+}
+
 function buildDeepdrawAiFillPrompt(input: {
   draft: JsonRecord
   fields: ProductArchiveAiFillCandidate[]
   skus: JsonRecord[]
+  allFields?: JsonRecord[]
+  sourceRows?: JsonRecord[]
+  mdmSpu?: JsonRecord
+  referenceImages?: JsonRecord[]
 }) {
   return JSON.stringify({
     task: "为深绘商品建档草稿中需要人工判断的枚举字段选择最合适的字段值",
@@ -3133,8 +3337,13 @@ function buildDeepdrawAiFillPrompt(input: {
     rules: [
       "只返回 JSON，不要 Markdown。",
       "不能编造选项，只能从对应字段 options[].value 中选择。",
-      "证据不足时选择保守通用值，并降低 confidence。",
-      "是否类字段没有明确证据时优先选择否/无。",
+      "只有在 MDM 主数据、来源表、SKU、商品标题或已填草稿字段中有明确证据时才填写。",
+      "可结合 SPU 参考图判断款式、版型、面料观感、颜色和细节元素；图片证据不明确时不要填写。",
+      "证据不足、仅凭字段名无法判断、或只能猜测时，直接省略该字段，不要返回该字段。",
+      "不要因为 options 的顺序选择第一个选项；不要选择看起来冷门但无证据的材质、版型、元素或工艺。",
+      "忽略 source_type 为 ai_rule_fallback 的历史值，它们不是可信证据。",
+      "是否类字段没有明确证据时也不要填写。",
+      `confidence 低于 ${AI_FILL_MIN_CONFIDENCE} 的字段不要返回。`,
       "颜色字段如果 current_value 有多个用分号分隔的原颜色名，field_value 返回同数量标准色，按顺序用分号分隔；每个标准色都必须来自 options[].value，系统会自动保留原颜色别名。",
     ],
     product: {
@@ -3142,13 +3351,18 @@ function buildDeepdrawAiFillPrompt(input: {
       title: input.draft.title,
       trade_path: input.draft.trade_path,
       retail_price: input.draft.retail_price,
-      source_snapshot: input.draft.source_snapshot_json,
+      mdm_master: buildMdmMasterAiContext(input.draft, input.mdmSpu),
       skus: input.skus.map((sku) => ({
         sku_code: sku.sku_code,
         skc_code: sku.skc_code,
         color_name: sku.color_name,
         size_name: sku.size_name,
       })),
+      reference_images: buildReferenceImageAiContext(input.referenceImages ?? []),
+    },
+    evidence: {
+      source_rows: buildSourceRowsAiContext(input.sourceRows ?? []),
+      filled_fields: buildFilledFieldAiContext(input.allFields ?? [], input.fields),
     },
     fields: input.fields.map((field) => ({
       field_id: field.id,
@@ -3165,13 +3379,11 @@ async function callDeepdrawAiFill(
   db: SyncPostgresDatabase,
   prompt: string,
   fields: ProductArchiveAiFillCandidate[],
+  referenceImages: JsonRecord[] = [],
   options: AiFillOptions = {},
 ) {
   const allowedFields = new Map(fields.map((field) => [field.id, field]))
-  const messages = [
-    { role: "system", content: "你是深绘商品建档字段专家，负责在给定枚举值里做保守选择。" },
-    { role: "user", content: prompt },
-  ]
+  const messages = buildDeepdrawAiFillMessages(prompt, referenceImages)
   const router = options.router ?? getDefaultAiScenarioRouter({
     db,
     fetchImpl: options.fetchImpl ?? fetch,
@@ -3397,6 +3609,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     const ruleSourceType = stringValue(rule.source_type) || (originCountryField ? "fixed" : "manual")
     const existingManual = Boolean(existing.manual_override)
       && !isStaleUnsupportedAiFillField(fieldName, existing)
+      && !isStaleMaterialAiRuleFallbackField(fieldName, existing)
       && !isStaleSizeChartScalarOverride(fieldName, existing)
     const sourceValueText = readSourceValue(spu, rule, sourceRows, fieldName)
     const sizeChartDerived = !existingManual && compactFieldKey(fieldName).includes("尺码表")
@@ -3506,6 +3719,117 @@ function rebuildProductArchiveDraftFields(
   })()
 }
 
+export function extractProductArchiveImageSpuCode(value: unknown) {
+  const text = stringValue(value).replace(/\\/g, "/")
+  const exact = Array.from(text.matchAll(/(?:^|[^0-9])([0-9]{12})(?=[^0-9]|$)/g)).map((match) => match[1])
+  if (exact.length > 0) return exact.at(-1) ?? ""
+  const fallback = Array.from(text.matchAll(/(?:^|[^0-9])([0-9]{9,15})(?=[^0-9]|$)/g)).map((match) => match[1])
+  return fallback.at(-1) ?? ""
+}
+
+function draftImagePreviewUrl(imageId: unknown) {
+  const id = Number(imageId)
+  return Number.isInteger(id) && id > 0 ? `/api/product-archive-drafts/images/${id}/file` : null
+}
+
+function serializeProductArchiveDraftImage(image: JsonRecord) {
+  return {
+    ...image,
+    preview_url: draftImagePreviewUrl(image.id),
+  }
+}
+
+export function latestProductArchiveDraftForSpuCode(db: SyncPostgresDatabase, spuCode: string) {
+  return db.prepare(`
+    select id, spu_code, title, status, tenant_name, merchant_id, trade_path, updated_at
+    from product_archive_draft
+    where spu_code = ?
+    order by updated_at desc, id desc
+    limit 1
+  `).get(spuCode) as JsonRecord | undefined
+}
+
+export function listProductArchiveDraftImages(db: SyncPostgresDatabase, draftId: number) {
+  return (db.prepare(`
+    select *
+    from product_archive_draft_image
+    where draft_id = ?
+    order by sort_no, id
+  `).all(draftId) as JsonRecord[]).map(serializeProductArchiveDraftImage)
+}
+
+export function getProductArchiveDraftImageFile(db: SyncPostgresDatabase, imageId: number) {
+  return db.prepare(`
+    select *
+    from product_archive_draft_image
+    where id = ?
+  `).get(imageId) as JsonRecord | undefined
+}
+
+export function createProductArchiveDraftImage(db: SyncPostgresDatabase, input: ProductArchiveDraftImageInput) {
+  const draft = draftById(db, input.draftId)
+  const now = nowIso()
+  const sortRow = db.prepare(`
+    select coalesce(max(sort_no), 0) + 1 as next_sort
+    from product_archive_draft_image
+    where draft_id = ?
+  `).get(input.draftId) as { next_sort?: unknown } | undefined
+  const result = db.prepare(`
+    insert into product_archive_draft_image (
+      draft_id,
+      spu_code,
+      source_type,
+      source_ref,
+      local_path,
+      file_name,
+      original_file_name,
+      mime_type,
+      file_size,
+      width,
+      height,
+      sort_no,
+      uploaded_by,
+      raw_payload_json,
+      created_at,
+      updated_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::timestamptz, ?::timestamptz)
+  `).run(
+    input.draftId,
+    stringValue(input.spuCode) || stringValue(draft.spu_code),
+    input.sourceType,
+    input.sourceRef || null,
+    input.localPath,
+    input.fileName,
+    input.originalFileName || null,
+    input.mimeType || null,
+    input.fileSize ?? null,
+    input.width ?? null,
+    input.height ?? null,
+    Number(sortRow?.next_sort ?? 1),
+    input.uploadedBy ?? null,
+    jsonText(input.rawPayload ?? {}),
+    now,
+    now,
+  )
+  db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(now, input.draftId)
+  const image = getProductArchiveDraftImageFile(db, Number(result.lastInsertRowid))
+  return image ? serializeProductArchiveDraftImage(image) : null
+}
+
+export function deleteProductArchiveDraftImage(db: SyncPostgresDatabase, draftId: number, imageId: number) {
+  const image = db.prepare(`
+    select *
+    from product_archive_draft_image
+    where id = ?
+      and draft_id = ?
+  `).get(imageId, draftId) as JsonRecord | undefined
+  if (!image) return null
+  db.prepare("delete from product_archive_draft_image where id = ? and draft_id = ?").run(imageId, draftId)
+  db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(nowIso(), draftId)
+  return image
+}
+
 function serializeDraftDetail(db: SyncPostgresDatabase, draftId: number) {
   const draft = draftById(db, draftId)
   const sourceRows = referenceSourceRowsForDraft(db, draft)
@@ -3555,6 +3879,7 @@ function serializeDraftDetail(db: SyncPostgresDatabase, draftId: number) {
         case severity when 'blocker' then 0 when 'warning' then 1 else 2 end,
         id
     `).all(draftId),
+    images: listProductArchiveDraftImages(db, draftId),
     logs: listProductArchiveSubmitLogs(db, draftId),
   }
 }
@@ -3597,7 +3922,8 @@ export function listProductArchiveDrafts(db: SyncPostgresDatabase, input: ListDr
       draft.updated_at,
       coalesce((draft.validation_summary_json::jsonb #>> '{blocker_count}')::integer, 0) as blocker_count,
       coalesce((draft.validation_summary_json::jsonb #>> '{warning_count}')::integer, 0) as warning_count,
-      (select count(*) from product_archive_draft_sku sku where sku.draft_id = draft.id) as sku_count
+      (select count(*) from product_archive_draft_sku sku where sku.draft_id = draft.id) as sku_count,
+      (select count(*) from product_archive_draft_image image where image.draft_id = draft.id) as image_count
     from product_archive_draft draft
     ${clause}
     order by draft.updated_at desc, draft.id desc
@@ -4507,21 +4833,33 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
   const fields = detail.fields as JsonRecord[]
   const skus = detail.skus as JsonRecord[]
   const issues = detail.issues as JsonRecord[]
-  const contextText = [
-    draft.title,
-    draft.trade_path,
-    draft.source_snapshot_json,
-    ...skus.map((sku) => `${stringValue(sku.color_name)} ${stringValue(sku.size_name)}`),
-  ].map(stringValue).join(" ")
+  const referenceImages = detail.images as JsonRecord[] ?? []
+  const sourceRows = referenceSourceRowsForDraft(db, draft)
+  const mdmSpu = resolveProductArchiveDraftSpu(db, draft)
   const candidates = buildProductArchiveAiFillCandidateFields(fields, issues, skus)
 
   if (candidates.length === 0) {
     return { saved: [], detail }
   }
+  const materialEvidenceFills = buildProductArchiveMaterialEvidenceFills(fields, candidates, sourceRows)
+  const materialEvidenceById = new Map(materialEvidenceFills.map((fill) => [Number(fill.field_id), fill]))
+  const aiCandidates = candidates.filter((field) => !materialEvidenceById.has(field.id))
 
-  const prompt = buildDeepdrawAiFillPrompt({ draft, fields: candidates, skus })
-  const aiFills = await callDeepdrawAiFill(db, prompt, candidates, options)
-    .catch(() => [] as JsonRecord[])
+  const prompt = aiCandidates.length > 0
+    ? buildDeepdrawAiFillPrompt({
+        draft,
+        fields: aiCandidates,
+        skus,
+        allFields: fields,
+        sourceRows,
+        mdmSpu,
+        referenceImages,
+      })
+    : ""
+  const aiFills = aiCandidates.length > 0
+    ? await callDeepdrawAiFill(db, prompt, aiCandidates, referenceImages, options)
+      .catch(() => [] as JsonRecord[])
+    : []
   const aiById = new Map(aiFills.map((fill) => [Number(fill.field_id), fill]))
   const now = nowIso()
   const saved: Array<{ field_id: number; field_name: string; field_value: string; source: string; confidence: number | null }> = []
@@ -4539,19 +4877,28 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
 
   db.transaction(() => {
     for (const field of candidates) {
-      const aiFill = aiById.get(field.id)
-      const aiValue = stringValue(aiFill?.field_value)
-      const fieldValue = normalizeProductArchiveAiFillValue(field.fieldName, field.currentValue, aiValue, field.options)
-        || chooseProductArchiveAiFallbackOption(field.fieldName, field.currentValue, field.options, contextText)
+      const materialFill = materialEvidenceById.get(field.id)
+      const aiFill = materialFill ?? aiById.get(field.id)
+      if (!aiFill) continue
+      const confidence = Number(aiFill.confidence)
+      if (!Number.isFinite(confidence) || confidence < AI_FILL_MIN_CONFIDENCE) continue
+      const aiValue = stringValue(aiFill.field_value)
+      const fieldValue = materialFill
+        ? aiValue
+        : normalizeProductArchiveAiFillValue(field.fieldName, field.currentValue, aiValue, field.options)
       if (!fieldValue || !productArchiveFieldValueMatchesOptions(fieldValue, field.options)) continue
-      const confidence = Number(aiFill?.confidence)
       updateField.run(
         fieldValue,
-        jsonText({
-          ai_fill: aiFill ?? { fallback: true },
-          source: aiFill ? "AI_SUGGESTED" : "AI_RULE_FALLBACK",
-        }),
-        aiFill ? "ai" : "ai_rule_fallback",
+        jsonText(materialFill
+          ? {
+              material_composition_rule: materialFill,
+              source: "MATERIAL_COMPOSITION_RULE",
+            }
+          : {
+              ai_fill: aiFill,
+              source: "AI_SUGGESTED",
+            }),
+        materialFill ? "source_rule" : "ai",
         now,
         draftId,
         field.id,
@@ -4560,8 +4907,8 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
         field_id: field.id,
         field_name: field.fieldName,
         field_value: fieldValue,
-        source: aiFill ? "AI_SUGGESTED" : "AI_RULE_FALLBACK",
-        confidence: Number.isFinite(confidence) ? confidence : null,
+        source: materialFill ? "MATERIAL_COMPOSITION_RULE" : "AI_SUGGESTED",
+        confidence,
       })
     }
     db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(now, draftId)
@@ -5003,6 +5350,13 @@ function isStaleUnsupportedAiFillField(fieldName: unknown, field: JsonRecord) {
   const sourceType = stringValue(field.source_type)
   return (isUnsupportedAiFillField(fieldName) || isProductArchiveOriginCountryField(fieldName))
     && (sourceType === "ai" || sourceType === "ai_rule_fallback")
+}
+
+function isStaleMaterialAiRuleFallbackField(fieldName: unknown, field: JsonRecord) {
+  if (!/材质|面料/.test(stringValue(fieldName))) return false
+  if (stringValue(field.source_type) !== "ai_rule_fallback") return false
+  const metadata = recordValue(field.value_json)
+  return stringValue(metadata.source) === "AI_RULE_FALLBACK" || recordValue(metadata.ai_fill).fallback === true
 }
 
 function isStaleSizeChartScalarOverride(fieldName: unknown, field: JsonRecord) {

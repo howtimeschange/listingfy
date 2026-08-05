@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { CheckCircle2, Download, FileSpreadsheet, FileText, Loader2, PackagePlus, RefreshCw, Search, Send, ShieldCheck, Upload } from "lucide-react"
+import { CheckCircle2, ChevronDown, ChevronUp, CircleHelp, Download, FileSpreadsheet, FileText, Images, Loader2, PackagePlus, RefreshCw, Search, Send, ShieldCheck, Upload } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
@@ -63,6 +63,7 @@ interface ProductArchiveDraftRow {
   blocker_count: number
   warning_count: number
   sku_count: number
+  image_count: number
   created_product_id: string | null
   updated_at: string
 }
@@ -165,6 +166,8 @@ interface HangtagWashlabelOcrPreviewItem {
   warnings: string[]
 }
 
+type HangtagWashlabelOcrExtractedField = HangtagWashlabelOcrPreviewItem["extractedFields"][number]
+
 interface HangtagWashlabelOcrPreviewResponse {
   overwriteExisting: boolean
   provider?: {
@@ -202,7 +205,45 @@ interface HangtagWashlabelOcrApplyResponse {
   }
 }
 
+interface ProductArchiveDraftImageImportResponse {
+  ok: boolean
+  summary: {
+    fileCount: number
+    importedCount: number
+    matchedDraftCount: number
+    skippedCount: number
+  }
+  items: Array<{
+    fileName: string
+    spuCode?: string
+    draftId?: number
+    ok: boolean
+    status: "imported" | "skipped" | string
+    reason?: string
+  }>
+}
+
 type BatchDraftAction = "validate" | "check_duplicate" | "submit_preview" | "submit_publish"
+
+const PRODUCT_ARCHIVE_DRAFT_GUIDE_STORAGE_KEY = "listingify.product_archive_draft_guide_seen.v1"
+
+function hasSeenProductArchiveDraftGuide() {
+  if (typeof window === "undefined") return true
+  try {
+    return window.localStorage.getItem(PRODUCT_ARCHIVE_DRAFT_GUIDE_STORAGE_KEY) === "seen"
+  } catch {
+    return false
+  }
+}
+
+function markProductArchiveDraftGuideSeen() {
+  if (typeof window === "undefined") return
+  try {
+    window.localStorage.setItem(PRODUCT_ARCHIVE_DRAFT_GUIDE_STORAGE_KEY, "seen")
+  } catch {
+    // The guide is non-critical; storage failures should not interrupt draft operations.
+  }
+}
 
 const statusLabels: Record<string, string> = {
   draft: "草稿",
@@ -260,6 +301,83 @@ function confidenceLabel(value: string) {
   return value || "-"
 }
 
+function asyncJobProgress(job?: AsyncTaskJob | null) {
+  if (!job?.total_count) return 0
+  const progress = Math.round(((job.completed_count + job.failed_count) / job.total_count) * 100)
+  if (job.status !== "completed") return Math.min(99, progress)
+  return progress
+}
+
+function numberResultValue(value: unknown) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : 0
+}
+
+function recordResultValue(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function hangtagWashlabelOcrJobSummary(job?: AsyncTaskJob | null) {
+  const result = recordResultValue(job?.result)
+  const applySummary = recordResultValue(result?.applySummary)
+  if (!applySummary) return null
+  const previewSummary = recordResultValue(result?.previewSummary)
+  return {
+    appliedDraftCount: numberResultValue(applySummary.appliedDraftCount),
+    appliedFieldCount: numberResultValue(applySummary.appliedFieldCount),
+    skippedCount: numberResultValue(applySummary.skippedCount),
+    matchedCount: numberResultValue(previewSummary?.matchedCount),
+    writableFieldCount: numberResultValue(previewSummary?.writableFieldCount),
+    overwriteExisting: result?.overwriteExisting === true,
+  }
+}
+
+function isCollapsedOcrCaptureField(field: HangtagWashlabelOcrExtractedField) {
+  return field.key === "rawText" || /截取/.test(field.label) || field.value.length > 96
+}
+
+function buildHangtagWashlabelOcrForm(files: File[], scmSupplementFile: File | null, overwriteExisting: boolean) {
+  const form = new FormData()
+  for (const file of files) {
+    form.append("files", file)
+    form.append("filePaths", uploadDisplayName(file))
+  }
+  if (scmSupplementFile) {
+    form.append("scmSupplementFile", scmSupplementFile)
+    form.append("filePaths", uploadDisplayName(scmSupplementFile))
+  }
+  form.append("overwriteExisting", overwriteExisting ? "true" : "false")
+  return form
+}
+
+function OcrExtractedFieldLine({ field }: { field: HangtagWashlabelOcrExtractedField }) {
+  const [expanded, setExpanded] = useState(false)
+  const collapsible = isCollapsedOcrCaptureField(field)
+  return (
+    <div className="min-w-0 rounded-md bg-muted/30 px-2 py-1.5 text-xs">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+        <span className="font-medium">{field.label}</span>
+        <span className="text-muted-foreground">· {confidenceLabel(field.confidence)}</span>
+      </div>
+      <div className={`mt-1 whitespace-pre-wrap break-words text-foreground ${collapsible && !expanded ? "line-clamp-2" : ""}`}>
+        {field.value}
+      </div>
+      {collapsible ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          className="mt-1 h-6 px-1.5 text-muted-foreground"
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+          {expanded ? "收起" : "展开"}
+        </Button>
+      ) : null}
+    </div>
+  )
+}
+
 function uploadDisplayName(file: File) {
   const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath
   return relativePath || file.name
@@ -282,6 +400,10 @@ function isScmSupplementUploadFile(file: File) {
   return ["xlsx", "xlsm"].includes(uploadExtension(file))
 }
 
+function isSpuReferenceImageUploadFile(file: File) {
+  return ["jpg", "jpeg", "png", "webp"].includes(uploadExtension(file))
+}
+
 function splitHangtagWashlabelUploads(files: File[]) {
   const ocrFiles: File[] = []
   let scmSupplementFile: File | null = null
@@ -302,6 +424,96 @@ function splitHangtagWashlabelUploads(files: File[]) {
     skippedCount += 1
   }
   return { ocrFiles, scmSupplementFile, skippedCount }
+}
+
+function buildSpuImageImportForm(files: File[]) {
+  const form = new FormData()
+  for (const file of files) {
+    form.append("files", file)
+    form.append("filePaths", uploadDisplayName(file))
+  }
+  return form
+}
+
+interface ProductArchiveDraftGuideDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}
+
+function ProductArchiveDraftGuideDialog({ open, onOpenChange }: ProductArchiveDraftGuideDialogProps) {
+  const workflowSteps = [
+    {
+      title: "准备来源文件",
+      body: "先准备标准文案表。上市计划用于匹配深绘类目，尺码表、吊牌/洗唛和 SPU 参考图可在后续按款号批量补充。",
+    },
+    {
+      title: "开始商品建档",
+      body: "点击列表右侧的开始商品建档，上传标准文案表和上市计划表。系统会导入来源数据、同步缺失 MDM，并生成或刷新草稿。",
+    },
+    {
+      title: "补充识别资料",
+      body: "导入吊牌/洗唛后可提交后台识别，识别完成会自动回填空字段；导入 SPU 图片后会作为 AI 判断款式、版型、材质观感的参考。",
+    },
+    {
+      title: "处理草稿详情",
+      body: "进入草稿后确认深绘类目，检查字段填充。AI 推荐补齐只会基于 MDM、来源表、已填草稿字段、OCR 和参考图做保守判断。",
+    },
+    {
+      title: "校验并发布",
+      body: "先批量校验和查重，再执行提交预览。确认没有阻断问题后，选择草稿批量发布到深绘并等待回读校验。",
+    },
+  ]
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>深绘建档草稿使用指南</DialogTitle>
+          <DialogDescription>
+            按下面顺序处理，能把来源导入、MDM 同步、类目确认、AI 补齐、校验查重和深绘发布串成一条稳定流程。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-3">
+          <div className="rounded-md border border-[#b9f4d8] bg-[#f2fff8] px-3 py-2 text-sm text-[#08794f]">
+            推荐路径：标准文案表建草稿 → 上市计划匹配类目 → 吊牌/洗唛和 SPU 图补证据 → 详情页确认字段 → 批量校验、查重、发布。
+          </div>
+          <div className="rounded-md border border-[#cfe8ff] bg-[#f6fbff] px-3 py-2 text-sm leading-6 text-[#0f5c8c]">
+            尺码表、吊牌/洗唛文件可以通过抓虾自动化抓取；需要采集工具时前往{" "}
+            <a
+              href="https://crawshrimp.com/download"
+              target="_blank"
+              rel="noreferrer"
+              className="font-medium underline underline-offset-4 hover:text-[#083f63]"
+            >
+              crawshrimp.com/download
+            </a>{" "}
+            下载。
+          </div>
+          <div className="grid gap-2">
+            {workflowSteps.map((step, index) => (
+              <div key={step.title} className="grid grid-cols-[2rem_1fr] gap-3 rounded-md border bg-background px-3 py-2.5">
+                <div className="flex size-8 items-center justify-center rounded-full bg-[#d4fae8] text-sm font-semibold text-[#0fa76e]">
+                  {index + 1}
+                </div>
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-foreground">{step.title}</div>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">{step.body}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="rounded-md bg-muted/40 px-3 py-2 text-xs leading-5 text-muted-foreground">
+            文件按款号关联：目录名或文件名里包含 12 位款号即可匹配。涉及执行标准、成分、材质等强证据字段时，没有可信来源就保留缺失，避免猜错后发布失败。
+          </div>
+        </div>
+        <DialogFooter>
+          <Button type="button" onClick={() => onOpenChange(false)}>
+            知道了
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 interface StartProductArchiveDialogProps {
@@ -470,10 +682,13 @@ interface HangtagWashlabelImportDialogProps {
   overwriteExisting: boolean
   onOverwriteExistingChange: (checked: boolean) => void
   preview: HangtagWashlabelOcrPreviewResponse | null
+  job: AsyncTaskJob | null
   isPreviewing: boolean
   isApplying: boolean
+  isSubmittingJob: boolean
   onPreview: () => void
   onApply: () => void
+  onSubmitJob: () => void
 }
 
 function HangtagWashlabelImportDialog({
@@ -486,13 +701,19 @@ function HangtagWashlabelImportDialog({
   overwriteExisting,
   onOverwriteExistingChange,
   preview,
+  job,
   isPreviewing,
   isApplying,
+  isSubmittingJob,
   onPreview,
   onApply,
+  onSubmitJob,
 }: HangtagWashlabelImportDialogProps) {
   const writableFieldCount = preview?.summary.writableFieldCount ?? 0
   const hasUploadInput = files.length > 0 || Boolean(scmSupplementFile)
+  const jobRunning = Boolean(job && job.status !== "completed")
+  const jobProgress = asyncJobProgress(job)
+  const jobSummary = hangtagWashlabelOcrJobSummary(job)
   const onFolderSelection = (selectedFiles: File[]) => {
     const split = splitHangtagWashlabelUploads(selectedFiles)
     onFilesChange(split.ocrFiles)
@@ -589,6 +810,37 @@ function HangtagWashlabelImportDialog({
             </p>
           </section>
 
+          {job ? (
+            <section className="rounded-lg border p-4">
+              <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+                <div className="font-medium">后台识别任务</div>
+                <Badge variant="outline" className={job.status === "completed" ? "border-[#b9f4d8] bg-[#d4fae8] text-[#0fa76e]" : "border-[#d7e5fb] bg-[#eef5ff] text-[#3772cf]"}>
+                  {job.status === "completed" ? "已完成" : "识别中"}
+                </Badge>
+              </div>
+              <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
+                <span>已处理 {formatNumber((job.completed_count ?? 0) + (job.failed_count ?? 0))} / {formatNumber(job.total_count ?? 0)}</span>
+                <span>{jobProgress}%</span>
+              </div>
+              <Progress value={jobProgress} />
+              <div className="mt-2 grid gap-2 text-xs sm:grid-cols-3">
+                <div className="rounded-md bg-muted/40 px-2 py-1">成功 {formatNumber(job.completed_count ?? 0)}</div>
+                <div className="rounded-md bg-muted/40 px-2 py-1">失败 {formatNumber(job.failed_count ?? 0)}</div>
+                <div className="rounded-md bg-muted/40 px-2 py-1">总数 {formatNumber(job.total_count ?? 0)}</div>
+              </div>
+              {jobSummary ? (
+                <div className="mt-3 rounded-md border border-[#b9f4d8] bg-[#f2fff8] px-3 py-2 text-xs text-[#0f7f58]">
+                  已自动{jobSummary.overwriteExisting ? "按覆盖模式写入" : "填充空字段"} {formatNumber(jobSummary.appliedFieldCount)} 个，
+                  匹配草稿 {formatNumber(jobSummary.appliedDraftCount || jobSummary.matchedCount)} 个，
+                  跳过 {formatNumber(jobSummary.skippedCount)} 个。
+                </div>
+              ) : null}
+              {job.current_item ? (
+                <p className="mt-2 truncate text-xs text-muted-foreground">当前：{job.current_item.spu_code}</p>
+              ) : null}
+            </section>
+          ) : null}
+
           {preview ? (
             <section className="rounded-lg border p-4">
               <div className="mb-3 grid gap-2 text-sm sm:grid-cols-4">
@@ -597,58 +849,54 @@ function HangtagWashlabelImportDialog({
                 <div className="rounded-md bg-muted/40 px-3 py-2">可写字段 {formatNumber(preview.summary.writableFieldCount)}</div>
                 <div className="rounded-md bg-muted/40 px-3 py-2">跳过/警告 {formatNumber(preview.summary.skippedFieldCount + preview.summary.warningCount)}</div>
               </div>
-              <div className="overflow-auto rounded-md border">
-                <Table>
+              <div className="overflow-hidden rounded-md border">
+                <Table className="w-full table-fixed">
                   <TableHeader>
                     <TableRow>
-                      <TableHead>文件</TableHead>
-                      <TableHead>款号/草稿</TableHead>
-                      <TableHead>状态</TableHead>
-                      <TableHead>识别字段</TableHead>
-                      <TableHead>写入字段</TableHead>
+                      <TableHead className="w-[20%]">文件</TableHead>
+                      <TableHead className="w-[17%]">款号/草稿</TableHead>
+                      <TableHead className="w-[11%]">状态</TableHead>
+                      <TableHead className="w-[32%]">识别字段</TableHead>
+                      <TableHead className="w-[20%]">写入字段</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {preview.items.map((item) => (
-                      <TableRow key={item.fileName}>
-                        <TableCell className="min-w-[180px] max-w-[240px]">
-                          <div className="truncate font-medium">{item.fileName}</div>
+                    {preview.items.map((item, itemIndex) => (
+                      <TableRow key={`${item.fileName}-${itemIndex}`}>
+                        <TableCell className="align-top whitespace-normal">
+                          <div className="break-words font-medium">{item.fileName}</div>
                           <div className="mt-1 text-xs text-muted-foreground">
                             {item.fileType || "-"} · {item.sourceKind || "-"} · {formatNumber(item.pageCount)} 页
                           </div>
                           {item.error ? <div className="mt-1 text-xs text-[#d45656]">{item.error}</div> : null}
                         </TableCell>
-                        <TableCell className="min-w-[150px]">
+                        <TableCell className="align-top whitespace-normal">
                           <div className="font-mono text-sm">{item.detectedSpuCode || "-"}</div>
-                          <div className="mt-1 text-xs text-muted-foreground">
+                          <div className="mt-1 break-words text-xs text-muted-foreground">
                             {item.matchedDraft ? `${item.matchedDraft.title || "未命名"} · ${statusLabels[item.matchedDraft.status] ?? item.matchedDraft.status}` : "未匹配"}
                           </div>
                           {item.warnings.length > 0 ? (
-                            <div className="mt-1 text-xs text-[#c37d0d]">{item.warnings.slice(0, 2).join("；")}</div>
+                            <div className="mt-1 break-words text-xs text-[#c37d0d]">{item.warnings.slice(0, 2).join("；")}</div>
                           ) : null}
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="align-top whitespace-normal">
                           <Badge variant="outline" className={ocrStatusClass(item.status)}>
                             {ocrStatusLabels[item.status] ?? item.status}
                           </Badge>
                         </TableCell>
-                        <TableCell className="min-w-[220px] max-w-[320px]">
+                        <TableCell className="align-top whitespace-normal">
                           <div className="grid gap-1">
-                            {item.extractedFields.slice(0, 6).map((field) => (
-                              <div key={`${field.key}-${field.value}`} className="text-xs">
-                                <span className="font-medium">{field.label}</span>
-                                <span className="mx-1 text-muted-foreground">· {confidenceLabel(field.confidence)}</span>
-                                <span className="break-words">{field.value}</span>
-                              </div>
+                            {item.extractedFields.slice(0, 6).map((field, fieldIndex) => (
+                              <OcrExtractedFieldLine key={`${field.key}-${fieldIndex}`} field={field} />
                             ))}
                             {item.extractedFields.length === 0 ? <span className="text-xs text-muted-foreground">无</span> : null}
                             {item.extractedFields.length > 6 ? <span className="text-xs text-muted-foreground">+{formatNumber(item.extractedFields.length - 6)} 项</span> : null}
                           </div>
                         </TableCell>
-                        <TableCell className="min-w-[220px] max-w-[320px]">
+                        <TableCell className="align-top whitespace-normal">
                           <div className="grid gap-1">
                             {item.targetFields.slice(0, 6).map((field) => (
-                              <div key={`${field.fieldId}-${field.fieldKey}`} className="text-xs">
+                              <div key={`${field.fieldId}-${field.fieldKey}`} className="min-w-0 rounded-md bg-muted/30 px-2 py-1.5 text-xs">
                                 <span className="font-medium">{field.fieldName}</span>
                                 <span className={field.willApply ? "ml-1 text-[#0fa76e]" : "ml-1 text-muted-foreground"}>
                                   {field.willApply ? "写入" : field.skippedReason || "跳过"}
@@ -680,7 +928,7 @@ function HangtagWashlabelImportDialog({
           <Button
             type="button"
             variant="outline"
-            disabled={isPreviewing || isApplying || !hasUploadInput}
+            disabled={isPreviewing || isApplying || isSubmittingJob || jobRunning || !hasUploadInput}
             onClick={onPreview}
           >
             {isPreviewing ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
@@ -688,11 +936,160 @@ function HangtagWashlabelImportDialog({
           </Button>
           <Button
             type="button"
-            disabled={isPreviewing || isApplying || !preview || writableFieldCount === 0}
+            variant="outline"
+            disabled={isPreviewing || isApplying || isSubmittingJob || jobRunning || !preview || writableFieldCount === 0}
             onClick={onApply}
           >
             {isApplying ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
             确认写入草稿
+          </Button>
+          <Button
+            type="button"
+            disabled={isPreviewing || isApplying || isSubmittingJob || jobRunning || !hasUploadInput}
+            onClick={onSubmitJob}
+          >
+            {isSubmittingJob ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
+            提交后台识别
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+interface SpuImageImportDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  files: File[]
+  onFilesChange: (files: File[]) => void
+  result: ProductArchiveDraftImageImportResponse | null
+  isPending: boolean
+  onSubmit: () => void
+}
+
+function SpuImageImportDialog({
+  open,
+  onOpenChange,
+  files,
+  onFilesChange,
+  result,
+  isPending,
+  onSubmit,
+}: SpuImageImportDialogProps) {
+  const onFolderSelection = (selectedFiles: File[]) => {
+    const accepted = selectedFiles.filter((file) => !isHiddenUploadFile(file) && isSpuReferenceImageUploadFile(file))
+    const skipped = selectedFiles.length - accepted.length
+    onFilesChange(accepted)
+    if (skipped > 0) toast.warning(`已忽略 ${formatNumber(skipped)} 个非图片文件`)
+  }
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogTrigger asChild>
+        <Button type="button" variant="outline" size="sm">
+          <Images className="size-4" />
+          导入 SPU 图片
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>导入 SPU 参考图</DialogTitle>
+          <DialogDescription>
+            批量上传 JPG/PNG/WEBP 商品图，系统从文件名或目录名识别款号并关联深绘建档草稿，作为 AI 多模态判断参考。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid max-h-[64vh] gap-4 overflow-auto pr-1">
+          <section className="rounded-lg border p-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-dashed px-3 py-3 text-sm hover:bg-muted/40">
+                <span className="flex min-w-0 items-center gap-2">
+                  <Upload className="size-4 text-muted-foreground" />
+                  <span className="truncate">
+                    {files.length > 0 ? `已选择 ${formatNumber(files.length)} 张图片` : "选择 SPU 图片文件"}
+                  </span>
+                </span>
+                <Input
+                  type="file"
+                  accept=".jpg,.jpeg,.png,.webp"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => onFilesChange(Array.from(event.target.files ?? []).filter(isSpuReferenceImageUploadFile))}
+                />
+              </label>
+              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-dashed px-3 py-3 text-sm hover:bg-muted/40">
+                <span className="flex min-w-0 items-center gap-2">
+                  <Images className="size-4 text-muted-foreground" />
+                  <span className="truncate">选择按款号整理的图片目录</span>
+                </span>
+                <input
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => onFolderSelection(Array.from(event.target.files ?? []))}
+                  {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+                />
+              </label>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              文件名或上级目录需要包含款号，例如 208426103215/主图1.jpg 或 208426103215-front.png。
+            </p>
+            {files.length > 0 ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {files.slice(0, 16).map((file) => (
+                  <Badge key={`${uploadDisplayName(file)}-${file.size}`} variant="secondary" className="max-w-[260px] truncate">
+                    {uploadDisplayName(file)}
+                  </Badge>
+                ))}
+                {files.length > 16 ? <Badge variant="outline">+{formatNumber(files.length - 16)}</Badge> : null}
+              </div>
+            ) : null}
+          </section>
+
+          {result ? (
+            <section className="rounded-lg border p-4">
+              <div className="mb-3 grid gap-2 text-sm sm:grid-cols-4">
+                <div className="rounded-md bg-muted/40 px-3 py-2">文件 {formatNumber(result.summary.fileCount)}</div>
+                <div className="rounded-md bg-muted/40 px-3 py-2">导入 {formatNumber(result.summary.importedCount)}</div>
+                <div className="rounded-md bg-muted/40 px-3 py-2">匹配草稿 {formatNumber(result.summary.matchedDraftCount)}</div>
+                <div className="rounded-md bg-muted/40 px-3 py-2">跳过 {formatNumber(result.summary.skippedCount)}</div>
+              </div>
+              <div className="max-h-56 overflow-auto rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>文件</TableHead>
+                      <TableHead>款号</TableHead>
+                      <TableHead>结果</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {result.items.map((item, index) => (
+                      <TableRow key={`${item.fileName}-${index}`}>
+                        <TableCell className="max-w-[320px] truncate">{item.fileName}</TableCell>
+                        <TableCell className="font-mono text-xs">{item.spuCode ?? "-"}</TableCell>
+                        <TableCell>
+                          {item.ok ? (
+                            <Badge variant="outline" className="border-[#b9f4d8] bg-[#d4fae8] text-[#0fa76e]">
+                              已关联草稿 {item.draftId}
+                            </Badge>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">{item.reason ?? "已跳过"}</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </section>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            取消
+          </Button>
+          <Button type="button" disabled={isPending || files.length === 0} onClick={onSubmit}>
+            {isPending ? <Loader2 className="size-4 animate-spin" /> : <Images className="size-4" />}
+            上传并关联草稿
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -702,7 +1099,8 @@ function HangtagWashlabelImportDialog({
 
 export default function ProductArchiveDraftsPage() {
   const queryClient = useQueryClient()
-  const { addTask, getTaskByJobId, openTaskCenter } = useAsyncTasks()
+  const { tasks, addTask, getTaskByJobId, openTaskCenter } = useAsyncTasks()
+  const refreshedOcrJobIds = useRef<Set<string>>(new Set())
   const [searchText, setSearchText] = useState("")
   const [multiLineSearchOpen, setMultiLineSearchOpen] = useState(false)
   const [multiLineSpuCodes, setMultiLineSpuCodes] = useState("")
@@ -712,11 +1110,16 @@ export default function ProductArchiveDraftsPage() {
   const [mdmCodes, setMdmCodes] = useState("")
   const [workflowDialogOpen, setWorkflowDialogOpen] = useState(false)
   const [workflowProgressDialogOpen, setWorkflowProgressDialogOpen] = useState(false)
+  const [guideDialogOpen, setGuideDialogOpen] = useState(() => !hasSeenProductArchiveDraftGuide())
   const [ocrDialogOpen, setOcrDialogOpen] = useState(false)
   const [ocrFiles, setOcrFiles] = useState<File[]>([])
   const [ocrScmSupplementFile, setOcrScmSupplementFile] = useState<File | null>(null)
   const [ocrOverwriteExisting, setOcrOverwriteExisting] = useState(false)
   const [ocrPreview, setOcrPreview] = useState<HangtagWashlabelOcrPreviewResponse | null>(null)
+  const [ocrJobId, setOcrJobId] = useState<string | null>(null)
+  const [spuImageDialogOpen, setSpuImageDialogOpen] = useState(false)
+  const [spuImageFiles, setSpuImageFiles] = useState<File[]>([])
+  const [spuImageImportResult, setSpuImageImportResult] = useState<ProductArchiveDraftImageImportResponse | null>(null)
   const [copywritingFile, setCopywritingFile] = useState<File | null>(null)
   const [launchPlanFile, setLaunchPlanFile] = useState<File | null>(null)
   const [sizeChartFile, setSizeChartFile] = useState<File | null>(null)
@@ -757,11 +1160,30 @@ export default function ProductArchiveDraftsPage() {
   const allVisibleSelected = visibleItems.length > 0 && visibleItems.every((item) => selectedDraftIds.has(item.id))
   const trackedTask = getTaskByJobId(batchJobId)
   const trackedJob = (trackedTask?.job ?? batchJob) as DraftBatchJob | null | undefined
+  const trackedOcrJob = (getTaskByJobId(ocrJobId)?.job ?? null) as AsyncTaskJob | null
   const trackedJobProgress = trackedJob?.total_count
     ? Math.round(((trackedJob.completed_count + trackedJob.failed_count) / trackedJob.total_count) * 100)
     : 0
   const failedJobItems = trackedJob?.items?.filter((item) => item.status === "failed") ?? []
   const appliedMultiLineCount = multiLineCodeCount(appliedMultiLineSpuCodes)
+
+  function handleGuideDialogOpenChange(open: boolean) {
+    setGuideDialogOpen(open)
+    if (!open) {
+      markProductArchiveDraftGuideSeen()
+    }
+  }
+
+  useEffect(() => {
+    const completedOcrTasks = tasks.filter((task) => (
+      task.type === "product_archive_hangtag_washlabel_ocr"
+      && task.job?.status === "completed"
+      && !refreshedOcrJobIds.current.has(task.id)
+    ))
+    if (completedOcrTasks.length === 0) return
+    for (const task of completedOcrTasks) refreshedOcrJobIds.current.add(task.id)
+    queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+  }, [queryClient, tasks])
 
   const syncMdmAndCreateBatch = useMutation({
     mutationFn: () => api.post<DraftBatchJob>("/product-archive-drafts/mdm-batch", {
@@ -836,16 +1258,7 @@ export default function ProductArchiveDraftsPage() {
 
   const previewHangtagWashlabelOcr = useMutation({
     mutationFn: async () => {
-      const form = new FormData()
-      for (const file of ocrFiles) {
-        form.append("files", file)
-        form.append("filePaths", uploadDisplayName(file))
-      }
-      if (ocrScmSupplementFile) {
-        form.append("scmSupplementFile", ocrScmSupplementFile)
-        form.append("filePaths", uploadDisplayName(ocrScmSupplementFile))
-      }
-      form.append("overwriteExisting", ocrOverwriteExisting ? "true" : "false")
+      const form = buildHangtagWashlabelOcrForm(ocrFiles, ocrScmSupplementFile, ocrOverwriteExisting)
       return api.postForm<HangtagWashlabelOcrPreviewResponse>("/product-archive-drafts/hangtag-washlabel-ocr/preview", form)
     },
     onSuccess: (result) => {
@@ -860,6 +1273,31 @@ export default function ProductArchiveDraftsPage() {
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "吊牌/洗唛识别失败")
+    },
+  })
+
+  const submitHangtagWashlabelOcrJob = useMutation({
+    mutationFn: async () => {
+      const form = buildHangtagWashlabelOcrForm(ocrFiles, ocrScmSupplementFile, ocrOverwriteExisting)
+      return api.postForm<AsyncTaskJob>("/product-archive-drafts/hangtag-washlabel-ocr/jobs", form)
+    },
+    onSuccess: (job) => {
+      addTask({
+        job,
+        type: "product_archive_hangtag_washlabel_ocr",
+        title: "吊牌/洗唛后台识别",
+        description: `待识别并写入 ${formatNumber(Math.max(0, (job.total_count ?? 1) - 1))} 个上传项`,
+        endpoint: `/product-archive-drafts/hangtag-washlabel-ocr/jobs/${job.id}`,
+      })
+      setOcrJobId(job.id)
+      setOcrPreview(null)
+      setOcrFiles([])
+      setOcrScmSupplementFile(null)
+      toast.success("吊牌/洗唛后台识别任务已提交")
+      openTaskCenter()
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "提交吊牌/洗唛后台识别失败")
     },
   })
 
@@ -879,6 +1317,26 @@ export default function ProductArchiveDraftsPage() {
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "写入吊牌/洗唛字段失败")
+    },
+  })
+
+  const importSpuReferenceImages = useMutation({
+    mutationFn: async () => api.postForm<ProductArchiveDraftImageImportResponse>(
+      "/product-archive-drafts/images/import",
+      buildSpuImageImportForm(spuImageFiles),
+    ),
+    onSuccess: (result) => {
+      setSpuImageImportResult(result)
+      if (result.summary.importedCount > 0) {
+        toast.success(`已关联 ${formatNumber(result.summary.importedCount)} 张 SPU 参考图`)
+        setSpuImageFiles([])
+        queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+      } else {
+        toast.warning("没有图片匹配到建档草稿，请检查文件名或目录名是否包含款号")
+      }
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "导入 SPU 参考图失败")
     },
   })
 
@@ -997,6 +1455,16 @@ export default function ProductArchiveDraftsPage() {
               type="button"
               variant="outline"
               size="sm"
+              className="border-[#ff6b76]/45 bg-[#fff7f8] text-[#d93d4a] hover:bg-[#ffecee] hover:text-[#be2f3b]"
+              onClick={() => setGuideDialogOpen(true)}
+            >
+              <CircleHelp className="size-4" />
+              使用指南
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
               disabled={selectedDrafts.length === 0 || batchDraftAction.isPending}
               onClick={() => runBatchAction("validate")}
             >
@@ -1061,6 +1529,11 @@ export default function ProductArchiveDraftsPage() {
             </Dialog>
           </>
         }
+      />
+
+      <ProductArchiveDraftGuideDialog
+        open={guideDialogOpen}
+        onOpenChange={handleGuideDialogOpenChange}
       />
 
       <CompactListCard>
@@ -1216,27 +1689,49 @@ export default function ProductArchiveDraftsPage() {
                   setOcrDialogOpen(open)
                   if (!open) return
                   setOcrPreview(null)
+                  setOcrJobId(null)
                 }}
                 files={ocrFiles}
                 onFilesChange={(files) => {
                   setOcrFiles(files)
                   setOcrPreview(null)
+                  setOcrJobId(null)
                 }}
                 scmSupplementFile={ocrScmSupplementFile}
                 onScmSupplementFileChange={(file) => {
                   setOcrScmSupplementFile(file)
                   setOcrPreview(null)
+                  setOcrJobId(null)
                 }}
                 overwriteExisting={ocrOverwriteExisting}
                 onOverwriteExistingChange={(checked) => {
                   setOcrOverwriteExisting(checked)
                   setOcrPreview(null)
+                  setOcrJobId(null)
                 }}
                 preview={ocrPreview}
+                job={trackedOcrJob}
                 isPreviewing={previewHangtagWashlabelOcr.isPending}
                 isApplying={applyHangtagWashlabelOcr.isPending}
+                isSubmittingJob={submitHangtagWashlabelOcrJob.isPending}
                 onPreview={() => previewHangtagWashlabelOcr.mutate()}
                 onApply={() => applyHangtagWashlabelOcr.mutate()}
+                onSubmitJob={() => submitHangtagWashlabelOcrJob.mutate()}
+              />
+              <SpuImageImportDialog
+                open={spuImageDialogOpen}
+                onOpenChange={(open) => {
+                  setSpuImageDialogOpen(open)
+                  if (open) setSpuImageImportResult(null)
+                }}
+                files={spuImageFiles}
+                onFilesChange={(files) => {
+                  setSpuImageFiles(files)
+                  setSpuImageImportResult(null)
+                }}
+                result={spuImageImportResult}
+                isPending={importSpuReferenceImages.isPending}
+                onSubmit={() => importSpuReferenceImages.mutate()}
               />
               <StartProductArchiveDialog
                 open={workflowDialogOpen}
@@ -1278,6 +1773,7 @@ export default function ProductArchiveDraftsPage() {
                   <TableHead>状态</TableHead>
                   <TableHead>问题</TableHead>
                   <TableHead>SKU</TableHead>
+                  <TableHead>参考图</TableHead>
                   <TableHead>productId</TableHead>
                   <TableHead>更新时间</TableHead>
                   <TableHead>操作</TableHead>
@@ -1316,6 +1812,7 @@ export default function ProductArchiveDraftsPage() {
                       <span className="text-[#c37d0d]">{item.warning_count}</span>
                     </TableCell>
                     <TableCell>{formatNumber(item.sku_count)}</TableCell>
+                    <TableCell>{formatNumber(item.image_count ?? 0)}</TableCell>
                     <TableCell>{item.created_product_id || "-"}</TableCell>
                     <TableCell>{formatDateTime(item.updated_at)}</TableCell>
                     <TableCell>

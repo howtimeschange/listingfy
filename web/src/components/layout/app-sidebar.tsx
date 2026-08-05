@@ -135,7 +135,15 @@ export function AppSidebar() {
             <Sparkles className="size-4" />
           </div>
           <div className="flex flex-col leading-tight group-data-[collapsible=icon]:hidden">
-            <span className="text-sm font-semibold tracking-[-0.1px]">Listingify</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm font-semibold tracking-[-0.1px]">Listingify</span>
+              <span
+                aria-label="AI 驱动"
+                className="inline-flex h-5 items-center rounded-full border border-[#18e299]/60 bg-[#d4fae8] px-1.5 font-mono text-[10px] font-semibold leading-none tracking-[0.4px] text-[#08794f] shadow-[0_1px_2px_rgba(15,167,110,0.12)]"
+              >
+                AI
+              </span>
+            </div>
             <span className="font-mono text-[10px] uppercase tracking-[0.6px] text-muted-foreground">
               Listing Platform
             </span>

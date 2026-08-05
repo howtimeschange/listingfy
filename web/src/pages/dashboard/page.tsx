@@ -344,6 +344,10 @@ export default function DashboardPage() {
   const submittedTasks = numberValue(taskStatus.PUBLISH_SUBMITTED) + numberValue(taskStatus.SUBMITTED)
   const draftTotal = numberValue(draftData?.pagination.total)
   const archiveDraftTotal = numberValue(archiveDraftData?.pagination.total)
+  const sheinProductTotal = numberValue(bucketData?.summary.total ?? bucketData?.pagination.total)
+  const sheinNeedsWork = numberValue(bucketData?.summary.needs_work_count)
+  const sheinNeedsAi = numberValue(bucketData?.summary.needs_ai_count)
+  const sheinMissingFields = numberValue(bucketData?.summary.missing_field_count)
   const archiveReadyDrafts = recentArchiveDrafts.filter((item) =>
     ["ready", "created", "readback_verified"].includes(item.status),
   ).length
@@ -358,6 +362,8 @@ export default function DashboardPage() {
   const leafCategoryCount = metadata?.roots.reduce((sum, item) => sum + numberValue(item.leaf_count), 0) ?? 0
   const bucketSummary = bucketData?.summary
   const bucketCompleteness = clampPercent(bucketSummary?.avg_completeness)
+  const productOperationBacklog = archiveNeedsWork + sheinNeedsWork + failedTasks
+  const aiEvidenceBacklog = archiveWarnings + sheinNeedsAi + sheinMissingFields
   const isLoading =
     (canUseDeepdraw && archiveDraftLoading)
     || (canUseShein && (metadataLoading || bucketLoading || draftLoading || taskLoading))
@@ -376,7 +382,7 @@ export default function DashboardPage() {
     workstreams.push(
       {
         title: "深绘建档",
-        description: "从标准文案表、上市计划和 MDM 数据生成深绘商品建档草稿。",
+        description: "标准文案、上市计划、MDM、吊牌/洗唛 OCR 和 SPU 图共同驱动建档草稿。",
         value: formatNumber(archiveDraftTotal),
         meta: `可创建 ${formatNumber(archiveReadyDrafts)} / 阻断 ${formatNumber(archiveBlockers)}`,
         icon: PenLine,
@@ -385,7 +391,7 @@ export default function DashboardPage() {
       },
       {
         title: "上市计划表",
-        description: "维护建档前置的上市计划明细，用于匹配类目、上市时间和商品基础字段。",
+        description: "维护商品上市节奏和类目来源，支撑深绘建档字段自动刷新。",
         value: formatNumber(archiveNeedsWork),
         meta: `最近草稿 ${formatNumber(recentArchiveDrafts.length)} / 警告 ${formatNumber(archiveWarnings)}`,
         icon: FileSpreadsheet,
@@ -399,8 +405,8 @@ export default function DashboardPage() {
     workstreams.push(
       {
         title: "SHEIN 上新运营",
-        description: "确认类目、图片、尺码、价格、毛重和 AI 待判断字段，推进发布草稿。",
-        value: formatNumber(bucketSummary?.needs_work_count ?? 0),
+        description: "从商品分桶推进类目、图片、尺码、价格和 AI 字段补齐，形成可发布草稿。",
+        value: formatNumber(sheinNeedsWork),
         meta: `就绪 ${formatNumber(bucketSummary?.ready_count ?? 0)} / 完整度 ${bucketCompleteness}%`,
         icon: ShoppingBag,
         to: "/shein-products",
@@ -408,7 +414,7 @@ export default function DashboardPage() {
       },
       {
         title: "SHEIN 平台商品运营",
-        description: "追踪平台商品、销售站点、供货价、审核状态和最近操作。",
+        description: "回捞平台商品、销售站点、供货价、审核状态和发布任务回执。",
         value: formatNumber(taskData?.summary.total ?? 0),
         meta: `发布中 ${formatNumber(publishingTasks)} / 失败 ${formatNumber(failedTasks)}`,
         icon: PackageSearch,
@@ -418,17 +424,74 @@ export default function DashboardPage() {
     )
   }
 
+  const aiOperationCards: Array<{
+    title: string
+    description: string
+    metric: string
+    meta: string
+    icon: LucideIcon
+    to: string
+  }> = []
+
+  if (canUseDeepdraw) {
+    aiOperationCards.push(
+      {
+        title: "AI 深绘建档",
+        description: "用来源表、MDM、OCR 和 SPU 参考图给深绘字段提供证据，减少手工建档。",
+        metric: formatNumber(archiveDraftTotal),
+        meta: `可创建 ${formatNumber(archiveReadyDrafts)} / 待处理 ${formatNumber(archiveNeedsWork)}`,
+        icon: Sparkles,
+        to: "/product-archive-drafts",
+      },
+      {
+        title: "商品类目与模板",
+        description: "围绕上市计划匹配深绘类目，持续维护平台字段、尺码表和字段对应关系。",
+        metric: formatNumber(leafCategoryCount),
+        meta: "深绘类目字段与规则配置",
+        icon: Database,
+        to: "/deepdraw-metadata",
+      },
+    )
+  }
+
+  if (canUseShein) {
+    aiOperationCards.push(
+      {
+        title: "AI 上新补齐",
+        description: "把 SHEIN 类目、标题、属性、图片和发布草稿放进同一个补齐队列。",
+        metric: formatNumber(sheinNeedsAi),
+        meta: `缺失字段 ${formatNumber(sheinMissingFields)} / 完整度 ${bucketCompleteness}%`,
+        icon: ShieldCheck,
+        to: "/pre-publish-validation",
+      },
+      {
+        title: "平台商品闭环",
+        description: "跟踪平台商品、发布任务、审核状态和回读结果，把异常拉回运营处理。",
+        metric: formatNumber(failedTasks),
+        meta: `发布中 ${formatNumber(publishingTasks)} / 已提交 ${formatNumber(submittedTasks)}`,
+        icon: PackageSearch,
+        to: "/shein-platform-products",
+      },
+    )
+  }
+
   return (
     <PageContainer className="space-y-6">
       <PageHeader
-        title="全链路运营驾驶舱"
-        description="按角色聚合深绘建档、SHEIN 上新运营和平台商品运营。每个角色只看到自己能处理的链路入口、待办和风险。"
+        title="AI 商品运营平台"
+        description="围绕商品建档、上新发布、平台商品和审核回执组织运营工作。系统用 MDM、来源表、OCR、SPU 参考图和 AI 补齐能力，把多平台商品从资料准备推进到发布回读。"
+        prefix={
+          <Badge variant="secondary" className="border border-[#b9f4d8] bg-[#f2fff8] text-[#08794f]">
+            <Sparkles className="size-3" />
+            AI 驱动
+          </Badge>
+        }
       >
         {canUseDeepdraw ? (
           <Button asChild>
             <Link to="/product-archive-drafts">
               <PenLine className="size-4" />
-              深绘建档
+              开始深绘建档
             </Link>
           </Button>
         ) : null}
@@ -436,7 +499,7 @@ export default function DashboardPage() {
           <Button asChild variant={canUseDeepdraw ? "outline" : "default"}>
             <Link to="/shein-platform-products">
               <PackageSearch className="size-4" />
-              SHEIN 平台商品
+              查看平台商品
             </Link>
           </Button>
         ) : null}
@@ -454,6 +517,32 @@ export default function DashboardPage() {
         </Card>
       ) : null}
 
+      {canUseDeepdraw || canUseShein ? (
+        <section className="grid gap-4 rounded-2xl border bg-card px-5 py-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] lg:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline" className="border-[#b9f4d8] bg-[#d4fae8] text-[#0fa76e]">
+                商品运营中台
+              </Badge>
+              <Badge variant="outline">深绘建档</Badge>
+              <Badge variant="outline">SHEIN 上新</Badge>
+              <Badge variant="outline">OCR/AI 补齐</Badge>
+            </div>
+            <h2 className="mt-3 text-xl font-semibold tracking-[-0.2px] text-foreground">
+              从商品资料到平台回执的统一运营台
+            </h2>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
+              首页现在聚合商品建档、上新补齐、发布任务、平台商品和审核异常。运营同学可以先看待处理商品，再进入对应链路批量处理。
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
+            <MiniMetric label="待处理商品" value={formatNumber(productOperationBacklog)} />
+            <MiniMetric label="AI/证据待补" value={formatNumber(aiEvidenceBacklog)} />
+            <MiniMetric label="平台商品" value={formatNumber(sheinProductTotal)} />
+          </div>
+        </section>
+      ) : null}
+
       {isLoading ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {Array.from({ length: 4 }).map((_, index) => (
@@ -465,13 +554,13 @@ export default function DashboardPage() {
           {canUseDeepdraw ? (
             <>
               <StatCard
-                title="深绘建档草稿"
+                title="深绘草稿池"
                 value={formatNumber(archiveDraftTotal)}
                 icon={PenLine}
                 description={`最近可创建 ${formatNumber(archiveReadyDrafts)} 个`}
               />
               <StatCard
-                title="深绘待补齐"
+                title="建档待处理"
                 value={formatNumber(archiveNeedsWork)}
                 icon={AlertTriangle}
                 description={`阻断 ${formatNumber(archiveBlockers)} / 警告 ${formatNumber(archiveWarnings)}`}
@@ -481,16 +570,16 @@ export default function DashboardPage() {
           {canUseShein ? (
             <>
               <StatCard
-                title="SHEIN 分桶商品"
-                value={formatNumber(bucketSummary?.total ?? bucketData?.pagination.total ?? 0)}
+                title="商品分桶池"
+                value={formatNumber(sheinProductTotal)}
                 icon={ShoppingBag}
                 description={`已建草稿 ${formatNumber(bucketSummary?.drafted_count ?? 0)} 款`}
               />
               <StatCard
-                title="SHEIN 待处理"
-                value={formatNumber(bucketSummary?.needs_work_count ?? 0)}
+                title="上新待处理"
+                value={formatNumber(sheinNeedsWork)}
                 icon={AlertTriangle}
-                description={`缺失字段 ${formatNumber(bucketSummary?.missing_field_count ?? 0)} / 需判断 ${formatNumber(bucketSummary?.needs_ai_count ?? 0)}`}
+                description={`缺失字段 ${formatNumber(sheinMissingFields)} / 需判断 ${formatNumber(sheinNeedsAi)}`}
               />
               <StatCard
                 title="发布草稿"
@@ -508,6 +597,24 @@ export default function DashboardPage() {
           ) : null}
         </div>
       )}
+
+      {aiOperationCards.length ? (
+        <section className="space-y-3">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold tracking-[-0.16px]">AI 商品运营能力</h2>
+              <p className="text-sm text-muted-foreground">
+                最近新增的建档、OCR、SPU 图参考、AI 补齐和平台回读能力，集中在这里进入。
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            {aiOperationCards.map((item) => (
+              <OperationCapabilityCard key={item.title} {...item} />
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {workstreams.length ? (
         <div className="grid gap-4 xl:grid-cols-4">
@@ -748,6 +855,47 @@ export default function DashboardPage() {
         </>
       ) : null}
     </PageContainer>
+  )
+}
+
+function OperationCapabilityCard({
+  title,
+  description,
+  metric,
+  meta,
+  icon: Icon,
+  to,
+}: {
+  title: string
+  description: string
+  metric: string
+  meta: string
+  icon: LucideIcon
+  to: string
+}) {
+  return (
+    <Card className="group py-4">
+      <CardContent className="px-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[#d4fae8] text-[#0fa76e]">
+            <Icon className="size-4" />
+          </div>
+          <Button asChild variant="ghost" size="icon-sm" className="shrink-0 group-hover:bg-accent/50">
+            <Link to={to} aria-label={`打开${title}`}>
+              <ArrowRight className="size-4" />
+            </Link>
+          </Button>
+        </div>
+        <div className="mt-4 flex items-end justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">{title}</p>
+            <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{description}</p>
+          </div>
+          <p className="shrink-0 font-mono text-xl font-semibold leading-none tabular-nums">{metric}</p>
+        </div>
+        <p className="mt-3 truncate text-xs text-muted-foreground">{meta}</p>
+      </CardContent>
+    </Card>
   )
 }
 

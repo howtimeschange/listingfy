@@ -7,6 +7,7 @@ const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const files = {
   migration: path.join(PROJECT_ROOT, "db/migrations/024_deepdraw_product_archive_creation.sql"),
   sizeChartMigration: path.join(PROJECT_ROOT, "db/migrations/036_product_archive_size_chart_source.sql"),
+  draftImageMigration: path.join(PROJECT_ROOT, "db/migrations/044_product_archive_draft_images.sql"),
   sqliteDb: path.join(PROJECT_ROOT, "scripts/lib/sqlite_db.mjs"),
   metadataService: path.join(PROJECT_ROOT, "web/server/services/deepdraw-metadata.ts"),
   draftService: path.join(PROJECT_ROOT, "web/server/services/product-archive-drafts.ts"),
@@ -26,12 +27,19 @@ async function readText(file) {
 }
 
 test("new deepdraw archive schema is a PostgreSQL-only schema revision, not a SQLite compatibility layer", async () => {
-  const [migration, sqliteDb] = await Promise.all([
+  const [migration, draftImageMigration, sqliteDb] = await Promise.all([
     readFile(files.migration, "utf8"),
+    readFile(files.draftImageMigration, "utf8"),
     readFile(files.sqliteDb, "utf8"),
   ]);
 
   assert.match(migration, /postgres-only/);
+  assert.match(draftImageMigration, /postgres-only/);
+  assert.match(draftImageMigration, /create table if not exists product_archive_draft_image/);
+  assert.match(draftImageMigration, /references product_archive_draft\(id\) on delete cascade/);
+  assert.match(draftImageMigration, /local_path text not null/);
+  assert.match(draftImageMigration, /uploaded_by integer references app_user\(id\) on delete set null/);
+  assert.match(draftImageMigration, /idx_product_archive_draft_image_draft/);
   assert.match(migration, /bigserial primary key/i);
   assert.match(migration, /timestamptz not null default now\(\)/i);
   assert.match(migration, /jsonb not null default '\{\}'::jsonb/i);
@@ -1444,7 +1452,117 @@ test("product archive AI fill skips fields that already have JSON values", async
   assert.match(service, /rebuildProductArchiveDraftFields\(db, draftId\)/);
   assert.match(service, /fillProductArchiveDraftFieldsWithAi/);
   assert.match(service, /isStaleUnsupportedAiFillField/);
-  assert.match(service, /Boolean\(existing\.manual_override\)[\s\S]*!isStaleUnsupportedAiFillField\(fieldName, existing\)[\s\S]*!isStaleSizeChartScalarOverride\(fieldName, existing\)/);
+  assert.match(service, /Boolean\(existing\.manual_override\)[\s\S]*!isStaleUnsupportedAiFillField\(fieldName, existing\)[\s\S]*!isStaleMaterialAiRuleFallbackField\(fieldName, existing\)[\s\S]*!isStaleSizeChartScalarOverride\(fieldName, existing\)/);
+});
+
+test("product archive AI fill prompt uses trusted draft MDM and source context only", async () => {
+  const service = await readFile(files.draftService, "utf8");
+
+  assert.match(service, /const AI_FILL_MIN_CONFIDENCE = 0\.7/);
+  assert.match(service, /function buildMdmMasterAiContext\(draft: JsonRecord, mdmSpu: JsonRecord = \{\}\)/);
+  assert.match(service, /const snapshotSpu = recordValue\(recordValue\(draft\.source_snapshot_json\)\.spu\)/);
+  assert.match(service, /mdm_master: buildMdmMasterAiContext\(input\.draft, input\.mdmSpu\)/);
+  assert.match(service, /source_rows: buildSourceRowsAiContext\(input\.sourceRows \?\? \[\]\)/);
+  assert.match(service, /filled_fields: buildFilledFieldAiContext\(input\.allFields \?\? \[\], input\.fields\)/);
+  assert.match(service, /reference_images: buildReferenceImageAiContext\(input\.referenceImages \?\? \[\]\)/);
+  assert.match(service, /buildDeepdrawAiFillMessages\(prompt, referenceImages\)/);
+  assert.match(service, /type: "image_url"/);
+  assert.match(service, /data:\$\{mimeType\};base64/);
+  assert.match(service, /忽略 source_type 为 ai_rule_fallback 的历史值/);
+  assert.match(service, /不要因为 options 的顺序选择第一个选项/);
+  assert.match(service, /confidence 低于 \$\{AI_FILL_MIN_CONFIDENCE\} 的字段不要返回/);
+  assert.match(service, /if \(!aiFill\) continue/);
+  assert.match(service, /if \(!Number\.isFinite\(confidence\) \|\| confidence < AI_FILL_MIN_CONFIDENCE\) continue/);
+  assert.match(service, /if \(!fieldValue \|\| !productArchiveFieldValueMatchesOptions\(fieldValue, field\.options\)\) continue/);
+  assert.doesNotMatch(service, /options\[0\]/);
+});
+
+test("product archive AI fill derives material enum fields from trusted composition text before model fallback", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const fields = [
+    {
+      id: 201,
+      field_name: "成分含量(文本)",
+      source_type: "scm_list",
+      value_text: "面料: 65.1%棉25.0%聚酯纤维9.2%粘纤0.7%氨纶（配料除外）",
+      value_json: {},
+      validation_status: "valid",
+      options_json: [],
+    },
+    {
+      id: 202,
+      field_name: "京东材质成分",
+      source_type: "ai_rule_fallback",
+      value_text: "",
+      value_json: { source: "AI_RULE_FALLBACK", ai_fill: { fallback: true } },
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [
+        { value: "棉" },
+        { value: "涤纶(聚酯纤维)" },
+        { value: "粘胶纤维(粘纤)" },
+        { value: "聚氨酯弹性纤维(氨纶)" },
+      ],
+    },
+    {
+      id: 203,
+      field_name: "材质",
+      source_type: "manual",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [
+        { value: "棉混纺" },
+        { value: "棉" },
+        { value: "聚酯纤维" },
+      ],
+    },
+    {
+      id: 204,
+      field_name: "材质(多选)",
+      source_type: "manual",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [
+        { value: "棉" },
+        { value: "聚酯纤维" },
+        { value: "粘胶纤维(粘纤)" },
+        { value: "氨纶" },
+      ],
+    },
+    {
+      id: 205,
+      field_name: "面料(多选)",
+      source_type: "manual",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [
+        { value: "棉" },
+        { value: "聚酯纤维" },
+        { value: "粘胶纤维(粘纤)" },
+        { value: "氨纶" },
+      ],
+    },
+  ];
+  const candidates = service.buildProductArchiveAiFillCandidateFields(fields, [], []);
+
+  assert.deepEqual(
+    service.buildProductArchiveMaterialEvidenceFills(fields, candidates, []).map((field) => [
+      field.field_name,
+      field.field_value,
+    ]),
+    [
+      ["京东材质成分", "棉,65.1;涤纶(聚酯纤维),25;粘胶纤维(粘纤),9.2;聚氨酯弹性纤维(氨纶),0.7"],
+      ["材质", "棉混纺"],
+      ["材质(多选)", "棉;聚酯纤维;粘胶纤维(粘纤);氨纶"],
+      ["面料(多选)", "棉;聚酯纤维;粘胶纤维(粘纤);氨纶"],
+    ],
+  );
 });
 
 test("product archive size-chart mapping AI routes and review services are wired", async () => {
@@ -2413,16 +2531,7 @@ test("product archive AI fill skips structural multi-platform size fields", asyn
   ], [], []);
 
   assert.deepEqual(candidates.map((field) => field.fieldName), ["适用季节"]);
-  assert.equal(service.chooseProductArchiveAiFallbackOption("多平台尺码", "", [
-    { value: "得物", label: "得物" },
-  ]), "");
-  assert.equal(service.chooseProductArchiveAiFallbackOption("淘宝尺码表", "", [
-    { value: "身高", label: "身高" },
-  ]), "");
-  assert.equal(service.chooseProductArchiveAiFallbackOption("尺码", "", [
-    { value: "48cm", label: "48cm" },
-    { value: "66cm", label: "66cm" },
-  ]), "");
+  assert.equal(service.chooseProductArchiveAiFallbackOption, undefined);
 });
 
 test("product archive AI fill normalizes color choices back to DeepDraw alias values", async () => {
@@ -2444,6 +2553,14 @@ test("product archive AI fill normalizes color choices back to DeepDraw alias va
   ]), "");
 });
 
+test("product archive draft reference image upload extracts style codes from folder paths", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(service.extractProductArchiveImageSpuCode("208426103215/主图1.jpg"), "208426103215");
+  assert.equal(service.extractProductArchiveImageSpuCode("SCM全链路冒烟_20260805/208426103215/front.png"), "208426103215");
+  assert.equal(service.extractProductArchiveImageSpuCode("no-style-image.png"), "");
+});
+
 test("product archive SKU color validation accepts AI-filled DeepDraw color aliases", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
@@ -2460,25 +2577,10 @@ test("product archive SKU color validation accepts AI-filled DeepDraw color alia
   ), false);
 });
 
-test("product archive AI fallback chooses semantic template options for invalid values", async () => {
+test("product archive AI fill does not expose legacy semantic fallback option writer", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
-  assert.equal(service.chooseProductArchiveAiFallbackOption("材质", "成分 面料：100%棉（配料除外）", [
-    { value: "聚酯纤维", label: "聚酯纤维" },
-    { value: "棉", label: "棉" },
-  ], ""), "棉");
-  assert.equal(service.chooseProductArchiveAiFallbackOption("功能(多选)", "柔和 亲肤 细腻", [
-    { value: "阻燃", label: "阻燃" },
-    { value: "其他", label: "其他" },
-  ], ""), "其他");
-  assert.equal(service.chooseProductArchiveAiFallbackOption("原产国(AKC)", "", [
-    { value: "黑山", label: "黑山" },
-    { value: "中国", label: "中国" },
-  ], ""), "中国");
-  assert.equal(service.chooseProductArchiveAiFallbackOption("原产国(AKC)", "", [
-    { value: "黑山", label: "黑山" },
-    { value: "越南", label: "越南" },
-  ], ""), "");
+  assert.equal(service.chooseProductArchiveAiFallbackOption, undefined);
 });
 
 test("product archive service normalizes source values into DeepDraw enum options", async () => {
@@ -2534,6 +2636,29 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "聚酯纤维" },
     { value: "棉" },
   ]), "棉");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("材质", "面料: 65.1%棉\n25.0%聚酯纤维\n9.2%粘纤\n0.7%氨纶（配料除外）", [
+    { value: "棉混纺" },
+    { value: "棉" },
+    { value: "聚酯纤维" },
+  ]), "棉混纺");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("材质成分", "面料: 65.1%棉\n25.0%聚酯纤维\n9.2%粘纤\n0.7%氨纶（配料除外）", [
+    { value: "棉" },
+    { value: "聚酯纤维" },
+    { value: "粘胶纤维(粘纤)" },
+    { value: "聚氨酯弹性纤维(氨纶)" },
+  ]), "棉,65.1;聚酯纤维,25;粘胶纤维(粘纤),9.2;聚氨酯弹性纤维(氨纶),0.7");
+  assert.equal(service.normalizeProductArchiveAiFillValue("材质成分", "", "面料: 65.1%棉\n25.0%聚酯纤维\n9.2%粘纤\n0.7%氨纶（配料除外）", [
+    { value: "棉", label: "棉" },
+    { value: "聚酯纤维", label: "聚酯纤维" },
+    { value: "粘胶纤维(粘纤)", label: "粘胶纤维(粘纤)" },
+    { value: "聚氨酯弹性纤维(氨纶)", label: "聚氨酯弹性纤维(氨纶)" },
+  ]), "棉,65.1;聚酯纤维,25;粘胶纤维(粘纤),9.2;聚氨酯弹性纤维(氨纶),0.7");
+  assert.equal(service.normalizeProductArchiveAiFillValue("面料(多选)", "", "面料: 65.1%棉\n25.0%聚酯纤维\n9.2%粘纤\n0.7%氨纶（配料除外）", [
+    { value: "棉", label: "棉" },
+    { value: "聚酯纤维", label: "聚酯纤维" },
+    { value: "粘胶纤维(粘纤)", label: "粘胶纤维(粘纤)" },
+    { value: "氨纶", label: "氨纶" },
+  ]), "棉;聚酯纤维;粘胶纤维(粘纤);氨纶");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("材质成分(文本)", "100%棉（配料除外）", [
     { value: "聚酯纤维" },
     { value: "棉" },

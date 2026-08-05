@@ -30,7 +30,7 @@ const navItems = [
 ]
 
 const metrics = [
-  { value: "01", label: "深绘建档" },
+  { value: "AI", label: "智能建档" },
   { value: "02", label: "SHEIN 上新" },
   { value: "03", label: "平台运营" },
 ]
@@ -38,7 +38,7 @@ const metrics = [
 const featureCards = [
   {
     title: "深绘商品建档",
-    description: "从标准文案表、上市计划表和 MDM 商品数据生成建档草稿，补齐字段、类目、SKU 和提交记录。",
+    description: "从标准文案、上市计划、MDM、吊牌/洗唛 OCR 和 SPU 参考图生成建档草稿，补齐字段、类目、SKU 和提交记录。",
     icon: PenLine,
   },
   {
@@ -48,7 +48,7 @@ const featureCards = [
   },
   {
     title: "SHEIN 发布闭环",
-    description: "商品分桶、发布草稿、字段清洗、图片校验、价格包装、批次发布和版本快照已串成可操作链路。",
+    description: "商品分桶、发布草稿、AI 类目/标题/属性补齐、图片校验、价格包装、批次发布和版本快照已串成可操作链路。",
     icon: FileCheck2,
   },
   {
@@ -57,9 +57,9 @@ const featureCards = [
     icon: PackageSearch,
   },
   {
-    title: "P1 运营中心",
-    description: "平台标识对账、商家 SKU 查重、条码尺码、审核状态聚合和真实数据回归日志已进入运营视图。",
-    icon: ClipboardList,
+    title: "AI/OCR 证据补齐",
+    description: "吊牌 PDF、洗唛图片、SCM 成分表和 SPU 图片进入统一识别链路，后台任务完成后自动填充草稿空字段。",
+    icon: Sparkles,
   },
   {
     title: "销售站点与多 Sheet 导出",
@@ -109,7 +109,7 @@ const workflowSteps = [
 const architectureItems = [
   "PlatformAdapter 隔离 SHEIN、TEMU 等平台差异，核心商品模型不绑定单一渠道",
   "深绘建档草稿、发布草稿、平台商品和运营动作分层建模，便于追踪生命周期",
-  "发布版本、任务回执、审核状态、最近操作和操作日志全链路留痕",
+  "OCR 识别、AI 补齐、异步任务、发布版本、审核状态和操作日志全链路留痕",
   "PostgreSQL、RBAC、角色菜单、凭据加密、种子快照和测试入口支撑持续交付",
 ]
 
@@ -131,7 +131,15 @@ export default function LandingPage() {
             <span className="flex size-9 items-center justify-center rounded-full bg-primary text-primary-foreground">
               <Sparkles className="size-4" />
             </span>
-            <span className="text-[15px] font-semibold tracking-[-0.15px]">Listingify</span>
+            <span className="flex items-center gap-1.5">
+              <span className="text-[15px] font-semibold tracking-[-0.15px]">Listingify</span>
+              <span
+                aria-label="AI 驱动"
+                className="inline-flex h-5 items-center rounded-full border border-[#18e299]/60 bg-[#d4fae8] px-1.5 font-mono text-[10px] font-semibold leading-none tracking-[0.4px] text-[#08794f]"
+              >
+                AI
+              </span>
+            </span>
           </Link>
           <nav className="hidden items-center gap-7 md:flex">
             {navItems.map((item) => (
@@ -166,13 +174,13 @@ export default function LandingPage() {
               className="max-w-[calc(100vw-40px)] text-4xl font-semibold leading-[1.12] tracking-[-0.8px] text-foreground sm:text-5xl md:max-w-full md:text-[64px] md:leading-[1.06] md:tracking-[-1.1px]"
               style={{ overflowWrap: "anywhere" }}
             >
-              从深绘商品建档，到 SHEIN 上新运营，再到平台商品回流
+              AI 驱动的商品运营平台
             </h1>
             <p
               className="mt-6 max-w-[calc(100vw-40px)] text-base leading-8 text-muted-foreground sm:text-lg md:max-w-2xl"
               style={{ overflowWrap: "anywhere" }}
             >
-              Listingify 将标准文案表、上市计划、深绘类目字段、MDM 商品主数据、SHEIN 发布草稿、平台商品回捞、供货价维护和审核状态放进同一个可审计的运营节奏。
+              Listingify 将深绘建档、吊牌/洗唛 OCR、SPU 参考图、MDM 商品主数据、SHEIN 上新发布、平台商品回捞、供货价维护和审核状态放进同一个可审计的运营节奏。
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Button asChild size="lg">
@@ -204,8 +212,8 @@ export default function LandingPage() {
       <section id="capabilities" className="border-t bg-background py-20 md:py-24">
         <div className="mx-auto w-full max-w-7xl px-5 md:px-8">
           <SectionHeading
-            title="平台已经从发品闭环，扩展到建档、上新和平台运营三段链路。"
-            description="深绘建档负责把商品资料变成可提交的商品档案；SHEIN 上新负责发布准备和任务追踪；平台运营负责回捞后的日常同步、对账、导出和审核状态。"
+            title="平台已经从发品闭环，扩展到 AI 建档、上新和平台运营三段链路。"
+            description="深绘建档负责把商品资料、OCR 证据和 SPU 图变成可提交的商品档案；SHEIN 上新负责发布准备和任务追踪；平台运营负责回捞后的日常同步、对账、导出和审核状态。"
           />
           <div className="mt-10 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             {featureCards.map((feature) => (
@@ -282,9 +290,9 @@ export default function LandingPage() {
       <section className="border-t px-5 py-16 md:px-8">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 rounded-[24px] border bg-primary px-6 py-8 text-primary-foreground shadow-[0_2px_4px_rgba(0,0,0,0.03)] md:flex-row md:items-center md:justify-between md:px-8">
           <div>
-            <h2 className="text-3xl font-semibold leading-tight tracking-[-0.6px]">进入全链路运营驾驶舱。</h2>
+            <h2 className="text-3xl font-semibold leading-tight tracking-[-0.6px]">进入 AI 商品运营驾驶舱。</h2>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-primary-foreground/70">
-              按角色查看深绘建档草稿、上市计划、SHEIN 分桶、发布草稿、平台商品、销售站点和审核状态。
+              按角色查看深绘建档草稿、OCR 识别、AI 字段补齐、SHEIN 分桶、发布草稿、平台商品、销售站点和审核状态。
             </p>
           </div>
           <Button asChild variant="brand" size="lg" className="self-start md:self-center">
@@ -308,30 +316,30 @@ function HeroWorkbench() {
           <div className="flex items-center justify-between gap-4">
             <div>
               <p className="font-mono text-xs font-semibold uppercase tracking-[0.6px] text-[var(--brand-deep)]">
-                Operation cockpit
+                AI operation cockpit
               </p>
-              <CardTitle className="mt-2">全链路运营驾驶舱</CardTitle>
+              <CardTitle className="mt-2">AI 商品运营驾驶舱</CardTitle>
             </div>
             <span className="rounded-full border border-[#b9f4d8] bg-[var(--brand-light)] px-3 py-1 text-xs font-medium text-[var(--brand-deep)]">
-              角色菜单已拆分
+              AI 补齐已上线
             </span>
           </div>
         </CardHeader>
         <CardContent className="space-y-5 p-6">
           <div className="grid gap-3 sm:grid-cols-3">
-            <HeroMetric label="深绘建档" value="01" />
-            <HeroMetric label="SHEIN 上新" value="02" tone="info" />
-            <HeroMetric label="平台运营" value="03" />
+            <HeroMetric label="AI 建档" value="01" />
+            <HeroMetric label="上新发布" value="02" tone="info" />
+            <HeroMetric label="平台回读" value="03" />
           </div>
           <div className="space-y-3">
-            <QueueRow title="深绘建档草稿" description="标准文案、上市计划、字段规则和类目字段" status="前置链路" icon={PenLine} />
-            <QueueRow title="SHEIN 发布草稿箱" description="分桶清洗、预检、版本和批次发布" status="上新运营" icon={FileCheck2} />
-            <QueueRow title="平台商品列表" description="同步、筛选、供货价、站点和最近操作" status="平台运营" icon={PackageSearch} />
-            <QueueRow title="审核状态中心" description="平台回执、失败归因、状态轮询和批量重试" status="追踪中" icon={LineChart} />
+            <QueueRow title="深绘建档草稿" description="标准文案、上市计划、MDM 与 SPU 参考图" status="AI 建档" icon={PenLine} />
+            <QueueRow title="吊牌/洗唛识别" description="PDF、图片和 SCM 成分表后台 OCR 写入" status="证据补齐" icon={Sparkles} />
+            <QueueRow title="SHEIN 发布草稿箱" description="AI 类目、标题、属性补齐和批次发布" status="上新运营" icon={FileCheck2} />
+            <QueueRow title="平台商品列表" description="平台回读、供货价、站点和审核状态" status="运营闭环" icon={PackageSearch} />
           </div>
           <div className="rounded-2xl border bg-[var(--surface-tint)] p-4">
             <div className="flex items-center justify-between gap-4 text-sm">
-              <span className="font-medium">建档到运营的链路覆盖</span>
+              <span className="font-medium">AI 证据到平台回读覆盖</span>
               <span className="font-mono text-xs tabular-nums text-muted-foreground">3/3</span>
             </div>
             <div className="mt-3 h-2 overflow-hidden rounded-full bg-secondary">

@@ -1,5 +1,9 @@
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
-import { validateProductArchiveDraft } from "./product-archive-drafts"
+import {
+  normalizeProductArchiveDeepdrawFieldValue,
+  productArchiveFieldValueMatchesOptions,
+  validateProductArchiveDraft,
+} from "./product-archive-drafts"
 
 type JsonRecord = Record<string, unknown>
 
@@ -59,6 +63,19 @@ function recordValue(value: unknown): JsonRecord {
   return {}
 }
 
+function arrayValue(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value)
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
+  }
+  return []
+}
+
 function jsonText(value: unknown) {
   return JSON.stringify(value ?? {})
 }
@@ -67,7 +84,15 @@ function compactFieldKey(value: unknown) {
   return stringValue(value).replace(/\s+/g, "").replace(/[()（）]/g, "").toLowerCase()
 }
 
+function isStaleMaterialAiRuleFallbackField(field: JsonRecord) {
+  if (!/材质|面料/.test(stringValue(field.field_name))) return false
+  if (stringValue(field.source_type) !== "ai_rule_fallback") return false
+  const metadata = recordValue(field.value_json)
+  return stringValue(metadata.source) === "AI_RULE_FALLBACK" || recordValue(metadata.ai_fill).fallback === true
+}
+
 function hasFieldValue(field: JsonRecord) {
+  if (isStaleMaterialAiRuleFallbackField(field)) return false
   if (stringValue(field.value_text)) return true
   return Object.keys(recordValue(field.value_json)).length > 0
 }
@@ -95,7 +120,7 @@ function sourceRefForOcrField(field: OcrField, document: OcrDocument) {
   return `${stringValue(document.fileName) || "OCR文件"}${Number.isInteger(pageNumber) && pageNumber > 0 ? `#p${pageNumber}` : ""}`
 }
 
-function ocrFieldMatchesDraftField(field: OcrField, draftFieldName: unknown) {
+function ocrFieldMatchesDraftField(field: OcrField, draftFieldName: unknown, draftField: JsonRecord = {}) {
   const key = stringValue(field.key)
   const name = compactFieldKey(draftFieldName)
   if (!key || !name) return false
@@ -104,7 +129,11 @@ function ocrFieldMatchesDraftField(field: OcrField, draftFieldName: unknown) {
   if (key === "productGrade") return name.includes("产品等级") || name.includes("质量等级")
   if (key === "productName") return name === "产品名称" || name === "商品名称" || name === "品名"
   if (key === "articleNo") return name === "产品货号" || name === "商品货号" || name === "货号" || name === "款号"
-  if (key === "materialComposition") return name.includes("材质成分") || name.includes("面料成分") || name.includes("成分含量文本")
+  if (key === "materialComposition") {
+    if (name.includes("材质成分") || name.includes("面料成分") || name.includes("成分含量文本")) return true
+    const hasTemplateOptions = arrayValue(draftField.options_json).length > 0
+    return hasTemplateOptions && (name.includes("材质") || name.includes("面料"))
+  }
   if (key === "washCare") return name.includes("洗涤说明") || name.includes("洗护说明") || name.includes("洗涤方法")
   if (key === "rawText") {
     const sourceKind = stringValue(field.sourceKind)
@@ -161,13 +190,50 @@ function latestDraftsBySpuCode(db: SyncPostgresDatabase, spuCodes: string[]) {
   return lookup
 }
 
-function draftFields(db: SyncPostgresDatabase, draftId: number) {
+function draftFields(db: SyncPostgresDatabase, draft: JsonRecord) {
+  const draftId = Number(draft.id)
   return db.prepare(`
-    select id, field_name, field_id, source_type, source_ref, value_text, value_json, required, blocking, validation_status
-    from product_archive_draft_field
-    where draft_id = ?
+    select field.id,
+      field.field_name,
+      field.field_id,
+      field.source_type,
+      field.source_ref,
+      field.value_text,
+      field.value_json,
+      field.required,
+      field.blocking,
+      field.validation_status,
+      template.options_json,
+      template.field_type
+    from product_archive_draft_field field
+    left join lateral (
+      select options_json, field_type
+      from deepdraw_trade_field_cache template
+      where template.tenant_name = ?
+        and template.merchant_id = ?
+        and template.trade_id = ?
+        and (template.field_id = field.field_id or template.field_name = field.field_name)
+      order by case when template.field_id = field.field_id then 0 else 1 end, template.field_id
+      limit 1
+    ) template on true
+    where field.draft_id = ?
     order by required desc, blocking desc, field_name
-  `).all(draftId) as JsonRecord[]
+  `).all(draft.tenant_name, draft.merchant_id, draft.trade_id, draftId) as JsonRecord[]
+}
+
+function normalizeOcrValueForDraftField(draftField: JsonRecord, ocrField: OcrField) {
+  const rawValue = stringValue(ocrField.value)
+  const options = arrayValue(draftField.options_json)
+  if (!options.length) return {
+    valueText: rawValue,
+    optionCompatible: true,
+  }
+  const fieldName = stringValue(draftField.field_name)
+  const normalizedValue = normalizeProductArchiveDeepdrawFieldValue(fieldName, rawValue, options)
+  return {
+    valueText: normalizedValue,
+    optionCompatible: productArchiveFieldValueMatchesOptions(normalizedValue, options),
+  }
 }
 
 function buildTargetFieldsForDocument(
@@ -178,18 +244,21 @@ function buildTargetFieldsForDocument(
   const targetsByFieldId = new Map<number, JsonRecord>()
   for (const ocrField of normalizedOcrFields(document)) {
     for (const draftField of draftFields) {
-      if (!ocrFieldMatchesDraftField(ocrField, draftField.field_name)) continue
+      if (!ocrFieldMatchesDraftField(ocrField, draftField.field_name, draftField)) continue
       const fieldId = Number(draftField.id)
       if (!Number.isInteger(fieldId) || fieldId <= 0) continue
       const currentValueText = stringValue(draftField.value_text)
       const currentHasValue = hasFieldValue(draftField)
-      const willApply = !currentHasValue || Boolean(options.overwriteExisting)
+      const normalized = normalizeOcrValueForDraftField(draftField, ocrField)
+      const canOverwrite = !currentHasValue || Boolean(options.overwriteExisting)
+      const willApply = canOverwrite && normalized.optionCompatible
       const target = {
         fieldId,
         fieldName: stringValue(draftField.field_name),
         fieldKey: stringValue(ocrField.key),
         label: stringValue(ocrField.label),
-        valueText: stringValue(ocrField.value),
+        valueText: normalized.valueText,
+        rawValueText: stringValue(ocrField.value),
         currentValueText,
         currentSourceType: stringValue(draftField.source_type),
         sourceType: sourceTypeForOcrField(ocrField, document),
@@ -199,7 +268,11 @@ function buildTargetFieldsForDocument(
         evidenceText: stringValue(ocrField.evidenceText),
         pageNumber: Number(ocrField.pageNumber) || null,
         willApply,
-        skippedReason: willApply ? null : "已有值，默认不覆盖",
+        skippedReason: willApply
+          ? null
+          : canOverwrite
+            ? "识别值未匹配深绘模板选项"
+            : "已有值，默认不覆盖",
       }
       const existing = targetsByFieldId.get(fieldId)
       targetsByFieldId.set(fieldId, existing ? betterTarget(existing, target) : target)
@@ -228,7 +301,7 @@ function buildPreviewItem(db: SyncPostgresDatabase, document: OcrDocument, draft
 }) {
   const detectedSpuCode = stringValue(document.detectedSpuCode)
   const matchedDraft = detectedSpuCode ? draftLookup.get(detectedSpuCode) ?? null : null
-  const fields = matchedDraft ? draftFields(db, Number(matchedDraft.id)) : []
+  const fields = matchedDraft ? draftFields(db, matchedDraft) : []
   const targetFields = matchedDraft ? buildTargetFieldsForDocument(fields, document, options) : []
   const warnings = Array.isArray(document.warnings) ? document.warnings.map(stringValue).filter(Boolean) : []
   const status = itemStatus({ document, detectedSpuCode, matchedDraft, targetFields })

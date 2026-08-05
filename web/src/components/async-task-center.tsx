@@ -99,6 +99,30 @@ function runningTaskItem(task: AsyncTaskRecord) {
   return task.job?.current_item ?? legacyRunningItem(task.job?.items)
 }
 
+function numberResultValue(value: unknown) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : 0
+}
+
+function recordResultValue(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function hangtagWashlabelOcrTaskSummary(task: AsyncTaskRecord) {
+  if (task.type !== "product_archive_hangtag_washlabel_ocr") return null
+  const result = recordResultValue(task.job?.result)
+  const applySummary = recordResultValue(result?.applySummary)
+  if (!applySummary) return null
+  const previewSummary = recordResultValue(result?.previewSummary)
+  return {
+    appliedDraftCount: numberResultValue(applySummary.appliedDraftCount),
+    appliedFieldCount: numberResultValue(applySummary.appliedFieldCount),
+    skippedCount: numberResultValue(applySummary.skippedCount),
+    matchedCount: numberResultValue(previewSummary?.matchedCount),
+    overwriteExisting: result?.overwriteExisting === true,
+  }
+}
+
 export function AsyncTaskProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<AsyncTaskRecord[]>(() => readStoredTasks())
   const [lastSeenAt, setLastSeenAt] = useState(() => readStoredSeenAt())
@@ -261,6 +285,7 @@ function AsyncTaskDrawer({
               const failures = failedItems(task)
               const runningItem = runningTaskItem(task)
               const done = job?.status === "completed"
+              const ocrSummary = hangtagWashlabelOcrTaskSummary(task)
               return (
                 <section key={task.id} className="rounded-lg border bg-card p-3">
                   <div className="flex items-start justify-between gap-3">
@@ -295,6 +320,13 @@ function AsyncTaskDrawer({
                     <div className="rounded-md bg-muted px-2 py-1">失败 {formatNumber(job?.failed_count ?? 0)}</div>
                     <div className="rounded-md bg-muted px-2 py-1">总数 {formatNumber(job?.total_count ?? 0)}</div>
                   </div>
+                  {ocrSummary ? (
+                    <div className="mt-3 rounded-md border border-[#b9f4d8] bg-[#f2fff8] px-2 py-1.5 text-xs text-[#0f7f58]">
+                      已自动{ocrSummary.overwriteExisting ? "按覆盖模式写入" : "填充空字段"} {formatNumber(ocrSummary.appliedFieldCount)} 个，
+                      匹配草稿 {formatNumber(ocrSummary.appliedDraftCount || ocrSummary.matchedCount)} 个，
+                      跳过 {formatNumber(ocrSummary.skippedCount)} 个。
+                    </div>
+                  ) : null}
                   {task.lastError ? (
                     <p className="mt-2 text-xs text-[#d45656]">{task.lastError}</p>
                   ) : null}

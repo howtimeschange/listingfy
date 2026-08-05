@@ -1,12 +1,20 @@
+import { randomUUID } from "node:crypto"
 import path from "node:path"
 import os from "node:os"
-import { mkdir, readFile, rm } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { Hono, type Context } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
 import { requirePermission } from "../lib/auth"
-import { safeUploadFileName, writeValidatedUploadFile } from "../lib/upload-guard"
-import { auditFromContext } from "../lib/audit"
+import { assertLocalImageFile } from "../lib/local-path-guard"
+import {
+  detectImageUploadType,
+  readImageDimensions,
+  readValidatedUploadBuffer,
+  safeUploadFileName,
+  writeValidatedUploadFile,
+} from "../lib/upload-guard"
+import { auditFromContext, writeOperationLog, type AuditActor } from "../lib/audit"
 import { assertSafeProductArchiveCode } from "../lib/product-archive-security"
 import {
   getProductArchiveOcrRuntimeInfo,
@@ -28,9 +36,14 @@ import {
   checkDuplicateProductArchiveDraft,
   confirmProductArchiveDraftRecommendedTrade,
   createProductArchiveDraftFromSpu,
+  createProductArchiveDraftImage,
+  deleteProductArchiveDraftImage,
+  extractProductArchiveImageSpuCode,
   fillProductArchiveDraftFieldsWithAi,
+  getProductArchiveDraftImageFile,
   getProductArchiveDraftDetail,
   importProductArchiveSourceRows,
+  latestProductArchiveDraftForSpuCode,
   listProductArchiveDrafts,
   listProductArchiveSubmitLogs,
   missingDraftSpuCodes,
@@ -54,6 +67,7 @@ const PROJECT_ROOT =
     : process.cwd()
 const UPLOAD_DIR = path.join(os.tmpdir(), "listingify-upload")
 const TEMPLATE_DIR = path.join(PROJECT_ROOT, "data", "product-archive-templates")
+const DRAFT_IMAGE_DIR = path.join(PROJECT_ROOT, "data", "product-archive-draft-images")
 const PRODUCT_ARCHIVE_TEMPLATES = {
   copywriting: {
     fileName: "标准文案表-模板.xlsx",
@@ -96,8 +110,413 @@ const draftQueue = createProductArchiveSyncQueue({
   },
 })
 
+type HangtagWashlabelOcrUploadFile = {
+  filePath: string
+  fileName: string
+  mimeType: string
+  size: number
+  kind?: "ocr_asset" | "scm_supplement"
+}
+
+type DraftImageUploadFile = {
+  buffer: Buffer
+  fileName: string
+  originalFileName: string
+  mimeType: string
+  size: number
+  width: number
+  height: number
+  extension: string
+}
+
+type HangtagWashlabelOcrJobItem = {
+  spu_code: string
+  status: "queued" | "running" | "completed" | "failed"
+  phase: "recognize" | "apply"
+  started_at: string | null
+  finished_at: string | null
+  result: Record<string, unknown> | null
+  error: string | null
+}
+
+type HangtagWashlabelOcrJob = {
+  id: string
+  source: "hangtag_washlabel_ocr"
+  status: "queued" | "running" | "completed"
+  outcome?: "succeeded" | "partial_failure" | "failed" | null
+  total_count: number
+  completed_count: number
+  failed_count: number
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  files: HangtagWashlabelOcrUploadFile[]
+  options: {
+    overwriteExisting: boolean
+    uploadDir: string
+    actor: AuditActor | null
+    ipAddress: string | null
+  }
+  items: HangtagWashlabelOcrJobItem[]
+  result: Record<string, unknown> | null
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function cloneHangtagWashlabelOcrJob(job: HangtagWashlabelOcrJob) {
+  const currentItem = job.items.find((item) => item.status === "running") ?? null
+  return {
+    ...job,
+    files: job.files.map((file) => ({ ...file })),
+    options: {
+      ...job.options,
+      actor: job.options.actor ? { ...job.options.actor } : null,
+    },
+    items: job.items.map((item) => ({ ...item, result: item.result ? { ...item.result } : null })),
+    current_item: currentItem ? { ...currentItem } : null,
+    failed_items: job.items.filter((item) => item.status === "failed").map((item) => ({ ...item })),
+    queued_count: job.items.filter((item) => item.status === "queued").length,
+    running_count: job.items.filter((item) => item.status === "running").length,
+  }
+}
+
+function ocrJobItemLabel(file: HangtagWashlabelOcrUploadFile, index: number, total: number) {
+  const baseName = path.basename(file.fileName || file.filePath || `文件${index + 1}`)
+  return `${index + 1}/${total} ${baseName}`.slice(0, 140)
+}
+
+function documentsFromOcrJobItems(items: HangtagWashlabelOcrJobItem[]) {
+  const documents = []
+  for (const item of items) {
+    const document = item.result?.document
+    if (document && typeof document === "object") documents.push(document)
+    const itemDocuments = item.result?.documents
+    if (Array.isArray(itemDocuments)) {
+      documents.push(...itemDocuments.filter((value) => value && typeof value === "object"))
+    }
+  }
+  return documents
+}
+
+function createHangtagWashlabelOcrQueue({
+  store,
+  onInternalError = (error: unknown) => console.error("Hangtag washlabel OCR queue internal error", error),
+  now = () => Date.now(),
+}: {
+  store: ReturnType<typeof createPostgresProductArchiveSyncJobStore>
+  onInternalError?: (error: unknown, context?: Record<string, unknown>) => void
+  now?: () => number
+}) {
+  const jobs = new Map<string, HangtagWashlabelOcrJob>()
+  const pending: HangtagWashlabelOcrJob[] = []
+  let running = false
+  let processScheduled = false
+
+  function reportInternalError(error: unknown, context: Record<string, unknown>) {
+    try {
+      onInternalError(error, context)
+    } catch {
+      // Error reporting must never stop the OCR worker.
+    }
+  }
+
+  function persist(job: HangtagWashlabelOcrJob) {
+    try {
+      store.save(cloneHangtagWashlabelOcrJob(job))
+    } catch (error) {
+      reportInternalError(error, { phase: "persist", jobId: job.id })
+    }
+  }
+
+  function getJob(id: string) {
+    const job = jobs.get(id)
+    if (job) return cloneHangtagWashlabelOcrJob(job)
+    const stored = store.get(id) as HangtagWashlabelOcrJob | null
+    return stored ? cloneHangtagWashlabelOcrJob(stored) : null
+  }
+
+  function setItemFinished(job: HangtagWashlabelOcrJob, item: HangtagWashlabelOcrJobItem, status: "completed" | "failed", result: Record<string, unknown> | null, error: string | null) {
+    item.status = status
+    item.result = result
+    item.error = error
+    item.finished_at = new Date(now()).toISOString()
+    if (status === "completed") job.completed_count += 1
+    if (status === "failed") job.failed_count += 1
+    persist(job)
+  }
+
+  async function processFileItem(job: HangtagWashlabelOcrJob, file: HangtagWashlabelOcrUploadFile, item: HangtagWashlabelOcrJobItem) {
+    item.status = "running"
+    item.started_at ??= new Date(now()).toISOString()
+    persist(job)
+    if (file.kind === "scm_supplement") {
+      const supplement = await readScmHangtagWashlabelSupplementWorkbook(file.filePath, {
+        fileName: file.fileName,
+      })
+      setItemFinished(job, item, "completed", {
+        fileName: supplement.fileName,
+        sheetCount: supplement.sheetCount,
+        documentCount: supplement.documentCount,
+        documents: supplement.documents,
+      }, null)
+      return
+    }
+
+    const [document] = await recognizeProductArchiveOcrFiles([{
+      filePath: file.filePath,
+      fileName: file.fileName,
+      mimeType: file.mimeType,
+      size: file.size,
+    }])
+    const result = {
+      fileName: document?.fileName ?? file.fileName,
+      detectedSpuCode: document?.detectedSpuCode ?? null,
+      status: document?.status ?? "ocr_failed",
+      extractedFieldCount: Array.isArray(document?.fields) ? document.fields.length : 0,
+      document,
+    }
+    if (document?.status === "ocr_failed") {
+      setItemFinished(job, item, "failed", result, stringValue(document.error) || "OCR 识别失败")
+      return
+    }
+    setItemFinished(job, item, "completed", result, null)
+  }
+
+  async function applyRecognizedDocuments(job: HangtagWashlabelOcrJob, item: HangtagWashlabelOcrJobItem) {
+    item.status = "running"
+    item.started_at ??= new Date(now()).toISOString()
+    persist(job)
+    const documents = documentsFromOcrJobItems(job.items)
+    const db = getDb()
+    const preview = previewProductArchiveHangtagWashlabelOcr(db, {
+      documents,
+      overwriteExisting: job.options.overwriteExisting,
+    })
+    const apply = applyProductArchiveHangtagWashlabelOcr(db, {
+      documents,
+      overwriteExisting: job.options.overwriteExisting,
+    })
+    const supplementFiles = job.items
+      .map((ocrItem) => ocrItem.result)
+      .filter((result) => result && Number(result.documentCount) > 0)
+      .map((result) => ({
+        fileName: stringValue(result?.fileName),
+        sheetCount: Number(result?.sheetCount ?? 0),
+        documentCount: Number(result?.documentCount ?? 0),
+      }))
+    const result = {
+      previewSummary: preview.summary,
+      applySummary: apply.summary,
+      overwriteExisting: job.options.overwriteExisting,
+      provider: getProductArchiveOcrRuntimeInfo(documents),
+      scmSupplement: { files: supplementFiles },
+      validations: apply.validations,
+    }
+    job.result = result
+    setItemFinished(job, item, "completed", result, null)
+    try {
+      writeOperationLog(db, {
+        action: "draft.hangtag_washlabel_ocr.background_applied",
+        module: "PRODUCT_ARCHIVE_DRAFT",
+        entityType: "product_archive_draft_batch",
+        entityId: job.id,
+        summary: `后台写入吊牌/洗唛 OCR 字段 ${apply.summary.appliedFieldCount} 个`,
+        metadata: {
+          fileCount: preview.summary.fileCount,
+          matchedCount: preview.summary.matchedCount,
+          appliedDraftCount: apply.summary.appliedDraftCount,
+          appliedFieldCount: apply.summary.appliedFieldCount,
+          skippedCount: apply.summary.skippedCount,
+          overwriteExisting: job.options.overwriteExisting,
+        },
+      }, job.options.actor, job.options.ipAddress ?? undefined)
+    } catch (error) {
+      reportInternalError(error, { phase: "completion_audit", jobId: job.id })
+    }
+  }
+
+  async function processLoop() {
+    processScheduled = false
+    if (running) return
+    running = true
+    try {
+      while (pending.length > 0) {
+        const job = pending.shift()
+        if (!job) continue
+        job.status = "running"
+        job.started_at ??= new Date(now()).toISOString()
+        persist(job)
+        try {
+          for (let index = 0; index < job.files.length; index += 1) {
+            const item = job.items[index]
+            if (!item || item.status === "completed" || item.status === "failed") continue
+            try {
+              await processFileItem(job, job.files[index], item)
+            } catch (error) {
+              setItemFinished(job, item, "failed", {
+                fileName: job.files[index].fileName,
+              }, errorMessage(error))
+            }
+          }
+
+          const applyItem = job.items[job.items.length - 1]
+          if (applyItem && applyItem.status !== "completed" && applyItem.status !== "failed") {
+            try {
+              await applyRecognizedDocuments(job, applyItem)
+            } catch (error) {
+              setItemFinished(job, applyItem, "failed", null, errorMessage(error))
+              job.result = {
+                error: errorMessage(error),
+                previewSummary: previewProductArchiveHangtagWashlabelOcr(getDb(), {
+                  documents: documentsFromOcrJobItems(job.items),
+                  overwriteExisting: job.options.overwriteExisting,
+                }).summary,
+              }
+            }
+          }
+        } finally {
+          job.status = "completed"
+          job.outcome = job.failed_count === 0
+            ? "succeeded"
+            : job.completed_count === 0
+              ? "failed"
+              : "partial_failure"
+          job.finished_at = new Date(now()).toISOString()
+          try {
+            await rm(job.options.uploadDir, { recursive: true, force: true })
+          } catch (error) {
+            reportInternalError(error, { phase: "cleanup", jobId: job.id })
+          }
+          persist(job)
+        }
+      }
+    } finally {
+      running = false
+    }
+  }
+
+  function schedule() {
+    if (processScheduled) return
+    processScheduled = true
+    queueMicrotask(() => {
+      void processLoop().catch((error) => {
+        reportInternalError(error, { phase: "process_loop" })
+      })
+    })
+  }
+
+  function enqueue({
+    files,
+    supplementFiles,
+    overwriteExisting,
+    actor,
+    ipAddress,
+    uploadDir,
+  }: {
+    files: HangtagWashlabelOcrUploadFile[]
+    supplementFiles: HangtagWashlabelOcrUploadFile[]
+    overwriteExisting: boolean
+    actor: AuditActor | null
+    ipAddress: string | null
+    uploadDir: string
+  }) {
+    const allFiles = [
+      ...files.map((file) => ({ ...file, kind: "ocr_asset" as const })),
+      ...supplementFiles.map((file) => ({ ...file, kind: "scm_supplement" as const })),
+    ]
+    const nowText = new Date(now()).toISOString()
+    const total = allFiles.length
+    const job: HangtagWashlabelOcrJob = {
+      id: randomUUID(),
+      source: "hangtag_washlabel_ocr",
+      status: "queued",
+      outcome: null,
+      total_count: total + 1,
+      completed_count: 0,
+      failed_count: 0,
+      created_at: nowText,
+      started_at: null,
+      finished_at: null,
+      files: allFiles,
+      options: {
+        overwriteExisting,
+        uploadDir,
+        actor,
+        ipAddress,
+      },
+      items: [
+        ...allFiles.map((file, index) => ({
+          spu_code: ocrJobItemLabel(file, index, total),
+          status: "queued" as const,
+          phase: "recognize" as const,
+          started_at: null,
+          finished_at: null,
+          result: null,
+          error: null,
+        })),
+        {
+          spu_code: "写入草稿并校验",
+          status: "queued",
+          phase: "apply",
+          started_at: null,
+          finished_at: null,
+          result: null,
+          error: null,
+        },
+      ],
+      result: null,
+    }
+    jobs.set(job.id, job)
+    pending.push(job)
+    persist(job)
+    schedule()
+    return cloneHangtagWashlabelOcrJob(job)
+  }
+
+  function resume() {
+    const recovered = (store.recover() as HangtagWashlabelOcrJob[])
+      .filter((job) => job?.source === "hangtag_washlabel_ocr")
+    for (const storedJob of recovered) {
+      const job = storedJob
+      job.status = "queued"
+      job.started_at = null
+      job.finished_at = null
+      for (const item of job.items) {
+        if (item.status === "running") {
+          item.status = "queued"
+          item.started_at = null
+          item.finished_at = null
+          item.error = null
+        }
+      }
+      job.completed_count = job.items.filter((item) => item.status === "completed").length
+      job.failed_count = job.items.filter((item) => item.status === "failed").length
+      jobs.set(job.id, job)
+      pending.push(job)
+      persist(job)
+    }
+    if (pending.length > 0) schedule()
+  }
+
+  return {
+    enqueue,
+    getJob,
+    resume,
+  }
+}
+
+const hangtagWashlabelOcrQueue = createHangtagWashlabelOcrQueue({
+  store: createPostgresProductArchiveSyncJobStore({
+    getDb,
+    queueName: "product_archive_hangtag_washlabel_ocr",
+  }),
+})
+
 export function resumeProductArchiveDraftQueue() {
   draftQueue.resume()
+  hangtagWashlabelOcrQueue.resume()
 }
 
 function readId(value: string) {
@@ -152,6 +571,10 @@ function safeScmSupplementUploadName(fileName: string) {
   return safeUploadFileName(fileName, { fallbackName: "scm-wash-hangtag-result.xlsx" })
 }
 
+function safeDraftImageUploadName(fileName: string, extension: string) {
+  return safeUploadFileName(fileName, { fallbackName: "spu-reference-image.jpg", extension })
+}
+
 function cleanUploadDisplayName(value: unknown, fallback: string) {
   const raw = stringValue(value) || fallback
   const parts = raw
@@ -174,9 +597,100 @@ function isScmSupplementWorkbookName(value: string) {
   return [".xlsx", ".xlsm"].includes(uploadDisplayExtension(value))
 }
 
+function isProductArchiveReferenceImageName(value: string) {
+  return [".jpg", ".jpeg", ".png", ".webp"].includes(uploadDisplayExtension(value))
+}
+
 function isIgnorableOcrFolderEntry(value: string) {
   const baseName = path.basename(value)
   return baseName === ".DS_Store" || baseName.startsWith("~$")
+}
+
+async function readDraftImageUploadFiles(c: Context) {
+  const form = await c.req.formData()
+  const displayNames = form.getAll("filePaths").map(stringValue)
+  const rawFiles = [
+    ...form.getAll("files"),
+    ...form.getAll("file"),
+    ...form.getAll("images"),
+  ].filter((value): value is File => value instanceof File && value.size > 0)
+  const maxFileCount = Math.max(1, Math.min(Number(process.env.LISTINGIFY_MAX_PRODUCT_ARCHIVE_IMAGE_FILES ?? 160) || 160, 300))
+  if (rawFiles.length === 0) {
+    throw new HTTPException(400, { message: "请上传 SPU 参考图片" })
+  }
+  if (rawFiles.length > maxFileCount) {
+    throw new HTTPException(400, { message: `单次最多导入 ${maxFileCount} 张 SPU 参考图片` })
+  }
+  const files: DraftImageUploadFile[] = []
+  let skippedCount = 0
+  for (let index = 0; index < rawFiles.length; index += 1) {
+    const file = rawFiles[index]
+    const originalFileName = cleanUploadDisplayName(displayNames[index], file.name)
+    if (isIgnorableOcrFolderEntry(originalFileName)) {
+      skippedCount += 1
+      continue
+    }
+    if (!isProductArchiveReferenceImageName(originalFileName)) {
+      skippedCount += 1
+      continue
+    }
+    const buffer = await readValidatedUploadBuffer(file, "image")
+    const detected = detectImageUploadType(buffer)
+    const dimensions = readImageDimensions(buffer)
+    files.push({
+      buffer,
+      fileName: path.basename(originalFileName),
+      originalFileName,
+      mimeType: detected.contentType,
+      size: buffer.length,
+      width: dimensions.width,
+      height: dimensions.height,
+      extension: detected.extension,
+    })
+  }
+  if (files.length === 0) {
+    throw new HTTPException(400, { message: skippedCount > 0 ? "没有可导入的 JPG、PNG、WEBP 图片" : "请上传 SPU 参考图片" })
+  }
+  return { files, skippedCount }
+}
+
+async function saveDraftImageUpload(input: {
+  db: ReturnType<typeof getDb>
+  draft: Record<string, unknown>
+  file: DraftImageUploadFile
+  sourceType: "manual_upload" | "batch_upload"
+  sourceRef: string
+  uploadedBy: number | null
+}) {
+  const draftId = Number(input.draft.id)
+  const spuCode = stringValue(input.draft.spu_code)
+  const imageDir = path.join(DRAFT_IMAGE_DIR, String(draftId))
+  await mkdir(imageDir, { recursive: true })
+  const fileName = safeDraftImageUploadName(input.file.fileName, input.file.extension)
+  const localPath = path.join(imageDir, fileName)
+  await writeFile(localPath, input.file.buffer)
+  return createProductArchiveDraftImage(input.db, {
+    draftId,
+    spuCode,
+    sourceType: input.sourceType,
+    sourceRef: input.sourceRef,
+    localPath,
+    fileName,
+    originalFileName: input.file.originalFileName,
+    mimeType: input.file.mimeType,
+    fileSize: input.file.size,
+    width: input.file.width,
+    height: input.file.height,
+    uploadedBy: input.uploadedBy,
+    rawPayload: {
+      original_file_name: input.file.originalFileName,
+      source_ref: input.sourceRef,
+      width: input.file.width,
+      height: input.file.height,
+      file_size: input.file.size,
+      mime_type: input.file.mimeType,
+    },
+  })
 }
 
 async function saveUploadedSpreadsheet(c: Context) {
@@ -214,7 +728,8 @@ async function saveOcrFormFiles(c: Context) {
   if (rawFiles.length > maxFileCount) {
     throw new HTTPException(400, { message: `单次最多导入 ${maxFileCount} 个吊牌/洗唛文件` })
   }
-  await mkdir(UPLOAD_DIR, { recursive: true })
+  const uploadDir = path.join(UPLOAD_DIR, `product-archive-ocr-${randomUUID()}`)
+  await mkdir(uploadDir, { recursive: true })
   const files = []
   const supplementFiles = []
   try {
@@ -223,7 +738,7 @@ async function saveOcrFormFiles(c: Context) {
       const fileName = cleanUploadDisplayName(displayNames[index], file.name)
       if (isIgnorableOcrFolderEntry(fileName)) continue
       if (isScmSupplementWorkbookName(fileName)) {
-        const filePath = path.join(UPLOAD_DIR, safeScmSupplementUploadName(file.name))
+        const filePath = path.join(uploadDir, safeScmSupplementUploadName(file.name))
         await writeValidatedUploadFile(file, "spreadsheet", filePath)
         supplementFiles.push({
           file,
@@ -237,7 +752,7 @@ async function saveOcrFormFiles(c: Context) {
       if (!isProductArchiveOcrAssetName(fileName)) {
         throw new HTTPException(400, { message: "仅支持 PDF、JPG、PNG 吊牌/洗唛文件和 SCM 下载结果 .xlsx" })
       }
-      const filePath = path.join(UPLOAD_DIR, safeOcrUploadName(file.name))
+      const filePath = path.join(uploadDir, safeOcrUploadName(file.name))
       await writeValidatedUploadFile(file, "product_archive_ocr", filePath)
       files.push({
         file,
@@ -248,16 +763,17 @@ async function saveOcrFormFiles(c: Context) {
       })
     }
   } catch (error) {
-    await Promise.all([...files, ...supplementFiles].map((file) => rm(file.filePath, { force: true })))
+    await rm(uploadDir, { recursive: true, force: true })
     throw error
   }
   if (files.length === 0 && supplementFiles.length === 0) {
+    await rm(uploadDir, { recursive: true, force: true })
     throw new HTTPException(400, { message: "请上传 PDF 吊牌、JPG/PNG 洗唛或 SCM 下载结果 Excel" })
   }
-  return { form, files, supplementFiles }
+  return { form, files, supplementFiles, uploadDir }
 }
 
-function applyDocumentsFromBody(body: Record<string, unknown>) {
+export function applyDocumentsFromBody(body: Record<string, unknown>) {
   if (Array.isArray(body.documents)) return body.documents
   if (!Array.isArray(body.items)) return []
   return body.items.map((item) => {
@@ -266,6 +782,7 @@ function applyDocumentsFromBody(body: Record<string, unknown>) {
       fileName: record.fileName,
       fileType: record.fileType,
       sourceKind: record.sourceKind,
+      sourceRef: record.sourceRef,
       detectedSpuCode: record.detectedSpuCode,
       styleCodes: record.styleCodes,
       pageCount: record.pageCount,
@@ -874,7 +1391,7 @@ productArchiveDrafts.post("/workflow/start", async (c) => {
 productArchiveDrafts.post("/hangtag-washlabel-ocr/preview", async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const db = getDb()
-  const { form, files, supplementFiles } = await saveOcrFormFiles(c)
+  const { form, files, supplementFiles, uploadDir } = await saveOcrFormFiles(c)
   try {
     const documents = await recognizeProductArchiveOcrFiles(files.map((file) => ({
       filePath: file.filePath,
@@ -922,7 +1439,7 @@ productArchiveDrafts.post("/hangtag-washlabel-ocr/preview", async (c) => {
       },
     })
   } finally {
-    await Promise.all([...files, ...supplementFiles].map((file) => rm(file.filePath, { force: true })))
+    await rm(uploadDir, { recursive: true, force: true })
   }
 })
 
@@ -955,6 +1472,52 @@ productArchiveDrafts.post("/hangtag-washlabel-ocr/apply", async (c) => {
   return c.json(result)
 })
 
+productArchiveDrafts.post("/hangtag-washlabel-ocr/jobs", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const { form, files, supplementFiles, uploadDir } = await saveOcrFormFiles(c)
+  const overwriteExisting = booleanFormValue(form.get("overwriteExisting") ?? form.get("overwrite_existing"))
+  let job: ReturnType<typeof hangtagWashlabelOcrQueue.enqueue>
+  try {
+    job = hangtagWashlabelOcrQueue.enqueue({
+      files,
+      supplementFiles,
+      overwriteExisting,
+      actor: {
+        id: user.id,
+        username: user.username,
+      },
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      uploadDir,
+    })
+  } catch (error) {
+    await rm(uploadDir, { recursive: true, force: true })
+    throw error
+  }
+  auditFromContext(c, {
+    action: "draft.hangtag_washlabel_ocr.background_queued",
+    module: "PRODUCT_ARCHIVE_DRAFT",
+    entityType: "product_archive_draft_batch",
+    entityId: job.id,
+    summary: `提交后台吊牌/洗唛 OCR 文件 ${files.length} 个，SCM 补充表 ${supplementFiles.length} 个`,
+    metadata: {
+      fileCount: files.length,
+      supplementFileCount: supplementFiles.length,
+      overwriteExisting,
+      userId: user.id,
+    },
+  })
+  return c.json(job, 202)
+})
+
+productArchiveDrafts.get("/hangtag-washlabel-ocr/jobs/:jobId", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const job = hangtagWashlabelOcrQueue.getJob(c.req.param("jobId"))
+  if (!job) {
+    throw new HTTPException(404, { message: "吊牌/洗唛 OCR 任务不存在" })
+  }
+  return c.json(job)
+})
+
 productArchiveDrafts.get("/batch-jobs/:jobId", (c) => {
   requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
   const job = draftQueue.getJob(c.req.param("jobId"))
@@ -962,6 +1525,173 @@ productArchiveDrafts.get("/batch-jobs/:jobId", (c) => {
     throw new HTTPException(404, { message: "Draft batch job not found" })
   }
   return c.json(job)
+})
+
+productArchiveDrafts.post("/images/import", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const db = getDb()
+  const { files, skippedCount: unsupportedSkippedCount } = await readDraftImageUploadFiles(c)
+  const items = []
+  const importedImages = []
+  const matchedDraftIds = new Set<number>()
+  let skippedCount = unsupportedSkippedCount
+
+  for (const file of files) {
+    const spuCode = extractProductArchiveImageSpuCode(file.originalFileName || file.fileName)
+    if (!spuCode) {
+      skippedCount += 1
+      items.push({
+        fileName: file.originalFileName,
+        ok: false,
+        status: "skipped",
+        reason: "文件名或目录名未识别到款号",
+      })
+      continue
+    }
+    const draft = latestProductArchiveDraftForSpuCode(db, spuCode)
+    if (!draft) {
+      skippedCount += 1
+      items.push({
+        fileName: file.originalFileName,
+        spuCode,
+        ok: false,
+        status: "skipped",
+        reason: "未找到对应建档草稿",
+      })
+      continue
+    }
+    const image = await saveDraftImageUpload({
+      db,
+      draft,
+      file,
+      sourceType: "batch_upload",
+      sourceRef: file.originalFileName,
+      uploadedBy: user.id,
+    })
+    if (image) {
+      importedImages.push(image)
+      matchedDraftIds.add(Number(draft.id))
+      items.push({
+        fileName: file.originalFileName,
+        spuCode,
+        draftId: Number(draft.id),
+        ok: true,
+        status: "imported",
+        image,
+      })
+    }
+  }
+
+  auditFromContext(c, {
+    action: "draft.image.batch_imported",
+    module: "PRODUCT_ARCHIVE_DRAFT",
+    entityType: "product_archive_draft_batch",
+    entityId: null,
+    summary: `批量导入深绘建档 SPU 参考图 ${importedImages.length} 张`,
+    metadata: {
+      fileCount: files.length + unsupportedSkippedCount,
+      importedCount: importedImages.length,
+      matchedDraftCount: matchedDraftIds.size,
+      skippedCount,
+      userId: user.id,
+    },
+  })
+  return c.json({
+    ok: importedImages.length > 0,
+    summary: {
+      fileCount: files.length + unsupportedSkippedCount,
+      importedCount: importedImages.length,
+      matchedDraftCount: matchedDraftIds.size,
+      skippedCount,
+    },
+    items,
+  })
+})
+
+productArchiveDrafts.get("/images/:imageId/file", async (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const db = getDb()
+  const imageId = Number(c.req.param("imageId"))
+  if (!Number.isInteger(imageId) || imageId <= 0) {
+    throw new HTTPException(400, { message: "无效的图片 ID" })
+  }
+  const image = getProductArchiveDraftImageFile(db, imageId)
+  const localPath = stringValue(image?.local_path)
+  if (!image || !localPath) {
+    throw new HTTPException(404, { message: "图片不存在" })
+  }
+  const file = await assertLocalImageFile({ rootDir: DRAFT_IMAGE_DIR, filePath: localPath })
+  return new Response(await readFile(file.realPath), {
+    headers: {
+      "Content-Type": file.contentType,
+      "Cache-Control": "private, max-age=3600",
+    },
+  })
+})
+
+productArchiveDrafts.post("/:draftId/images", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const db = getDb()
+  const draftId = readId(c.req.param("draftId"))
+  const detail = getProductArchiveDraftDetail(db, draftId)
+  const draft = detail.draft as Record<string, unknown>
+  const { files, skippedCount } = await readDraftImageUploadFiles(c)
+  const images = []
+  for (const file of files) {
+    const image = await saveDraftImageUpload({
+      db,
+      draft,
+      file,
+      sourceType: "manual_upload",
+      sourceRef: file.originalFileName,
+      uploadedBy: user.id,
+    })
+    if (image) images.push(image)
+  }
+  auditFromContext(c, {
+    action: "draft.image.uploaded",
+    module: "PRODUCT_ARCHIVE_DRAFT",
+    entityType: "product_archive_draft",
+    entityId: draftId,
+    summary: `上传深绘建档 SPU 参考图 ${images.length} 张`,
+    metadata: {
+      importedCount: images.length,
+      skippedCount,
+      userId: user.id,
+    },
+  })
+  return c.json({
+    ok: images.length > 0,
+    imported_count: images.length,
+    skipped_count: skippedCount,
+    images,
+    detail: getProductArchiveDraftDetail(db, draftId),
+  })
+})
+
+productArchiveDrafts.delete("/:draftId/images/:imageId", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const db = getDb()
+  const draftId = readId(c.req.param("draftId"))
+  const imageId = Number(c.req.param("imageId"))
+  if (!Number.isInteger(imageId) || imageId <= 0) {
+    throw new HTTPException(400, { message: "无效的图片 ID" })
+  }
+  const image = deleteProductArchiveDraftImage(db, draftId, imageId)
+  if (!image) {
+    throw new HTTPException(404, { message: "图片不存在" })
+  }
+  const localPath = stringValue(image.local_path)
+  if (localPath) await rm(localPath, { force: true })
+  auditFromContext(c, {
+    action: "draft.image.deleted",
+    module: "PRODUCT_ARCHIVE_DRAFT",
+    entityType: "product_archive_draft",
+    entityId: draftId,
+    summary: `删除深绘建档 SPU 参考图 ${imageId}`,
+    metadata: { imageId, userId: user.id },
+  })
+  return c.json({ ok: true, detail: getProductArchiveDraftDetail(db, draftId) })
 })
 
 productArchiveDrafts.get("/:draftId", (c) => {

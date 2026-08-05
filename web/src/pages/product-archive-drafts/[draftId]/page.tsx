@@ -1,7 +1,7 @@
-import { Fragment, useMemo, useRef, useState } from "react"
+import { Fragment, useMemo, useRef, useState, type ReactNode } from "react"
 import { Link, useParams } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, ClipboardCheck, ListTree, Loader2, Pin, PinOff, RefreshCw, Save, Search, Send, Sparkles } from "lucide-react"
+import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, ClipboardCheck, Images, ListTree, Loader2, Pin, PinOff, RefreshCw, Save, Search, Send, Sparkles, Trash2, Upload, X } from "lucide-react"
 import { toast } from "sonner"
 import { api, ApiError } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
@@ -12,8 +12,15 @@ import { PageHeader } from "@/components/layout/page-header"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
 import {
   Dialog,
   DialogContent,
@@ -24,6 +31,11 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Select,
@@ -109,6 +121,22 @@ interface DraftLog {
   created_at: string
 }
 
+interface DraftImage {
+  id: number
+  draft_id: number
+  spu_code: string
+  source_type: string
+  source_ref: string | null
+  file_name: string
+  original_file_name: string | null
+  mime_type: string | null
+  file_size: number | null
+  width: number | null
+  height: number | null
+  preview_url: string | null
+  created_at: string
+}
+
 interface DraftDetail {
   draft: Draft
   tradeSelectionDecision: TradeSelectionDecision
@@ -118,6 +146,7 @@ interface DraftDetail {
   fields: DraftField[]
   skus: DraftSku[]
   issues: DraftIssue[]
+  images?: DraftImage[]
   logs: DraftLog[]
 }
 
@@ -299,7 +328,6 @@ function fieldOptionText(option: unknown, keys: string[]) {
 }
 
 function fieldOptions(field: DraftField): FieldOption[] {
-  const currentValue = field.value_text ?? ""
   const options = parseOptionList(field.options_json)
     .map((option) => {
       const value = fieldOptionText(option, ["value", "code", "id", "optionValue", "option_value", "key", "name", "label"])
@@ -308,27 +336,31 @@ function fieldOptions(field: DraftField): FieldOption[] {
       return { value: value || label, label: label || value }
     })
     .filter(Boolean) as FieldOption[]
-  const deduped = Array.from(new Map(options.map((option) => [option.value, option])).values())
-  if (currentValue && !deduped.some((option) => option.value === currentValue)) {
-    deduped.unshift({ value: currentValue, label: `${currentValue}（当前值）` })
-  }
-  return deduped
+  return Array.from(new Map(options.map((option) => [option.value, option])).values())
 }
 
 function deepdrawFieldType(field: DraftField) {
   return String(field.field_type ?? "").trim().toUpperCase()
 }
 
+const MULTI_CHOICE_FIELD_TYPES = new Set(["MULTI_CHOICE", "MULTIPLE_CHOICE", "MULTI_SELECT", "CHECKBOX"])
+
 function isChoiceFieldType(field: DraftField) {
   const type = deepdrawFieldType(field)
-  if (!type) return fieldOptions(field).length > 0
+  if (fieldOptions(field).length > 0) return true
   if (["SINGLE_CHOICE", "SINGLE_SELECT", "SELECT", "RADIO", "ENUM"].includes(type)) return true
-  if (["MULTI_CHOICE", "MULTIPLE_CHOICE", "MULTI_SELECT", "CHECKBOX"].includes(type)) return true
+  if (MULTI_CHOICE_FIELD_TYPES.has(type)) return true
   return false
 }
 
-function isMultiChoiceFieldType(field: DraftField) {
-  return ["MULTI_CHOICE", "MULTIPLE_CHOICE", "MULTI_SELECT", "CHECKBOX"].includes(deepdrawFieldType(field))
+function isMultiChoiceFieldType(field: DraftField, value = "") {
+  const type = deepdrawFieldType(field)
+  const key = compactFieldKey(field.field_name)
+  const hasOptions = fieldOptions(field).length > 0
+  return MULTI_CHOICE_FIELD_TYPES.has(type)
+    || (hasOptions && type === "MULTI_TEXT")
+    || (hasOptions && key.includes("多选"))
+    || (hasOptions && splitMultiFieldValue(value).length > 1)
 }
 
 function isLongTextFieldType(field: DraftField) {
@@ -339,12 +371,50 @@ function splitMultiFieldValue(value: string) {
   return value.split(/[;；]/).map((part) => part.trim()).filter(Boolean)
 }
 
-function toggleMultiFieldValue(value: string, optionValue: string, checked: boolean) {
+function multiFieldOptionValue(value: string, options: FieldOption[]) {
+  if (options.some((option) => option.value === value)) return value
+  const aliases = value.split(/[,，]/).map((part) => part.trim()).filter(Boolean)
+  return options.find((option) => aliases.includes(option.value))?.value ?? ""
+}
+
+function addMultiFieldValue(value: string, optionValue: string, options: FieldOption[]) {
   const values = splitMultiFieldValue(value)
-  const nextValues = checked
-    ? [...values, optionValue]
-    : values.filter((item) => item !== optionValue)
+  if (values.some((item) => item === optionValue || multiFieldOptionValue(item, options) === optionValue)) return value
+  return [...values, optionValue].join(";")
+}
+
+function removeMultiFieldValue(value: string, optionValue: string, options: FieldOption[]) {
+  const nextValues = splitMultiFieldValue(value).filter((item) => (
+    item !== optionValue && multiFieldOptionValue(item, options) !== optionValue
+  ))
+  return nextValues.join(";")
+}
+
+function clearInvalidMultiFieldValue(value: string, rawValue: string) {
+  const nextValues = splitMultiFieldValue(value).filter((item) => item !== rawValue)
   return Array.from(new Set(nextValues)).join(";")
+}
+
+function uploadDisplayName(file: File) {
+  const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath
+  return relativePath || file.name
+}
+
+function uploadExtension(file: File) {
+  return uploadDisplayName(file).split(".").pop()?.toLowerCase() ?? ""
+}
+
+function isDraftReferenceImageFile(file: File) {
+  return ["jpg", "jpeg", "png", "webp"].includes(uploadExtension(file))
+}
+
+function buildDraftImageUploadForm(files: File[]) {
+  const form = new FormData()
+  for (const file of files) {
+    form.append("files", file)
+    form.append("filePaths", uploadDisplayName(file))
+  }
+  return form
 }
 
 function recordValue(value: unknown): Record<string, unknown> {
@@ -515,6 +585,240 @@ function issueSeverityClass(severity: string) {
   return "border-[#d7e5fb] bg-[#eef5ff] text-[#3772cf]"
 }
 
+function MultiChoiceFieldEditor({
+  field,
+  value,
+  options,
+  onChange,
+}: {
+  field: DraftField
+  value: string
+  options: FieldOption[]
+  onChange: (value: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const selectedValues = splitMultiFieldValue(value)
+  const selectedOptionValues = new Set(
+    selectedValues
+      .map((item) => multiFieldOptionValue(item, options))
+      .filter(Boolean),
+  )
+  const selectedTags = selectedValues.map((item) => {
+    const optionValue = multiFieldOptionValue(item, options)
+    const option = optionValue ? options.find((candidate) => candidate.value === optionValue) : null
+    return {
+      rawValue: item,
+      optionValue,
+      label: option && item === option.value ? option.label : item,
+      valid: Boolean(option),
+    }
+  })
+  const availableOptions = options.filter((option) => !selectedOptionValues.has(option.value))
+
+  return (
+    <div className="min-w-[280px] max-w-[420px] space-y-2">
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 w-full justify-between px-3 font-normal"
+          >
+            <span className="truncate">
+              {selectedTags.length ? `已选 ${formatNumber(selectedTags.length)} 项，继续添加` : "添加选项"}
+            </span>
+            <Search className="ml-2 size-4 shrink-0 text-muted-foreground" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-[min(420px,calc(100vw-4rem))] p-0">
+          <Command>
+            <CommandInput placeholder={`搜索${field.field_name}选项`} />
+            <CommandList className="max-h-72">
+              <CommandEmpty>{availableOptions.length ? "没有匹配的选项" : "没有可添加的选项"}</CommandEmpty>
+              <CommandGroup>
+                {availableOptions.map((option) => (
+                  <CommandItem
+                    key={option.value}
+                    value={`${option.label} ${option.value}`}
+                    onSelect={() => onChange(addMultiFieldValue(value, option.value, options))}
+                    className="gap-2"
+                  >
+                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+            <div className="flex items-center justify-between border-t px-3 py-2">
+              <span className="text-xs text-muted-foreground">当前已选 {formatNumber(selectedTags.length)} 项</span>
+              <Button type="button" variant="ghost" size="sm" onClick={() => onChange("")} disabled={selectedTags.length === 0}>
+                清空
+              </Button>
+            </div>
+          </Command>
+        </PopoverContent>
+      </Popover>
+      {selectedTags.length > 0 ? (
+        <div className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto rounded-md border bg-background p-2">
+          {selectedTags.map((tag) => (
+            <Badge
+              key={`${tag.rawValue}\u0000${tag.optionValue}`}
+              variant="outline"
+              className={cn(
+                "max-w-full gap-1 rounded-md border-[#5bdca8] bg-[#dff8ed] px-2 py-1 font-medium text-[#0b7f56] shadow-sm",
+                !tag.valid && "border-[#f1cccc] bg-[#fff1f1] text-[#d45656]",
+              )}
+            >
+              <span className="max-w-[300px] truncate">{tag.valid ? tag.label : `${tag.label}（不在模板）`}</span>
+              <button
+                type="button"
+                className={cn(
+                  "rounded-sm text-[#0b7f56]/70 hover:text-[#075f42] focus:outline-none focus:ring-2 focus:ring-ring",
+                  !tag.valid && "text-[#d45656]/70 hover:text-[#b63f3f]",
+                )}
+                onClick={() => onChange(tag.optionValue
+                  ? removeMultiFieldValue(value, tag.optionValue, options)
+                  : clearInvalidMultiFieldValue(value, tag.rawValue))}
+                aria-label={`移除${tag.label}`}
+              >
+                <X className="size-3" />
+              </button>
+            </Badge>
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">未选择</div>
+      )}
+    </div>
+  )
+}
+
+function DraftImageUploadDialog({
+  open,
+  onOpenChange,
+  files,
+  onFilesChange,
+  isPending,
+  onSubmit,
+  trigger,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  files: File[]
+  onFilesChange: (files: File[]) => void
+  isPending: boolean
+  onSubmit: () => void
+  trigger: ReactNode
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      <DialogContent className="sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>上传 SPU 参考图</DialogTitle>
+          <DialogDescription>
+            图片会绑定当前深绘建档草稿，供 AI 补齐字段时作为多模态参考。
+          </DialogDescription>
+        </DialogHeader>
+        <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-dashed px-3 py-4 text-sm hover:bg-muted/40">
+          <span className="flex min-w-0 items-center gap-2">
+            <Upload className="size-4 text-muted-foreground" />
+            <span className="truncate">{files.length ? `已选择 ${formatNumber(files.length)} 张图片` : "选择 JPG/PNG/WEBP 图片"}</span>
+          </span>
+          <Input
+            type="file"
+            accept=".jpg,.jpeg,.png,.webp"
+            multiple
+            className="hidden"
+            onChange={(event) => onFilesChange(Array.from(event.target.files ?? []).filter(isDraftReferenceImageFile))}
+          />
+        </label>
+        {files.length > 0 ? (
+          <div className="flex max-h-32 flex-wrap gap-2 overflow-auto rounded-md border bg-muted/20 p-2">
+            {files.map((file) => (
+              <Badge key={`${uploadDisplayName(file)}-${file.size}`} variant="secondary" className="max-w-[240px] truncate">
+                {uploadDisplayName(file)}
+              </Badge>
+            ))}
+          </div>
+        ) : null}
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            取消
+          </Button>
+          <Button type="button" disabled={isPending || files.length === 0} onClick={onSubmit}>
+            {isPending ? <Loader2 className="size-4 animate-spin" /> : <Images className="size-4" />}
+            上传并作为参考图
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function DraftReferenceImagesSection({
+  images,
+  uploadDialog,
+  onDelete,
+  deletingImageId,
+}: {
+  images: DraftImage[]
+  uploadDialog: ReactNode
+  onDelete: (imageId: number) => void
+  deletingImageId: number | null
+}) {
+  return (
+    <section className="rounded-lg border bg-card p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="text-sm font-semibold">SPU 参考图</h2>
+          <p className="mt-1 text-xs text-muted-foreground">AI 推荐补齐字段时会读取最多 4 张参考图。</p>
+        </div>
+        {uploadDialog}
+      </div>
+      {images.length > 0 ? (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(132px,156px))] justify-start gap-3">
+          {images.map((image) => (
+            <div key={image.id} className="min-w-0 overflow-hidden rounded-md border bg-background">
+              <div className="aspect-square bg-muted/60 p-2">
+                {image.preview_url ? (
+                  <img
+                    src={image.preview_url}
+                    alt={image.original_file_name ?? image.file_name ?? "SPU 参考图"}
+                    className="h-full w-full object-contain"
+                  />
+                ) : null}
+              </div>
+              <div className="grid gap-1.5 p-2 text-xs">
+                <div className="truncate font-medium">{image.original_file_name ?? image.file_name}</div>
+                <div className="truncate text-muted-foreground">
+                  {image.width && image.height ? `${image.width} × ${image.height}` : "尺寸未知"}
+                  {image.file_size ? ` · ${formatNumber(Math.round(image.file_size / 1024))}KB` : ""}
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  className="w-fit text-muted-foreground hover:text-[#d45656]"
+                  disabled={deletingImageId === image.id}
+                  onClick={() => onDelete(image.id)}
+                >
+                  {deletingImageId === image.id ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
+                  删除
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
+          暂无参考图
+        </div>
+      )}
+    </section>
+  )
+}
+
 export default function ProductArchiveDraftDetailPage() {
   const { draftId } = useParams()
   const queryClient = useQueryClient()
@@ -534,6 +838,9 @@ export default function ProductArchiveDraftDetailPage() {
   const [tradeSearch, setTradeSearch] = useState("")
   const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null)
   const [activeIssueIndex, setActiveIssueIndex] = useState(0)
+  const [imageUploadDialogOpen, setImageUploadDialogOpen] = useState(false)
+  const [imageUploadFiles, setImageUploadFiles] = useState<File[]>([])
+  const [deletingImageId, setDeletingImageId] = useState<number | null>(null)
   const debouncedTradeSearch = useDebounce(tradeSearch, 250)
 
   const draft = detail.data?.draft
@@ -544,6 +851,7 @@ export default function ProductArchiveDraftDetailPage() {
     && tradeSelectionDecision.recommendedTrade.tradeId !== tradeSelectionDecision.appliedTrade?.tradeId,
   )
   const launchPlanReference = detail.data?.launchPlanReference ?? { matched: false, fields: [] }
+  const referenceImages = detail.data?.images ?? []
   const trades = useQuery<TradeListResponse>({
     queryKey: ["deepdraw-metadata-trades", draft?.tenant_name, debouncedTradeSearch],
     enabled: Boolean(draft && tradeDialogOpen),
@@ -740,6 +1048,41 @@ export default function ProductArchiveDraftDetailPage() {
     },
   })
 
+  const uploadDraftImages = useMutation({
+    mutationFn: () => api.postForm<{ detail: DraftDetail; imported_count: number; skipped_count: number }>(
+      `/product-archive-drafts/${draftId}/images`,
+      buildDraftImageUploadForm(imageUploadFiles),
+    ),
+    onSuccess: (result) => {
+      queryClient.setQueryData(["product-archive-drafts", draftId], result.detail)
+      setImageUploadFiles([])
+      setImageUploadDialogOpen(false)
+      toast.success(`已上传 ${formatNumber(result.imported_count)} 张 SPU 参考图`)
+      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "上传 SPU 参考图失败")
+    },
+  })
+
+  const deleteDraftImage = useMutation({
+    mutationFn: (imageId: number) => {
+      setDeletingImageId(imageId)
+      return api.delete<{ detail: DraftDetail }>(`/product-archive-drafts/${draftId}/images/${imageId}`)
+    },
+    onSuccess: (result) => {
+      queryClient.setQueryData(["product-archive-drafts", draftId], result.detail)
+      toast.success("参考图已删除")
+      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "删除参考图失败")
+    },
+    onSettled: () => setDeletingImageId(null),
+  })
+
   const recommendSizeChartMappings = useMutation({
     mutationFn: () => api.post<SizeChartRecommendationResponse>(`/product-archive-drafts/${draftId}/size-chart/ai-recommend`),
     onSuccess: (result) => {
@@ -830,16 +1173,19 @@ export default function ProductArchiveDraftDetailPage() {
 
   return (
     <PageContainer ref={pageScrollRef}>
-      <PageHeader
-        title={draft.title || draft.spu_code}
-        description={`${draft.spu_code} / ${draft.tenant_name} / ${draft.trade_path || "待确认类目"}`}
-      >
-        <Button asChild variant="outline" size="sm">
-          <Link to="/product-archive-drafts">
-            <ArrowLeft className="size-4" />
-            返回
-          </Link>
-        </Button>
+        <PageHeader
+          compact
+          title={draft.title || draft.spu_code}
+          description={`${draft.spu_code} / ${draft.tenant_name} / ${draft.trade_path || "待确认类目"}`}
+          prefix={(
+            <Button asChild variant="ghost" size="sm" className="-ml-2 h-8 w-fit text-muted-foreground hover:text-foreground">
+              <Link to="/product-archive-drafts">
+                <ArrowLeft className="size-4" />
+                返回草稿列表
+              </Link>
+            </Button>
+          )}
+        >
         <Dialog
           open={tradeDialogOpen}
           onOpenChange={(open) => {
@@ -961,6 +1307,20 @@ export default function ProductArchiveDraftDetailPage() {
           {aiFill.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
           AI 推荐补齐空字段
         </Button>
+        <DraftImageUploadDialog
+          open={imageUploadDialogOpen}
+          onOpenChange={setImageUploadDialogOpen}
+          files={imageUploadFiles}
+          onFilesChange={setImageUploadFiles}
+          isPending={uploadDraftImages.isPending}
+          onSubmit={() => uploadDraftImages.mutate()}
+          trigger={(
+            <Button type="button" variant="outline" size="sm">
+              <Images className="size-4" />
+              上传 SPU 图
+            </Button>
+          )}
+        />
         <Button type="button" size="sm" onClick={() => dryRunSubmit.mutate()} disabled={dryRunSubmit.isPending}>
           {dryRunSubmit.isPending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
           提交预览
@@ -990,7 +1350,19 @@ export default function ProductArchiveDraftDetailPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-      </PageHeader>
+        </PageHeader>
+
+      <DraftReferenceImagesSection
+        images={referenceImages}
+        deletingImageId={deletingImageId}
+        onDelete={(imageId) => deleteDraftImage.mutate(imageId)}
+        uploadDialog={(
+          <Button type="button" variant="outline" size="sm" onClick={() => setImageUploadDialogOpen(true)}>
+            <Images className="size-4" />
+            上传参考图
+          </Button>
+        )}
+      />
 
       {tradeSelectionDecision ? (
         <section
@@ -1253,8 +1625,7 @@ export default function ProductArchiveDraftDetailPage() {
                       const isSizeChartField = isProductArchiveSizeChartField(field)
                       const hasPersistedSizeChart = hasStructuredSizeChartValue(field.value_json)
                       const isChoiceField = isChoiceFieldType(field)
-                      const isMultiChoiceField = isMultiChoiceFieldType(field)
-                      const selectedMultiValues = new Set(splitMultiFieldValue(value))
+                      const isMultiChoiceField = isMultiChoiceFieldType(field, value)
                       const fieldIssues = fieldIssueMap.get(field.field_name) ?? []
                       const hasFieldIssue = fieldIssues.length > 0
                       const isActiveIssueField = activeIssueFieldName === field.field_name
@@ -1311,23 +1682,15 @@ export default function ProductArchiveDraftDetailPage() {
                                   配置尺码表
                                 </Button>
                               ) : isChoiceField && isMultiChoiceField && options.length > 0 ? (
-                                <div className="grid max-h-36 min-w-[220px] gap-2 overflow-y-auto rounded-md border bg-background p-2">
-                                  {options.map((option) => (
-                                    <label key={option.value} className="flex min-w-0 items-center gap-2 text-sm">
-                                      <Checkbox
-                                        checked={selectedMultiValues.has(option.value)}
-                                        onCheckedChange={(checked) => setFieldValues((current) => ({
-                                          ...current,
-                                          [field.id]: toggleMultiFieldValue(value, option.value, checked === true),
-                                        }))}
-                                      />
-                                      <span className="truncate">{option.label}</span>
-                                    </label>
-                                  ))}
-                                </div>
+                                <MultiChoiceFieldEditor
+                                  field={field}
+                                  value={value}
+                                  options={options}
+                                  onChange={(nextValue) => setFieldValues((current) => ({ ...current, [field.id]: nextValue }))}
+                                />
                               ) : isChoiceField && options.length > 0 ? (
                                 <Select
-                                  value={value}
+                                  value={options.some((option) => option.value === value) ? value : ""}
                                   onValueChange={(nextValue) => setFieldValues((current) => ({ ...current, [field.id]: nextValue }))}
                                 >
                                   <SelectTrigger className="h-8">

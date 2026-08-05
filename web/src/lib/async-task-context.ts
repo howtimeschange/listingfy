@@ -10,6 +10,7 @@ export interface AsyncTaskJobItem {
 export interface AsyncTaskJob {
   id: string
   status: "queued" | "running" | "completed"
+  outcome?: "succeeded" | "partial_failure" | "failed" | string | null
   total_count: number
   completed_count: number
   failed_count: number
@@ -25,11 +26,12 @@ export interface AsyncTaskJob {
   shard_size?: number
   downloadUrl?: string
   fileName?: string
+  result?: unknown
 }
 
 export interface AsyncTaskRecord {
   id: string
-  type: "product_archive_mdm_draft" | "listing_launch_plan_import" | "category_mapping_ai_suggestions" | "shein_platform_product_sync" | "shein_platform_product_export"
+  type: "product_archive_mdm_draft" | "product_archive_hangtag_washlabel_ocr" | "listing_launch_plan_import" | "category_mapping_ai_suggestions" | "shein_platform_product_sync" | "shein_platform_product_export"
   title: string
   description?: string
   endpoint: string

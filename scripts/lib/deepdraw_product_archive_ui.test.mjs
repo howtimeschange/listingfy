@@ -78,9 +78,15 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
     /productArchiveDrafts\.post\("\/workflow\/start"/,
     /productArchiveDrafts\.post\("\/hangtag-washlabel-ocr\/preview"/,
     /productArchiveDrafts\.post\("\/hangtag-washlabel-ocr\/apply"/,
+    /productArchiveDrafts\.post\("\/hangtag-washlabel-ocr\/jobs"/,
+    /productArchiveDrafts\.get\("\/hangtag-washlabel-ocr\/jobs\/:jobId"/,
+    /productArchiveDrafts\.post\("\/images\/import"/,
+    /productArchiveDrafts\.get\("\/images\/:imageId\/file"/,
     /productArchiveDrafts\.get\("\/templates\/:templateType"/,
     /productArchiveDrafts\.post\("\/source-imports"/,
     /productArchiveDrafts\.get\("\/:draftId"/,
+    /productArchiveDrafts\.post\("\/:draftId\/images"/,
+    /productArchiveDrafts\.delete\("\/:draftId\/images\/:imageId"/,
     /productArchiveDrafts\.patch\("\/:draftId\/trade"/,
     /productArchiveDrafts\.patch\("\/:draftId\/trade\/confirm"/,
     /productArchiveDrafts\.patch\("\/:draftId\/fields"/,
@@ -103,6 +109,14 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
   assert.match(draftRoute, /readScmHangtagWashlabelSupplementWorkbook/);
   assert.match(draftRoute, /previewProductArchiveHangtagWashlabelOcr/);
   assert.match(draftRoute, /applyProductArchiveHangtagWashlabelOcr/);
+  assert.match(draftRoute, /createHangtagWashlabelOcrQueue/);
+  assert.match(draftRoute, /queueName: "product_archive_hangtag_washlabel_ocr"/);
+  assert.match(draftRoute, /background_queued/);
+  assert.match(draftRoute, /background_applied/);
+  assert.match(draftRoute, /readDraftImageUploadFiles/);
+  assert.match(draftRoute, /extractProductArchiveImageSpuCode/);
+  assert.match(draftRoute, /DRAFT_IMAGE_DIR/);
+  assert.match(draftRoute, /assertLocalImageFile/);
   assert.match(draftRoute, /writeValidatedUploadFile\(file,\s*"product_archive_ocr"/);
   assert.match(draftRoute, /writeValidatedUploadFile\(file,\s*"spreadsheet"/);
   assert.match(draftRoute, /filePaths/);
@@ -299,7 +313,14 @@ test("draft detail field fill tab highlights validation issues and can jump betw
   assert.match(draftDetailPage, /isMultiChoiceFieldType/);
   assert.match(draftDetailPage, /isLongTextFieldType/);
   assert.match(draftDetailPage, /deepdrawFieldType/);
-  assert.match(draftDetailPage, /<Checkbox/);
+  assert.match(draftDetailPage, /MultiChoiceFieldEditor/);
+  assert.match(draftDetailPage, /CommandInput/);
+  assert.match(draftDetailPage, /添加选项/);
+  assert.match(draftDetailPage, /当前已选/);
+  assert.match(draftDetailPage, /不在模板/);
+  assert.match(draftDetailPage, /border-\[#5bdca8\] bg-\[#dff8ed\]/);
+  assert.match(draftDetailPage, /removeMultiFieldValue/);
+  assert.doesNotMatch(draftDetailPage, /toggleMultiFieldValue/);
   assert.match(draftDetailPage, /<Textarea/);
   assert.match(draftDetailPage, /validationLocatorRef/);
   assert.match(draftDetailPage, /activeIssueIndex/);
@@ -378,9 +399,26 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(asyncTaskCenter, /product-archive-drafts\/batch-jobs/);
   assert.match(asyncTaskCenter, /失败明细/);
   assert.match(asyncTaskCenter, /Progress/);
+  assert.match(asyncTaskCenter, /hangtagWashlabelOcrTaskSummary/);
+  assert.match(asyncTaskCenter, /已自动/);
+  assert.match(asyncTaskCenter, /填充空字段/);
 
   assert.doesNotMatch(draftListPage, /ComingSoonPage/);
   assert.match(draftListPage, /CompactListPage/);
+  assert.match(draftListPage, /ProductArchiveDraftGuideDialog/);
+  assert.match(draftListPage, /PRODUCT_ARCHIVE_DRAFT_GUIDE_STORAGE_KEY/);
+  assert.match(draftListPage, /hasSeenProductArchiveDraftGuide/);
+  assert.match(draftListPage, /markProductArchiveDraftGuideSeen/);
+  assert.match(draftListPage, /window\.localStorage\.getItem\(PRODUCT_ARCHIVE_DRAFT_GUIDE_STORAGE_KEY\)/);
+  assert.match(draftListPage, /window\.localStorage\.setItem\(PRODUCT_ARCHIVE_DRAFT_GUIDE_STORAGE_KEY, "seen"\)/);
+  assert.match(draftListPage, /setGuideDialogOpen\(true\)/);
+  assert.match(draftListPage, /使用指南/);
+  assert.match(draftListPage, /深绘建档草稿使用指南/);
+  assert.match(draftListPage, /推荐路径：标准文案表建草稿/);
+  assert.match(draftListPage, /尺码表、吊牌\/洗唛文件可以通过抓虾自动化抓取/);
+  assert.match(draftListPage, /https:\/\/crawshrimp\.com\/download/);
+  assert.match(draftListPage, /补充识别资料/);
+  assert.match(draftListPage, /批量校验、查重、发布/);
   assert.match(draftListPage, /api\.get<.*>\(`\/product-archive-drafts\?/s);
   assert.match(draftListPage, /ServerPagination/);
   assert.match(draftListPage, /limit=/);
@@ -390,12 +428,28 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /导入吊牌\/洗唛/);
   assert.match(draftListPage, /hangtag-washlabel-ocr\/preview/);
   assert.match(draftListPage, /hangtag-washlabel-ocr\/apply/);
+  assert.match(draftListPage, /hangtag-washlabel-ocr\/jobs/);
   assert.match(draftListPage, /选择抓虾 SCM 导出目录/);
   assert.match(draftListPage, /SCM洗唛吊牌下载结果/);
   assert.match(draftListPage, /webkitdirectory/);
   assert.match(draftListPage, /form\.append\("filePaths", uploadDisplayName\(file\)\)/);
   assert.match(draftListPage, /form\.append\("scmSupplementFile"/);
   assert.match(draftListPage, /overwriteExisting/);
+  assert.match(draftListPage, /product_archive_hangtag_washlabel_ocr/);
+  assert.match(draftListPage, /提交后台识别/);
+  assert.match(draftListPage, /table-fixed/);
+  assert.match(draftListPage, /line-clamp-2/);
+  assert.match(draftListPage, /OcrExtractedFieldLine/);
+  assert.match(draftListPage, /后台识别任务/);
+  assert.match(draftListPage, /hangtagWashlabelOcrJobSummary/);
+  assert.match(draftListPage, /已自动/);
+  assert.match(draftListPage, /填充空字段/);
+  assert.match(draftListPage, /SpuImageImportDialog/);
+  assert.match(draftListPage, /导入 SPU 图片/);
+  assert.match(draftListPage, /\/product-archive-drafts\/images\/import/);
+  assert.match(draftListPage, /isSpuReferenceImageUploadFile/);
+  assert.match(draftListPage, /参考图/);
+  assert.match(draftListPage, /item\.image_count/);
   assert.match(draftListPage, /确认写入草稿/);
   assert.match(draftListPage, /api\.get<.*>\(`\/product-archive-drafts\/batch-jobs\/\$\{batchJobId\}`\)/s);
   assert.match(draftListPage, /开始商品建档/);
@@ -462,11 +516,24 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftDetailPage, /api\.patch<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/trade`/s);
   assert.match(draftDetailPage, /api\.get<.*>\(`\/deepdraw-metadata\/trades\?/s);
   assert.match(draftDetailPage, /fieldOptions/);
+  assert.match(draftDetailPage, /fieldOptions\(field\)\.length > 0\) return true/);
+  assert.match(draftDetailPage, /MULTI_CHOICE_FIELD_TYPES/);
+  assert.match(draftDetailPage, /type === "MULTI_TEXT"/);
+  assert.doesNotMatch(draftDetailPage, /当前值/);
   assert.match(draftDetailPage, /SelectTrigger/);
   assert.match(draftDetailPage, /SelectItem/);
   assert.match(draftDetailPage, /选择深绘类目/);
   assert.match(draftDetailPage, /应用类目并生成字段/);
   assert.match(draftDetailPage, /待确认类目/);
+  assert.match(draftDetailPage, /DraftReferenceImagesSection/);
+  assert.match(draftDetailPage, /SPU 参考图/);
+  assert.match(draftDetailPage, /上传 SPU 图/);
+  assert.match(draftDetailPage, /grid-cols-\[repeat\(auto-fill,minmax\(132px,156px\)\)\]/);
+  assert.match(draftDetailPage, /api\.postForm<[\s\S]*?>\(\s*`\/product-archive-drafts\/\$\{draftId\}\/images`/);
+  assert.match(draftDetailPage, /api\.delete<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/images\/\$\{imageId\}`/s);
+  assert.match(draftDetailPage, /prefix=\{\(/);
+  assert.match(draftDetailPage, /返回草稿列表/);
+  assert.match(draftDetailPage, /compact/);
   assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/validate`/s);
   assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/ai-fill`/s);
   assert.match(draftDetailPage, /尺码表配置/);

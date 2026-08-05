@@ -63,6 +63,8 @@ test("sidebar groups operational menus by workstream permissions", async () => {
   assert.match(sidebar, /label:\s*"规则配置"/);
   assert.doesNotMatch(sidebar, /label:\s*"上新工作"/);
   assert.doesNotMatch(sidebar, /label:\s*"SHEIN运营中心"/);
+  assert.match(sidebar, /aria-label="AI 驱动"/);
+  assert.match(sidebar, /Listing Platform/);
 
   assert.match(sidebar, /深绘建档草稿", to: "\/product-archive-drafts", icon: PenLine, permission: "PRODUCT_ARCHIVE_DRAFT_READ"/);
   assert.match(sidebar, /上市计划表", to: "\/listing-launch-plans", icon: FileSpreadsheet, permission: "PRODUCT_ARCHIVE_DRAFT_READ"/);
@@ -83,7 +85,11 @@ test("dashboard becomes a permission-aware cross-workstream cockpit", async () =
   assert.match(dashboard, /canUseShein/);
   assert.match(dashboard, /enabled:\s*canUseDeepdraw/);
   assert.match(dashboard, /enabled:\s*canUseShein/);
-  assert.match(dashboard, /全链路运营驾驶舱/);
+  assert.match(dashboard, /AI 商品运营平台/);
+  assert.match(dashboard, /商品运营中台/);
+  assert.match(dashboard, /AI 商品运营能力/);
+  assert.match(dashboard, /OCR\/AI 补齐/);
+  assert.match(dashboard, /从商品资料到平台回执的统一运营台/);
   assert.match(dashboard, /深绘建档/);
   assert.match(dashboard, /SHEIN 上新运营/);
   assert.match(dashboard, /\/product-archive-drafts/);

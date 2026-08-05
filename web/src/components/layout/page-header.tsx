@@ -5,6 +5,7 @@ interface PageHeaderProps {
   title: string
   description?: string
   children?: ReactNode
+  prefix?: ReactNode
   className?: string
   compact?: boolean
   actionsClassName?: string
@@ -14,6 +15,7 @@ export function PageHeader({
   title,
   description,
   children,
+  prefix,
   className,
   compact = false,
   actionsClassName,
@@ -29,6 +31,7 @@ export function PageHeader({
       <div className="pointer-events-none absolute inset-x-0 top-0 h-40 bg-[radial-gradient(circle_at_50%_0%,rgba(24,226,153,0.20),transparent_68%)]" />
       <div className="relative flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
         <div className="max-w-3xl">
+          {prefix ? <div className="mb-3">{prefix}</div> : null}
           <h1
             className={cn(
               "font-semibold leading-[1.1] tracking-[-0.8px] text-foreground",

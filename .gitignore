@@ -19,3 +19,4 @@ data/*.db
 data/*.db-*
 data/shein-metadata/
 data/deepdraw-content/
+data/product-archive-draft-images/
