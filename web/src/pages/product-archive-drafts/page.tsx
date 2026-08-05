@@ -124,6 +124,84 @@ interface SourceImportUploadResponse {
   syncJobs?: DraftBatchJob[]
 }
 
+interface HangtagWashlabelOcrTargetField {
+  fieldId: number
+  fieldName: string
+  fieldKey: string
+  label: string
+  valueText: string
+  currentValueText: string
+  sourceType: string
+  sourceRef: string
+  confidence: "high" | "medium" | "low" | string
+  evidenceText: string
+  willApply: boolean
+  skippedReason: string | null
+}
+
+interface HangtagWashlabelOcrPreviewItem {
+  fileName: string
+  fileType: string
+  sourceKind: string
+  status: "ready" | "all_skipped" | "unmatched" | "ocr_failed" | "no_style_code" | "no_fields" | "no_target_fields"
+  error: string | null
+  detectedSpuCode: string | null
+  pageCount: number
+  matchedDraft: {
+    id: number
+    spuCode: string
+    title: string | null
+    status: string
+  } | null
+  extractedFields: Array<{
+    key: string
+    label: string
+    value: string
+    confidence: string
+    evidenceText: string
+    pageNumber: number | null
+  }>
+  targetFields: HangtagWashlabelOcrTargetField[]
+  warnings: string[]
+}
+
+interface HangtagWashlabelOcrPreviewResponse {
+  overwriteExisting: boolean
+  provider?: {
+    kind: string
+    usedKinds?: string[]
+    lang: string
+    pdfRenderer: string
+  }
+  scmSupplement?: {
+    files: Array<{
+      fileName: string
+      sheetCount: number
+      documentCount: number
+    }>
+  }
+  summary: {
+    fileCount: number
+    matchedCount: number
+    readyCount: number
+    unmatchedCount: number
+    failedCount: number
+    extractedFieldCount: number
+    writableFieldCount: number
+    skippedFieldCount: number
+    warningCount: number
+  }
+  items: HangtagWashlabelOcrPreviewItem[]
+}
+
+interface HangtagWashlabelOcrApplyResponse {
+  summary: {
+    appliedDraftCount: number
+    appliedFieldCount: number
+    skippedCount: number
+  }
+}
+
 type BatchDraftAction = "validate" | "check_duplicate" | "submit_preview" | "submit_publish"
 
 const statusLabels: Record<string, string> = {
@@ -157,6 +235,73 @@ function useDrafts(query: string, status: string, pagination: { limit: number; o
 
 function multiLineCodeCount(value: string) {
   return value.split(/[\s,，;；]+/).map((item) => item.trim()).filter(Boolean).length
+}
+
+const ocrStatusLabels: Record<HangtagWashlabelOcrPreviewItem["status"], string> = {
+  ready: "可写入",
+  all_skipped: "已识别但跳过",
+  unmatched: "未匹配草稿",
+  ocr_failed: "识别失败",
+  no_style_code: "缺少款号",
+  no_fields: "未识别字段",
+  no_target_fields: "无对应字段",
+}
+
+function ocrStatusClass(status: HangtagWashlabelOcrPreviewItem["status"]) {
+  if (status === "ready") return "border-[#b9f4d8] bg-[#d4fae8] text-[#0fa76e]"
+  if (status === "all_skipped" || status === "no_target_fields" || status === "no_fields") return "border-[#f4ddb3] bg-[#fff8e8] text-[#c37d0d]"
+  return "border-[#f1cccc] bg-[#fff1f1] text-[#d45656]"
+}
+
+function confidenceLabel(value: string) {
+  if (value === "high") return "高"
+  if (value === "medium") return "中"
+  if (value === "low") return "低"
+  return value || "-"
+}
+
+function uploadDisplayName(file: File) {
+  const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath
+  return relativePath || file.name
+}
+
+function uploadExtension(file: File) {
+  return uploadDisplayName(file).split(".").pop()?.toLowerCase() ?? ""
+}
+
+function isHiddenUploadFile(file: File) {
+  const name = uploadDisplayName(file).split("/").pop() ?? file.name
+  return name === ".DS_Store" || name.startsWith("~$")
+}
+
+function isOcrAssetUploadFile(file: File) {
+  return ["pdf", "jpg", "jpeg", "png"].includes(uploadExtension(file))
+}
+
+function isScmSupplementUploadFile(file: File) {
+  return ["xlsx", "xlsm"].includes(uploadExtension(file))
+}
+
+function splitHangtagWashlabelUploads(files: File[]) {
+  const ocrFiles: File[] = []
+  let scmSupplementFile: File | null = null
+  let skippedCount = 0
+  for (const file of files) {
+    if (isHiddenUploadFile(file)) {
+      skippedCount += 1
+      continue
+    }
+    if (isOcrAssetUploadFile(file)) {
+      ocrFiles.push(file)
+      continue
+    }
+    if (isScmSupplementUploadFile(file) && !scmSupplementFile) {
+      scmSupplementFile = file
+      continue
+    }
+    skippedCount += 1
+  }
+  return { ocrFiles, scmSupplementFile, skippedCount }
 }
 
 interface StartProductArchiveDialogProps {
@@ -315,6 +460,246 @@ function StartProductArchiveDialog({
   )
 }
 
+interface HangtagWashlabelImportDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  files: File[]
+  onFilesChange: (files: File[]) => void
+  scmSupplementFile: File | null
+  onScmSupplementFileChange: (file: File | null) => void
+  overwriteExisting: boolean
+  onOverwriteExistingChange: (checked: boolean) => void
+  preview: HangtagWashlabelOcrPreviewResponse | null
+  isPreviewing: boolean
+  isApplying: boolean
+  onPreview: () => void
+  onApply: () => void
+}
+
+function HangtagWashlabelImportDialog({
+  open,
+  onOpenChange,
+  files,
+  onFilesChange,
+  scmSupplementFile,
+  onScmSupplementFileChange,
+  overwriteExisting,
+  onOverwriteExistingChange,
+  preview,
+  isPreviewing,
+  isApplying,
+  onPreview,
+  onApply,
+}: HangtagWashlabelImportDialogProps) {
+  const writableFieldCount = preview?.summary.writableFieldCount ?? 0
+  const hasUploadInput = files.length > 0 || Boolean(scmSupplementFile)
+  const onFolderSelection = (selectedFiles: File[]) => {
+    const split = splitHangtagWashlabelUploads(selectedFiles)
+    onFilesChange(split.ocrFiles)
+    onScmSupplementFileChange(split.scmSupplementFile)
+    if (split.skippedCount > 0) {
+      toast.warning(`已忽略 ${formatNumber(split.skippedCount)} 个非吊牌/洗唛/SCM 结果文件`)
+    }
+  }
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogTrigger asChild>
+        <Button type="button" variant="outline" size="sm">
+          <FileText className="size-4" />
+          导入吊牌/洗唛
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-5xl">
+        <DialogHeader>
+          <DialogTitle>导入吊牌/洗唛</DialogTitle>
+          <DialogDescription>
+            批量上传 PDF 吊牌、JPG/PNG 洗唛和 SCM 下载结果表，确认后写入匹配草稿。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid max-h-[68vh] gap-4 overflow-auto pr-1">
+          <section className="rounded-lg border p-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-dashed px-3 py-3 text-sm hover:bg-muted/40">
+                <span className="flex min-w-0 items-center gap-2">
+                  <Upload className="size-4 text-muted-foreground" />
+                  <span className="truncate">
+                    {files.length > 0 ? `已选择 ${formatNumber(files.length)} 个文件` : "选择 PDF 吊牌 + JPG/PNG 洗唛文件"}
+                  </span>
+                </span>
+                <Input
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => onFilesChange(Array.from(event.target.files ?? []).filter(isOcrAssetUploadFile))}
+                />
+              </label>
+              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-dashed px-3 py-3 text-sm hover:bg-muted/40">
+                <span className="flex min-w-0 items-center gap-2">
+                  <FileSpreadsheet className="size-4 text-muted-foreground" />
+                  <span className="truncate">选择抓虾 SCM 导出目录</span>
+                </span>
+                <input
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => onFolderSelection(Array.from(event.target.files ?? []))}
+                  {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+                />
+              </label>
+            </div>
+            <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-md border border-dashed px-3 py-3 text-sm hover:bg-muted/40">
+              <span className="flex min-w-0 items-center gap-2">
+                <FileSpreadsheet className="size-4 text-muted-foreground" />
+                <span className="truncate">{scmSupplementFile ? uploadDisplayName(scmSupplementFile) : "选择 SCM洗唛吊牌下载结果 .xlsx"}</span>
+              </span>
+              <Input
+                type="file"
+                accept=".xlsx,.xlsm"
+                className="hidden"
+                onChange={(event) => onScmSupplementFileChange(event.target.files?.[0] ?? null)}
+              />
+            </label>
+            {files.length > 0 ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {files.slice(0, 12).map((file) => (
+                  <Badge key={`${uploadDisplayName(file)}-${file.size}`} variant="secondary" className="max-w-[260px] truncate">
+                    {uploadDisplayName(file)}
+                  </Badge>
+                ))}
+                {files.length > 12 ? <Badge variant="outline">+{formatNumber(files.length - 12)}</Badge> : null}
+              </div>
+            ) : null}
+            {scmSupplementFile ? (
+              <div className="mt-3">
+                <Badge variant="outline" className="max-w-[360px] truncate">
+                  SCM补充：{uploadDisplayName(scmSupplementFile)}
+                </Badge>
+              </div>
+            ) : null}
+            <label className="mt-3 flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={overwriteExisting}
+                onCheckedChange={(checked) => onOverwriteExistingChange(checked === true)}
+              />
+              覆盖已有字段值
+            </label>
+            <p className="mt-2 text-xs text-muted-foreground">
+              默认只补空字段；SCM 结果表里的中文成分会作为明文字段补充，识别结果会保留来源证据。
+            </p>
+          </section>
+
+          {preview ? (
+            <section className="rounded-lg border p-4">
+              <div className="mb-3 grid gap-2 text-sm sm:grid-cols-4">
+                <div className="rounded-md bg-muted/40 px-3 py-2">文件 {formatNumber(preview.summary.fileCount)}</div>
+                <div className="rounded-md bg-muted/40 px-3 py-2">匹配草稿 {formatNumber(preview.summary.matchedCount)}</div>
+                <div className="rounded-md bg-muted/40 px-3 py-2">可写字段 {formatNumber(preview.summary.writableFieldCount)}</div>
+                <div className="rounded-md bg-muted/40 px-3 py-2">跳过/警告 {formatNumber(preview.summary.skippedFieldCount + preview.summary.warningCount)}</div>
+              </div>
+              <div className="overflow-auto rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>文件</TableHead>
+                      <TableHead>款号/草稿</TableHead>
+                      <TableHead>状态</TableHead>
+                      <TableHead>识别字段</TableHead>
+                      <TableHead>写入字段</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {preview.items.map((item) => (
+                      <TableRow key={item.fileName}>
+                        <TableCell className="min-w-[180px] max-w-[240px]">
+                          <div className="truncate font-medium">{item.fileName}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {item.fileType || "-"} · {item.sourceKind || "-"} · {formatNumber(item.pageCount)} 页
+                          </div>
+                          {item.error ? <div className="mt-1 text-xs text-[#d45656]">{item.error}</div> : null}
+                        </TableCell>
+                        <TableCell className="min-w-[150px]">
+                          <div className="font-mono text-sm">{item.detectedSpuCode || "-"}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {item.matchedDraft ? `${item.matchedDraft.title || "未命名"} · ${statusLabels[item.matchedDraft.status] ?? item.matchedDraft.status}` : "未匹配"}
+                          </div>
+                          {item.warnings.length > 0 ? (
+                            <div className="mt-1 text-xs text-[#c37d0d]">{item.warnings.slice(0, 2).join("；")}</div>
+                          ) : null}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className={ocrStatusClass(item.status)}>
+                            {ocrStatusLabels[item.status] ?? item.status}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="min-w-[220px] max-w-[320px]">
+                          <div className="grid gap-1">
+                            {item.extractedFields.slice(0, 6).map((field) => (
+                              <div key={`${field.key}-${field.value}`} className="text-xs">
+                                <span className="font-medium">{field.label}</span>
+                                <span className="mx-1 text-muted-foreground">· {confidenceLabel(field.confidence)}</span>
+                                <span className="break-words">{field.value}</span>
+                              </div>
+                            ))}
+                            {item.extractedFields.length === 0 ? <span className="text-xs text-muted-foreground">无</span> : null}
+                            {item.extractedFields.length > 6 ? <span className="text-xs text-muted-foreground">+{formatNumber(item.extractedFields.length - 6)} 项</span> : null}
+                          </div>
+                        </TableCell>
+                        <TableCell className="min-w-[220px] max-w-[320px]">
+                          <div className="grid gap-1">
+                            {item.targetFields.slice(0, 6).map((field) => (
+                              <div key={`${field.fieldId}-${field.fieldKey}`} className="text-xs">
+                                <span className="font-medium">{field.fieldName}</span>
+                                <span className={field.willApply ? "ml-1 text-[#0fa76e]" : "ml-1 text-muted-foreground"}>
+                                  {field.willApply ? "写入" : field.skippedReason || "跳过"}
+                                </span>
+                              </div>
+                            ))}
+                            {item.targetFields.length === 0 ? <span className="text-xs text-muted-foreground">无可写字段</span> : null}
+                            {item.targetFields.length > 6 ? <span className="text-xs text-muted-foreground">+{formatNumber(item.targetFields.length - 6)} 项</span> : null}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              {preview.provider ? (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  OCR：{preview.provider.kind} · {preview.provider.lang} · PDF {preview.provider.pdfRenderer}
+                  {preview.scmSupplement?.files.length ? ` · SCM补充 ${formatNumber(preview.scmSupplement.files.reduce((sum, file) => sum + file.documentCount, 0))} 条` : ""}
+                </p>
+              ) : null}
+            </section>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            取消
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={isPreviewing || isApplying || !hasUploadInput}
+            onClick={onPreview}
+          >
+            {isPreviewing ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
+            识别预览
+          </Button>
+          <Button
+            type="button"
+            disabled={isPreviewing || isApplying || !preview || writableFieldCount === 0}
+            onClick={onApply}
+          >
+            {isApplying ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
+            确认写入草稿
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export default function ProductArchiveDraftsPage() {
   const queryClient = useQueryClient()
   const { addTask, getTaskByJobId, openTaskCenter } = useAsyncTasks()
@@ -327,6 +712,11 @@ export default function ProductArchiveDraftsPage() {
   const [mdmCodes, setMdmCodes] = useState("")
   const [workflowDialogOpen, setWorkflowDialogOpen] = useState(false)
   const [workflowProgressDialogOpen, setWorkflowProgressDialogOpen] = useState(false)
+  const [ocrDialogOpen, setOcrDialogOpen] = useState(false)
+  const [ocrFiles, setOcrFiles] = useState<File[]>([])
+  const [ocrScmSupplementFile, setOcrScmSupplementFile] = useState<File | null>(null)
+  const [ocrOverwriteExisting, setOcrOverwriteExisting] = useState(false)
+  const [ocrPreview, setOcrPreview] = useState<HangtagWashlabelOcrPreviewResponse | null>(null)
   const [copywritingFile, setCopywritingFile] = useState<File | null>(null)
   const [launchPlanFile, setLaunchPlanFile] = useState<File | null>(null)
   const [sizeChartFile, setSizeChartFile] = useState<File | null>(null)
@@ -441,6 +831,54 @@ export default function ProductArchiveDraftsPage() {
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "导入尺码表失败")
+    },
+  })
+
+  const previewHangtagWashlabelOcr = useMutation({
+    mutationFn: async () => {
+      const form = new FormData()
+      for (const file of ocrFiles) {
+        form.append("files", file)
+        form.append("filePaths", uploadDisplayName(file))
+      }
+      if (ocrScmSupplementFile) {
+        form.append("scmSupplementFile", ocrScmSupplementFile)
+        form.append("filePaths", uploadDisplayName(ocrScmSupplementFile))
+      }
+      form.append("overwriteExisting", ocrOverwriteExisting ? "true" : "false")
+      return api.postForm<HangtagWashlabelOcrPreviewResponse>("/product-archive-drafts/hangtag-washlabel-ocr/preview", form)
+    },
+    onSuccess: (result) => {
+      setOcrPreview(result)
+      if (result.summary.writableFieldCount > 0) {
+        toast.success(`识别完成：可写入 ${formatNumber(result.summary.writableFieldCount)} 个字段`)
+      } else if (result.summary.failedCount > 0) {
+        toast.error("OCR 识别失败，请查看文件行里的错误原因")
+      } else {
+        toast.warning("已识别文件，但没有可写入字段")
+      }
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "吊牌/洗唛识别失败")
+    },
+  })
+
+  const applyHangtagWashlabelOcr = useMutation({
+    mutationFn: async () => api.post<HangtagWashlabelOcrApplyResponse>("/product-archive-drafts/hangtag-washlabel-ocr/apply", {
+      items: ocrPreview?.items ?? [],
+      overwriteExisting: ocrOverwriteExisting,
+    }),
+    onSuccess: (result) => {
+      toast.success(`已写入 ${formatNumber(result.summary.appliedDraftCount)} 个草稿、${formatNumber(result.summary.appliedFieldCount)} 个字段`)
+      setOcrDialogOpen(false)
+      setOcrFiles([])
+      setOcrScmSupplementFile(null)
+      setOcrPreview(null)
+      setOcrOverwriteExisting(false)
+      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "写入吊牌/洗唛字段失败")
     },
   })
 
@@ -771,6 +1209,34 @@ export default function ProductArchiveDraftsPage() {
                 onImport={async (file) => {
                   await importSizeChart.mutateAsync(file)
                 }}
+              />
+              <HangtagWashlabelImportDialog
+                open={ocrDialogOpen}
+                onOpenChange={(open) => {
+                  setOcrDialogOpen(open)
+                  if (!open) return
+                  setOcrPreview(null)
+                }}
+                files={ocrFiles}
+                onFilesChange={(files) => {
+                  setOcrFiles(files)
+                  setOcrPreview(null)
+                }}
+                scmSupplementFile={ocrScmSupplementFile}
+                onScmSupplementFileChange={(file) => {
+                  setOcrScmSupplementFile(file)
+                  setOcrPreview(null)
+                }}
+                overwriteExisting={ocrOverwriteExisting}
+                onOverwriteExistingChange={(checked) => {
+                  setOcrOverwriteExisting(checked)
+                  setOcrPreview(null)
+                }}
+                preview={ocrPreview}
+                isPreviewing={previewHangtagWashlabelOcr.isPending}
+                isApplying={applyHangtagWashlabelOcr.isPending}
+                onPreview={() => previewHangtagWashlabelOcr.mutate()}
+                onApply={() => applyHangtagWashlabelOcr.mutate()}
               />
               <StartProductArchiveDialog
                 open={workflowDialogOpen}

@@ -76,6 +76,8 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
     /productArchiveDrafts\.post\("\/batch"/,
     /productArchiveDrafts\.post\("\/mdm-batch"/,
     /productArchiveDrafts\.post\("\/workflow\/start"/,
+    /productArchiveDrafts\.post\("\/hangtag-washlabel-ocr\/preview"/,
+    /productArchiveDrafts\.post\("\/hangtag-washlabel-ocr\/apply"/,
     /productArchiveDrafts\.get\("\/templates\/:templateType"/,
     /productArchiveDrafts\.post\("\/source-imports"/,
     /productArchiveDrafts\.get\("\/:draftId"/,
@@ -97,6 +99,13 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
   assert.match(draftRoute, /autoSyncMissingMdm/);
   assert.match(draftRoute, /missingMdmSpuCodes/);
   assert.match(draftRoute, /missingDraftSpuCodes/);
+  assert.match(draftRoute, /recognizeProductArchiveOcrFiles/);
+  assert.match(draftRoute, /readScmHangtagWashlabelSupplementWorkbook/);
+  assert.match(draftRoute, /previewProductArchiveHangtagWashlabelOcr/);
+  assert.match(draftRoute, /applyProductArchiveHangtagWashlabelOcr/);
+  assert.match(draftRoute, /writeValidatedUploadFile\(file,\s*"product_archive_ocr"/);
+  assert.match(draftRoute, /writeValidatedUploadFile\(file,\s*"spreadsheet"/);
+  assert.match(draftRoute, /filePaths/);
   assert.match(draftRoute, /copywriting/);
   assert.match(draftRoute, /launch-plan/);
   assert.doesNotMatch(draftRoute, /const mdmCodes = parseSpuCodes\(form\.get\("mdmCodes"\)/);
@@ -378,6 +387,16 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /offset=/);
   assert.match(draftListPage, /api\.post<.*>\("\/product-archive-drafts\/mdm-batch"/s);
   assert.doesNotMatch(draftListPage, /api\.post<.*>\("\/product-archive-drafts\/batch"/s);
+  assert.match(draftListPage, /导入吊牌\/洗唛/);
+  assert.match(draftListPage, /hangtag-washlabel-ocr\/preview/);
+  assert.match(draftListPage, /hangtag-washlabel-ocr\/apply/);
+  assert.match(draftListPage, /选择抓虾 SCM 导出目录/);
+  assert.match(draftListPage, /SCM洗唛吊牌下载结果/);
+  assert.match(draftListPage, /webkitdirectory/);
+  assert.match(draftListPage, /form\.append\("filePaths", uploadDisplayName\(file\)\)/);
+  assert.match(draftListPage, /form\.append\("scmSupplementFile"/);
+  assert.match(draftListPage, /overwriteExisting/);
+  assert.match(draftListPage, /确认写入草稿/);
   assert.match(draftListPage, /api\.get<.*>\(`\/product-archive-drafts\/batch-jobs\/\$\{batchJobId\}`\)/s);
   assert.match(draftListPage, /开始商品建档/);
   assert.match(draftListPage, /MDM 同步建档/);

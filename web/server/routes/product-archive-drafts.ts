@@ -9,11 +9,20 @@ import { safeUploadFileName, writeValidatedUploadFile } from "../lib/upload-guar
 import { auditFromContext } from "../lib/audit"
 import { assertSafeProductArchiveCode } from "../lib/product-archive-security"
 import {
+  getProductArchiveOcrRuntimeInfo,
+  readScmHangtagWashlabelSupplementWorkbook,
+  recognizeProductArchiveOcrFiles,
+} from "../../../scripts/lib/product_archive_hangtag_ocr.mjs"
+import {
   createPostgresProductArchiveSyncJobStore,
   createProductArchiveSyncQueue,
 } from "../../../scripts/lib/product_archive_sync_queue.mjs"
 import { resolveDeepdrawConfig } from "../../../scripts/lib/deepdraw_client.mjs"
 import { syncMdmProduct } from "../services/product-archive-sync"
+import {
+  applyProductArchiveHangtagWashlabelOcr,
+  previewProductArchiveHangtagWashlabelOcr,
+} from "../services/product-archive-hangtag-ocr"
 import {
   applyProductArchiveDraftTrade,
   checkDuplicateProductArchiveDraft,
@@ -126,8 +135,48 @@ function booleanFormValue(value: unknown) {
   return ["1", "true", "yes", "y", "是"].includes(text)
 }
 
+function booleanInputValue(value: unknown) {
+  if (typeof value === "boolean") return value
+  return booleanFormValue(value)
+}
+
 function safeUploadName(fileName: string) {
   return safeUploadFileName(fileName, { fallbackName: "upload.xlsx" })
+}
+
+function safeOcrUploadName(fileName: string) {
+  return safeUploadFileName(fileName, { fallbackName: "ocr-document.pdf" })
+}
+
+function safeScmSupplementUploadName(fileName: string) {
+  return safeUploadFileName(fileName, { fallbackName: "scm-wash-hangtag-result.xlsx" })
+}
+
+function cleanUploadDisplayName(value: unknown, fallback: string) {
+  const raw = stringValue(value) || fallback
+  const parts = raw
+    .replace(/\\/g, "/")
+    .split("/")
+    .map((part) => part.trim())
+    .filter((part) => part && part !== "." && part !== "..")
+  return (parts.length ? parts.join("/") : fallback).slice(0, 500)
+}
+
+function uploadDisplayExtension(value: string) {
+  return path.extname(value).toLowerCase()
+}
+
+function isProductArchiveOcrAssetName(value: string) {
+  return [".pdf", ".jpg", ".jpeg", ".png"].includes(uploadDisplayExtension(value))
+}
+
+function isScmSupplementWorkbookName(value: string) {
+  return [".xlsx", ".xlsm"].includes(uploadDisplayExtension(value))
+}
+
+function isIgnorableOcrFolderEntry(value: string) {
+  const baseName = path.basename(value)
+  return baseName === ".DS_Store" || baseName.startsWith("~$")
 }
 
 async function saveUploadedSpreadsheet(c: Context) {
@@ -145,6 +194,87 @@ async function saveFormFile(file: File) {
   const filePath = path.join(UPLOAD_DIR, safeUploadName(file.name))
   await writeValidatedUploadFile(file, "spreadsheet", filePath)
   return filePath
+}
+
+async function saveOcrFormFiles(c: Context) {
+  const form = await c.req.formData()
+  const displayNames = form.getAll("filePaths").map(stringValue)
+  const rawFiles = [
+    ...form.getAll("files"),
+    ...form.getAll("file"),
+    ...form.getAll("scmSupplementFile"),
+    ...form.getAll("scmSupplement"),
+    ...form.getAll("supplementFile"),
+    ...form.getAll("workbook"),
+  ].filter((value): value is File => value instanceof File && value.size > 0)
+  const maxFileCount = Math.max(1, Math.min(Number(process.env.LISTINGIFY_MAX_PRODUCT_ARCHIVE_OCR_FILES ?? 80) || 80, 200))
+  if (rawFiles.length === 0) {
+    throw new HTTPException(400, { message: "请上传 PDF 吊牌、JPG/PNG 洗唛或 SCM 下载结果 Excel" })
+  }
+  if (rawFiles.length > maxFileCount) {
+    throw new HTTPException(400, { message: `单次最多导入 ${maxFileCount} 个吊牌/洗唛文件` })
+  }
+  await mkdir(UPLOAD_DIR, { recursive: true })
+  const files = []
+  const supplementFiles = []
+  try {
+    for (let index = 0; index < rawFiles.length; index += 1) {
+      const file = rawFiles[index]
+      const fileName = cleanUploadDisplayName(displayNames[index], file.name)
+      if (isIgnorableOcrFolderEntry(fileName)) continue
+      if (isScmSupplementWorkbookName(fileName)) {
+        const filePath = path.join(UPLOAD_DIR, safeScmSupplementUploadName(file.name))
+        await writeValidatedUploadFile(file, "spreadsheet", filePath)
+        supplementFiles.push({
+          file,
+          filePath,
+          fileName,
+          mimeType: file.type,
+          size: file.size,
+        })
+        continue
+      }
+      if (!isProductArchiveOcrAssetName(fileName)) {
+        throw new HTTPException(400, { message: "仅支持 PDF、JPG、PNG 吊牌/洗唛文件和 SCM 下载结果 .xlsx" })
+      }
+      const filePath = path.join(UPLOAD_DIR, safeOcrUploadName(file.name))
+      await writeValidatedUploadFile(file, "product_archive_ocr", filePath)
+      files.push({
+        file,
+        filePath,
+        fileName,
+        mimeType: file.type,
+        size: file.size,
+      })
+    }
+  } catch (error) {
+    await Promise.all([...files, ...supplementFiles].map((file) => rm(file.filePath, { force: true })))
+    throw error
+  }
+  if (files.length === 0 && supplementFiles.length === 0) {
+    throw new HTTPException(400, { message: "请上传 PDF 吊牌、JPG/PNG 洗唛或 SCM 下载结果 Excel" })
+  }
+  return { form, files, supplementFiles }
+}
+
+function applyDocumentsFromBody(body: Record<string, unknown>) {
+  if (Array.isArray(body.documents)) return body.documents
+  if (!Array.isArray(body.items)) return []
+  return body.items.map((item) => {
+    const record = item && typeof item === "object" ? item as Record<string, unknown> : {}
+    return {
+      fileName: record.fileName,
+      fileType: record.fileType,
+      sourceKind: record.sourceKind,
+      detectedSpuCode: record.detectedSpuCode,
+      styleCodes: record.styleCodes,
+      pageCount: record.pageCount,
+      fields: record.extractedFields,
+      warnings: record.warnings,
+      status: record.error ? "ocr_failed" : "recognized",
+      error: record.error,
+    }
+  })
 }
 
 function uniqueStrings(values: unknown[]) {
@@ -739,6 +869,90 @@ productArchiveDrafts.post("/workflow/start", async (c) => {
     refreshSummaries,
     syncJob,
   }, syncJob ? 202 : 200)
+})
+
+productArchiveDrafts.post("/hangtag-washlabel-ocr/preview", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const db = getDb()
+  const { form, files, supplementFiles } = await saveOcrFormFiles(c)
+  try {
+    const documents = await recognizeProductArchiveOcrFiles(files.map((file) => ({
+      filePath: file.filePath,
+      fileName: file.fileName,
+      mimeType: file.mimeType,
+      size: file.size,
+    })))
+    const supplementSummaries = []
+    for (const file of supplementFiles) {
+      const supplement = await readScmHangtagWashlabelSupplementWorkbook(file.filePath, {
+        fileName: file.fileName,
+      })
+      documents.push(...supplement.documents)
+      supplementSummaries.push({
+        fileName: supplement.fileName,
+        sheetCount: supplement.sheetCount,
+        documentCount: supplement.documentCount,
+      })
+    }
+    const overwriteExisting = booleanFormValue(form.get("overwriteExisting") ?? form.get("overwrite_existing"))
+    const result = previewProductArchiveHangtagWashlabelOcr(db, {
+      documents,
+      overwriteExisting,
+    })
+    auditFromContext(c, {
+      action: "draft.hangtag_washlabel_ocr.previewed",
+      module: "PRODUCT_ARCHIVE_DRAFT",
+      entityType: "product_archive_draft_batch",
+      entityId: null,
+      summary: `识别吊牌/洗唛文件 ${files.length} 个，SCM 补充表 ${supplementFiles.length} 个`,
+      metadata: {
+        fileCount: files.length,
+        supplementFileCount: supplementFiles.length,
+        matchedCount: result.summary.matchedCount,
+        writableFieldCount: result.summary.writableFieldCount,
+        failedCount: result.summary.failedCount,
+        userId: user.id,
+      },
+    })
+    return c.json({
+      ...result,
+      provider: getProductArchiveOcrRuntimeInfo(documents),
+      scmSupplement: {
+        files: supplementSummaries,
+      },
+    })
+  } finally {
+    await Promise.all([...files, ...supplementFiles].map((file) => rm(file.filePath, { force: true })))
+  }
+})
+
+productArchiveDrafts.post("/hangtag-washlabel-ocr/apply", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const db = getDb()
+  const body = await readJson(c)
+  const documents = applyDocumentsFromBody(body)
+  if (documents.length === 0) {
+    throw new HTTPException(400, { message: "请先完成吊牌/洗唛 OCR 预览后再写入" })
+  }
+  const result = applyProductArchiveHangtagWashlabelOcr(db, {
+    documents,
+    overwriteExisting: booleanInputValue(body.overwriteExisting ?? body.overwrite_existing),
+  })
+  auditFromContext(c, {
+    action: "draft.hangtag_washlabel_ocr.applied",
+    module: "PRODUCT_ARCHIVE_DRAFT",
+    entityType: "product_archive_draft_batch",
+    entityId: null,
+    summary: `写入吊牌/洗唛 OCR 字段 ${result.summary.appliedFieldCount} 个`,
+    metadata: {
+      appliedDraftCount: result.summary.appliedDraftCount,
+      appliedFieldCount: result.summary.appliedFieldCount,
+      skippedCount: result.summary.skippedCount,
+      overwriteExisting: booleanInputValue(body.overwriteExisting ?? body.overwrite_existing),
+      userId: user.id,
+    },
+  })
+  return c.json(result)
 })
 
 productArchiveDrafts.get("/batch-jobs/:jobId", (c) => {

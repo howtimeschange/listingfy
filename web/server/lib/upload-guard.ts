@@ -3,11 +3,16 @@ import { writeFile } from "node:fs/promises"
 import path from "node:path"
 import { HTTPException } from "hono/http-exception"
 
-export type UploadKind = "spreadsheet" | "image"
+export type UploadKind = "spreadsheet" | "image" | "product_archive_ocr"
 
 export type ImageUploadType = {
   extension: ".jpg" | ".png" | ".webp"
   contentType: "image/jpeg" | "image/png" | "image/webp"
+}
+
+export type ProductArchiveOcrUploadType = {
+  extension: ".pdf" | ".jpg" | ".png"
+  contentType: "application/pdf" | "image/jpeg" | "image/png"
 }
 
 export type ImageDimensions = {
@@ -18,6 +23,7 @@ export type ImageDimensions = {
 const MB = 1024 * 1024
 const SPREADSHEET_EXTENSIONS = new Set([".xlsx", ".xlsm", ".csv"])
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"])
+const PRODUCT_ARCHIVE_OCR_EXTENSIONS = new Set([".pdf", ".jpg", ".jpeg", ".png"])
 const SPREADSHEET_MIME_TYPES = new Set([
   "",
   "application/octet-stream",
@@ -34,12 +40,20 @@ const IMAGE_MIME_TYPES = new Set([
   "image/png",
   "image/webp",
 ])
+const PRODUCT_ARCHIVE_OCR_MIME_TYPES = new Set([
+  "",
+  "application/octet-stream",
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+])
 const ZIP_SIGNATURES = [
   [0x50, 0x4b, 0x03, 0x04],
   [0x50, 0x4b, 0x05, 0x06],
   [0x50, 0x4b, 0x07, 0x08],
 ]
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+const PDF_SIGNATURE = Buffer.from("%PDF-", "ascii")
 
 function readPositiveMb(value: string | undefined, fallback: number) {
   const number = Number(value ?? fallback)
@@ -50,6 +64,9 @@ function readPositiveMb(value: string | undefined, fallback: number) {
 export function maxUploadBytes(kind: UploadKind) {
   if (kind === "image") {
     return readPositiveMb(process.env.LISTINGIFY_MAX_IMAGE_UPLOAD_MB, 20) * MB
+  }
+  if (kind === "product_archive_ocr") {
+    return readPositiveMb(process.env.LISTINGIFY_MAX_PRODUCT_ARCHIVE_OCR_UPLOAD_MB, 50) * MB
   }
   return readPositiveMb(process.env.LISTINGIFY_MAX_SPREADSHEET_UPLOAD_MB, 50) * MB
 }
@@ -77,10 +94,12 @@ export function safeUploadFileName(fileName: string, options: { fallbackName: st
 }
 
 function uploadKindLabel(kind: UploadKind) {
+  if (kind === "product_archive_ocr") return "吊牌/洗唛"
   return kind === "image" ? "图片" : "表格"
 }
 
 function allowedExtensionMessage(kind: UploadKind) {
+  if (kind === "product_archive_ocr") return "仅支持 PDF、JPG、PNG 吊牌/洗唛文件"
   return kind === "image"
     ? "仅支持 JPG、PNG、WEBP 图片文件"
     : "仅支持 .xlsx、.xlsm、.csv 表格文件"
@@ -88,7 +107,11 @@ function allowedExtensionMessage(kind: UploadKind) {
 
 function assertAllowedMime(file: File, kind: UploadKind) {
   const mimeType = String(file.type ?? "").toLowerCase()
-  const allowed = kind === "image" ? IMAGE_MIME_TYPES : SPREADSHEET_MIME_TYPES
+  const allowed = kind === "image"
+    ? IMAGE_MIME_TYPES
+    : kind === "product_archive_ocr"
+      ? PRODUCT_ARCHIVE_OCR_MIME_TYPES
+      : SPREADSHEET_MIME_TYPES
   if (!allowed.has(mimeType)) {
     throw new HTTPException(400, { message: `${uploadKindLabel(kind)}文件类型不受支持` })
   }
@@ -96,7 +119,11 @@ function assertAllowedMime(file: File, kind: UploadKind) {
 
 export function assertUploadFile(file: File, kind: UploadKind): void {
   const ext = extensionFor(file)
-  const allowedExtensions = kind === "image" ? IMAGE_EXTENSIONS : SPREADSHEET_EXTENSIONS
+  const allowedExtensions = kind === "image"
+    ? IMAGE_EXTENSIONS
+    : kind === "product_archive_ocr"
+      ? PRODUCT_ARCHIVE_OCR_EXTENSIONS
+      : SPREADSHEET_EXTENSIONS
   if (!allowedExtensions.has(ext)) {
     throw new HTTPException(400, { message: allowedExtensionMessage(kind) })
   }
@@ -128,6 +155,17 @@ export function detectImageUploadType(buffer: Buffer): ImageUploadType {
     return { extension: ".webp", contentType: "image/webp" }
   }
   throw new HTTPException(400, { message: "不是支持的图片文件" })
+}
+
+export function detectProductArchiveOcrUploadType(buffer: Buffer): ProductArchiveOcrUploadType {
+  if (buffer.length >= PDF_SIGNATURE.length && buffer.subarray(0, PDF_SIGNATURE.length).equals(PDF_SIGNATURE)) {
+    return { extension: ".pdf", contentType: "application/pdf" }
+  }
+  const imageType = detectImageUploadType(buffer)
+  if (imageType.contentType === "image/webp") {
+    throw new HTTPException(400, { message: "吊牌/洗唛 OCR 暂不支持 WEBP，请导出为 JPG、PNG 或 PDF" })
+  }
+  return imageType
 }
 
 function validDimensions(width: number, height: number): ImageDimensions | null {
@@ -255,6 +293,10 @@ export async function readValidatedUploadBuffer(file: File, kind: UploadKind): P
   const buffer = Buffer.from(await file.arrayBuffer())
   if (kind === "image") {
     detectImageUploadType(buffer)
+    return buffer
+  }
+  if (kind === "product_archive_ocr") {
+    detectProductArchiveOcrUploadType(buffer)
     return buffer
   }
   const ext = extensionFor(file)

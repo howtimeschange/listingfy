@@ -17,6 +17,7 @@ const VALID_JPEG = Buffer.from(
 
 const {
   assertUploadFile,
+  detectProductArchiveOcrUploadType,
   detectImageUploadType,
   readImageDimensions,
   readValidatedUploadBuffer,
@@ -91,6 +92,31 @@ test("upload guard verifies image size, extension, MIME, and magic bytes", async
   assert.throws(
     () => detectImageUploadType(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x00, 0x00, 0x00])),
     /不是支持的图片文件/,
+  );
+});
+
+test("upload guard accepts only PDF JPG and PNG for product archive OCR imports", async () => {
+  await withEnv({ LISTINGIFY_MAX_PRODUCT_ARCHIVE_OCR_UPLOAD_MB: "1" }, async () => {
+    await assert.rejects(
+      () => readValidatedUploadBuffer(file(Buffer.alloc(1024 * 1024 + 1), "large.pdf", "application/pdf"), "product_archive_ocr"),
+      /文件过大/,
+    );
+  });
+
+  assert.deepEqual(
+    detectProductArchiveOcrUploadType(Buffer.from("%PDF-1.7\n", "ascii")),
+    { extension: ".pdf", contentType: "application/pdf" },
+  );
+  assert.deepEqual(detectProductArchiveOcrUploadType(VALID_JPEG), { extension: ".jpg", contentType: "image/jpeg" });
+  assert.deepEqual(detectProductArchiveOcrUploadType(PNG_BYTES), { extension: ".png", contentType: "image/png" });
+  await assert.doesNotReject(() => readValidatedUploadBuffer(file(Buffer.from("%PDF-1.7\n", "ascii"), "hangtag.pdf", "application/pdf"), "product_archive_ocr"));
+  await assert.rejects(
+    () => readValidatedUploadBuffer(file("not a pdf", "hangtag.pdf", "application/pdf"), "product_archive_ocr"),
+    /不是支持的图片|不是支持的吊牌\/洗唛/,
+  );
+  await assert.rejects(
+    () => readValidatedUploadBuffer(file(Buffer.from("RIFFxxxxWEBP", "ascii"), "wash.webp", "image/webp"), "product_archive_ocr"),
+    /仅支持|不支持 WEBP/,
   );
 });
 
