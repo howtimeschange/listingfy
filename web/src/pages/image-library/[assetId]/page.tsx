@@ -12,7 +12,6 @@ import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { JsonViewer } from "@/components/json-viewer"
 import { PageContainer } from "@/components/layout/page-container"
-import { PageHeader } from "@/components/layout/page-header"
 import { StatCard } from "@/components/stat-card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -185,18 +184,32 @@ export default function ImageLibraryDetailPage() {
   const title = asset.file_name ?? asset.content_title ?? asset.spu_code ?? `素材 #${asset.id}`
 
   return (
-    <PageContainer className="flex flex-col gap-6">
-      <PageHeader title={`素材 #${asset.id}`} description={title} compact>
-        <Badge variant="outline">{sourceKindLabel(asset.source_kind)}</Badge>
-        <Badge variant="outline">{asset.status}</Badge>
-      </PageHeader>
+    <PageContainer className="flex flex-col gap-5">
+      <div className="flex flex-col gap-3">
+        <Button asChild variant="ghost" size="sm" className="-ml-2 w-fit">
+          <Link to="/image-library">
+            <ArrowLeft className="size-4" />
+            图片素材库
+          </Link>
+        </Button>
 
-      <Button asChild variant="ghost" size="sm" className="-ml-2 w-fit">
-        <Link to="/image-library">
-          <ArrowLeft className="size-4" />
-          图片素材库
-        </Link>
-      </Button>
+        <section className="rounded-2xl border bg-card px-5 py-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+          <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <h1 className="break-words text-3xl font-semibold leading-10 tracking-[-0.2px] text-foreground">
+                素材 #{asset.id}
+              </h1>
+              <p className="mt-1 max-w-4xl break-words text-sm leading-6 text-muted-foreground">
+                {title}
+              </p>
+            </div>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <Badge variant="outline">{sourceKindLabel(asset.source_kind)}</Badge>
+              <Badge variant="outline">{asset.status}</Badge>
+            </div>
+          </div>
+        </section>
+      </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard title="尺寸" value={formatDimensions(asset)} icon={Ruler} />
@@ -205,14 +218,14 @@ export default function ImageLibraryDetailPage() {
         <StatCard title="同步时间" value={formatDateTime(asset.synced_at)} icon={Layers3} />
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(320px,520px)_1fr]">
+      <div className="grid gap-4 xl:grid-cols-[minmax(420px,0.95fr)_minmax(0,1.05fr)]">
         <Card>
           <CardContent className="space-y-3 p-4">
-            <div className="overflow-hidden rounded-2xl border bg-muted">
+            <div className="flex min-h-[420px] items-center justify-center overflow-hidden rounded-2xl border bg-muted/40">
               <img
                 src={asset.normalized_url}
                 alt={title}
-                className="max-h-[720px] w-full object-contain"
+                className="max-h-[72vh] w-full object-contain p-2"
                 referrerPolicy="no-referrer"
               />
             </div>
