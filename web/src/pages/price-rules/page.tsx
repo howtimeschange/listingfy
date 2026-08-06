@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Download, Edit3, Loader2, Plus, Search, Trash2, Upload } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
+import { useAuth } from "@/lib/auth-context"
 import { formatCurrency, formatDateTime, formatNumber } from "@/lib/format"
 import { exportSpreadsheet, parseBatchSearch, readSpreadsheetFile } from "@/lib/spreadsheet"
 import type { SpreadsheetRow } from "@/lib/spreadsheet"
@@ -154,6 +155,8 @@ function formatDiscount(value: number | null | undefined) {
 }
 
 export default function PriceRulesPage() {
+  const { hasPermission } = useAuth()
+  const canWrite = hasPermission("RULE_WRITE")
   const [search, setSearch] = useState("")
   const [batchSearchText, setBatchSearchText] = useState("")
   const [previewSearch, setPreviewSearch] = useState("")
@@ -181,6 +184,7 @@ export default function PriceRulesPage() {
       queryClient.invalidateQueries({ queryKey: ["business-rules", "discount-rules"] })
       queryClient.invalidateQueries({ queryKey: ["shein-products"] })
     },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "导入价格规则失败"),
   })
 
   const saveMutation = useMutation({
@@ -204,6 +208,7 @@ export default function PriceRulesPage() {
       queryClient.invalidateQueries({ queryKey: ["business-rules", "discount-rules"] })
       queryClient.invalidateQueries({ queryKey: ["shein-products"] })
     },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "保存价格规则失败"),
   })
 
   const saveConfigMutation = useMutation({
@@ -219,6 +224,7 @@ export default function PriceRulesPage() {
 	      queryClient.invalidateQueries({ queryKey: ["business-rules", "discount-rules"] })
 	      queryClient.invalidateQueries({ queryKey: ["shein-products"] })
 	    },
+	    onError: (error) => toast.error(error instanceof Error ? error.message : "保存价格配置失败"),
 	  })
 
   const deleteMutation = useMutation({
@@ -228,6 +234,7 @@ export default function PriceRulesPage() {
       queryClient.invalidateQueries({ queryKey: ["business-rules", "discount-rules"] })
       queryClient.invalidateQueries({ queryKey: ["shein-products"] })
     },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "删除价格规则失败"),
   })
 
   async function handleFile(file: File | null) {
@@ -332,7 +339,7 @@ export default function PriceRulesPage() {
                 <p className="text-sm text-muted-foreground">
                   当前默认折扣 {formatDiscount(summary?.default_discount)} / USD 折算汇率 {summary?.retail_usd_rate ?? 7.3}
                 </p>
-                <Button onClick={() => saveConfigMutation.mutate()} disabled={saveConfigMutation.isPending || !canSaveConfig}>
+            <Button onClick={() => saveConfigMutation.mutate()} disabled={!canWrite || saveConfigMutation.isPending || !canSaveConfig}>
                   {saveConfigMutation.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
                   保存默认配置
                 </Button>
@@ -356,7 +363,7 @@ export default function PriceRulesPage() {
                     <Download className="mr-2 size-4" />
                     导出
                   </Button>
-                  <Button asChild variant="outline">
+                  <Button asChild variant="outline" disabled={!canWrite || importMutation.isPending}>
                     <Label className="cursor-pointer">
                       {importMutation.isPending ? (
                         <Loader2 className="mr-2 size-4 animate-spin" />
@@ -372,7 +379,7 @@ export default function PriceRulesPage() {
                       />
                     </Label>
                   </Button>
-                  <Button onClick={openCreate}>
+                  <Button onClick={openCreate} disabled={!canWrite}>
                     <Plus className="mr-2 size-4" />
                     新增规则
                   </Button>
@@ -439,11 +446,11 @@ export default function PriceRulesPage() {
                           <TableCell className="max-w-[360px] truncate">{item.note || "-"}</TableCell>
                           <TableCell>{formatDateTime(item.updated_at || item.created_at)}</TableCell>
                           <TableCell className="space-x-2 text-right">
-                            <Button variant="ghost" size="sm" onClick={() => openEdit(item)}>
+                            <Button variant="ghost" size="sm" onClick={() => openEdit(item)} disabled={!canWrite}>
                               <Edit3 className="mr-1 size-4" />
                               编辑
                             </Button>
-                            <Button variant="ghost" size="sm" className="text-destructive" onClick={() => deleteMutation.mutate(item.id)}>
+                            <Button variant="ghost" size="sm" className="text-destructive" onClick={() => deleteMutation.mutate(item.id)} disabled={!canWrite || deleteMutation.isPending}>
                               <Trash2 className="mr-1 size-4" />
                               删除
                             </Button>
@@ -571,7 +578,7 @@ export default function PriceRulesPage() {
                 rows={3}
               />
             </Label>
-            <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || !canSave}>
+            <Button onClick={() => saveMutation.mutate()} disabled={!canWrite || saveMutation.isPending || !canSave}>
               {saveMutation.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
               保存
             </Button>

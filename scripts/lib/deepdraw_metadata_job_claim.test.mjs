@@ -40,6 +40,16 @@ test("DeepDraw metadata workers atomically claim queued jobs and recover stale r
       staleAfterMs: 60_000,
     });
     assert.equal(recovered.id, jobId);
+    assert.equal(service.updateMetadataSyncJobProgress(db, jobId, {
+      workerId: "worker-a",
+      completedCount: 99,
+      heartbeatAt: "2026-07-15T08:01:01.000Z",
+    }), null);
+    assert.equal(service.updateMetadataSyncJobProgress(db, jobId, {
+      workerId: "worker-b",
+      completedCount: 1,
+      heartbeatAt: "2026-07-15T08:01:02.000Z",
+    })?.completed_count, 1);
   } finally {
     db.prepare("delete from deepdraw_metadata_sync_job where id = ?").run(jobId);
     db.close();

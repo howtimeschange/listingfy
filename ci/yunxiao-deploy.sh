@@ -7,6 +7,7 @@ APP_DIR="${APP_DIR:-/opt/listingfy}"
 DATABASE_URL_VALUE="${PROD_DATABASE_URL:-${DATABASE_URL:-}}"
 ALLOWED_ORIGINS="${LISTINGIFY_ALLOWED_ORIGINS:-https://listingify.semirapp.com,https://smbd.semirapp.cn,http://10.90.20.221,http://127.0.0.1:3001,http://localhost:3001}"
 PUBLIC_ORIGIN="${LISTINGIFY_PUBLIC_ORIGIN:-https://listingify.semirapp.com}"
+TRUSTED_PROXY="${LISTINGIFY_TRUSTED_PROXY:-true}"
 RUN_SEED_IMPORT_VALUE="${RUN_SEED_IMPORT:-0}"
 DEEPDRAW_M2_DIR="${DEEPDRAW_M2_DIR:-$APP_DIR/.m2}"
 DEEPDRAW_MAVEN_MIRROR_URL_VALUE="${DEEPDRAW_MAVEN_MIRROR_URL:-https://maven.aliyun.com/repository/public}"
@@ -73,6 +74,7 @@ echo "===== Write production env ====="
   printf 'DATABASE_IDLE_TIMEOUT_MS=%s\n' "${DATABASE_IDLE_TIMEOUT_MS:-30000}"
   printf 'LISTINGIFY_ALLOWED_ORIGINS=%s\n' "$ALLOWED_ORIGINS"
   printf 'LISTINGIFY_PUBLIC_ORIGIN=%s\n' "$PUBLIC_ORIGIN"
+  printf 'LISTINGIFY_TRUSTED_PROXY=%s\n' "$TRUSTED_PROXY"
   printf 'NODE_ENV=production\n'
   printf 'PORT=%s\n' "${PORT:-3001}"
   [ -n "${LISTINGIFY_ADMIN_USERNAME:-}" ] && printf 'LISTINGIFY_ADMIN_USERNAME=%s\n' "$LISTINGIFY_ADMIN_USERNAME"
@@ -200,11 +202,6 @@ fi
 
 echo "===== Write web server config ====="
 cat > "$PREPARED_DIR/nginx.conf" <<'NGINXEOF'
-map $http_x_forwarded_proto $listingify_forwarded_proto {
-    default $http_x_forwarded_proto;
-    "" $scheme;
-}
-
 server {
     listen 80;
     server_name _;
@@ -220,9 +217,9 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $listingify_forwarded_proto;
-        proxy_set_header X-Forwarded-Scheme $listingify_forwarded_proto;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Scheme $scheme;
         proxy_read_timeout 600s;
         proxy_send_timeout 600s;
     }
@@ -248,8 +245,8 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $listingify_forwarded_proto;
-        proxy_set_header X-Forwarded-Scheme $listingify_forwarded_proto;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Scheme $scheme;
     }
 }
 NGINXEOF

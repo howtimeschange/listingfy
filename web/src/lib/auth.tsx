@@ -2,6 +2,7 @@ import { useMemo, type ReactNode } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { api, ApiError } from "@/lib/api-client"
 import { AuthContext, type AuthContextValue, type AuthUser } from "@/lib/auth-context"
+import { clearAsyncTaskStorage } from "@/lib/async-task-context"
 
 interface AuthResponse {
   user: AuthUser | null
@@ -20,11 +21,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     user,
     isLoading,
     logout: async () => {
+      const currentUserId = user?.id ?? null
       try {
         await api.post("/auth/logout")
       } catch (error) {
         if (!(error instanceof ApiError && error.status === 401)) throw error
       } finally {
+        clearAsyncTaskStorage(currentUserId)
         await queryClient.cancelQueries()
         queryClient.setQueryData<AuthResponse>(["auth", "me"], { user: null })
         queryClient.removeQueries({

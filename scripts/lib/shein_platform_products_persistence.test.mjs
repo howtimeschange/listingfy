@@ -1089,3 +1089,11 @@ test("SHEIN platform product account key resolver keeps historical platform rows
   assert.equal(calls.some((call) => call[2] === "integration:1"), true);
   assert.equal(calls.some((call) => call[2] === "env:legacy-open-key"), true);
 });
+
+test("SHEIN platform product stale reclaim fences old worker job and item writes", async () => {
+  const jobService = await fileText(JOB_SERVICE_FILE)
+  assert.match(jobService, /started_at = \?,\s*updated_at = \?/)
+  assert.match(jobService, /where id = \?\s+and started_at is not distinct from \?/)
+  assert.match(jobService, /parent_job\.started_at is not distinct from \?/)
+  assert.match(jobService, /拒绝旧 worker 写入/)
+})

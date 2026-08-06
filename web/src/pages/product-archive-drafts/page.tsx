@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { CheckCircle2, ChevronDown, ChevronUp, CircleHelp, Download, FileSpreadsheet, FileText, Images, Loader2, PackagePlus, RefreshCw, Search, Send, ShieldCheck, Upload } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
+import { useAuth } from "@/lib/auth-context"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { ImportDialog } from "@/components/import-dialog"
@@ -50,6 +51,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
+import { QueryErrorState } from "@/components/query-error-state"
 
 interface ProductArchiveDraftRow {
   id: number
@@ -529,6 +531,7 @@ interface StartProductArchiveDialogProps {
   onSkipLaunchPlanChange: (checked: boolean) => void
   workflowResult: ProductArchiveWorkflowResponse | null
   isPending: boolean
+  canWrite: boolean
   onSubmit: () => void
 }
 
@@ -545,13 +548,14 @@ function StartProductArchiveDialog({
   onSkipLaunchPlanChange,
   workflowResult,
   isPending,
+  canWrite,
   onSubmit,
 }: StartProductArchiveDialogProps) {
   const missingLaunchPlanSpuCodes = workflowResult?.missingLaunchPlanSpuCodes ?? []
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
-        <Button type="button" size="sm">
+        <Button type="button" size="sm" disabled={!canWrite}>
           <PackagePlus className="size-4" />
           开始商品建档
         </Button>
@@ -660,7 +664,7 @@ function StartProductArchiveDialog({
           </Button>
           <Button
             type="button"
-            disabled={isPending || (!copywritingFile && !launchPlanFile)}
+            disabled={!canWrite || isPending || (!copywritingFile && !launchPlanFile)}
             onClick={onSubmit}
           >
             {isPending ? <Loader2 className="size-4 animate-spin" /> : <PackagePlus className="size-4" />}
@@ -686,6 +690,7 @@ interface HangtagWashlabelImportDialogProps {
   isPreviewing: boolean
   isApplying: boolean
   isSubmittingJob: boolean
+  canWrite: boolean
   onPreview: () => void
   onApply: () => void
   onSubmitJob: () => void
@@ -705,6 +710,7 @@ function HangtagWashlabelImportDialog({
   isPreviewing,
   isApplying,
   isSubmittingJob,
+  canWrite,
   onPreview,
   onApply,
   onSubmitJob,
@@ -725,7 +731,7 @@ function HangtagWashlabelImportDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
-        <Button type="button" variant="outline" size="sm">
+        <Button type="button" variant="outline" size="sm" disabled={!canWrite}>
           <FileText className="size-4" />
           导入吊牌/洗唛
         </Button>
@@ -928,7 +934,7 @@ function HangtagWashlabelImportDialog({
           <Button
             type="button"
             variant="outline"
-            disabled={isPreviewing || isApplying || isSubmittingJob || jobRunning || !hasUploadInput}
+            disabled={!canWrite || isPreviewing || isApplying || isSubmittingJob || jobRunning || !hasUploadInput}
             onClick={onPreview}
           >
             {isPreviewing ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
@@ -937,7 +943,7 @@ function HangtagWashlabelImportDialog({
           <Button
             type="button"
             variant="outline"
-            disabled={isPreviewing || isApplying || isSubmittingJob || jobRunning || !preview || writableFieldCount === 0}
+            disabled={!canWrite || isPreviewing || isApplying || isSubmittingJob || jobRunning || !preview || writableFieldCount === 0}
             onClick={onApply}
           >
             {isApplying ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
@@ -945,7 +951,7 @@ function HangtagWashlabelImportDialog({
           </Button>
           <Button
             type="button"
-            disabled={isPreviewing || isApplying || isSubmittingJob || jobRunning || !hasUploadInput}
+            disabled={!canWrite || isPreviewing || isApplying || isSubmittingJob || jobRunning || !hasUploadInput}
             onClick={onSubmitJob}
           >
             {isSubmittingJob ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
@@ -964,6 +970,7 @@ interface SpuImageImportDialogProps {
   onFilesChange: (files: File[]) => void
   result: ProductArchiveDraftImageImportResponse | null
   isPending: boolean
+  canWrite: boolean
   onSubmit: () => void
 }
 
@@ -974,6 +981,7 @@ function SpuImageImportDialog({
   onFilesChange,
   result,
   isPending,
+  canWrite,
   onSubmit,
 }: SpuImageImportDialogProps) {
   const onFolderSelection = (selectedFiles: File[]) => {
@@ -985,7 +993,7 @@ function SpuImageImportDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
-        <Button type="button" variant="outline" size="sm">
+        <Button type="button" variant="outline" size="sm" disabled={!canWrite}>
           <Images className="size-4" />
           导入 SPU 图片
         </Button>
@@ -1087,7 +1095,7 @@ function SpuImageImportDialog({
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             取消
           </Button>
-          <Button type="button" disabled={isPending || files.length === 0} onClick={onSubmit}>
+          <Button type="button" disabled={!canWrite || isPending || files.length === 0} onClick={onSubmit}>
             {isPending ? <Loader2 className="size-4 animate-spin" /> : <Images className="size-4" />}
             上传并关联草稿
           </Button>
@@ -1098,6 +1106,8 @@ function SpuImageImportDialog({
 }
 
 export default function ProductArchiveDraftsPage() {
+  const { hasPermission } = useAuth()
+  const canWrite = hasPermission("PRODUCT_ARCHIVE_DRAFT_WRITE")
   const queryClient = useQueryClient()
   const { tasks, addTask, getTaskByJobId, openTaskCenter } = useAsyncTasks()
   const refreshedOcrJobIds = useRef<Set<string>>(new Set())
@@ -1465,7 +1475,7 @@ export default function ProductArchiveDraftsPage() {
               type="button"
               variant="outline"
               size="sm"
-              disabled={selectedDrafts.length === 0 || batchDraftAction.isPending}
+              disabled={!canWrite || selectedDrafts.length === 0 || batchDraftAction.isPending}
               onClick={() => runBatchAction("validate")}
             >
               <ShieldCheck className="size-4" />
@@ -1475,7 +1485,7 @@ export default function ProductArchiveDraftsPage() {
               type="button"
               variant="outline"
               size="sm"
-              disabled={selectedDrafts.length === 0 || batchDraftAction.isPending}
+              disabled={!canWrite || selectedDrafts.length === 0 || batchDraftAction.isPending}
               onClick={() => runBatchAction("check_duplicate")}
             >
               <Search className="size-4" />
@@ -1485,7 +1495,7 @@ export default function ProductArchiveDraftsPage() {
               type="button"
               variant="outline"
               size="sm"
-              disabled={selectedDrafts.length === 0 || batchDraftAction.isPending}
+              disabled={!canWrite || selectedDrafts.length === 0 || batchDraftAction.isPending}
               onClick={() => runBatchAction("submit_preview")}
             >
               <CheckCircle2 className="size-4" />
@@ -1496,7 +1506,7 @@ export default function ProductArchiveDraftsPage() {
                 <Button
                   type="button"
                   size="sm"
-                  disabled={selectedDrafts.length === 0 || batchDraftAction.isPending}
+                  disabled={!canWrite || selectedDrafts.length === 0 || batchDraftAction.isPending}
                 >
                   {batchDraftAction.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
                   批量发布到深绘{selectedDrafts.length ? ` ${selectedDrafts.length}` : ""}
@@ -1515,7 +1525,7 @@ export default function ProductArchiveDraftsPage() {
                   </Button>
                   <Button
                     type="button"
-                    disabled={selectedDrafts.length === 0 || batchDraftAction.isPending}
+                    disabled={!canWrite || selectedDrafts.length === 0 || batchDraftAction.isPending}
                     onClick={() => {
                       setPublishDialogOpen(false)
                       runBatchAction("submit_publish")
@@ -1624,7 +1634,7 @@ export default function ProductArchiveDraftsPage() {
               </Select>
               <Dialog open={mdmDialogOpen} onOpenChange={setMdmDialogOpen}>
                 <DialogTrigger asChild>
-                  <Button type="button" variant="outline" size="sm" disabled={syncMdmAndCreateBatch.isPending}>
+                  <Button type="button" variant="outline" size="sm" disabled={!canWrite || syncMdmAndCreateBatch.isPending}>
                     {syncMdmAndCreateBatch.isPending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                     MDM 同步建档
                   </Button>
@@ -1646,9 +1656,9 @@ export default function ProductArchiveDraftsPage() {
                     <Button type="button" variant="outline" onClick={() => setMdmDialogOpen(false)}>
                       取消
                     </Button>
-                    <Button
+                  <Button
                       type="button"
-                      disabled={syncMdmAndCreateBatch.isPending || !mdmCodes.trim()}
+                      disabled={!canWrite || syncMdmAndCreateBatch.isPending || !mdmCodes.trim()}
                       onClick={() => syncMdmAndCreateBatch.mutate()}
                     >
                       {syncMdmAndCreateBatch.isPending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
@@ -1661,7 +1671,7 @@ export default function ProductArchiveDraftsPage() {
                 title="导入标准文案表"
                 description="导入后会刷新已有草稿字段；没有 MDM/草稿的款号会自动进入同步建档队列。"
                 trigger={
-                  <Button type="button" variant="outline" size="sm" disabled={importCopywriting.isPending}>
+                  <Button type="button" variant="outline" size="sm" disabled={!canWrite || importCopywriting.isPending}>
                     {importCopywriting.isPending ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />}
                     导入标准文案表
                   </Button>
@@ -1674,7 +1684,7 @@ export default function ProductArchiveDraftsPage() {
                 title="导入尺码表"
                 description="导入 PLM 导出的宽表/长表模板后，会按款号刷新已有深绘建档草稿的尺码表字段。"
                 trigger={
-                  <Button type="button" variant="outline" size="sm" disabled={importSizeChart.isPending}>
+                  <Button type="button" variant="outline" size="sm" disabled={!canWrite || importSizeChart.isPending}>
                     {importSizeChart.isPending ? <Loader2 className="size-4 animate-spin" /> : <FileSpreadsheet className="size-4" />}
                     导入尺码表
                   </Button>
@@ -1714,6 +1724,7 @@ export default function ProductArchiveDraftsPage() {
                 isPreviewing={previewHangtagWashlabelOcr.isPending}
                 isApplying={applyHangtagWashlabelOcr.isPending}
                 isSubmittingJob={submitHangtagWashlabelOcrJob.isPending}
+                canWrite={canWrite}
                 onPreview={() => previewHangtagWashlabelOcr.mutate()}
                 onApply={() => applyHangtagWashlabelOcr.mutate()}
                 onSubmitJob={() => submitHangtagWashlabelOcrJob.mutate()}
@@ -1731,6 +1742,7 @@ export default function ProductArchiveDraftsPage() {
                 }}
                 result={spuImageImportResult}
                 isPending={importSpuReferenceImages.isPending}
+                canWrite={canWrite}
                 onSubmit={() => importSpuReferenceImages.mutate()}
               />
               <StartProductArchiveDialog
@@ -1749,12 +1761,16 @@ export default function ProductArchiveDraftsPage() {
                 onSkipLaunchPlanChange={setSkipLaunchPlan}
                 workflowResult={workflowResult}
                 isPending={startProductArchiveWorkflow.isPending}
+                canWrite={canWrite}
                 onSubmit={() => startProductArchiveWorkflow.mutate()}
               />
             </CompactListControls>
           </CompactListToolbar>
         </CompactListCardHeader>
         <CompactListCardContent>
+          {drafts.isError ? (
+            <QueryErrorState message={drafts.error instanceof Error ? drafts.error.message : undefined} onRetry={() => void drafts.refetch()} />
+          ) : null}
           <CompactListTableFrame>
             <Table>
               <TableHeader>

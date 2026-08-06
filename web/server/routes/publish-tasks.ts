@@ -9,6 +9,11 @@ import {
   markPublishTaskStatusSynced,
   refreshBatchPublishSummary as refreshBatchPublishSummaryForBatch,
 } from "../services/publish/publish-job-service"
+import {
+  mapSheinDocumentState,
+  parseSheinDocumentStates,
+  sheinDocumentStateLabel,
+} from "../services/publish/shein-status-parser"
 import { upsertAuditStatusSnapshots } from "../services/shein-operations"
 
 const publishTasks = new Hono()
@@ -92,27 +97,6 @@ function firstPlatformIdentity(db: ReturnType<typeof getDb>, task: SourceRow, pl
   `).get(task.platform, task.channel_account_id, task.listing_id, platformType) as SourceRow | undefined
 }
 
-function documentStateLabel(state: number) {
-  const labels: Record<number, string> = {
-    [-1]: "接收失败",
-    1: "待审核",
-    2: "审批成功",
-    3: "审批失败",
-    4: "已撤回",
-    5: "申诉中",
-  }
-  return labels[state] ?? `未知状态 ${state}`
-}
-
-function mapDocumentState(states: number[]) {
-  if (states.length === 0) return "UNDER_REVIEW"
-  if (states.some((state) => state === 3 || state === -1)) return "REJECTED"
-  if (states.every((state) => state === 2)) return "APPROVED"
-  if (states.some((state) => state === 2) && states.some((state) => [1, 5].includes(state))) return "PARTIALLY_APPROVED"
-  if (states.some((state) => [1, 5].includes(state))) return "UNDER_REVIEW"
-  return "UNDER_REVIEW"
-}
-
 function failureReasons(documentPayload: unknown) {
   const info = publishInfo(documentPayload)
   const rows = parseJsonArray(info.data)
@@ -131,19 +115,6 @@ function failureReasons(documentPayload: unknown) {
     }
   }
   return output
-}
-
-function documentStates(documentPayload: unknown) {
-  const info = publishInfo(documentPayload)
-  const states: number[] = []
-  for (const row of parseJsonArray(info.data)) {
-    const object = parseJsonObject(row)
-    for (const skc of parseJsonArray(object.skcList ?? object.skc_list)) {
-      const state = Number(parseJsonObject(skc).documentState ?? parseJsonObject(skc).document_state)
-      if (Number.isFinite(state)) states.push(state)
-    }
-  }
-  return states
 }
 
 function updateListingAndBucketStatus(db: ReturnType<typeof getDb>, listingId: unknown, status: string) {
@@ -389,8 +360,22 @@ publishTasks.post("/audit-status/sync", async (c) => {
         sourceId: task.id == null ? "" : String(task.id),
         result,
       })
-      const states = documentStates(result.payload)
-      const nextStatus = mapDocumentState(states)
+      const parsedStates = parseSheinDocumentStates(result.payload)
+      if (!parsedStates.valid) {
+        results.push({
+          task_id: task.id,
+          ok: false,
+          error_code: "SHEIN_STATUS_UNKNOWN",
+          error_message: parsedStates.reason || "SHEIN 审核状态无法确认",
+        })
+        continue
+      }
+      const states = parsedStates.states
+      const nextStatus = mapSheinDocumentState(states)
+      if (nextStatus === "STATUS_UNKNOWN") {
+        results.push({ task_id: task.id, ok: false, error_code: "SHEIN_STATUS_UNKNOWN", error_message: "SHEIN 审核状态无法确认" })
+        continue
+      }
       const reasons = failureReasons(result.payload)
       markPublishTaskStatusSynced(db, {
         taskId: Number(task.id),
@@ -589,8 +574,21 @@ publishTasks.post("/:id/sync-status", async (c) => {
     })
     throw new HTTPException(502, { message })
   }
-  const states = documentStates(result.payload)
-  const nextStatus = mapDocumentState(states)
+  const parsedStates = parseSheinDocumentStates(result.payload)
+  if (!parsedStates.valid) {
+    return c.json({
+      ok: false,
+      status: "STATUS_UNKNOWN",
+      error_code: "SHEIN_STATUS_UNKNOWN",
+      error_message: parsedStates.reason || "SHEIN 审核状态无法确认",
+      response: result.payload,
+    }, 422)
+  }
+  const states = parsedStates.states
+  const nextStatus = mapSheinDocumentState(states)
+  if (nextStatus === "STATUS_UNKNOWN") {
+    return c.json({ ok: false, status: "STATUS_UNKNOWN", error_code: "SHEIN_STATUS_UNKNOWN", error_message: "SHEIN 审核状态无法确认", response: result.payload }, 422)
+  }
   const reasons = failureReasons(result.payload)
   const message = reasons.join("；")
   upsertAuditStatusSnapshots(db, {
@@ -636,7 +634,7 @@ publishTasks.post("/:id/sync-status", async (c) => {
   return c.json({
     ok: true,
     status: nextStatus,
-    state_labels: states.map(documentStateLabel),
+    state_labels: states.map(sheinDocumentStateLabel),
     response: result.payload,
   })
 })

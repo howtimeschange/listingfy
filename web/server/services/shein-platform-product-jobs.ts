@@ -487,6 +487,7 @@ export function updatePlatformProductJob(job: PlatformProductJob, db: SyncPostgr
       finished_at = ?,
       updated_at = ?
     where id = ?
+      and started_at is not distinct from ?
     returning *
   `).get(
     job.type,
@@ -506,12 +507,15 @@ export function updatePlatformProductJob(job: PlatformProductJob, db: SyncPostgr
     job.finished_at,
     nowIso(),
     job.id,
+    job.started_at,
   ) as JsonRecord | undefined
-  return row ? jobFromRow(row) : job
+  return row ? jobFromRow(row) : null
 }
 
 export async function savePlatformProductJob(job: PlatformProductJob, db: SyncPostgresDatabase = getDb()) {
-  return updatePlatformProductJob(job, db)
+  const saved = updatePlatformProductJob(job, db)
+  if (!saved) throw new Error("平台商品任务 claim 已失效，拒绝旧 worker 写入")
+  return saved
 }
 
 function platformProductJobItemCount(jobId: string, db: SyncPostgresDatabase = getDb()) {
@@ -575,33 +579,49 @@ function ensurePlatformProductJobItems(job: PlatformProductJob, codes: string[],
   return createPlatformProductJobItems(job.id, codes, db)
 }
 
-function resetRunningPlatformProductJobItems(jobId: string, db: SyncPostgresDatabase = getDb()) {
+function resetRunningPlatformProductJobItems(job: PlatformProductJob, db: SyncPostgresDatabase = getDb()) {
   db.prepare(`
     update shein_platform_product_job_item
     set status = 'queued',
       started_at = null,
       updated_at = ?
     where job_id = ?
+      and exists (
+        select 1 from shein_platform_product_job job
+        where job.id = shein_platform_product_job_item.job_id
+          and job.started_at is not distinct from ?
+          and job.status = 'running'
+      )
       and status = 'running'
       and finished_at is null
-  `).run(nowIso(), jobId)
+  `).run(nowIso(), job.id, job.started_at)
 }
 
-function nextPlatformProductJobItem(jobId: string, db: SyncPostgresDatabase = getDb()) {
+function nextPlatformProductJobItem(job: PlatformProductJob, db: SyncPostgresDatabase = getDb()) {
   const row = db.prepare(`
     select *
     from shein_platform_product_job_item
     where job_id = ?
       and status = 'queued'
+      and exists (
+        select 1 from shein_platform_product_job parent_job
+        where parent_job.id = shein_platform_product_job_item.job_id
+          and parent_job.started_at is not distinct from ?
+          and parent_job.status = 'running'
+      )
     order by item_index asc
     limit 1
-  `).get(jobId) as JsonRecord | undefined
+  `).get(job.id, job.started_at) as JsonRecord | undefined
   return row ? jobItemFromRow(row) : null
 }
 
-function markPlatformProductJobItemRunning(jobId: string, item: PlatformProductJobItem, db: SyncPostgresDatabase = getDb()) {
+function markPlatformProductJobItemRunning(
+  job: PlatformProductJob,
+  item: PlatformProductJobItem,
+  db: SyncPostgresDatabase = getDb(),
+) {
   const now = nowIso()
-  db.prepare(`
+  const write = db.prepare(`
     update shein_platform_product_job_item
     set status = 'running',
       error_message = null,
@@ -610,12 +630,20 @@ function markPlatformProductJobItemRunning(jobId: string, item: PlatformProductJ
       updated_at = ?
     where job_id = ?
       and item_index = ?
-  `).run(now, now, jobId, item.item_index ?? 0)
+      and status = 'queued'
+      and exists (
+        select 1 from shein_platform_product_job parent_job
+        where parent_job.id = shein_platform_product_job_item.job_id
+          and parent_job.started_at is not distinct from ?
+          and parent_job.status = 'running'
+      )
+  `).run(now, now, job.id, item.item_index ?? 0, job.started_at)
+  if (numberValue(write?.changes) !== 1) return null
   return { ...item, status: "running" as const, error: null, started_at: now, finished_at: null }
 }
 
 function markPlatformProductJobItemFinished(
-  jobId: string,
+  job: PlatformProductJob,
   item: PlatformProductJobItem,
   status: "completed" | "failed",
   result: unknown,
@@ -623,7 +651,7 @@ function markPlatformProductJobItemFinished(
   db: SyncPostgresDatabase = getDb(),
 ) {
   const now = nowIso()
-  db.prepare(`
+  const write = db.prepare(`
     update shein_platform_product_job_item
     set status = ?,
       error_message = ?,
@@ -632,8 +660,62 @@ function markPlatformProductJobItemFinished(
       updated_at = ?
     where job_id = ?
       and item_index = ?
-  `).run(status, error, jsonText(result), now, now, jobId, item.item_index ?? 0)
+      and status = 'running'
+      and exists (
+        select 1 from shein_platform_product_job parent_job
+        where parent_job.id = shein_platform_product_job_item.job_id
+          and parent_job.started_at is not distinct from ?
+          and parent_job.status = 'running'
+      )
+  `).run(status, error, jsonText(result), now, now, job.id, item.item_index ?? 0, job.started_at)
+  if (numberValue(write?.changes) !== 1) return null
   return { ...item, status, result, error, finished_at: now }
+}
+
+type PlatformProductDetailSync = typeof syncProductDetail
+type PlatformProductJobItemClaimHook = (runningItem: PlatformProductJobItem) => void | Promise<void>
+
+/**
+ * Claims one detail-sync item, performs the remote call only while that claim
+ * is current, and fences the completion write against a stale worker.
+ *
+ * The claim hook lets the queue worker persist its running snapshot before the
+ * remote request starts. A failed hook is treated as a lost claim as well, so
+ * an old worker cannot continue into an external call after its parent job was
+ * reclaimed.
+ */
+export async function processPlatformProductJobItem(
+  job: PlatformProductJob,
+  item: PlatformProductJobItem,
+  db: SyncPostgresDatabase = getDb(),
+  detailSync: PlatformProductDetailSync = syncProductDetail,
+  onClaimed?: PlatformProductJobItemClaimHook,
+) {
+  const runningItem = markPlatformProductJobItemRunning(job, item, db)
+  if (!runningItem) return { claimLost: true, item }
+
+  if (onClaimed) {
+    try {
+      await onClaimed(runningItem)
+    } catch (error) {
+      return { claimLost: true, item: runningItem, error: errorMessage(error) }
+    }
+  }
+
+  try {
+    const remote = await detailSync(item.spu_code, {}, job.actor)
+    if (!responseOk(remote.result)) {
+      throw new Error(responseMessage(remote.result) || "详情同步失败")
+    }
+    const finishedItem = markPlatformProductJobItemFinished(job, item, "completed", remote.persistence, null, db)
+    if (!finishedItem) return { claimLost: true, item: runningItem, remote }
+    return { claimLost: false, item: finishedItem, remote }
+  } catch (error) {
+    const message = errorMessage(error)
+    const failedItem = markPlatformProductJobItemFinished(job, item, "failed", null, message, db)
+    if (!failedItem) return { claimLost: true, item: runningItem, error: message }
+    return { claimLost: false, item: failedItem, error: message }
+  }
 }
 
 function refreshPlatformProductJobCounts(job: PlatformProductJob, db: SyncPostgresDatabase = getDb()) {
@@ -718,7 +800,7 @@ function claimNextPlatformProductJob(type: PlatformProductJobType, db: SyncPostg
     )
     update shein_platform_product_job as job
     set status = 'running',
-      started_at = coalesce(job.started_at, ?),
+      started_at = ?,
       updated_at = ?
     from next_job
     where job.id = next_job.id
@@ -852,14 +934,14 @@ async function processSyncJob(job: PlatformProductJob) {
   if (codes.length || existingItemCount > 0) {
     const detailIntervalMs = platformProductDetailSyncIntervalMs(job.payload)
     ensurePlatformProductJobItems(job, codes, db)
-    resetRunningPlatformProductJobItems(job.id, db)
+    resetRunningPlatformProductJobItems(job, db)
     refreshPlatformProductJobCounts(job, db)
     job.items = []
     await savePlatformProductJob(job)
 
     let processedInThisRun = 0
     while (true) {
-      const item = nextPlatformProductJobItem(job.id, db)
+      const item = nextPlatformProductJobItem(job, db)
       if (!item) {
         refreshPlatformProductJobCounts(job, db)
         if (shouldRetryFailedPlatformProductJobItems(job)) {
@@ -878,35 +960,37 @@ async function processSyncJob(job: PlatformProductJob) {
       if (processedInThisRun > 0 && detailIntervalMs > 0) {
         await wait(detailIntervalMs)
       }
-      const runningItem = markPlatformProductJobItemRunning(job.id, item, db)
-      job.current_item = runningItem
-      job.running_count = 1
-      job.queued_count = Math.max(0, (job.queued_count ?? 0) - 1)
-      await savePlatformProductJob(job)
-      try {
-        const result = await syncProductDetail(item.spu_code, {}, job.actor)
-        if (!responseOk(result.result)) {
-          throw new Error(responseMessage(result.result) || "详情同步失败")
-        }
-        markPlatformProductJobItemFinished(job.id, item, "completed", result.persistence, null, db)
-        job.completed_count += 1
-      } catch (error) {
-        const message = errorMessage(error)
-        const failedItem = markPlatformProductJobItemFinished(job.id, item, "failed", null, message, db)
+      const outcome = await processPlatformProductJobItem(
+        job,
+        item,
+        db,
+        syncProductDetail,
+        async (runningItem) => {
+          job.current_item = runningItem
+          job.running_count = 1
+          job.queued_count = Math.max(0, (job.queued_count ?? 0) - 1)
+          await savePlatformProductJob(job)
+        },
+      )
+      if (outcome.claimLost) return
+      if (outcome.error) {
         job.failed_count += 1
-        if ((job.failed_items?.length ?? 0) < JOB_ITEM_FAILURE_SAMPLE_LIMIT) {
-          job.failed_items = [...(job.failed_items ?? []), failedItem]
+        if (outcome.item && (job.failed_items?.length ?? 0) < JOB_ITEM_FAILURE_SAMPLE_LIMIT) {
+          job.failed_items = [...(job.failed_items ?? []), outcome.item]
         }
-        const rateLimitCooldownMs = isSheinRateLimitMessage(message) ? platformProductRateLimitCooldownMs(job.payload) : 0
+        const rateLimitCooldownMs = isSheinRateLimitMessage(outcome.error)
+          ? platformProductRateLimitCooldownMs(job.payload)
+          : 0
         if (rateLimitCooldownMs > 0) {
           await wait(rateLimitCooldownMs)
         }
-      } finally {
-        job.current_item = null
-        job.running_count = 0
-        processedInThisRun += 1
-        await savePlatformProductJob(job)
+      } else {
+        job.completed_count += 1
       }
+      job.current_item = null
+      job.running_count = 0
+      processedInThisRun += 1
+      await savePlatformProductJob(job)
       if (await yieldPlatformProductDetailSyncJob(job, processedInThisRun, db)) return
     }
     refreshPlatformProductJobCounts(job, db)

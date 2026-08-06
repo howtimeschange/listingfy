@@ -4,6 +4,7 @@ import { ArrowRight, CheckSquare, RefreshCw, RotateCcw, Search, Send } from "luc
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
+import { useAuth } from "@/lib/auth-context"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { FilterTrigger } from "@/components/filter-trigger"
 import { ServerPagination } from "@/components/server-pagination"
@@ -19,6 +20,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { QueryErrorState } from "@/components/query-error-state"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   DropdownMenu,
@@ -195,6 +197,8 @@ function usePublishTaskFilters() {
 }
 
 export default function PublishTasksPage() {
+  const { hasPermission } = useAuth()
+  const canPublish = hasPermission("PUBLISH_RUN")
   const queryClient = useQueryClient()
   const [searchParams] = useSearchParams()
   const batchSearch = searchParams.get("batch_search") ?? ""
@@ -202,7 +206,7 @@ export default function PublishTasksPage() {
   const [statusFilter, setStatusFilter] = useState<string[]>([])
   const [selectedTaskIds, setSelectedTaskIds] = useState<number[]>([])
   const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
-  const { data, isLoading, refetch, isFetching } = usePublishTasks({
+  const { data, isLoading, isError, error, refetch, isFetching } = usePublishTasks({
     q: search,
     batchSearch,
     statuses: statusFilter,
@@ -279,7 +283,7 @@ export default function PublishTasksPage() {
               size="sm"
               variant="outline"
               onClick={() => batchSyncMutation.mutate()}
-              disabled={batchSyncMutation.isPending}
+                disabled={!canPublish || batchSyncMutation.isPending}
             >
               {batchSyncMutation.isPending ? <RefreshCw className="size-4 animate-spin" /> : <CheckSquare className="size-4" />}
               批量同步审核
@@ -384,7 +388,9 @@ export default function PublishTasksPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {isLoading ? (
+                {isError ? (
+                  <TableRow><TableCell colSpan={8}><QueryErrorState message={error instanceof Error ? error.message : undefined} onRetry={() => void refetch()} /></TableCell></TableRow>
+                ) : isLoading ? (
                   <TableRow>
                     <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
                       加载发布任务...
@@ -463,7 +469,7 @@ export default function PublishTasksPage() {
                       </TableCell>
                       <TableCell className={`${ACTION_COLUMN_CLASS} text-right`}>
                         <div className="flex justify-end gap-1">
-                          {canSyncStatus(item.status) ? (
+                          {canPublish && canSyncStatus(item.status) ? (
                             <Button
                               variant="ghost"
                               size="sm"
@@ -474,7 +480,7 @@ export default function PublishTasksPage() {
                               同步
                             </Button>
                           ) : null}
-                          {canRetry(item.status) ? (
+                          {canPublish && canRetry(item.status) ? (
                             <Button
                               variant="ghost"
                               size="sm"

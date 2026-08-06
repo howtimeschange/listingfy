@@ -71,6 +71,7 @@ import {
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api-client"
+import { useAuth } from "@/lib/auth-context"
 import { useAsyncTasks, type AsyncTaskJob } from "@/lib/async-task-context"
 import { formatNumber } from "@/lib/format"
 import {
@@ -780,6 +781,9 @@ function ProductThumb({ src, alt, size = "md" }: { src: string | null; alt: stri
 }
 
 export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatformProductsPageProps) {
+  const { hasPermission } = useAuth()
+  const canSync = hasPermission("SYNC_RUN")
+  const canPublish = hasPermission("PUBLISH_RUN")
   const queryClient = useQueryClient()
   const { tasks, addTask, openTaskCenter } = useAsyncTasks()
   const navigate = useNavigate()
@@ -1558,7 +1562,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
               <Button
                 size="sm"
                 onClick={() => setSyncDialogOpen(true)}
-                disabled={syncProductsMutation.isPending || syncSpuProductsMutation.isPending}
+                disabled={!canSync || syncProductsMutation.isPending || syncSpuProductsMutation.isPending}
               >
                 {syncProductsMutation.isPending || syncSpuProductsMutation.isPending ? (
                   <Loader2 className="size-4 animate-spin" />
@@ -1572,7 +1576,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                 variant="outline"
                 className="hidden min-[1120px]:inline-flex"
                 onClick={() => batchSyncStatusMutation.mutate()}
-                disabled={batchSyncStatusMutation.isPending}
+                disabled={!canSync || batchSyncStatusMutation.isPending}
               >
                 {batchSyncStatusMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />}
                 批量同步状态
@@ -1586,7 +1590,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-52">
                   <DropdownMenuLabel>列表操作</DropdownMenuLabel>
-                  <DropdownMenuItem onSelect={() => openSyncScheduleDialog()}>
+                  <DropdownMenuItem onSelect={() => openSyncScheduleDialog()} disabled={!canSync}>
                     <Settings2 className="size-4" />
                     定时同步
                   </DropdownMenuItem>
@@ -1594,12 +1598,12 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                   <DropdownMenuItem
                     className="min-[1120px]:hidden"
                     onSelect={() => batchSyncStatusMutation.mutate()}
-                    disabled={batchSyncStatusMutation.isPending}
+                    disabled={!canSync || batchSyncStatusMutation.isPending}
                   >
                     <ClipboardCheck className="size-4" />
                     批量同步状态
                   </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => setCostImportDialogOpen(true)}>
+                  <DropdownMenuItem onSelect={() => setCostImportDialogOpen(true)} disabled={!canPublish}>
                     <Upload className="size-4" />
                     表格导入更新供货价
                   </DropdownMenuItem>
@@ -1636,7 +1640,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             </Button>
           ) : null}
           {view === "sites" ? (
-            <Button variant="outline" onClick={() => syncSitesMutation.mutate()} disabled={syncSitesMutation.isPending}>
+            <Button variant="outline" onClick={() => syncSitesMutation.mutate()} disabled={!canSync || syncSitesMutation.isPending}>
               {syncSitesMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Globe2 className="size-4" />}
               同步站点币种
             </Button>
@@ -1988,6 +1992,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                               variant="ghost"
                               size="sm"
                               className="w-full justify-end"
+                              disabled={!canPublish}
                               onClick={() => void openBatchCostDialogFromList(row)}
                             >
                               <DollarSign className="size-4" />
@@ -2014,7 +2019,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                                 <DropdownMenuLabel>更多操作</DropdownMenuLabel>
                                 <DropdownMenuItem
                                   onSelect={() => syncDetailMutation.mutate(row.spuName)}
-                                  disabled={syncDetailMutation.isPending}
+                                  disabled={!canSync || syncDetailMutation.isPending}
                                 >
                                   <PackageSearch className="size-4" />
                                   同步详情
@@ -2029,7 +2034,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                                 <DropdownMenuSeparator />
                                 <DropdownMenuItem
                                   onSelect={() => syncStatusMutation.mutate(row.spuName)}
-                                  disabled={syncStatusMutation.isPending}
+                                  disabled={!canSync || syncStatusMutation.isPending}
                                 >
                                   <RefreshCw className={syncStatusMutation.isPending ? "size-4 animate-spin" : "size-4"} />
                                   同步状态
@@ -2219,7 +2224,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             </Button>
             <Button
               onClick={() => (syncDialogMode === "time" ? syncProductsMutation.mutate() : syncSpuProductsMutation.mutate())}
-              disabled={syncProductsMutation.isPending || syncSpuProductsMutation.isPending}
+              disabled={!canSync || syncProductsMutation.isPending || syncSpuProductsMutation.isPending}
             >
               {syncProductsMutation.isPending || syncSpuProductsMutation.isPending ? (
                 <Loader2 className="size-4 animate-spin" />
@@ -2250,7 +2255,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                 id="sync-schedule-enabled"
                 checked={syncScheduleForm.enabled}
                 onCheckedChange={(enabled) => setSyncScheduleForm((current) => ({ ...current, enabled }))}
-                disabled={syncScheduleMutation.isPending}
+                disabled={!canSync || syncScheduleMutation.isPending}
               />
             </div>
             {alreadyRunningScheduledSync ? (
@@ -2269,7 +2274,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                   step="1"
                   value={syncScheduleForm.schedule_hour}
                   onChange={(event) => setSyncScheduleForm((current) => ({ ...current, schedule_hour: event.target.value }))}
-                  disabled={syncScheduleMutation.isPending}
+                  disabled={!canSync || syncScheduleMutation.isPending}
                 />
               </div>
               <div className="grid gap-2">
@@ -2277,7 +2282,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                 <Select
                   value={syncScheduleForm.sync_scope}
                   onValueChange={(sync_scope) => setSyncScheduleForm((current) => ({ ...current, sync_scope: sync_scope as SyncScheduleScope }))}
-                  disabled={syncScheduleMutation.isPending}
+                  disabled={!canSync || syncScheduleMutation.isPending}
                 >
                   <SelectTrigger id="sync-schedule-scope">
                     <SelectValue />
@@ -2298,7 +2303,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                   onChange={(event) => setSyncScheduleForm((current) => ({ ...current, spu_names_text: event.target.value }))}
                   placeholder="c250722589993&#10;s2409195445"
                   className="min-h-32 font-mono text-sm"
-                  disabled={syncScheduleMutation.isPending}
+                  disabled={!canSync || syncScheduleMutation.isPending}
                 />
                 <p className="text-xs text-muted-foreground">
                   已识别 {formatNumber(scheduledSpuNames.length)} 个 SPU。
@@ -2314,14 +2319,14 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             <Button
               variant="outline"
               onClick={() => setSyncScheduleForm(DEFAULT_SYNC_SCHEDULE_FORM)}
-              disabled={syncScheduleMutation.isPending}
+              disabled={!canSync || syncScheduleMutation.isPending}
             >
               恢复默认
             </Button>
             <Button variant="outline" onClick={() => setSyncScheduleDialogOpen(false)} disabled={syncScheduleMutation.isPending}>
               取消
             </Button>
-            <Button onClick={() => syncScheduleMutation.mutate()} disabled={syncScheduleMutation.isPending}>
+            <Button onClick={() => syncScheduleMutation.mutate()} disabled={!canSync || syncScheduleMutation.isPending}>
               {syncScheduleMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Settings2 className="size-4" />}
               保存配置
             </Button>
@@ -2497,7 +2502,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                       type="button"
                       variant="outline"
                       onClick={() => syncDetailMutation.mutate(selectedSpuName)}
-                      disabled={syncDetailMutation.isPending}
+                      disabled={!canSync || syncDetailMutation.isPending}
                     >
                       <PackageSearch className="size-4" />
                       同步详情
@@ -2515,16 +2520,16 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                       type="button"
                       variant="outline"
                       onClick={() => syncStatusMutation.mutate(selectedSpuName)}
-                      disabled={syncStatusMutation.isPending}
+                      disabled={!canSync || syncStatusMutation.isPending}
                     >
                       {syncStatusMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                       同步状态
                     </Button>
-                    <Button type="button" variant="outline" onClick={() => openEditDialog(selectedSpuName)}>
+                    <Button type="button" variant="outline" disabled={!canPublish} onClick={() => openEditDialog(selectedSpuName)}>
                       <Edit3 className="size-4" />
                       常用字段编辑
                     </Button>
-                    <Button type="button" variant="outline" onClick={() => openVariantDialog(selectedSpuName)}>
+                    <Button type="button" variant="outline" disabled={!canPublish} onClick={() => openVariantDialog(selectedSpuName)}>
                       <GitMerge className="size-4" />
                       拼款模板
                     </Button>
@@ -2532,13 +2537,14 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                       <Button
                         type="button"
                         variant="outline"
+                        disabled={!canPublish}
                         onClick={() => openBatchCostDialog(selectedSpuName, detailCostItems(detail), detail.skcs.flatMap((skc) => skc.skus).find((sku) => sku.currency)?.currency)}
                       >
                         <DollarSign className="size-4" />
                         批量更新供货价
                       </Button>
                     ) : null}
-                    <Button type="button" variant="ghost" onClick={() => openJsonAction("partial-edit", selectedSpuName)}>
+                    <Button type="button" variant="ghost" disabled={!canPublish} onClick={() => openJsonAction("partial-edit", selectedSpuName)}>
                       <Wand2 className="size-4" />
                       高级 JSON 编辑
                     </Button>
@@ -2546,7 +2552,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                       type="button"
                       variant="outline"
                       onClick={() => revokeMutation.mutate(selectedSpuName)}
-                      disabled={revokeMutation.isPending}
+                      disabled={!canPublish || revokeMutation.isPending}
                     >
                       <RotateCcw className="size-4" />
                       撤回商品
@@ -2668,6 +2674,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                                         type="button"
                                         variant="ghost"
                                         size="sm"
+                                        disabled={!canPublish}
                                         onClick={() =>
                                           openCostDialog({
                                             spuName: detailProduct?.spuName || selectedSpuName,
@@ -2921,7 +2928,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             <Button variant="outline" onClick={() => setCostDialogOpen(false)}>
               取消
             </Button>
-            <Button onClick={() => updateCostMutation.mutate()} disabled={updateCostMutation.isPending}>
+            <Button onClick={() => updateCostMutation.mutate()} disabled={!canPublish || updateCostMutation.isPending}>
               {updateCostMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <DollarSign className="size-4" />}
               提交更新
             </Button>
@@ -3027,7 +3034,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             <Button variant="outline" onClick={() => handleCostImportDialogOpenChange(false)} disabled={costImportMutation.isPending}>
               取消
             </Button>
-            <Button onClick={() => costImportMutation.mutate()} disabled={costImportMutation.isPending || !costImportRows.length}>
+            <Button onClick={() => costImportMutation.mutate()} disabled={!canPublish || costImportMutation.isPending || !costImportRows.length}>
               {costImportMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <DollarSign className="size-4" />}
               {costImportMutation.isPending && costImportProgress
                 ? `处理中 ${formatNumber(costImportProgress.completedGroups)}/${formatNumber(costImportProgress.totalGroups)}`
@@ -3128,7 +3135,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             <Button variant="outline" onClick={() => setRegressionDialogOpen(false)}>
               取消
             </Button>
-            <Button onClick={() => regressionLogMutation.mutate()} disabled={regressionLogMutation.isPending}>
+            <Button onClick={() => regressionLogMutation.mutate()} disabled={!canSync || regressionLogMutation.isPending}>
               保存回归记录
             </Button>
           </DialogFooter>
@@ -3169,7 +3176,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                       size="sm"
                       className="mt-2"
                       onClick={() => retryOperationMutation.mutate(operation)}
-                      disabled={retryOperationMutation.isPending}
+                      disabled={!canPublish || retryOperationMutation.isPending}
                     >
                       {retryOperationMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
                       重试失败操作
@@ -3363,7 +3370,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             <Button variant="outline" onClick={() => setEditDialogOpen(false)}>
               取消
             </Button>
-            <Button onClick={() => fieldEditMutation.mutate()} disabled={fieldEditMutation.isPending || editTemplateQuery.isLoading}>
+            <Button onClick={() => fieldEditMutation.mutate()} disabled={!canPublish || fieldEditMutation.isPending || editTemplateQuery.isLoading}>
               {fieldEditMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Edit3 className="size-4" />}
               提交常用字段编辑
             </Button>
@@ -3518,13 +3525,13 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => openJsonAction("add-variants", selectedSpuName)} disabled={!selectedSpuName}>
+            <Button variant="outline" onClick={() => openJsonAction("add-variants", selectedSpuName)} disabled={!canPublish || !selectedSpuName}>
               高级 JSON 拼款
             </Button>
             <Button variant="outline" onClick={() => setVariantDialogOpen(false)}>
               取消
             </Button>
-            <Button onClick={() => addVariantTemplateMutation.mutate()} disabled={addVariantTemplateMutation.isPending || variantTemplateQuery.isLoading}>
+            <Button onClick={() => addVariantTemplateMutation.mutate()} disabled={!canPublish || addVariantTemplateMutation.isPending || variantTemplateQuery.isLoading}>
               {addVariantTemplateMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <GitMerge className="size-4" />}
               提交拼款模板
             </Button>
@@ -3557,7 +3564,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             <Button variant="outline" onClick={() => setJsonActionDialog(DEFAULT_JSON_ACTION)}>
               取消
             </Button>
-            <Button onClick={() => jsonActionMutation.mutate()} disabled={jsonActionMutation.isPending}>
+            <Button onClick={() => jsonActionMutation.mutate()} disabled={!canPublish || jsonActionMutation.isPending}>
               {jsonActionMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Edit3 className="size-4" />}
               提交
             </Button>

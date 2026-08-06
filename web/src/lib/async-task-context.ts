@@ -1,5 +1,22 @@
 import { createContext, useContext } from "react"
 
+export const ASYNC_TASK_STORAGE_KEY = "listingify.asyncTasks.v1"
+export const ASYNC_TASK_SEEN_STORAGE_KEY = "listingify.asyncTasks.lastSeenAt.v1"
+
+export function asyncTaskStorageKeys(userId: number) {
+  return {
+    tasks: `${ASYNC_TASK_STORAGE_KEY}.user.${userId}`,
+    seen: `${ASYNC_TASK_SEEN_STORAGE_KEY}.user.${userId}`,
+  }
+}
+
+export function clearAsyncTaskStorage(userId: number | null | undefined) {
+  if (typeof window === "undefined" || userId == null) return
+  const keys = asyncTaskStorageKeys(userId)
+  window.localStorage.removeItem(keys.tasks)
+  window.localStorage.removeItem(keys.seen)
+}
+
 export interface AsyncTaskJobItem {
   spu_code: string
   status: "queued" | "running" | "completed" | "failed"

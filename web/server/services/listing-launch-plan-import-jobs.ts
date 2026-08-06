@@ -208,6 +208,7 @@ function saveListingLaunchPlanImportJob(job: ImportJob) {
       finished_at = ?,
       updated_at = ?
     where id = ?
+      and started_at is not distinct from ?
     returning *
   `).get(
     job.status,
@@ -227,8 +228,10 @@ function saveListingLaunchPlanImportJob(job: ImportJob) {
     job.finished_at,
     nowIso(),
     job.id,
+    job.started_at,
   ) as JsonRecord | undefined
-  return row ? jobFromRow(row) : job
+  if (!row) throw new Error("上市计划导入任务 claim 已失效，拒绝旧 worker 写入")
+  return jobFromRow(row)
 }
 
 function loadListingLaunchPlanImportJob(id: string) {
@@ -255,7 +258,7 @@ function claimNextListingLaunchPlanImportJob() {
     )
     update listing_launch_plan_import_job as job
     set status = 'running',
-      started_at = coalesce(job.started_at, ?),
+      started_at = ?,
       updated_at = ?
     from next_job
     where job.id = next_job.id

@@ -8,6 +8,7 @@ import {
   Search,
 } from "lucide-react"
 import { api } from "@/lib/api-client"
+import { QueryErrorState } from "@/components/query-error-state"
 import { formatCurrency, formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { EmptyState } from "@/components/empty-state"
@@ -141,7 +142,7 @@ export default function DeepDrawContentPage() {
   const [searchText, setSearchText] = useState("")
   const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
   const debouncedSearch = useDebounce(searchText, 300)
-  const { data, isLoading } = useDeepdrawContent(debouncedSearch, pagination)
+  const { data, isLoading, isError, error, refetch } = useDeepdrawContent(debouncedSearch, pagination)
   const { data: summary } = useDeepdrawContentSummary()
 
   return (
@@ -172,7 +173,9 @@ export default function DeepDrawContentPage() {
         </CompactListCardHeader>
         <CompactListCardContent>
           <div className="min-h-0 flex-1 space-y-3 overflow-auto md:hidden">
-            {isLoading ? (
+            {isError ? (
+              <QueryErrorState message={error instanceof Error ? error.message : undefined} onRetry={() => void refetch()} />
+            ) : isLoading ? (
               Array.from({ length: 3 }).map((_, index) => (
                 <div key={index} className="rounded-2xl border p-4">
                   <Skeleton className="mb-3 h-14 w-14 rounded-2xl" />
@@ -247,7 +250,9 @@ export default function DeepDrawContentPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {isLoading ? (
+                {isError ? (
+                  <TableRow><TableCell colSpan={9}><QueryErrorState message={error instanceof Error ? error.message : undefined} onRetry={() => void refetch()} /></TableCell></TableRow>
+                ) : isLoading ? (
                   Array.from({ length: 6 }).map((_, index) => (
                     <TableRow key={index}>
                       <TableCell>

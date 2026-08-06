@@ -52,6 +52,9 @@ const allowedOrigins = (process.env.LISTINGIFY_ALLOWED_ORIGINS || "")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean)
+if (allowedOrigins.includes("*")) {
+  throw new Error("LISTINGIFY_ALLOWED_ORIGINS cannot contain '*' when credentialed CORS is enabled")
+}
 function isLocalDevOrigin(origin: string) {
   try {
     const url = new URL(origin)
@@ -63,7 +66,6 @@ function isLocalDevOrigin(origin: string) {
 const corsOptions = {
   origin: (origin: string) => {
     if (!origin) return null
-    if (allowedOrigins.includes("*")) return origin
     if (allowedOrigins.length === 0 && isLocalDevOrigin(origin)) return origin
     return allowedOrigins.includes(origin) ? origin : null
   },

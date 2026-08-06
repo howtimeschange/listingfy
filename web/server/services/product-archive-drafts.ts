@@ -5479,7 +5479,13 @@ function assertDeepdrawProductArchiveSuccess(result: DeepdrawResult, type: strin
 
 function isDeepdrawProductNotFound(payload: unknown) {
   const business = deepdrawBusinessResult(payload)
-  return business.code === 10404 || /未在服务器上发现|不存在|未找到|not\s*found/i.test(business.reason)
+  if (business.code === 10404) return true
+  const reason = business.reason.trim()
+  const productReference = /商品|产品|product(?:\s*code)?|spu(?:\s*code)?/i.test(reason)
+  const nonProductReference = /商户|租户|字段|merchant|tenant|field/i.test(reason)
+  return productReference
+    && !nonProductReference
+    && /未在服务器上发现|不存在|未找到|not\s*found/i.test(reason)
 }
 
 function duplicateRecords(payload: unknown) {
@@ -5548,6 +5554,22 @@ export async function checkDuplicateProductArchiveDraft(db: SyncPostgresDatabase
   return summary
 }
 
+/** Atomically reserves a draft for the remote create call.
+ *
+ * A transport timeout leaves the row in `submitting`, which is intentionally
+ * outside the claimable statuses so a retry cannot blindly create a duplicate.
+ */
+export function claimProductArchiveDraftForSubmit(db: SyncPostgresDatabase, draftId: number, now = nowIso()) {
+  return db.prepare(`
+    update product_archive_draft
+    set status = 'submitting',
+      updated_at = ?::timestamptz
+    where id = ?
+      and status in ('draft', 'missing_fields', 'manual_review', 'ready', 'update_pending')
+    returning *
+  `).get(now, draftId) as JsonRecord | undefined
+}
+
 export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftId: number, options: SubmitOptions = {}) {
   refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
   rebuildProductArchiveDraftFields(db, draftId)
@@ -5576,7 +5598,15 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
       timeoutMs: Number(process.env.DEEPDRAW_TIMEOUT_MS ?? 30000),
     }) as DeepdrawResult
   })
-  db.prepare("update product_archive_draft set status = 'submitting', updated_at = ?::timestamptz where id = ?").run(nowIso(), draftId)
+  const claimedDraft = claimProductArchiveDraftForSubmit(db, draftId)
+  if (!claimedDraft) {
+    const currentDraft = draftById(db, draftId)
+    return {
+      alreadySubmitting: stringValue(currentDraft?.status) === "submitting",
+      status: stringValue(currentDraft?.status),
+      draftId,
+    }
+  }
   let result: DeepdrawResult
   try {
     result = await runCreate(payload)
@@ -5587,12 +5617,15 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
         requestSummary: summary,
         responseReason: createError.message,
       })
+      // Transport uncertainty intentionally does not set status = 'failed':
+      // the submitting claim blocks blind duplicate creates until reconciliation.
       db.prepare(`
         update product_archive_draft
-        set status = 'failed',
+        set duplicate_result_json = jsonb_set(coalesce(duplicate_result_json, '{}'::jsonb), '{submit_transport_unknown}', to_jsonb(?::text), true),
           updated_at = ?::timestamptz
         where id = ?
-      `).run(nowIso(), draftId)
+          and status = 'submitting'
+      `).run(createError.message, nowIso(), draftId)
     })()
     throw createError
   }

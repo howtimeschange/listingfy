@@ -35,6 +35,22 @@ export interface LoginFailurePolicy {
   now?: Date
 }
 
+function trustedProxyConfigured() {
+  return ["1", "true", "yes", "on"].includes(String(process.env.LISTINGIFY_TRUSTED_PROXY ?? "").trim().toLowerCase())
+}
+
+export function trustedClientAddress(input: {
+  forwardedFor?: string | null
+  realIp?: string | null
+} = {}) {
+  if (!trustedProxyConfigured()) return null
+  const forwarded = String(input.forwardedFor ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .find(Boolean)
+  return forwarded || String(input.realIp ?? "").trim() || null
+}
+
 function nowIso() {
   return new Date().toISOString()
 }
@@ -60,23 +76,34 @@ export function secureCookieFromRequest({
   if (["1", "true", "yes", "on"].includes(override ?? "")) return true
   if (["0", "false", "no", "off"].includes(override ?? "")) return false
 
-  const protoValues = [forwardedProto, forwardedScheme]
-    .flatMap((value) => String(value ?? "").split(","))
-    .map((value) => value.trim().toLowerCase())
-    .filter(Boolean)
-  if (protoValues.includes("https")) return true
-  if (["1", "true", "yes", "on", "https"].includes(String(forwardedSsl ?? "").trim().toLowerCase())) return true
-  if (["1", "true", "yes", "on", "https"].includes(String(frontEndHttps ?? "").trim().toLowerCase())) return true
-  if (protoValues.length) return false
+  const publicOrigin = process.env.LISTINGIFY_PUBLIC_ORIGIN?.trim()
+  const publicOriginIsHttps = (() => {
+    try {
+      return publicOrigin ? new URL(publicOrigin).protocol === "https:" : false
+    } catch {
+      return false
+    }
+  })()
+
+  if (trustedProxyConfigured()) {
+    if (publicOriginIsHttps) return true
+    const protoValues = [forwardedProto, forwardedScheme]
+      .flatMap((value) => String(value ?? "").split(","))
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean)
+    if (protoValues.includes("https")) return true
+    if (["1", "true", "yes", "on", "https"].includes(String(forwardedSsl ?? "").trim().toLowerCase())) return true
+    if (["1", "true", "yes", "on", "https"].includes(String(frontEndHttps ?? "").trim().toLowerCase())) return true
+    if (protoValues.length) return false
+  }
 
   try {
     const url = new URL(requestUrl ?? "")
     if (url.protocol === "https:") return true
 
-    const publicOrigin = process.env.LISTINGIFY_PUBLIC_ORIGIN?.trim()
     if (publicOrigin) {
       const origin = new URL(publicOrigin)
-      if (origin.protocol === "https:" && origin.host === url.host) return true
+      if (origin.protocol === "https:" && (origin.host === url.host || trustedProxyConfigured())) return true
     }
     return false
   } catch {
@@ -187,25 +214,20 @@ export function recordFailedLogin(
 ) {
   if (!loginFailureColumnsExist(db)) return { failedLoginCount: 0, lockedUntil: null }
   const now = policy.now ?? new Date()
-  const user = db.prepare(`
-    select failed_login_count
-    from app_user
-    where id = ?
-  `).get(userId) as { failed_login_count: number } | undefined
-  const failedLoginCount = Number(user?.failed_login_count ?? 0) + 1
-  const shouldLock = failedLoginCount >= policy.maxFailures
-  const lockedUntil = shouldLock
-    ? new Date(now.getTime() + policy.lockMinutes * 60 * 1000).toISOString()
-    : null
-
-  db.prepare(`
+  const lockUntil = new Date(now.getTime() + policy.lockMinutes * 60 * 1000).toISOString()
+  const row = db.prepare(`
     update app_user
-    set failed_login_count = ?,
-      locked_until = ?,
+    set failed_login_count = coalesce(failed_login_count, 0) + 1,
+      locked_until = case
+        when coalesce(failed_login_count, 0) + 1 >= ? then ?
+        else null
+      end,
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     where id = ?
-  `).run(failedLoginCount, lockedUntil, userId)
-
+    returning failed_login_count, locked_until
+  `).get(policy.maxFailures, lockUntil, userId) as { failed_login_count?: number; locked_until?: string | null } | undefined
+  const failedLoginCount = Number(row?.failed_login_count ?? 0)
+  const lockedUntil = row?.locked_until ?? null
   return { failedLoginCount, lockedUntil }
 }
 

@@ -4,6 +4,7 @@ import { ArrowRight, PackagePlus, Search } from "lucide-react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
+import { useAuth } from "@/lib/auth-context"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { parseBatchPublishSummary } from "@/lib/publish-summary"
 import {
@@ -40,6 +41,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
+import { QueryErrorState } from "@/components/query-error-state"
 
 interface ListingBatch {
   id: number
@@ -91,13 +93,15 @@ function statusClass(batch: ListingBatch) {
 }
 
 export default function ListingBatchesPage() {
+  const { hasPermission } = useAuth()
+  const canWrite = hasPermission("LISTING_WRITE") && hasPermission("PUBLISH_RUN")
   const queryClient = useQueryClient()
   const [q, setQ] = useState("")
   const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
   const [dialogOpen, setDialogOpen] = useState(false)
   const [batchName, setBatchName] = useState(`SHEIN 上新批次 ${new Date().toISOString().slice(0, 10)}`)
   const [batchSearch, setBatchSearch] = useState("")
-  const { data, isLoading } = useListingBatches({ q, pagination })
+  const { data, isLoading, isError, error, refetch } = useListingBatches({ q, pagination })
   const items = useMemo(() => data?.items ?? [], [data?.items])
   const summary = useMemo(() => {
     const totalDrafts = items.reduce((sum, item) => sum + Number(item.draft_count ?? 0), 0)
@@ -124,7 +128,7 @@ export default function ListingBatchesPage() {
         title="上新批次"
         summary={summary}
         description="按批次组织 SHEIN 发布草稿，跟踪草稿、校验、发布、审核状态。"
-        actions={(
+        actions={canWrite ? (
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
               <Button size="sm">
@@ -151,13 +155,13 @@ export default function ListingBatchesPage() {
                     className="min-h-40"
                   />
                 </Label>
-                <Button onClick={() => createMutation.mutate()} disabled={createMutation.isPending}>
+                <Button onClick={() => createMutation.mutate()} disabled={!canWrite || createMutation.isPending}>
                   创建批次
                 </Button>
               </div>
             </DialogContent>
           </Dialog>
-        )}
+        ) : null}
       />
 
       <CompactListCard>
@@ -199,7 +203,9 @@ export default function ListingBatchesPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {isLoading ? (
+                {isError ? (
+                  <TableRow><TableCell colSpan={6}><QueryErrorState message={error instanceof Error ? error.message : undefined} onRetry={() => void refetch()} /></TableCell></TableRow>
+                ) : isLoading ? (
                   <TableRow>
                     <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">加载批次...</TableCell>
                   </TableRow>

@@ -217,6 +217,7 @@ function serializeMetadataSyncJob(row: JsonRecord) {
     fieldConcurrency: numberValue(row.field_concurrency) ?? 0,
     fieldRetryCount: numberValue(row.field_retry_count) ?? 0,
     status: stringValue(row.status),
+    workerId: stringValue(row.worker_id) || null,
     started_at: stringValue(row.started_at) || null,
     finished_at: stringValue(row.finished_at) || null,
     total_count: numberValue(row.total_count) ?? 0,
@@ -303,6 +304,7 @@ export function claimNextMetadataSyncJob(db: SyncPostgresDatabase, input: {
 }
 
 export function updateMetadataSyncJobProgress(db: SyncPostgresDatabase, id: string, input: {
+  workerId?: string | null
   status?: string | null
   totalCount?: number | null
   completedCount?: number | null
@@ -315,6 +317,8 @@ export function updateMetadataSyncJobProgress(db: SyncPostgresDatabase, id: stri
   finishedAt?: string | null
   heartbeatAt?: string | null
 }) {
+  const workerId = stringValue(input.workerId)
+  if (!workerId) return null
   const now = nowIso()
   const summaryJson = input.summary === undefined ? null : jsonText(input.summary)
   const row = db.prepare(`
@@ -332,6 +336,8 @@ export function updateMetadataSyncJobProgress(db: SyncPostgresDatabase, id: stri
       heartbeat_at = coalesce(?::timestamptz, heartbeat_at),
       updated_at = ?::timestamptz
     where id = ?
+      and status = 'running'
+      and worker_id = ?
     returning *
   `).get(
     input.status ?? null,
@@ -347,6 +353,7 @@ export function updateMetadataSyncJobProgress(db: SyncPostgresDatabase, id: stri
     input.heartbeatAt ?? null,
     now,
     id,
+    workerId,
   ) as JsonRecord | undefined
   return row ? serializeMetadataSyncJob(row) : null
 }

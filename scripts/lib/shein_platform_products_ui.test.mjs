@@ -148,6 +148,37 @@ test("SHEIN platform products page wires durable P0 lifecycle operations", async
   assert.doesNotMatch(page, /ComingSoonPage/);
 });
 
+test("SHEIN platform products UI uses the same permission keys as its API actions", async () => {
+  const [page, route] = await Promise.all([
+    fileText(PAGE_FILE),
+    fileText(path.join(PROJECT_ROOT, "web/server/routes/shein-platform-products.ts")),
+  ]);
+
+  assert.match(page, /const canSync = hasPermission\("SYNC_RUN"\)/);
+  assert.match(page, /const canPublish = hasPermission\("PUBLISH_RUN"\)/);
+  assert.doesNotMatch(page, /canWrite/);
+  assert.doesNotMatch(page, /hasPermission\("LISTING_WRITE"\)/);
+
+  assert.match(page, /disabled=\{!canSync \|\| syncProductsMutation\.isPending/);
+  assert.match(page, /disabled=\{!canSync \|\| batchSyncStatusMutation\.isPending\}/);
+  assert.match(page, /disabled=\{!canSync \|\| syncSitesMutation\.isPending\}/);
+  assert.match(page, /disabled=\{!canSync \|\| syncDetailMutation\.isPending\}/);
+  assert.match(page, /disabled=\{!canSync \|\| syncStatusMutation\.isPending\}/);
+  assert.match(page, /disabled=\{!canSync \|\| regressionLogMutation\.isPending\}/);
+
+  assert.match(page, /disabled=\{!canPublish \|\| updateCostMutation\.isPending\}/);
+  assert.match(page, /disabled=\{!canPublish \|\| retryOperationMutation\.isPending\}/);
+  assert.match(page, /disabled=\{!canPublish \|\| revokeMutation\.isPending\}/);
+  assert.match(page, /disabled=\{!canPublish \|\| fieldEditMutation\.isPending/);
+  assert.match(page, /disabled=\{!canPublish \|\| addVariantTemplateMutation\.isPending/);
+  assert.match(page, /disabled=\{!canPublish \|\| jsonActionMutation\.isPending\}/);
+
+  assert.match(route, /post\("\/sync-jobs"[\s\S]+requirePermission\(c, "SYNC_RUN"\)/);
+  assert.match(route, /post\("\/status\/sync"[\s\S]+requirePermission\(c, "SYNC_RUN"\)/);
+  assert.match(route, /post\("\/operations\/:operationId\/retry"[\s\S]+requirePermission\(c, "PUBLISH_RUN"\)/);
+  assert.match(route, /post\("\/:spuName\/field-edit"[\s\S]+requirePermission\(c, "PUBLISH_RUN"\)/);
+});
+
 test("SHEIN platform products page opens a dedicated sync dialog for time range and SPU sync", async () => {
   const page = await fileText(PAGE_FILE);
 

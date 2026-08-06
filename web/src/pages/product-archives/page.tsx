@@ -11,6 +11,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
+import { useAuth } from "@/lib/auth-context"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { parseBatchSearch } from "@/lib/spreadsheet"
 import { useDebounce } from "@/hooks/use-debounce"
@@ -57,6 +58,7 @@ import {
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
+import { QueryErrorState } from "@/components/query-error-state"
 import {
   Table,
   TableBody,
@@ -233,6 +235,8 @@ function selectedStatusesLabel(values: SourceStatus[]) {
 }
 
 export default function ProductArchivesPage() {
+  const { hasPermission } = useAuth()
+  const canWrite = hasPermission("PRODUCT_ARCHIVE_DRAFT_WRITE")
   const [searchText, setSearchText] = useState("")
   const [brandFilter, setBrandFilter] = useState("all")
   const [mdmStatusFilter, setMdmStatusFilter] = useState<SourceStatus[]>([])
@@ -248,7 +252,7 @@ export default function ProductArchivesPage() {
   const queryClient = useQueryClient()
   const codePreview = parseBatchSearch(syncCodes)
 
-  const { data, isLoading } = useProductArchives(debouncedSearch, brandFilter, pagination)
+  const { data, isLoading, isError, error, refetch } = useProductArchives(debouncedSearch, brandFilter, pagination)
   const { data: summary } = useProductArchiveSummary()
   const { data: config } = useProductArchiveConfig()
   const { data: syncJob } = useQuery<SyncJob>({
@@ -451,7 +455,7 @@ export default function ProductArchivesPage() {
                       <Button
                         type="button"
                         onClick={() => syncMutation.mutate()}
-                        disabled={syncMutation.isPending || codePreview.length === 0}
+                        disabled={!canWrite || syncMutation.isPending || codePreview.length === 0}
                       >
                         {syncMutation.isPending ? (
                           <Loader2 className="size-4 animate-spin" />
@@ -485,7 +489,7 @@ export default function ProductArchivesPage() {
                                 size="sm"
                                 variant="outline"
                                 onClick={() => retryFailedMutation.mutate()}
-                                disabled={retryFailedMutation.isPending}
+                                disabled={!canWrite || retryFailedMutation.isPending}
                               >
                                 {retryFailedMutation.isPending ? (
                                   <Loader2 className="size-4 animate-spin" />
@@ -545,7 +549,7 @@ export default function ProductArchivesPage() {
                     <Button
                       type="button"
                       onClick={() => importBucketMutation.mutate()}
-                      disabled={importBucketMutation.isPending || (selectedSpus.length === 0 && batchBucketCount === 0)}
+                      disabled={!canWrite || importBucketMutation.isPending || (selectedSpus.length === 0 && batchBucketCount === 0)}
                     >
                       {importBucketMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
                       确认入桶
@@ -719,7 +723,9 @@ export default function ProductArchivesPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {isLoading ? (
+                {isError ? (
+                  <TableRow><TableCell colSpan={8}><QueryErrorState message={error instanceof Error ? error.message : undefined} onRetry={() => void refetch()} /></TableCell></TableRow>
+                ) : isLoading ? (
                   Array.from({ length: 6 }).map((_, index) => (
                     <TableRow key={index}>
                       <TableCell colSpan={8}>

@@ -4,6 +4,7 @@ import { currentUser, type AuthUser } from "../lib/auth"
 import { resolveSheinCredentials, type SheinCredentials } from "../lib/platform-config"
 import { sheinAdapter } from "../platform-adapters"
 import type { PlatformRequestResult } from "../platform-adapters/types"
+import { mapSheinDocumentState, parseSheinDocumentStates, sheinDocumentStateLabel } from "./publish/shein-status-parser"
 import { upsertAuditStatusSnapshots } from "./shein-operations"
 
 type JsonRecord = Record<string, unknown>
@@ -2628,31 +2629,8 @@ export async function updateProductCost(
   return { result, localUpdate, detail: getProductDetail(normalizedSpuName) }
 }
 
-function documentStateLabel(state: number) {
-  const labels: Record<number, string> = {
-    [-1]: "接收失败",
-    1: "待审核",
-    2: "审批成功",
-    3: "审批失败",
-    4: "已撤回",
-    5: "申诉中",
-  }
-  return labels[state] ?? `未知状态 ${state}`
-}
-
 function documentRows(result: PlatformRequestResult) {
   return arrayRecords(responseInfo(result).data)
-}
-
-function documentStates(result: PlatformRequestResult) {
-  const states: number[] = []
-  for (const row of documentRows(result)) {
-    for (const skc of arrayRecords(row.skcList ?? row.skc_list)) {
-      const state = numberValue(skc.documentState ?? skc.document_state)
-      if (state != null) states.push(state)
-    }
-  }
-  return states
 }
 
 function documentFailureReasons(result: PlatformRequestResult) {
@@ -2667,15 +2645,6 @@ function documentFailureReasons(result: PlatformRequestResult) {
     }
   }
   return reasons
-}
-
-function mapDocumentStatus(states: number[]) {
-  if (!states.length) return "UNDER_REVIEW"
-  if (states.some((state) => state === 3 || state === -1)) return "REJECTED"
-  if (states.every((state) => state === 2)) return "APPROVED"
-  if (states.some((state) => state === 4)) return "REVOKED"
-  if (states.some((state) => [1, 5].includes(state))) return "UNDER_REVIEW"
-  return "UNDER_REVIEW"
 }
 
 function documentVersion(db: SyncPostgresDatabase, context: SheinPlatformContext, spuName: string) {
@@ -2712,10 +2681,31 @@ function persistDocumentState(
   context: SheinPlatformContext,
   result: PlatformRequestResult,
 ) {
-  const states = documentStates(result)
-  const status = mapDocumentStatus(states)
+  const parsedStates = parseSheinDocumentStates(result.payload)
+  if (!parsedStates.valid) {
+    return {
+      status: "STATUS_UNKNOWN",
+      states: [],
+      stateLabels: [],
+      failureReasons: [],
+      persisted: false,
+      errorMessage: parsedStates.reason || "SHEIN 审核状态无法确认",
+    }
+  }
+  const states = parsedStates.states
+  const status = mapSheinDocumentState(states)
+  if (status === "STATUS_UNKNOWN") {
+    return {
+      status,
+      states,
+      stateLabels: states.map(sheinDocumentStateLabel),
+      failureReasons: [],
+      persisted: false,
+      errorMessage: "SHEIN 审核状态无法确认",
+    }
+  }
   const failureReasons = documentFailureReasons(result)
-  const labels = states.map(documentStateLabel)
+  const labels = states.map(sheinDocumentStateLabel)
   for (const row of documentRows(result)) {
     const spuName = firstString(row.spuName, row.spu_name)
     if (!spuName) continue
@@ -2745,7 +2735,7 @@ function persistDocumentState(
     sourceId: "platform-product",
     result,
   })
-  return { status, states, stateLabels: labels, failureReasons }
+  return { status, states, stateLabels: labels, failureReasons, persisted: true }
 }
 
 export async function syncProductDocumentState(

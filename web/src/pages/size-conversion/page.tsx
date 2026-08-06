@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Download, Edit3, Loader2, Plus, Search, Trash2, Upload } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
+import { useAuth } from "@/lib/auth-context"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { exportSpreadsheet, parseBatchSearch, readSpreadsheetFile } from "@/lib/spreadsheet"
 import type { SpreadsheetRow } from "@/lib/spreadsheet"
@@ -78,6 +79,8 @@ function useSizeRules(search: string, batchSearch: string, pagination: { limit: 
 }
 
 export default function SizeConversionPage() {
+  const { hasPermission } = useAuth()
+  const canWrite = hasPermission("RULE_WRITE")
   const [search, setSearch] = useState("")
   const [batchSearchText, setBatchSearchText] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -97,6 +100,7 @@ export default function SizeConversionPage() {
       toast.success(`导入完成：成功 ${result.success_count} 条，失败 ${result.failed_count} 条`)
       queryClient.invalidateQueries({ queryKey: ["business-rules", "size-conversions"] })
     },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "导入尺码转换规则失败"),
   })
 
   const saveMutation = useMutation({
@@ -118,6 +122,7 @@ export default function SizeConversionPage() {
       setForm(emptyForm)
       queryClient.invalidateQueries({ queryKey: ["business-rules", "size-conversions"] })
     },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "保存尺码转换规则失败"),
   })
 
   const deleteMutation = useMutation({
@@ -126,6 +131,7 @@ export default function SizeConversionPage() {
       toast.success("尺码转换规则已删除")
       queryClient.invalidateQueries({ queryKey: ["business-rules", "size-conversions"] })
     },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "删除尺码转换规则失败"),
   })
 
   async function handleFile(file: File | null) {
@@ -172,7 +178,7 @@ export default function SizeConversionPage() {
               <Download className="size-4" />
               导出
             </Button>
-            <Button asChild size="sm" variant="outline">
+            <Button asChild size="sm" variant="outline" disabled={!canWrite || importMutation.isPending}>
               <Label className="cursor-pointer">
                 {importMutation.isPending ? (
                   <Loader2 className="size-4 animate-spin" />
@@ -188,7 +194,7 @@ export default function SizeConversionPage() {
                 />
               </Label>
             </Button>
-            <Button size="sm" onClick={openCreate}>
+            <Button size="sm" onClick={openCreate} disabled={!canWrite}>
               <Plus className="size-4" />
               新增
             </Button>
@@ -265,7 +271,7 @@ export default function SizeConversionPage() {
                     <TableCell>{formatDateTime(rule.updated_at)}</TableCell>
                     <TableCell>
                       <div className="flex justify-end gap-2">
-                        <Button size="sm" variant="outline" onClick={() => openEdit(rule)}>
+                        <Button size="sm" variant="outline" onClick={() => openEdit(rule)} disabled={!canWrite}>
                           <Edit3 className="mr-1 size-3.5" />
                           编辑
                         </Button>
@@ -273,6 +279,7 @@ export default function SizeConversionPage() {
                           size="sm"
                           variant="outline"
                           onClick={() => deleteMutation.mutate(rule.id)}
+                          disabled={!canWrite || deleteMutation.isPending}
                         >
                           <Trash2 className="mr-1 size-3.5" />
                           删除
@@ -333,7 +340,7 @@ export default function SizeConversionPage() {
                 onChange={(event) => setForm((prev) => ({ ...prev, note: event.target.value }))}
               />
             </div>
-            <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
+            <Button onClick={() => saveMutation.mutate()} disabled={!canWrite || saveMutation.isPending}>
               {saveMutation.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
               保存
             </Button>

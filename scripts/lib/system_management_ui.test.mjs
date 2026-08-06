@@ -89,12 +89,13 @@ test("system sync task list includes SHEIN platform product async jobs", async (
   assert.match(route, /failed_count/);
 });
 
-test("Yunxiao deploy preserves external HTTPS headers for auth cookies", async () => {
+test("Yunxiao deploy overwrites forwarded security headers at the trusted proxy", async () => {
   const deploy = await file("ci/yunxiao-deploy.sh");
 
   assert.match(deploy, /https:\/\/listingify\.semirapp\.com/);
-  assert.match(deploy, /map \$http_x_forwarded_proto \$listingify_forwarded_proto/);
-  assert.match(deploy, /proxy_set_header X-Forwarded-Proto \$listingify_forwarded_proto/);
+  assert.match(deploy, /proxy_set_header X-Forwarded-Proto \$scheme/);
+  assert.match(deploy, /proxy_set_header X-Forwarded-For \$remote_addr/);
+  assert.doesNotMatch(deploy, /proxy_set_header X-Forwarded-Proto \$http_x_forwarded_proto/);
 });
 
 test("system management migration defines RBAC, sessions, audit logs, and platform integrations", async () => {

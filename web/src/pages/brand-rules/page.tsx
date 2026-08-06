@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { BadgeCheck, Download, Edit3, Loader2, Plus, Search, Trash2, Upload } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
+import { useAuth } from "@/lib/auth-context"
 import { formatDateTime } from "@/lib/format"
 import { exportSpreadsheet, parseBatchSearch, readSpreadsheetFile } from "@/lib/spreadsheet"
 import type { SpreadsheetRow } from "@/lib/spreadsheet"
@@ -94,6 +95,8 @@ function useBrandRules(search: string, batchSearch: string, pagination: { limit:
 }
 
 export default function BrandRulesPage() {
+  const { hasPermission } = useAuth()
+  const canWrite = hasPermission("RULE_WRITE")
   const [search, setSearch] = useState("")
   const [batchSearchText, setBatchSearchText] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -115,6 +118,7 @@ export default function BrandRulesPage() {
       toast.success(`导入完成：成功 ${result.success_count} 条，失败 ${result.failed_count} 行`)
       queryClient.invalidateQueries({ queryKey: ["business-rules", "brand-rules"] })
     },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "导入品牌映射失败"),
   })
 
   const saveMutation = useMutation({
@@ -138,6 +142,7 @@ export default function BrandRulesPage() {
       setForm(emptyForm)
       queryClient.invalidateQueries({ queryKey: ["business-rules", "brand-rules"] })
     },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "保存品牌映射失败"),
   })
 
   const deleteMutation = useMutation({
@@ -146,6 +151,7 @@ export default function BrandRulesPage() {
       toast.success("品牌映射已删除")
       queryClient.invalidateQueries({ queryKey: ["business-rules", "brand-rules"] })
     },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "删除品牌映射失败"),
   })
 
   async function handleFile(file: File | null) {
@@ -204,7 +210,7 @@ export default function BrandRulesPage() {
               <Download className="size-4" />
               导出
             </Button>
-            <Button asChild size="sm" variant="outline">
+            <Button asChild size="sm" variant="outline" disabled={!canWrite || importMutation.isPending}>
               <Label className="cursor-pointer">
                 {importMutation.isPending ? (
                   <Loader2 className="size-4 animate-spin" />
@@ -220,7 +226,7 @@ export default function BrandRulesPage() {
                 />
               </Label>
             </Button>
-            <Button size="sm" onClick={openCreate}>
+            <Button size="sm" onClick={openCreate} disabled={!canWrite}>
               <Plus className="size-4" />
               新增品牌
             </Button>
@@ -318,7 +324,7 @@ export default function BrandRulesPage() {
                     </TableCell>
                     <TableCell>{formatDateTime(item.updated_at || item.created_at)}</TableCell>
                     <TableCell className="space-x-2 text-right">
-                      <Button variant="ghost" size="sm" onClick={() => openEdit(item)}>
+                      <Button variant="ghost" size="sm" onClick={() => openEdit(item)} disabled={!canWrite}>
                         <Edit3 className="mr-1 size-4" />
                         编辑
                       </Button>
@@ -327,6 +333,7 @@ export default function BrandRulesPage() {
                         size="sm"
                         className="text-destructive"
                         onClick={() => deleteMutation.mutate(item.id)}
+                        disabled={!canWrite || deleteMutation.isPending}
                       >
                         <Trash2 className="mr-1 size-4" />
                         删除
@@ -411,7 +418,7 @@ export default function BrandRulesPage() {
                 />
               </Label>
             </div>
-            <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || !canSave}>
+            <Button onClick={() => saveMutation.mutate()} disabled={!canWrite || saveMutation.isPending || !canSave}>
               {saveMutation.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
               保存
             </Button>

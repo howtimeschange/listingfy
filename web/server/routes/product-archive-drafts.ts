@@ -5,7 +5,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { Hono, type Context } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
-import { requirePermission } from "../lib/auth"
+import { requirePermission, trustedClientAddress } from "../lib/auth"
 import { assertLocalImageFile } from "../lib/local-path-guard"
 import {
   detectImageUploadType,
@@ -1486,7 +1486,10 @@ productArchiveDrafts.post("/hangtag-washlabel-ocr/jobs", async (c) => {
         id: user.id,
         username: user.username,
       },
-      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      ipAddress: trustedClientAddress({
+        forwardedFor: c.req.header("x-forwarded-for"),
+        realIp: c.req.header("x-real-ip"),
+      }),
       uploadDir,
     })
   } catch (error) {

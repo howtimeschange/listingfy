@@ -17,6 +17,7 @@ import {
   Upload,
 } from "lucide-react"
 import { ApiError, api } from "@/lib/api-client"
+import { useAuth } from "@/lib/auth-context"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { parseBatchSearch } from "@/lib/spreadsheet"
 import { toast } from "sonner"
@@ -69,6 +70,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
+import { QueryErrorState } from "@/components/query-error-state"
 
 interface PlatformOption {
   platform: string
@@ -237,6 +239,9 @@ function ProductThumb({ src, alt }: { src: string | null; alt: string }) {
 }
 
 export default function PrePublishValidationPage() {
+  const { hasPermission } = useAuth()
+  const canWrite = hasPermission("LISTING_WRITE")
+  const canPublish = hasPermission("PUBLISH_RUN")
   const [searchParams, setSearchParams] = useSearchParams()
   const queryClient = useQueryClient()
   const [platform, setPlatform] = useState("SHEIN")
@@ -253,7 +258,7 @@ export default function PrePublishValidationPage() {
   const [batchImageFolderPath, setBatchImageFolderPath] = useState("")
   const { data: platformData } = usePlatforms()
   const { data: categoryData } = useDraftCategories(platform)
-  const { data: draftData, isLoading } = useDrafts(platform, batchSearchText, categoryFilter, draftPagination)
+  const { data: draftData, isLoading, isError, error, refetch } = useDrafts(platform, batchSearchText, categoryFilter, draftPagination)
   const drafts = useMemo(() => draftData?.items ?? [], [draftData?.items])
   const allVisibleSelected = drafts.length > 0 && drafts.every((draft) => selectedDraftIds.has(draft.id))
   const batchCount = useMemo(() => parseBatchSearch(batchSearchText).length, [batchSearchText])
@@ -409,7 +414,7 @@ export default function PrePublishValidationPage() {
           <>
             <Dialog open={batchImagePackageDialogOpen} onOpenChange={setBatchImagePackageDialogOpen}>
               <DialogTrigger asChild>
-                <Button type="button" size="sm" variant="outline">
+                <Button type="button" size="sm" variant="outline" disabled={!canWrite}>
                   <Upload className="size-4" />
                   批量上传图包
                 </Button>
@@ -482,7 +487,7 @@ export default function PrePublishValidationPage() {
                   <Button
                     type="button"
                     onClick={() => batchImagePackageFile && batchUploadImagePackageMutation.mutate(batchImagePackageFile)}
-                    disabled={!batchImagePackageFile || batchUploadImagePackageMutation.isPending}
+                    disabled={!canWrite || !batchImagePackageFile || batchUploadImagePackageMutation.isPending}
                   >
                     {batchUploadImagePackageMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Upload className="mr-2 size-4" />}
                     {batchUploadImagePackageMutation.isPending ? "正在上传并匹配…" : "上传并批量填充"}
@@ -495,7 +500,7 @@ export default function PrePublishValidationPage() {
               size="sm"
               variant="outline"
               onClick={createDraftFromSelectedProducts}
-              disabled={createDraftMutation.isPending || selectedSpuCodes.length === 0}
+              disabled={!canWrite || createDraftMutation.isPending || selectedSpuCodes.length === 0}
             >
               {createDraftMutation.isPending ? (
                 <Loader2 className="size-4 animate-spin" />
@@ -506,7 +511,7 @@ export default function PrePublishValidationPage() {
             </Button>
             <Dialog open={createDraftDialogOpen} onOpenChange={setCreateDraftDialogOpen}>
               <DialogTrigger asChild>
-                <Button type="button" size="sm" variant="outline">
+                <Button type="button" size="sm" variant="outline" disabled={!canWrite}>
                   <Plus className="size-4" />
                   新建草稿
                 </Button>
@@ -528,7 +533,7 @@ export default function PrePublishValidationPage() {
                   <Button
                     type="button"
                     onClick={createDraftFromText}
-                    disabled={createDraftMutation.isPending}
+                    disabled={!canWrite || createDraftMutation.isPending}
                   >
                     {createDraftMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
                     创建草稿
@@ -539,11 +544,13 @@ export default function PrePublishValidationPage() {
             <BatchPublishDialog
               listingIds={Array.from(selectedDraftIds)}
               triggerLabel="批量提交发布"
-              disabled={selectedDraftIds.size === 0}
+              disabled={!canPublish || selectedDraftIds.size === 0}
+              canWrite={canWrite}
+              canPublish={canPublish}
             />
             <Dialog open={batchImageDialogOpen} onOpenChange={setBatchImageDialogOpen}>
               <DialogTrigger asChild>
-                <Button type="button" size="sm" variant="outline" disabled={selectedDraftIds.size === 0}>
+                  <Button type="button" size="sm" variant="outline" disabled={!canWrite || selectedDraftIds.size === 0}>
                   <ImageIcon className="size-4" />
                   批量导入图片目录
                 </Button>
@@ -563,7 +570,7 @@ export default function PrePublishValidationPage() {
                   <Button
                     type="button"
                     onClick={() => batchImportFoldersMutation.mutate()}
-                    disabled={batchImportFoldersMutation.isPending || !batchImageFolderPath.trim()}
+                    disabled={!canWrite || batchImportFoldersMutation.isPending || !batchImageFolderPath.trim()}
                   >
                     {batchImportFoldersMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
                     批量导入图片目录
@@ -647,7 +654,9 @@ export default function PrePublishValidationPage() {
           </div>
         </CompactListCardHeader>
         <CompactListCardContent>
-          {isLoading ? (
+          {isError ? (
+            <QueryErrorState message={error instanceof Error ? error.message : undefined} onRetry={() => void refetch()} />
+          ) : isLoading ? (
             <div className="py-10 text-center text-sm text-muted-foreground">草稿加载中...</div>
           ) : drafts.length === 0 ? (
             <EmptyState icon={FileClock} message="暂无发布草稿，请先到 SHEIN 商品分桶勾选商品并创建草稿" />
@@ -747,28 +756,28 @@ export default function PrePublishValidationPage() {
                             <DropdownMenuLabel>草稿操作</DropdownMenuLabel>
                             <DropdownMenuItem
                               onSelect={() => duplicateDraftMutation.mutate(draft.id)}
-                              disabled={duplicateDraftMutation.isPending}
+                              disabled={!canWrite || duplicateDraftMutation.isPending}
                             >
                               <CopyPlus className="size-4" />
                               派生一份草稿
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               onSelect={() => updateStatusMutation.mutate({ listingId: draft.id, status: "READY_TO_VALIDATE" })}
-                              disabled={updateStatusMutation.isPending}
+                              disabled={!canWrite || updateStatusMutation.isPending}
                             >
                               <PlayCircle className="size-4" />
                               标记待校验
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               onSelect={() => updateStatusMutation.mutate({ listingId: draft.id, status: "PAUSED" })}
-                              disabled={updateStatusMutation.isPending}
+                              disabled={!canWrite || updateStatusMutation.isPending}
                             >
                               <PauseCircle className="size-4" />
                               暂停草稿
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               onSelect={() => updateStatusMutation.mutate({ listingId: draft.id, status: "DRAFT" })}
-                              disabled={updateStatusMutation.isPending}
+                              disabled={!canWrite || updateStatusMutation.isPending}
                             >
                               <RefreshCw className="size-4" />
                               恢复草稿
@@ -784,7 +793,7 @@ export default function PrePublishValidationPage() {
                                 <DropdownMenuItem
                                   variant="destructive"
                                   onSelect={(event) => event.preventDefault()}
-                                  disabled={deleteDraftMutation.isPending}
+                                  disabled={!canWrite || deleteDraftMutation.isPending}
                                 >
                                   <Trash2 className="size-4" />
                                   删除草稿

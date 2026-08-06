@@ -5,6 +5,11 @@ import {
   markPublishTaskStatusSynced,
 } from "./publish-job-service"
 import { upsertAuditStatusSnapshots } from "../shein-operations"
+import {
+  mapSheinDocumentState,
+  parseSheinDocumentStates,
+  sheinDocumentStateLabel,
+} from "./shein-status-parser"
 
 type SourceRow = Record<string, unknown>
 
@@ -61,27 +66,6 @@ function firstPlatformIdentity(db: SyncPostgresDatabase, task: SourceRow, platfo
   `).get(task.platform, task.channel_account_id, task.listing_id, platformType) as SourceRow | undefined
 }
 
-function documentStateLabel(state: number) {
-  const labels: Record<number, string> = {
-    [-1]: "接收失败",
-    1: "待审核",
-    2: "审批成功",
-    3: "审批失败",
-    4: "已撤回",
-    5: "申诉中",
-  }
-  return labels[state] ?? `未知状态 ${state}`
-}
-
-function mapDocumentState(states: number[]) {
-  if (states.length === 0) return "UNDER_REVIEW"
-  if (states.some((state) => state === 3 || state === -1)) return "REJECTED"
-  if (states.every((state) => state === 2)) return "APPROVED"
-  if (states.some((state) => state === 2) && states.some((state) => [1, 5].includes(state))) return "PARTIALLY_APPROVED"
-  if (states.some((state) => [1, 5].includes(state))) return "UNDER_REVIEW"
-  return "UNDER_REVIEW"
-}
-
 function failureReasons(documentPayload: unknown) {
   const info = publishInfo(documentPayload)
   const rows = parseJsonArray(info.data)
@@ -100,19 +84,6 @@ function failureReasons(documentPayload: unknown) {
     }
   }
   return output
-}
-
-function documentStates(documentPayload: unknown) {
-  const info = publishInfo(documentPayload)
-  const states: number[] = []
-  for (const row of parseJsonArray(info.data)) {
-    const object = parseJsonObject(row)
-    for (const skc of parseJsonArray(object.skcList ?? object.skc_list)) {
-      const state = Number(parseJsonObject(skc).documentState ?? parseJsonObject(skc).document_state)
-      if (Number.isFinite(state)) states.push(state)
-    }
-  }
-  return states
 }
 
 function updateListingAndBucketStatus(db: SyncPostgresDatabase, listingId: unknown, status: string) {
@@ -200,8 +171,29 @@ export async function syncPublishTaskStatus(db: SyncPostgresDatabase, taskId: nu
     }
   }
 
-  const states = documentStates(result.payload)
-  const nextStatus = mapDocumentState(states)
+  const parsedStates = parseSheinDocumentStates(result.payload)
+  if (!parsedStates.valid) {
+    return {
+      ok: false,
+      task_id: taskId,
+      listing_id: task.listing_id,
+      error_code: "SHEIN_STATUS_UNKNOWN",
+      error_message: parsedStates.reason || "SHEIN 审核状态无法确认",
+      response: result.payload,
+    }
+  }
+  const states = parsedStates.states
+  const nextStatus = mapSheinDocumentState(states)
+  if (nextStatus === "STATUS_UNKNOWN") {
+    return {
+      ok: false,
+      task_id: taskId,
+      listing_id: task.listing_id,
+      error_code: "SHEIN_STATUS_UNKNOWN",
+      error_message: "SHEIN 审核状态无法确认",
+      response: result.payload,
+    }
+  }
   const reasons = failureReasons(result.payload)
   const message = reasons.join("；")
   upsertAuditStatusSnapshots(db, {
@@ -250,7 +242,7 @@ export async function syncPublishTaskStatus(db: SyncPostgresDatabase, taskId: nu
     listing_id: task.listing_id,
     status: nextStatus,
     task: syncedTask,
-    state_labels: states.map(documentStateLabel),
+    state_labels: states.map(sheinDocumentStateLabel),
     response: result.payload,
   }
 }

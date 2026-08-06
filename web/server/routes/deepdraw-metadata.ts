@@ -68,6 +68,7 @@ async function drainSyncJobs() {
           if (progress.completed === progress.total || progress.completed - lastPersisted >= 25) {
             lastPersisted = progress.completed
             updateMetadataSyncJobProgress(getDb(), job.id, {
+              workerId: metadataSyncWorkerId,
               totalCount: progress.total,
               completedCount: progress.completed,
               heartbeatAt: new Date().toISOString(),
@@ -76,6 +77,7 @@ async function drainSyncJobs() {
         },
       })
       updateMetadataSyncJobProgress(getDb(), job.id, {
+        workerId: metadataSyncWorkerId,
         status: "completed",
         totalCount: summary.fieldTradeCount,
         completedCount: summary.fieldTradeCount,
@@ -88,6 +90,7 @@ async function drainSyncJobs() {
     },
     markFailed: (job, error) => {
       updateMetadataSyncJobProgress(getDb(), job.id, {
+        workerId: metadataSyncWorkerId,
         status: "failed",
         errorMessage: error instanceof Error ? error.message : String(error),
         finishedAt: new Date().toISOString(),
@@ -95,6 +98,7 @@ async function drainSyncJobs() {
     },
     heartbeat: (job) => {
       updateMetadataSyncJobProgress(getDb(), job.id, {
+        workerId: metadataSyncWorkerId,
         heartbeatAt: new Date().toISOString(),
       })
     },

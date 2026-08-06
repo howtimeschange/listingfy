@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Box, Download, Edit3, Loader2, Plus, Search, Trash2, Upload } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
+import { useAuth } from "@/lib/auth-context"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { exportSpreadsheet, parseBatchSearch, readSpreadsheetFile } from "@/lib/spreadsheet"
 import type { SpreadsheetRow } from "@/lib/spreadsheet"
@@ -130,6 +131,8 @@ function formatRuleSize(rule: PackageRule) {
 }
 
 export default function PackageRulesPage() {
+  const { hasPermission } = useAuth()
+  const canWrite = hasPermission("RULE_WRITE")
   const [search, setSearch] = useState("")
   const [batchSearchText, setBatchSearchText] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -160,6 +163,7 @@ export default function PackageRulesPage() {
       toast.success(`导入完成：成功 ${result.success_count} 个 SKU，失败 ${result.failed_count} 行`)
       queryClient.invalidateQueries({ queryKey: ["business-rules", "product-weights"] })
     },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "导入产品毛重失败"),
   })
 
   const saveMutation = useMutation({
@@ -181,6 +185,7 @@ export default function PackageRulesPage() {
       setForm(emptyForm)
       queryClient.invalidateQueries({ queryKey: ["business-rules", "product-weights"] })
     },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "保存产品毛重失败"),
   })
 
   const saveRuleMutation = useMutation({
@@ -209,6 +214,7 @@ export default function PackageRulesPage() {
       queryClient.invalidateQueries({ queryKey: ["business-rules", "package-rules"] })
       queryClient.invalidateQueries({ queryKey: ["shein-products"] })
     },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "保存包装规则失败"),
   })
 
   const deleteMutation = useMutation({
@@ -217,6 +223,7 @@ export default function PackageRulesPage() {
       toast.success("产品毛重已删除")
       queryClient.invalidateQueries({ queryKey: ["business-rules", "product-weights"] })
     },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "删除产品毛重失败"),
   })
 
   const deleteRuleMutation = useMutation({
@@ -226,6 +233,7 @@ export default function PackageRulesPage() {
       queryClient.invalidateQueries({ queryKey: ["business-rules", "package-rules"] })
       queryClient.invalidateQueries({ queryKey: ["shein-products"] })
     },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "删除包装规则失败"),
   })
 
   async function handleFile(file: File | null) {
@@ -305,7 +313,7 @@ export default function PackageRulesPage() {
               <Download className="size-4" />
               导出
             </Button>
-            <Button asChild size="sm" variant="outline">
+            <Button asChild size="sm" variant="outline" disabled={!canWrite || importMutation.isPending}>
               <Label className="cursor-pointer">
                 {importMutation.isPending ? (
                   <Loader2 className="size-4 animate-spin" />
@@ -321,11 +329,11 @@ export default function PackageRulesPage() {
                 />
               </Label>
             </Button>
-            <Button size="sm" variant="outline" onClick={openCreate}>
+            <Button size="sm" variant="outline" onClick={openCreate} disabled={!canWrite}>
               <Plus className="size-4" />
               新增毛重
             </Button>
-            <Button size="sm" onClick={openCreateRule}>
+            <Button size="sm" onClick={openCreateRule} disabled={!canWrite}>
               <Plus className="size-4" />
               新增包装规则
             </Button>
@@ -356,7 +364,7 @@ export default function PackageRulesPage() {
                   优先级 {rule.priority}
                 </Badge>
                 <div className="flex gap-1">
-                  <Button variant="ghost" size="icon-xs" onClick={() => openEditRule(rule)}>
+                  <Button variant="ghost" size="icon-xs" onClick={() => openEditRule(rule)} disabled={!canWrite}>
                     <Edit3 className="size-3.5" />
                   </Button>
                   <Button
@@ -364,6 +372,7 @@ export default function PackageRulesPage() {
                     size="icon-xs"
                     className="text-destructive"
                     onClick={() => deleteRuleMutation.mutate(rule.id)}
+                    disabled={!canWrite || deleteRuleMutation.isPending}
                   >
                     <Trash2 className="size-3.5" />
                   </Button>
@@ -444,7 +453,7 @@ export default function PackageRulesPage() {
                     </TableCell>
                     <TableCell>{formatDateTime(item.updated_at || item.created_at)}</TableCell>
                     <TableCell className="space-x-2 text-right">
-                      <Button variant="ghost" size="sm" onClick={() => openEdit(item)}>
+                      <Button variant="ghost" size="sm" onClick={() => openEdit(item)} disabled={!canWrite}>
                         <Edit3 className="mr-1 size-4" />
                         编辑
                       </Button>
@@ -453,6 +462,7 @@ export default function PackageRulesPage() {
                         size="sm"
                         className="text-destructive"
                         onClick={() => deleteMutation.mutate(item.id)}
+                        disabled={!canWrite || deleteMutation.isPending}
                       >
                         <Trash2 className="mr-1 size-4" />
                         删除
@@ -515,7 +525,7 @@ export default function PackageRulesPage() {
                 onChange={(event) => setForm((current) => ({ ...current, package_weight_g: event.target.value }))}
               />
             </Label>
-            <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || !canSave}>
+            <Button onClick={() => saveMutation.mutate()} disabled={!canWrite || saveMutation.isPending || !canSave}>
               {saveMutation.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
               保存
             </Button>
@@ -612,7 +622,7 @@ export default function PackageRulesPage() {
                 rows={2}
               />
             </Label>
-            <Button onClick={() => saveRuleMutation.mutate()} disabled={saveRuleMutation.isPending || !canSaveRule}>
+            <Button onClick={() => saveRuleMutation.mutate()} disabled={!canWrite || saveRuleMutation.isPending || !canSaveRule}>
               {saveRuleMutation.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
               保存规则
             </Button>

@@ -71,6 +71,14 @@ class MemoryAuthDb {
       const user = this.users.find((row) => row.id === params[0]);
       return user ? { failed_login_count: user.failed_login_count } : undefined;
     }
+    if (sql.startsWith("update app_user set failed_login_count = coalesce(failed_login_count, 0) + 1")) {
+      const [maxFailures, lockedUntilCandidate, userId] = params;
+      const user = this.users.find((row) => row.id === userId);
+      if (!user) return undefined;
+      user.failed_login_count = Number(user.failed_login_count ?? 0) + 1;
+      user.locked_until = user.failed_login_count >= Number(maxFailures) ? lockedUntilCandidate : null;
+      return { failed_login_count: user.failed_login_count, locked_until: user.locked_until };
+    }
     if (sql === "select id from rbac_role where role_key = 'admin'") {
       return this.roles.find((row) => row.role_key === "ADMIN");
     }
@@ -259,17 +267,25 @@ test("session cookie secure flag follows the actual request protocol instead of 
   await withEnv({
     NODE_ENV: "production",
     LISTINGIFY_COOKIE_SECURE: undefined,
+    LISTINGIFY_TRUSTED_PROXY: undefined,
   }, () => {
     assert.equal(secureCookieFromRequest({ requestUrl: "http://localhost:3001/api/auth/login" }), false);
     assert.equal(secureCookieFromRequest({ requestUrl: "https://listingify.example.com/api/auth/login" }), true);
     assert.equal(secureCookieFromRequest({
       requestUrl: "http://listingify.internal/api/auth/login",
       forwardedProto: "https",
-    }), true);
+    }), false);
     assert.equal(secureCookieFromRequest({
       requestUrl: "http://listingify.internal/api/auth/login",
       forwardedProto: "http",
       forwardedSsl: "on",
+    }), false);
+  });
+
+  await withEnv({ LISTINGIFY_TRUSTED_PROXY: "true" }, () => {
+    assert.equal(secureCookieFromRequest({
+      requestUrl: "http://listingify.internal/api/auth/login",
+      forwardedProto: "https",
     }), true);
   });
 

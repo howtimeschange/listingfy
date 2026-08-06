@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, ClipboardCheck, Images, ListTree, Loader2, Pin, PinOff, RefreshCw, Save, Search, Send, Sparkles, Trash2, Upload, X } from "lucide-react"
 import { toast } from "sonner"
 import { api, ApiError } from "@/lib/api-client"
+import { useAuth } from "@/lib/auth-context"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { cn } from "@/lib/utils"
@@ -590,11 +591,13 @@ function MultiChoiceFieldEditor({
   value,
   options,
   onChange,
+  disabled = false,
 }: {
   field: DraftField
   value: string
   options: FieldOption[]
   onChange: (value: string) => void
+  disabled?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const selectedValues = splitMultiFieldValue(value)
@@ -624,6 +627,7 @@ function MultiChoiceFieldEditor({
             variant="outline"
             size="sm"
             className="h-8 w-full justify-between px-3 font-normal"
+            disabled={disabled}
           >
             <span className="truncate">
               {selectedTags.length ? `已选 ${formatNumber(selectedTags.length)} 项，继续添加` : "添加选项"}
@@ -641,7 +645,9 @@ function MultiChoiceFieldEditor({
                   <CommandItem
                     key={option.value}
                     value={`${option.label} ${option.value}`}
-                    onSelect={() => onChange(addMultiFieldValue(value, option.value, options))}
+                    onSelect={() => {
+                      if (!disabled) onChange(addMultiFieldValue(value, option.value, options))
+                    }}
                     className="gap-2"
                   >
                     <span className="min-w-0 flex-1 truncate">{option.label}</span>
@@ -651,7 +657,7 @@ function MultiChoiceFieldEditor({
             </CommandList>
             <div className="flex items-center justify-between border-t px-3 py-2">
               <span className="text-xs text-muted-foreground">当前已选 {formatNumber(selectedTags.length)} 项</span>
-              <Button type="button" variant="ghost" size="sm" onClick={() => onChange("")} disabled={selectedTags.length === 0}>
+              <Button type="button" variant="ghost" size="sm" onClick={() => onChange("")} disabled={disabled || selectedTags.length === 0}>
                 清空
               </Button>
             </div>
@@ -679,6 +685,7 @@ function MultiChoiceFieldEditor({
                 onClick={() => onChange(tag.optionValue
                   ? removeMultiFieldValue(value, tag.optionValue, options)
                   : clearInvalidMultiFieldValue(value, tag.rawValue))}
+                disabled={disabled}
                 aria-label={`移除${tag.label}`}
               >
                 <X className="size-3" />
@@ -699,6 +706,7 @@ function DraftImageUploadDialog({
   files,
   onFilesChange,
   isPending,
+  canWrite,
   onSubmit,
   trigger,
 }: {
@@ -707,6 +715,7 @@ function DraftImageUploadDialog({
   files: File[]
   onFilesChange: (files: File[]) => void
   isPending: boolean
+  canWrite: boolean
   onSubmit: () => void
   trigger: ReactNode
 }) {
@@ -746,7 +755,7 @@ function DraftImageUploadDialog({
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             取消
           </Button>
-          <Button type="button" disabled={isPending || files.length === 0} onClick={onSubmit}>
+          <Button type="button" disabled={!canWrite || isPending || files.length === 0} onClick={onSubmit}>
             {isPending ? <Loader2 className="size-4 animate-spin" /> : <Images className="size-4" />}
             上传并作为参考图
           </Button>
@@ -761,11 +770,13 @@ function DraftReferenceImagesSection({
   uploadDialog,
   onDelete,
   deletingImageId,
+  canWrite,
 }: {
   images: DraftImage[]
   uploadDialog: ReactNode
   onDelete: (imageId: number) => void
   deletingImageId: number | null
+  canWrite: boolean
 }) {
   return (
     <section className="rounded-lg border bg-card p-3">
@@ -800,7 +811,7 @@ function DraftReferenceImagesSection({
                   variant="ghost"
                   size="xs"
                   className="w-fit text-muted-foreground hover:text-[#d45656]"
-                  disabled={deletingImageId === image.id}
+                  disabled={!canWrite || deletingImageId === image.id}
                   onClick={() => onDelete(image.id)}
                 >
                   {deletingImageId === image.id ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
@@ -820,6 +831,8 @@ function DraftReferenceImagesSection({
 }
 
 export default function ProductArchiveDraftDetailPage() {
+  const { hasPermission } = useAuth()
+  const canWrite = hasPermission("PRODUCT_ARCHIVE_DRAFT_WRITE")
   const { draftId } = useParams()
   const queryClient = useQueryClient()
   const detail = useDraftDetail(draftId)
@@ -1194,7 +1207,7 @@ export default function ProductArchiveDraftDetailPage() {
           }}
         >
           <DialogTrigger asChild>
-            <Button type="button" variant="outline" size="sm">
+            <Button type="button" variant="outline" size="sm" disabled={!canWrite}>
               <ListTree className="size-4" />
               选择深绘类目
             </Button>
@@ -1290,7 +1303,7 @@ export default function ProductArchiveDraftDetailPage() {
               </Button>
               <Button
                 type="button"
-                disabled={!selectedTradeId || applyTrade.isPending}
+                disabled={!canWrite || !selectedTradeId || applyTrade.isPending}
                 onClick={() => applyTrade.mutate()}
               >
                 {applyTrade.isPending ? <Loader2 className="size-4 animate-spin" /> : <ListTree className="size-4" />}
@@ -1299,11 +1312,11 @@ export default function ProductArchiveDraftDetailPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-        <Button type="button" variant="outline" size="sm" onClick={() => validate.mutate()} disabled={validate.isPending || saveFields.isPending}>
+        <Button type="button" variant="outline" size="sm" onClick={() => validate.mutate()} disabled={!canWrite || validate.isPending || saveFields.isPending}>
           {validate.isPending ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />}
           重新校验
         </Button>
-        <Button type="button" variant="outline" size="sm" onClick={() => aiFill.mutate()} disabled={aiFill.isPending}>
+        <Button type="button" variant="outline" size="sm" onClick={() => aiFill.mutate()} disabled={!canWrite || aiFill.isPending}>
           {aiFill.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
           AI 推荐补齐空字段
         </Button>
@@ -1313,21 +1326,22 @@ export default function ProductArchiveDraftDetailPage() {
           files={imageUploadFiles}
           onFilesChange={setImageUploadFiles}
           isPending={uploadDraftImages.isPending}
+          canWrite={canWrite}
           onSubmit={() => uploadDraftImages.mutate()}
           trigger={(
-            <Button type="button" variant="outline" size="sm">
+            <Button type="button" variant="outline" size="sm" disabled={!canWrite}>
               <Images className="size-4" />
               上传 SPU 图
             </Button>
           )}
         />
-        <Button type="button" size="sm" onClick={() => dryRunSubmit.mutate()} disabled={dryRunSubmit.isPending}>
+        <Button type="button" size="sm" onClick={() => dryRunSubmit.mutate()} disabled={!canWrite || dryRunSubmit.isPending}>
           {dryRunSubmit.isPending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
           提交预览
         </Button>
         <Dialog open={publishDialogOpen} onOpenChange={setPublishDialogOpen}>
           <DialogTrigger asChild>
-            <Button type="button" size="sm" disabled={publishSubmit.isPending}>
+            <Button type="button" size="sm" disabled={!canWrite || publishSubmit.isPending}>
               {publishSubmit.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
               确认发布到深绘
             </Button>
@@ -1343,7 +1357,7 @@ export default function ProductArchiveDraftDetailPage() {
               <Button type="button" variant="outline" onClick={() => setPublishDialogOpen(false)}>
                 取消
               </Button>
-              <Button type="button" disabled={publishSubmit.isPending} onClick={() => publishSubmit.mutate()}>
+              <Button type="button" disabled={!canWrite || publishSubmit.isPending} onClick={() => publishSubmit.mutate()}>
                 {publishSubmit.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
                 确认发布到深绘
               </Button>
@@ -1355,9 +1369,10 @@ export default function ProductArchiveDraftDetailPage() {
       <DraftReferenceImagesSection
         images={referenceImages}
         deletingImageId={deletingImageId}
+        canWrite={canWrite}
         onDelete={(imageId) => deleteDraftImage.mutate(imageId)}
         uploadDialog={(
-          <Button type="button" variant="outline" size="sm" onClick={() => setImageUploadDialogOpen(true)}>
+          <Button type="button" variant="outline" size="sm" disabled={!canWrite} onClick={() => setImageUploadDialogOpen(true)}>
             <Images className="size-4" />
             上传参考图
           </Button>
@@ -1421,7 +1436,7 @@ export default function ProductArchiveDraftDetailPage() {
               <Button
                 type="button"
                 size="sm"
-                disabled={!tradeSelectionDecision.recommendedTrade || confirmRecommendedTrade.isPending}
+              disabled={!canWrite || !tradeSelectionDecision.recommendedTrade || confirmRecommendedTrade.isPending}
                 onClick={() => confirmRecommendedTrade.mutate()}
               >
                 {confirmRecommendedTrade.isPending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
@@ -1431,6 +1446,7 @@ export default function ProductArchiveDraftDetailPage() {
                 type="button"
                 variant="outline"
                 size="sm"
+                disabled={!canWrite}
                 onClick={() => {
                   setSelectedTradeId(draft.trade_id)
                   setTradeDialogOpen(true)
@@ -1448,6 +1464,7 @@ export default function ProductArchiveDraftDetailPage() {
                 type="button"
                 variant="outline"
                 size="sm"
+                disabled={!canWrite}
                 onClick={() => {
                   setSelectedTradeId(draft.trade_id)
                   setTradeDialogOpen(true)
@@ -1547,17 +1564,17 @@ export default function ProductArchiveDraftDetailPage() {
                       type="button"
                       variant="outline"
                       size="sm"
-                      disabled={changedFields.length === 0 || saveFields.isPending}
+                      disabled={!canWrite || changedFields.length === 0 || saveFields.isPending}
                       onClick={() => saveFields.mutate()}
                     >
                       {saveFields.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
                       保存字段
                     </Button>
-                    <Button type="button" variant="outline" size="sm" onClick={() => validate.mutate()} disabled={validate.isPending || saveFields.isPending}>
+                    <Button type="button" variant="outline" size="sm" onClick={() => validate.mutate()} disabled={!canWrite || validate.isPending || saveFields.isPending}>
                       {validate.isPending ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />}
                       重新校验
                     </Button>
-                    <Button type="button" variant="outline" size="sm" onClick={() => aiFill.mutate()} disabled={aiFill.isPending}>
+                    <Button type="button" variant="outline" size="sm" onClick={() => aiFill.mutate()} disabled={!canWrite || aiFill.isPending}>
                       {aiFill.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
                       AI 推荐补齐空字段
                     </Button>
@@ -1601,7 +1618,7 @@ export default function ProductArchiveDraftDetailPage() {
                   <div className="mt-2 text-sm text-muted-foreground">
                     先选择深绘类目，系统会按该类目的字段模板生成可填字段。
                   </div>
-                  <Button type="button" className="mt-4" onClick={() => setTradeDialogOpen(true)}>
+                  <Button type="button" className="mt-4" disabled={!canWrite} onClick={() => setTradeDialogOpen(true)}>
                     <ListTree className="size-4" />
                     选择深绘类目
                   </Button>
@@ -1686,6 +1703,7 @@ export default function ProductArchiveDraftDetailPage() {
                                   field={field}
                                   value={value}
                                   options={options}
+                                  disabled={!canWrite}
                                   onChange={(nextValue) => setFieldValues((current) => ({ ...current, [field.id]: nextValue }))}
                                 />
                               ) : isChoiceField && options.length > 0 ? (
@@ -1693,7 +1711,7 @@ export default function ProductArchiveDraftDetailPage() {
                                   value={options.some((option) => option.value === value) ? value : ""}
                                   onValueChange={(nextValue) => setFieldValues((current) => ({ ...current, [field.id]: nextValue }))}
                                 >
-                                  <SelectTrigger className="h-8">
+                                  <SelectTrigger className="h-8" disabled={!canWrite}>
                                     <SelectValue placeholder="选择字段值" />
                                   </SelectTrigger>
                                   <SelectContent>
@@ -1707,6 +1725,7 @@ export default function ProductArchiveDraftDetailPage() {
                               ) : isLongTextFieldType(field) ? (
                                 <Textarea
                                   value={value}
+                                  disabled={!canWrite}
                                   onChange={(event) => setFieldValues((current) => ({ ...current, [field.id]: event.target.value }))}
                                   placeholder="填写目标值"
                                   className="min-h-20 min-w-[260px]"
@@ -1714,6 +1733,7 @@ export default function ProductArchiveDraftDetailPage() {
                               ) : (
                                 <Input
                                   value={value}
+                                  disabled={!canWrite}
                                   onChange={(event) => setFieldValues((current) => ({ ...current, [field.id]: event.target.value }))}
                                   placeholder="填写目标值"
                                   className="h-8"
@@ -1766,7 +1786,7 @@ export default function ProductArchiveDraftDetailPage() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    disabled={recommendSizeChartMappings.isPending}
+                    disabled={!canWrite || recommendSizeChartMappings.isPending}
                     onClick={() => recommendSizeChartMappings.mutate()}
                   >
                     {recommendSizeChartMappings.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
@@ -1778,7 +1798,7 @@ export default function ProductArchiveDraftDetailPage() {
                         type="button"
                         variant="outline"
                         size="sm"
-                        disabled={!activeSizeChartMappings.length}
+                        disabled={!canWrite || !activeSizeChartMappings.length}
                       >
                         <ClipboardCheck className="size-4" />
                         查看全部映射
@@ -1839,7 +1859,7 @@ export default function ProductArchiveDraftDetailPage() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    disabled={!sizeChartRecommendation?.mappings.length || applySizeChartMappings.isPending || saveSizeChartMappings.isPending}
+                    disabled={!canWrite || !sizeChartRecommendation?.mappings.length || applySizeChartMappings.isPending || saveSizeChartMappings.isPending}
                     onClick={() => applySizeChartMappings.mutate()}
                   >
                     {applySizeChartMappings.isPending ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />}
@@ -1849,7 +1869,7 @@ export default function ProductArchiveDraftDetailPage() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    disabled={sizeChartChangedFields.length === 0 || saveSizeChartValues.isPending}
+                    disabled={!canWrite || sizeChartChangedFields.length === 0 || saveSizeChartValues.isPending}
                     onClick={() => saveSizeChartValues.mutate()}
                   >
                     {saveSizeChartValues.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
@@ -1858,7 +1878,7 @@ export default function ProductArchiveDraftDetailPage() {
                   <Button
                     type="button"
                     size="sm"
-                    disabled={!sizeChartRecommendation?.mappings.length || applySizeChartMappings.isPending || saveSizeChartMappings.isPending}
+                    disabled={!canWrite || !sizeChartRecommendation?.mappings.length || applySizeChartMappings.isPending || saveSizeChartMappings.isPending}
                     onClick={() => saveSizeChartMappings.mutate()}
                   >
                     {saveSizeChartMappings.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
@@ -1982,6 +2002,7 @@ export default function ProductArchiveDraftDetailPage() {
                                     <TableCell key={`${row.size}-${title}`} className="min-w-[150px]">
                                       <Input
                                         value={value}
+                                        disabled={!canWrite}
                                         onChange={(event) => setSizeChartCellValues((current) => ({
                                           ...current,
                                           [key]: event.target.value,

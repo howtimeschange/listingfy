@@ -1,14 +1,17 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Activity, AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, Clock, Download, Trash2 } from "lucide-react"
 import { api } from "@/lib/api-client"
 import {
   AsyncTaskContext,
+  asyncTaskStorageKeys,
   useAsyncTasks,
   type AddTaskInput,
   type AsyncTaskJob,
   type AsyncTaskRecord,
   type AsyncTaskContextValue,
 } from "@/lib/async-task-context"
+import { useAuth } from "@/lib/auth-context"
+import { ApiError } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
@@ -21,17 +24,16 @@ import {
 } from "@/components/ui/sheet"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
-const TASK_STORAGE_KEY = "listingify.asyncTasks.v1"
-const TASK_SEEN_STORAGE_KEY = "listingify.asyncTasks.lastSeenAt.v1"
 const TASK_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const TASK_CLEANUP_INTERVAL_MS = 10 * 60 * 1000
 const TASK_PAGE_SIZE = 5
 const MAX_STORED_TASKS = 100
 
-function readStoredTasks() {
+function readStoredTasks(userId: number | null) {
   if (typeof window === "undefined") return []
+  if (userId == null) return []
   try {
-    const raw = window.localStorage.getItem(TASK_STORAGE_KEY)
+    const raw = window.localStorage.getItem(asyncTaskStorageKeys(userId).tasks)
     if (!raw) return []
     const parsed = JSON.parse(raw)
     return Array.isArray(parsed) ? retainedTasks(parsed as AsyncTaskRecord[]) : []
@@ -40,9 +42,10 @@ function readStoredTasks() {
   }
 }
 
-function readStoredSeenAt() {
+function readStoredSeenAt(userId: number | null) {
   if (typeof window === "undefined") return ""
-  return window.localStorage.getItem(TASK_SEEN_STORAGE_KEY) ?? ""
+  if (userId == null) return ""
+  return window.localStorage.getItem(asyncTaskStorageKeys(userId).seen) ?? ""
 }
 
 function timeValue(value?: string | null) {
@@ -124,9 +127,13 @@ function hangtagWashlabelOcrTaskSummary(task: AsyncTaskRecord) {
 }
 
 export function AsyncTaskProvider({ children }: { children: ReactNode }) {
-  const [tasks, setTasks] = useState<AsyncTaskRecord[]>(() => readStoredTasks())
-  const [lastSeenAt, setLastSeenAt] = useState(() => readStoredSeenAt())
+  const { user } = useAuth()
+  const userId = user?.id ?? null
+  const [tasks, setTasks] = useState<AsyncTaskRecord[]>([])
+  const [lastSeenAt, setLastSeenAt] = useState("")
   const [open, setOpen] = useState(false)
+  const refreshInFlight = useRef<Promise<void> | null>(null)
+  const refreshGeneration = useRef(0)
   const currentActiveTaskCount = useMemo(() => activeTaskCount(tasks), [tasks])
   const unreadCompletedCount = useMemo(
     () => unreadCompletedTaskCount(tasks, lastSeenAt),
@@ -134,9 +141,19 @@ export function AsyncTaskProvider({ children }: { children: ReactNode }) {
   )
 
   useEffect(() => {
+    refreshGeneration.current += 1
+    // User identity changes are an external storage boundary; reset in-memory state immediately.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setTasks(readStoredTasks(userId))
+    setLastSeenAt(readStoredSeenAt(userId))
+    refreshInFlight.current = null
+  }, [userId])
+
+  useEffect(() => {
+    if (userId == null) return
     const retained = retainedTasks(tasks)
-    window.localStorage.setItem(TASK_STORAGE_KEY, JSON.stringify(retained))
-  }, [tasks])
+    window.localStorage.setItem(asyncTaskStorageKeys(userId).tasks, JSON.stringify(retained))
+  }, [tasks, userId])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -146,24 +163,39 @@ export function AsyncTaskProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const refreshTasks = useCallback(async () => {
+    if (refreshInFlight.current) return refreshInFlight.current
+    const generation = refreshGeneration.current
     const activeTasks = tasks.filter((task) => task.job?.status !== "completed")
     if (activeTasks.length === 0) return
-    const updates = await Promise.all(activeTasks.map(async (task) => {
-      try {
-        const job = await api.get<AsyncTaskJob>(task.endpoint)
-        return { id: task.id, job, lastError: null }
-      } catch (error) {
-        return {
-          id: task.id,
-          job: task.job ?? null,
-          lastError: error instanceof Error ? error.message : String(error),
+    const run = (async () => {
+      const updates = await Promise.all(activeTasks.map(async (task) => {
+        try {
+          const job = await api.get<AsyncTaskJob>(task.endpoint)
+          return { id: task.id, job, lastError: null, terminal: false }
+        } catch (error) {
+          const terminal = error instanceof ApiError && [401, 403, 404].includes(error.status)
+          return {
+            id: task.id,
+            job: task.job ?? null,
+            lastError: error instanceof Error ? error.message : String(error),
+            terminal,
+          }
         }
-      }
-    }))
-    setTasks((current) => current.map((task) => {
-      const update = updates.find((item) => item.id === task.id)
-      return update ? { ...task, job: update.job, lastError: update.lastError } : task
-    }))
+      }))
+      if (generation !== refreshGeneration.current) return
+      setTasks((current) => current
+        .filter((task) => !updates.some((update) => update.id === task.id && update.terminal))
+        .map((task) => {
+          const update = updates.find((item) => item.id === task.id)
+          return update ? { ...task, job: update.job, lastError: update.lastError } : task
+        }))
+    })()
+    refreshInFlight.current = run
+    try {
+      await run
+    } finally {
+      if (refreshInFlight.current === run) refreshInFlight.current = null
+    }
   }, [tasks])
 
   useEffect(() => {
@@ -177,10 +209,11 @@ export function AsyncTaskProvider({ children }: { children: ReactNode }) {
   const markTasksSeen = useCallback(() => {
     const seenAt = new Date().toISOString()
     setLastSeenAt(seenAt)
-    window.localStorage.setItem(TASK_SEEN_STORAGE_KEY, seenAt)
-  }, [])
+    if (userId != null) window.localStorage.setItem(asyncTaskStorageKeys(userId).seen, seenAt)
+  }, [userId])
 
   const addTask = useCallback((input: AddTaskInput) => {
+    if (userId == null) return
     const endpoint = input.endpoint ?? `/product-archive-drafts/batch-jobs/${input.job.id}`
     setTasks((current) => {
       const record: AsyncTaskRecord = {
@@ -195,7 +228,7 @@ export function AsyncTaskProvider({ children }: { children: ReactNode }) {
       }
       return retainedTasks([record, ...current.filter((task) => task.id !== input.job.id)])
     })
-  }, [])
+  }, [userId])
 
   const openTaskCenter = useCallback(() => {
     setOpen(true)

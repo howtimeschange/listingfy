@@ -1,7 +1,7 @@
 import type { Context } from "hono"
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import { getDb } from "../db"
-import { currentUser } from "./auth"
+import { currentUser, trustedClientAddress } from "./auth"
 
 export interface AuditInput {
   action: string
@@ -46,6 +46,9 @@ export function writeOperationLog(db: SyncPostgresDatabase, input: AuditInput, a
 
 export function auditFromContext(c: Context, input: AuditInput) {
   const user = currentUser(c)
-  const ip = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null
+  const ip = trustedClientAddress({
+    forwardedFor: c.req.header("x-forwarded-for"),
+    realIp: c.req.header("x-real-ip"),
+  })
   writeOperationLog(getDb(), input, user, ip ?? undefined)
 }

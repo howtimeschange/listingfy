@@ -113,6 +113,8 @@ interface BatchPublishDialogProps {
   triggerLabel?: string
   emptyMessage?: string
   disabled?: boolean
+  canWrite?: boolean
+  canPublish?: boolean
   variant?: "default" | "outline" | "ghost" | "link" | "destructive" | "secondary"
   className?: string
   selectionLabel?: string
@@ -186,6 +188,8 @@ export function BatchPublishDialog({
   triggerLabel = "批量提交发布",
   emptyMessage = "请先勾选要批量发布的草稿",
   disabled,
+  canWrite = true,
+  canPublish = true,
   variant = "default",
   className,
   selectionLabel = "已勾选草稿",
@@ -404,7 +408,7 @@ export function BatchPublishDialog({
         variant={variant}
         className={className}
         onClick={startBatchPublish}
-        disabled={disabled || batchCheckMutation.isPending}
+        disabled={disabled || !canPublish || batchCheckMutation.isPending}
       >
         {batchCheckMutation.isPending ? (
           <Loader2 className="mr-2 size-4 animate-spin" />
@@ -723,7 +727,7 @@ export function BatchPublishDialog({
               type="button"
               variant="outline"
               onClick={() => saveBlockingFieldsMutation.mutate(blockedItems)}
-              disabled={saveBlockingFieldsMutation.isPending || blockedItems.every((item) => !hasQuickAdjustments(item))}
+              disabled={!canWrite || saveBlockingFieldsMutation.isPending || blockedItems.every((item) => !hasQuickAdjustments(item))}
             >
               {saveBlockingFieldsMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
               保存调整并重新预检
@@ -731,7 +735,7 @@ export function BatchPublishDialog({
             <Button
               type="button"
               onClick={() => batchPublishMutation.mutate(batchCheck?.items ?? [])}
-              disabled={batchPublishMutation.isPending || publishableItems.length === 0 || blockedItems.length > 0}
+              disabled={!canPublish || batchPublishMutation.isPending || publishableItems.length === 0 || blockedItems.length > 0}
             >
               {batchPublishMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Send className="mr-2 size-4" />}
               确认批量发布

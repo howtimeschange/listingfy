@@ -314,7 +314,7 @@ npm run lint
 - 各平台生产环境通常有账号、白名单、签名、限流和审核差异，必须通过平台适配器隔离。
 - 平台密钥只通过环境变量或凭据引用使用，不写入项目文件。
 - 系统不再自动创建默认弱口令管理员。首次运行迁移后，使用 `npm run admin:create -- --username admin --display-name 系统管理员 --password '<强密码>'` 创建或重置管理员。
-- 生产环境应设置 `LISTINGIFY_ALLOWED_ORIGINS` 和 `LISTINGIFY_CREDENTIAL_SECRET`；后者用于加密平台对接密钥，保存凭据后需保持稳定。
+- 生产环境应设置 `LISTINGIFY_ALLOWED_ORIGINS`、`LISTINGIFY_PUBLIC_ORIGIN` 和 `LISTINGIFY_CREDENTIAL_SECRET`；启用反向代理时仅在代理会覆盖转发头的前提下设置 `LISTINGIFY_TRUSTED_PROXY=true`。凭据密钥用于加密平台对接密钥，保存凭据后需保持稳定。启用凭据 CORS 时不允许使用 `*` 通配来源。
 - PostgreSQL 本地数据由 `docker-compose.postgres.yml` 中的 Docker volume 管理；`data/shein-metadata/` 等同步产物不提交 Git。历史 `data/app.sqlite` 仅用于显式 legacy 转换/测试，不作为运行时数据库。
 - 平台类目、发布规范和属性模板会变化，需要定期同步，并在发布前刷新关键类目规范。
 - 当前 SHEIN 适配中，`fill_in_standard_list.show=false` 的字段不要提交，`attribute_status=3` 的属性必须补齐。
