@@ -168,11 +168,14 @@ test("confirmed category rules and deterministic fallbacks auto-select valid SHE
   assert.equal(fallbackDecision.reason, "RULE_FALLBACK_READY");
 });
 
-test("invalid metadata pairs and unreviewed stored AI suggestions never auto-select", () => {
+test("invalid metadata pairs do not apply, while stored AI suggestions apply for review", () => {
   assert.equal(decide({ metadataValid: false }).apply, false);
-  assert.equal(decide({
+  const storedAiDecision = decide({
     category: category({ source: "AI_CATEGORY", status: "NEEDS_REVIEW" }),
-  }).apply, false);
+  });
+  assert.equal(storedAiDecision.apply, false);
+  assert.equal(storedAiDecision.applyAsReview, true);
+  assert.equal(storedAiDecision.reason, "CATEGORY_NEEDS_REVIEW");
 });
 
 test("live AI auto-selects only READY, high-confidence, unsplit, risk-free candidates", () => {
@@ -201,7 +204,56 @@ test("live AI auto-selects only READY, high-confidence, unsplit, risk-free candi
   assert.equal(decision.confidence, 0.92);
 });
 
-test("ambiguous, low-confidence, risky, or split live AI candidates require review", () => {
+test("low-confidence or risky valid live AI candidates are applied for review", () => {
+  const missing = category({
+    categoryId: null,
+    productTypeId: null,
+    categoryName: null,
+    path: null,
+    source: "MISSING",
+    status: "MISSING",
+  });
+  const baseAi = {
+    ...category({ source: "AI_CATEGORY_LIVE" }),
+    status: "READY",
+    confidence: 0.92,
+    splitBySkc: false,
+    risks: [],
+  };
+
+  const lowConfidence = decide({
+    category: missing,
+    liveAi: { ...baseAi, confidence: 0.919 },
+    liveAiMetadataValid: true,
+  });
+  assert.equal(lowConfidence.apply, false);
+  assert.equal(lowConfidence.applyAsReview, true);
+  assert.equal(lowConfidence.reason, "AI_LOW_CONFIDENCE");
+
+  const risky = decide({
+    category: missing,
+    liveAi: { ...baseAi, risks: ["图文性别冲突"] },
+    liveAiMetadataValid: true,
+  });
+  assert.equal(risky.apply, false);
+  assert.equal(risky.applyAsReview, true);
+  assert.equal(risky.reason, "AI_HAS_RISKS");
+
+  const highRiskCategory = decide({
+    category: missing,
+    liveAi: {
+      ...baseAi,
+      categoryName: "女童（小）泳装",
+      path: "儿童 > 女童（小）服装 > 女童（小）泳装",
+    },
+    liveAiMetadataValid: true,
+  });
+  assert.equal(highRiskCategory.apply, false);
+  assert.equal(highRiskCategory.applyAsReview, true);
+  assert.equal(highRiskCategory.reason, "AI_HIGH_RISK_CATEGORY");
+});
+
+test("ambiguous, invalid, blocking-risk, or split live AI candidates are not applied", () => {
   const missing = category({
     categoryId: null,
     productTypeId: null,
@@ -225,26 +277,17 @@ test("ambiguous, low-confidence, risky, or split live AI candidates require revi
   }).apply, false);
   assert.equal(decide({
     category: missing,
-    liveAi: { ...baseAi, confidence: 0.919 },
-    liveAiMetadataValid: true,
-  }).apply, false);
-  assert.equal(decide({
-    category: missing,
-    liveAi: { ...baseAi, risks: ["图文性别冲突"] },
-    liveAiMetadataValid: true,
-  }).apply, false);
-  assert.equal(decide({
-    category: missing,
     liveAi: { ...baseAi, splitBySkc: true },
     liveAiMetadataValid: true,
   }).apply, false);
   assert.equal(decide({
     category: missing,
-    liveAi: {
-      ...baseAi,
-      categoryName: "女童（小）泳装",
-      path: "儿童 > 女童（小）服装 > 女童（小）泳装",
-    },
+    liveAi: { ...baseAi, blockingRisks: ["缺少 SKC 证据"] },
     liveAiMetadataValid: true,
   }).apply, false);
+  assert.equal(decide({
+    category: missing,
+    liveAi: baseAi,
+    liveAiMetadataValid: false,
+  }).applyAsReview, false);
 });

@@ -128,6 +128,16 @@ interface FieldGroup {
   fields: FillField[]
 }
 
+interface AiEnrichResult {
+  warning_count?: number
+  warnings?: Array<{ spu_code: string; message: string }>
+  category_selection?: {
+    apply?: boolean
+    applyAsReview?: boolean
+    message?: string
+  } | null
+}
+
 interface DimensionFieldGroup {
   dimension: "SPU" | "SKC" | "SKU"
   title: string
@@ -1064,7 +1074,7 @@ function FieldGroupsTable({
                               ) : (
                                 <Bot className="mr-1 size-3.5" />
                               )}
-                              AI 转换类目
+                              AI 自动选类目
                             </Button>
                           ) : null}
                           {onEditCategory && isCategoryField ? (
@@ -2305,20 +2315,29 @@ export default function PrePublishDraftDetailPage() {
 
   const aiEnrichMutation = useMutation({
     mutationFn: (mode: "all" | "attributes" | "category" | "title" | "description") =>
-      api.post<{ warning_count?: number; warnings?: Array<{ spu_code: string; message: string }> }>(
+      api.post<AiEnrichResult>(
         `/pre-publish/drafts/${listingId}/ai-enrich`,
         { mode },
       ),
     onSuccess: (result, mode) => {
-      toast.success(
-        mode === "category"
-          ? "AI 转换类目完成"
-          : mode === "title"
+      if (mode === "category") {
+        const selection = result.category_selection
+        if (selection?.apply) {
+          toast.success("AI 已自动选择并应用 SHEIN 类目")
+        } else if (selection?.applyAsReview) {
+          toast.success("AI 已自动选择 SHEIN 类目，待人工复核")
+        } else {
+          toast.warning(selection?.message ? `AI 未自动应用类目：${selection.message}` : "AI 未自动应用类目，需要人工选择")
+        }
+      } else {
+        toast.success(
+          mode === "title"
             ? "AI 翻译标题完成"
             : mode === "description"
               ? "AI 生成商品描述完成"
               : "AI 推荐补齐空字段完成",
-      )
+        )
+      }
       if (result.warning_count) {
         const firstWarning = result.warnings?.[0]
         toast.warning(
@@ -2647,7 +2666,7 @@ export default function PrePublishDraftDetailPage() {
               disabled={aiEnrichMutation.isPending}
             >
               <Bot className="size-4" />
-              AI 转换类目
+              AI 自动选类目
             </DropdownMenuItem>
             <DropdownMenuItem
               onSelect={() => aiEnrichMutation.mutate("title")}

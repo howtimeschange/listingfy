@@ -1465,6 +1465,85 @@ function fieldStatus(value: unknown, fallback: FillField["status"] = "READY") {
   return normalizeText(value) ? fallback : "MISSING"
 }
 
+function isLikelyEnglishTitle(value: unknown) {
+  const text = normalizeText(value)
+  return /[A-Za-z]/.test(text) && !/[\u3400-\u9fff]/.test(text)
+}
+
+function readinessWithListingTitle(readiness: ReadinessRow, titleEn: string): ReadinessRow {
+  const fieldGroups = readiness.field_groups.map((group) => ({
+    ...group,
+    fields: group.fields.map((field) => field.key === "title_en"
+      ? {
+        ...field,
+        value: titleEn,
+        source: "LISTING_TITLE",
+        status: "READY" as const,
+        note: "当前发布草稿标题",
+      }
+      : field),
+  }))
+  return {
+    ...readiness,
+    title_en: titleEn,
+    field_groups: fieldGroups,
+    dimension_field_groups: buildDimensionFieldGroups(fieldGroups),
+  }
+}
+
+function readinessWithListingDescription(readiness: ReadinessRow, description: string): ReadinessRow {
+  const fieldGroups = readiness.field_groups.map((group) => ({
+    ...group,
+    fields: group.fields.map((field) => field.key === "product_description"
+      ? {
+        ...field,
+        value: description,
+        source: "LISTING_DESCRIPTION",
+        status: "READY" as const,
+        note: "当前发布草稿描述",
+      }
+      : field),
+  }))
+  return {
+    ...readiness,
+    field_groups: fieldGroups,
+    dimension_field_groups: buildDimensionFieldGroups(fieldGroups),
+  }
+}
+
+function readinessWithoutSharedAiDescription(readiness: ReadinessRow): ReadinessRow {
+  const fieldGroups = readiness.field_groups.map((group) => ({
+    ...group,
+    fields: group.fields.map((field) => field.key === "product_description" && normalizeText(field.source).startsWith("AI_")
+      ? {
+        ...field,
+        value: null,
+        source: "AI/人工",
+        status: "NEEDS_AI" as const,
+        note: "拆分草稿需按当前发布单独生成商品描述。",
+      }
+      : field),
+  }))
+  return {
+    ...readiness,
+    field_groups: fieldGroups,
+    dimension_field_groups: buildDimensionFieldGroups(fieldGroups),
+  }
+}
+
+function categoryGenderValueForAttribute(attr: RequiredAttribute, category: CategoryOverride) {
+  const name = normalizeText(attr.attribute_name)
+  if (!name.includes("性别")) return ""
+  const categoryText = `${normalizeText(category.category_name)} ${normalizeText(category.path)}`
+  if (/男童|男孩|婴童（男）|男\)/.test(categoryText)) {
+    return findEnumValue(attr.values, ["男童", "男孩", "Boys", "Boy", "男"])
+  }
+  if (/女童|女孩|婴童（女）|女\)/.test(categoryText)) {
+    return findEnumValue(attr.values, ["女童", "女孩", "Girls", "Girl", "女"])
+  }
+  return ""
+}
+
 function shouldIncludeDependentCustomsField(value: unknown) {
   return parseJsonList(value).concat([normalizeText(value)])
     .some((item) => normalizeText(item) === UNSPECIFIED_TARIFF_VALUE)
@@ -1602,11 +1681,9 @@ function buildRow({
       source: category.source,
       status: category.status === "READY"
         ? "READY"
-        : category.status === "WARNING"
+        : category.status === "WARNING" || (category.category_id && category.product_type_id)
           ? "WARNING"
-        : category.status === "MISSING" || !category.category_id || !category.product_type_id
-          ? "MISSING"
-          : "NEEDS_AI",
+          : "MISSING",
       note: category.error || category.path,
     },
     { key: "title_cn", label: "中文标题", value: titleCn, source: storedTitleCn ? String(storedTitleCn.source ?? "MANUAL") : "DEEPDRAW", status: fieldStatus(titleCn) },
@@ -1700,7 +1777,26 @@ function buildRow({
   const attributeFields: FillField[] = attrs.filter((attr) => attr.attribute_type !== 1).map((attr) => {
     const key = `attr:${attr.attribute_id}`
     const stored = getStoredFill(fills, spuCode, key)
-    if (stored) {
+    const categoryGenderValue = categoryGenderValueForAttribute(attr, category)
+    if (categoryGenderValue) {
+      return {
+        key,
+        label: attr.attribute_name,
+        value: categoryGenderValue,
+        source: "SHEIN 类目",
+        status: "READY",
+        confidence: 1,
+        note: "按当前 SHEIN 叶子类目确定性别。",
+        ...attributeFillMeta(attr),
+      }
+    }
+    const ignoreStoredAiComposition = Boolean(
+      stored
+      && normalizeText(attr.attribute_name).includes("成分")
+      && !compositionText
+      && normalizeText(stored.source).toUpperCase().startsWith("AI"),
+    )
+    if (stored && !ignoreStoredAiComposition) {
       const storedValue = stored.field_value == null ? "" : String(stored.field_value)
       const storedValues = renderKindForAttribute(attr) === "multi_enum" ? parseJsonList(storedValue) : [storedValue]
       const storedValid = (attr.values ?? []).length === 0
@@ -1838,7 +1934,17 @@ function buildRow({
       if (field.key === "category") continue
       const stored = getStoredFill(fills, spuCode, field.key)
       if (!stored) continue
+      if (normalizeText(field.source) === "SHEIN 类目" && normalizeText(field.label).includes("性别")) {
+        continue
+      }
       const storedValue = stored.field_value == null ? "" : String(stored.field_value)
+      if (
+        isCompositionAttributeField(field)
+        && !compositionText
+        && normalizeText(stored.source).toUpperCase().startsWith("AI")
+      ) {
+        continue
+      }
       if (field.conditional_on && !normalizeText(storedValue)) continue
       const storedValues = field.render_kind === "multi_enum" ? parseJsonList(storedValue) : [storedValue]
       if (
@@ -1994,6 +2100,46 @@ function getReadinessBySpu(db: ReturnType<typeof getDb>, spuCode: string) {
   return buildRow({ db, row, sizeConversions, discounts, weights, fills })
 }
 
+function storedReviewCategoryOverrideForListing(
+  db: ReturnType<typeof getDb>,
+  listing: ListingRow,
+  categoryId: number,
+  productTypeId: number,
+  metadata?: SourceRow | null,
+): CategoryOverride | null {
+  const stored = db.prepare(`
+    select *
+    from listing_field_fill
+    where spu_code = ?
+      and field_key = 'category'
+      and coalesce(status, 'ACTIVE') = 'ACTIVE'
+    order by updated_at desc, id desc
+    limit 1
+  `).get(listing.spu_code) as SourceRow | undefined
+  if (!stored) return null
+  const payload = parseJsonObject(stored.payload_json)
+  const storedCategoryId = asPositiveNumber(payload.category_id)
+  const storedProductTypeId = asPositiveNumber(payload.product_type_id)
+  if (storedCategoryId !== categoryId || storedProductTypeId !== productTypeId) return null
+  const source = normalizeText(stored.source)
+  const status = normalizeText(payload.status)
+  const reviewSource = source.endsWith("_REVIEW") || source === "AI_CATEGORY_REVIEW" || source === "AI_CATEGORY_LIVE_REVIEW"
+  if (status !== "NEEDS_REVIEW" && !reviewSource) return null
+  return {
+    category_id: categoryId,
+    product_type_id: productTypeId,
+    category_name: normalizeText(metadata?.category_name)
+      || normalizeText(payload.category_name)
+      || normalizeText(stored.field_value)
+      || normalizeText(listing.platform_category_name)
+      || null,
+    path: normalizeText(metadata?.path) || normalizeText(payload.path) || normalizeText(listing.platform_category_path) || null,
+    source: source || "AI_CATEGORY_REVIEW",
+    status: "NEEDS_REVIEW",
+    error: normalizeText(payload.error) || "AI 已自动选择类目，需要人工复核。",
+  }
+}
+
 function listingCategoryOverride(
   db: ReturnType<typeof getDb>,
   listing: ListingRow,
@@ -2009,6 +2155,10 @@ function listingCategoryOverride(
     metadataMatch: Boolean(metadata),
     metadataKnown: metadataState.known,
   })
+  const storedReview = pair.valid
+    ? storedReviewCategoryOverrideForListing(db, listing, categoryId, productTypeId, metadata)
+    : null
+  if (storedReview) return storedReview
   return {
     category_id: categoryId,
     product_type_id: productTypeId,
@@ -2040,7 +2190,7 @@ function getReadinessForListing(
   const weights = activeWeights(db)
   const fills = activeFillMap(db, [listing.spu_code])
   const override = options.ignoreListingCategory ? null : listingCategoryOverride(db, listing)
-  return buildRow({
+  const readiness = buildRow({
     db,
     row,
     sizeConversions,
@@ -2050,6 +2200,18 @@ function getReadinessForListing(
     categoryOverride: override,
     ignoreStoredCategory: options.ignoreStoredCategory,
   })
+  let adjustedReadiness = readiness
+  const listingTitle = normalizeText(listing.title)
+  if (isLikelyEnglishTitle(listingTitle)) {
+    adjustedReadiness = readinessWithListingTitle(adjustedReadiness, listingTitle)
+  }
+  const listingDescription = sanitizeProductDescription(listing.description)
+  if (listingDescription) {
+    adjustedReadiness = readinessWithListingDescription(adjustedReadiness, listingDescription)
+  } else if (normalizeText(listing.split_group_key)) {
+    adjustedReadiness = readinessWithoutSharedAiDescription(adjustedReadiness)
+  }
+  return adjustedReadiness
 }
 
 function validationStatusFor(row: ReadinessRow) {
@@ -2119,7 +2281,7 @@ function blockingIssueSuggestion(row: ReadinessRow, issue: string) {
     return "使用“转为 OpenAPI 单品发布”切换到非套装叶子类目，或先拆分部件。"
   }
   if (issue === "SHEIN 类目") {
-    return "使用“AI 转换类目”获取候选后人工确认，或在类目树手动选择合法 SHEIN 叶子类目。"
+    return "使用“AI 自动选类目”自动写入合法 SHEIN 叶子类目；低置信或高风险类目会保留人工复核提示。"
   }
   if (issue === "产品毛重/g") {
     return "导入毛重报表、刷新 SKU 毛重，或在尺码发布表人工填写；AI 不生成毛重。"
@@ -2618,6 +2780,7 @@ function refreshListingAfterFill(db: ReturnType<typeof getDb>, listingId: number
   db.prepare(`
     update listing
     set title = ?,
+        description = ?,
         platform_category_id = ?,
         product_type_id = ?,
         platform_category_name = ?,
@@ -2630,6 +2793,7 @@ function refreshListingAfterFill(db: ReturnType<typeof getDb>, listingId: number
     where id = ?
   `).run(
     readiness.title_en || readiness.title_cn || readiness.spu_name,
+    normalizeText(readinessFieldValue(readiness, "product_description")) || normalizeText(existing.description) || null,
     persistedCategory?.categoryId ?? null,
     persistedCategory?.productTypeId ?? null,
     persistedCategory?.categoryName ?? null,
@@ -3667,6 +3831,7 @@ function liveAiSelectionCandidate(liveCategory: LiveAiDraftCategory) {
     confidence: liveCategory.confidence,
     splitBySkc: liveCategory.splitBySkc,
     risks: liveCategory.risks,
+    blockingRisks: liveCategory.blockingRisks,
   }
 }
 
@@ -3704,19 +3869,48 @@ function categoryDecisionMessage(reason: CategoryAutoSelectionDecision["reason"]
   const messages: Record<CategoryAutoSelectionDecision["reason"], string> = {
     RULE_READY: "已命中确认类目规则",
     RULE_FALLBACK_READY: "性别、年龄段和品类均明确，已应用确定性类目算法",
-    AI_READY: "AI 建议达到自动应用门槛",
+    AI_READY: "AI 建议达到自动应用门槛，已自动选择 SHEIN 类目",
     CATEGORY_MISSING: "没有可用类目候选，需要人工选择",
     CATEGORY_PAIR_INVALID: "类目与 Product Type 未通过本地叶子类目校验",
     CATEGORY_NEEDS_REVIEW: "现有类目建议尚未确认",
     RULE_FALLBACK_DISABLED: "本次操作未允许自动应用 fallback 类目",
     AI_STATUS_NOT_READY: "AI 判定为歧义或无匹配",
-    AI_LOW_CONFIDENCE: "AI 置信度未达到 0.92",
+    AI_LOW_CONFIDENCE: "AI 已选择合法类目，但置信度未达到 0.92，需要人工复核",
     AI_SPLIT_BY_SKC: "同一 SPU 的不同 SKC 可能需要不同类目",
-    AI_HAS_RISKS: "AI 返回了需要人工核对的风险",
-    AI_HIGH_RISK_CATEGORY: "该细分类目必须人工确认",
+    AI_HAS_RISKS: "AI 已选择合法类目，但返回了需要人工核对的风险",
+    AI_HIGH_RISK_CATEGORY: "AI 已选择合法类目，但该细分类目必须人工确认",
     AI_CATEGORY_PAIR_INVALID: "AI 类目未通过本地叶子类目校验",
   }
   return messages[reason]
+}
+
+function reviewCategorySourceForDecision(decision: CategoryAutoSelectionDecision) {
+  const source = normalizeText(decision.source || decision.suggestion?.source || "AI_CATEGORY")
+  if (source === "AI_CATEGORY_LIVE") return "AI_CATEGORY_LIVE_REVIEW"
+  if (source === "AI_CATEGORY") return "AI_CATEGORY_REVIEW"
+  return source.endsWith("_REVIEW") ? source : `${source}_REVIEW`
+}
+
+function categoryApplicationFromDecision(decision: CategoryAutoSelectionDecision) {
+  if (decision.apply && decision.category) {
+    return {
+      category: decision.category,
+      source: normalizeText(decision.source || decision.category.source) || "CATEGORY_RULE",
+      status: "READY",
+      error: null,
+      reviewRequired: false,
+    }
+  }
+  if (decision.applyAsReview && decision.suggestion) {
+    return {
+      category: decision.suggestion,
+      source: reviewCategorySourceForDecision(decision),
+      status: "NEEDS_REVIEW",
+      error: categoryDecisionMessage(decision.reason),
+      reviewRequired: true,
+    }
+  }
+  return null
 }
 
 function categoryOverrideFromSelection(
@@ -3860,6 +4054,15 @@ function liveAiCategoryKeywords(row: ReadinessRow, sourceRow: SourceRow | null) 
     keywords.add("裤")
     keywords.add("长裤")
     keywords.add("短裤")
+  }
+  if (/鞋|慢跑|跑步|运动鞋|户外运动|凉鞋|拖鞋|靴/.test(text)) {
+    keywords.add("鞋")
+    keywords.add("运动鞋")
+    if (/慢跑|跑步/.test(text)) keywords.add("跑步鞋")
+    if (/户外/.test(text)) keywords.add("户外运动鞋")
+    if (/凉鞋/.test(text)) keywords.add("凉鞋")
+    if (/拖鞋/.test(text)) keywords.add("拖鞋")
+    if (/靴/.test(text)) keywords.add("靴")
   }
   if (/连衣裙|裙/.test(text)) {
     keywords.add("连衣裙")
@@ -5692,6 +5895,8 @@ function applyDraftCategorySelection({
   productTypeId,
   source,
   confidence = 1,
+  status = "READY",
+  error = null,
   payload = {},
 }: {
   db: ReturnType<typeof getDb>
@@ -5701,6 +5906,8 @@ function applyDraftCategorySelection({
   productTypeId: number | null
   source: string
   confidence?: number | null
+  status?: string | null
+  error?: string | null
   payload?: Record<string, unknown>
 }) {
   if (!categoryId && !productTypeId) return false
@@ -5742,10 +5949,56 @@ function applyDraftCategorySelection({
       category_name: category.category_name,
       path: category.path,
       source,
+      status: normalizeText(status) || "READY",
+      error: normalizeText(error) || null,
       ...payload,
     },
   })
   return true
+}
+
+function applyDraftCategoryDecision({
+  db,
+  listing,
+  listingId,
+  decision,
+  selectedFrom,
+  payload = {},
+}: {
+  db: ReturnType<typeof getDb>
+  listing: ListingRow
+  listingId: number
+  decision: CategoryAutoSelectionDecision
+  selectedFrom: string
+  payload?: Record<string, unknown>
+}) {
+  const application = categoryApplicationFromDecision(decision)
+  if (!application) return null
+  applyDraftCategorySelection({
+    db,
+    listing,
+    listingId,
+    categoryId: application.category.categoryId,
+    productTypeId: application.category.productTypeId,
+    source: application.source,
+    confidence: decision.confidence,
+    status: application.status,
+    error: application.error,
+    payload: {
+      selected_from: selectedFrom,
+      decision_reason: decision.reason,
+      review_required: application.reviewRequired,
+      ...payload,
+    },
+  })
+  return {
+    field_key: "category",
+    field_label: "SHEIN 类目",
+    field_value: application.category.categoryName || String(application.category.categoryId),
+    source: application.source,
+    confidence: decision.confidence,
+    review_required: application.reviewRequired,
+  }
 }
 
 function resetListingSkcImageConfirmation(
@@ -6815,27 +7068,15 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
       allowRuleFallback: true,
     })
     categorySelection = ruleDecision
-    if (ruleDecision.apply && ruleDecision.category) {
-      applyDraftCategorySelection({
-        db,
-        listing,
-        listingId,
-        categoryId: ruleDecision.category.categoryId,
-        productTypeId: ruleDecision.category.productTypeId,
-        source: ruleDecision.source || "CATEGORY_RULE",
-        confidence: ruleDecision.confidence,
-        payload: {
-          selected_from: "draft_ai_enrich_rule",
-          decision_reason: ruleDecision.reason,
-        },
-      })
-      saved.push({
-        field_key: "category",
-        field_label: "SHEIN 类目",
-        field_value: ruleDecision.category.categoryName,
-        source: ruleDecision.source || "CATEGORY_RULE",
-        confidence: ruleDecision.confidence,
-      })
+    const ruleApplication = applyDraftCategoryDecision({
+      db,
+      listing,
+      listingId,
+      decision: ruleDecision,
+      selectedFrom: "draft_ai_enrich_rule",
+    })
+    if (ruleApplication) {
+      saved.push(ruleApplication)
     } else if (shouldAskLiveAiCategory(categoryReadiness.category)) {
       const liveCategory = await safeResolveLiveAiDraftCategory(db, categoryReadiness)
       if (liveCategory) {
@@ -6844,30 +7085,19 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
           liveAi: liveCategory,
         })
         categorySelection = liveDecision
-        if (liveDecision.apply && liveDecision.category) {
-          applyDraftCategorySelection({
-            db,
-            listing,
-            listingId,
-            categoryId: liveDecision.category.categoryId,
-            productTypeId: liveDecision.category.productTypeId,
-            source: "AI_CATEGORY_LIVE",
-            confidence: liveDecision.confidence,
-            payload: {
-              reason: liveCategory.reasons.join("；"),
-              risks: liveCategory.risks,
-              selected_from: "draft_ai_enrich",
-              decision_reason: liveDecision.reason,
-            },
-          })
-          saved.push({
-            field_key: "category",
-            field_label: "SHEIN 类目",
-            field_value: liveCategory.categoryName || String(liveCategory.categoryId),
-            source: "AI_CATEGORY_LIVE",
-            confidence: liveDecision.confidence,
-          })
-        }
+        const liveApplication = applyDraftCategoryDecision({
+          db,
+          listing,
+          listingId,
+          decision: liveDecision,
+          selectedFrom: "draft_ai_enrich",
+          payload: {
+            reason: liveCategory.reasons.join("；"),
+            risks: liveCategory.risks,
+            blocking_risks: liveCategory.blockingRisks,
+          },
+        })
+        if (liveApplication) saved.push(liveApplication)
       }
     }
     if (saved.some((field) => field.field_key === "category")) {
@@ -6916,6 +7146,12 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
             context: "draft_ai_enrich",
           },
         })
+        db.prepare(`
+          update listing
+          set description = ?,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          where id = ?
+        `).run(productDescription, listingId)
         saved.push({
           field_key: "product_description",
           field_label: "商品描述",

@@ -184,6 +184,36 @@ test("category prompt makes model evidence primary and color evidence a no-model
   assert.match(prompt, /中性款.*0\.80/);
 });
 
+test("category prompt keeps shoe products in shoe category paths", () => {
+  const prompt = buildCategoryMatchPrompt({
+    groups: [{
+      match_key: "儿童慢跑鞋|女",
+      mdm_small_category_name: "慢跑鞋",
+      gender_name: "女",
+      deepdraw_title: "儿童慢跑鞋",
+      skc_examples: [],
+    }],
+    candidates: [
+      {
+        category_id: 6488,
+        product_type_id: 3431,
+        category_name: "儿童跑步鞋",
+        path: "儿童 > 儿童鞋子 > 儿童户外运动鞋 > 儿童跑步鞋",
+      },
+      {
+        category_id: 4904,
+        product_type_id: 2104,
+        category_name: "女童（小）运动服",
+        path: "儿童 > 女童（小）服装 > 女童（小）运动服",
+      },
+    ],
+  });
+
+  assert.match(prompt, /慢跑鞋、跑步鞋、运动鞋/);
+  assert.match(prompt, /儿童鞋子或青少年鞋/);
+  assert.match(prompt, /不能误选运动服或普通服装/);
+});
+
 test("parseAiCategoryMatchResponse extracts suggestions from fenced JSON", () => {
   const suggestions = parseAiCategoryMatchResponse(`
     \`\`\`json

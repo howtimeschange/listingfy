@@ -1007,7 +1007,7 @@ test("pre-publish sale attributes require enum ids when SHEIN metadata provides 
   assert.match(source, /return Boolean\(normalizeText\(payload\.custom_attribute_value\)\)/);
 });
 
-test("draft AI category enrichment calls AI live and applies only a policy-approved category", async () => {
+test("draft AI category enrichment calls AI live and applies valid selections to the draft", async () => {
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
 
   assert.match(source, /callAiCategoryMatcher/);
@@ -1016,9 +1016,11 @@ test("draft AI category enrichment calls AI live and applies only a policy-appro
   assert.match(source, /async function safeResolveLiveAiDraftCategory/);
   assert.match(source, /safeResolveLiveAiDraftCategory\(db,\s*categoryReadiness\)/);
   assert.match(source, /const liveDecision = categoryDecisionForReadiness/);
-  assert.match(source, /if \(liveDecision\.apply && liveDecision\.category\)/);
+  assert.match(source, /function applyDraftCategoryDecision/);
+  assert.match(source, /categoryApplicationFromDecision\(decision\)/);
+  assert.match(source, /review_required: application\.reviewRequired/);
   assert.match(source, /applyDraftCategorySelection/);
-  assert.match(source, /source:\s*"AI_CATEGORY_LIVE"/);
+  assert.match(source, /AI_CATEGORY_LIVE_REVIEW/);
   assert.match(source, /fieldLabel:\s*"SHEIN 类目"/);
   assert.doesNotMatch(source, /fieldLabel:\s*"SHEIN 类目候选"/);
 });
@@ -1209,6 +1211,20 @@ test("draft category AI recomputes from source data instead of replaying the dra
   assert.match(source, /const ruleDecision = categoryDecisionForReadiness\(db,\s*categoryReadiness\.category/);
   assert.match(source, /function selectedReadinessForListing/);
   assert.match(source, /displayReadinessForSelectedSkcs\(readiness,\s*selectedSkcs,\s*readiness\.skcs\)/);
+  assert.match(source, /function isLikelyEnglishTitle/);
+  assert.match(source, /function readinessWithListingTitle/);
+  assert.match(source, /isLikelyEnglishTitle\(listingTitle\)[\s\S]+readinessWithListingTitle\(adjustedReadiness,\s*listingTitle\)/);
+  assert.match(source, /function readinessWithListingDescription/);
+  assert.match(source, /function readinessWithoutSharedAiDescription/);
+  assert.match(source, /sanitizeProductDescription\(listing\.description\)/);
+  assert.match(source, /normalizeText\(listing\.split_group_key\)[\s\S]+readinessWithoutSharedAiDescription\(adjustedReadiness\)/);
+  assert.match(source, /description = \?/);
+  assert.match(source, /readinessFieldValue\(readiness,\s*"product_description"\)/);
+  assert.match(source, /set description = \?,[\s\S]+where id = \?/);
+  assert.match(source, /function categoryGenderValueForAttribute/);
+  assert.match(source, /const categoryGenderValue = categoryGenderValueForAttribute\(attr,\s*category\)/);
+  assert.match(source, /source:\s*"SHEIN 类目"[\s\S]+按当前 SHEIN 叶子类目确定性别。/);
+  assert.match(source, /normalizeText\(field\.source\) === "SHEIN 类目" && normalizeText\(field\.label\)\.includes\("性别"\)[\s\S]+continue/);
   assert.match(source, /let enrichmentReadiness = selectedReadinessForListing\(db,\s*listingId,\s*readiness\)/);
   assert.match(source, /const updatedReadiness = updatedListing \? getReadinessForListing\(db,\s*updatedListing\) : null/);
   assert.match(source, /if \(updatedReadiness\) enrichmentReadiness = selectedReadinessForListing\(db,\s*listingId,\s*updatedReadiness\)/);
@@ -1218,6 +1234,9 @@ test("draft category AI recomputes from source data instead of replaying the dra
   assert.match(source, /aiFills = await callAiFill\(enrichmentReadiness\) as Array<Record<string, unknown>>/);
   assert.match(source, /resolveSheinKidsCategoryFallback/);
   assert.match(bucketSource, /resolveSheinKidsCategoryFallback/);
+  assert.match(source, /AI_CATEGORY_LIVE_REVIEW/);
+  assert.match(source, /category\.status === "WARNING" \|\| \(category\.category_id && category\.product_type_id\)[\s\S]+?\? "WARNING"/);
+  assert.match(source, /跑步鞋/);
 });
 
 test("SHEIN AI fill avoids unsupported composition guesses and handles conditional lining", async () => {
@@ -1229,6 +1248,9 @@ test("SHEIN AI fill avoids unsupported composition guesses and handles condition
   assert.match(source, /const compositionTextSource = deepdrawCompositionText \? "DEEPDRAW" : mdmCompositionText \? "MDM" : "MDM\/DEEPDRAW"/);
   assert.match(source, /isCompositionAttributeField\(field\)\s*&&\s*!compositionSourceForReadiness\(row\)\)\s*return ""/);
   assert.match(source, /normalizeText\(attr\.attribute_name\)\.includes\("成分"\) && !compositionText/);
+  assert.match(source, /const ignoreStoredAiComposition = Boolean\(/);
+  assert.match(source, /stored && !ignoreStoredAiComposition/);
+  assert.match(source, /isCompositionAttributeField\(field\)[\s\S]+!compositionText[\s\S]+normalizeText\(stored\.source\)\.toUpperCase\(\)\.startsWith\("AI"\)[\s\S]+continue/);
   assert.match(source, /note:\s*"缺少 MDM\/深绘成分来源，禁止 AI 猜测成分枚举。"/);
   assert.match(source, /function isAiFillableAttributeField/);
   assert.match(source, /if \(!isAiFillableAttributeField\(field\)\) return ""/);
@@ -1251,7 +1273,7 @@ test("SHEIN draft validation suggestions separate AI-fillable fields from source
   assert.match(source, /AI 不生成毛重/);
   assert.match(source, /AI 不补图片/);
   assert.match(source, /AI 不编造成分/);
-  assert.match(source, /使用“AI 转换类目”获取候选后人工确认/);
+  assert.match(source, /使用“AI 自动选类目”自动写入合法 SHEIN 叶子类目/);
   assert.match(source, /canAiHelpIssue\(row,\s*issue\)/);
   assert.doesNotMatch(source, /使用 AI 补齐后重新保存/);
 });

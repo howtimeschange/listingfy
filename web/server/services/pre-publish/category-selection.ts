@@ -13,6 +13,7 @@ export type LiveAiCategorySelectionCandidate = CategorySelectionCandidate & {
   confidence?: number | null
   splitBySkc?: boolean
   risks?: unknown[]
+  blockingRisks?: unknown[]
 }
 
 export type AiCategoryCandidate = Record<string, unknown> & {
@@ -22,6 +23,7 @@ export type AiCategoryCandidate = Record<string, unknown> & {
 
 export type CategoryAutoSelectionDecision = {
   apply: boolean
+  applyAsReview?: boolean
   category: CategorySelectionCandidate | null
   suggestion: CategorySelectionCandidate | null
   source: string | null
@@ -130,9 +132,11 @@ function reviewDecision(
   reason: CategoryAutoSelectionDecision["reason"],
   suggestion: CategorySelectionCandidate | null,
   confidence: number | null = null,
+  options: { applyAsReview?: boolean } = {},
 ): CategoryAutoSelectionDecision {
   return {
     apply: false,
+    applyAsReview: options.applyAsReview === true,
     category: null,
     suggestion,
     source: suggestion?.source ? String(suggestion.source) : null,
@@ -189,6 +193,10 @@ export function categoryAutoSelectionDecision(input: {
     const risks = Array.isArray(input.liveAi?.risks)
       ? input.liveAi.risks.filter((risk) => String(risk ?? "").trim())
       : []
+    const blockingRisks = Array.isArray(input.liveAi?.blockingRisks)
+      ? input.liveAi.blockingRisks.filter((risk) => String(risk ?? "").trim())
+      : []
+    const canApplyForReview = input.liveAiMetadataValid === true
 
     if (aiStatus !== "READY") {
       return reviewDecision("AI_STATUS_NOT_READY", liveAi, Number.isFinite(confidence) ? confidence : null)
@@ -196,18 +204,21 @@ export function categoryAutoSelectionDecision(input: {
     if (input.liveAi?.splitBySkc === true) {
       return reviewDecision("AI_SPLIT_BY_SKC", liveAi, Number.isFinite(confidence) ? confidence : null)
     }
-    if (risks.length > 0) {
+    if (input.liveAiMetadataValid !== true) {
+      return reviewDecision("AI_CATEGORY_PAIR_INVALID", liveAi, Number.isFinite(confidence) ? confidence : null)
+    }
+    if (blockingRisks.length > 0) {
       return reviewDecision("AI_HAS_RISKS", liveAi, Number.isFinite(confidence) ? confidence : null)
+    }
+    if (risks.length > 0) {
+      return reviewDecision("AI_HAS_RISKS", liveAi, Number.isFinite(confidence) ? confidence : null, { applyAsReview: canApplyForReview })
     }
     const aiCategoryText = `${String(liveAi.categoryName ?? "")} ${String(liveAi.path ?? "")}`
     if (/套装|泳装|泳衣|牛仔|连体裤|婴儿|婴童/.test(aiCategoryText)) {
-      return reviewDecision("AI_HIGH_RISK_CATEGORY", liveAi, Number.isFinite(confidence) ? confidence : null)
+      return reviewDecision("AI_HIGH_RISK_CATEGORY", liveAi, Number.isFinite(confidence) ? confidence : null, { applyAsReview: canApplyForReview })
     }
     if (!Number.isFinite(confidence) || confidence < minConfidence) {
-      return reviewDecision("AI_LOW_CONFIDENCE", liveAi, Number.isFinite(confidence) ? confidence : null)
-    }
-    if (input.liveAiMetadataValid !== true) {
-      return reviewDecision("AI_CATEGORY_PAIR_INVALID", liveAi, confidence)
+      return reviewDecision("AI_LOW_CONFIDENCE", liveAi, Number.isFinite(confidence) ? confidence : null, { applyAsReview: canApplyForReview })
     }
     return {
       apply: true,
@@ -225,5 +236,7 @@ export function categoryAutoSelectionDecision(input: {
 
   if (!category) return reviewDecision("CATEGORY_MISSING", null)
   if (input.metadataValid !== true) return reviewDecision("CATEGORY_PAIR_INVALID", category)
-  return reviewDecision("CATEGORY_NEEDS_REVIEW", category)
+  return reviewDecision("CATEGORY_NEEDS_REVIEW", category, null, {
+    applyAsReview: source === "AI_CATEGORY" && status === "NEEDS_REVIEW",
+  })
 }
