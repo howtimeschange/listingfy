@@ -1177,6 +1177,14 @@ test("pre-publish basic fields expose DeepDraw product description", async () =>
   assert.match(source, /const productDescription = firstField\(fields,\s*\["商品描述", "商品卖点", "产品描述", "卖点", "推荐理由"\]\)/);
   assert.match(source, /key:\s*"product_description"[\s\S]+label:\s*"商品描述"[\s\S]+compactText\(productDescription,\s*160\)/);
   assert.match(source, /深绘字段池未返回商品描述\/卖点来源/);
+  assert.match(source, /function shouldGenerateProductDescription/);
+  assert.match(source, /scenario:\s*"shein_description"/);
+  assert.match(source, /promptVersion:\s*"shein-description-v1"/);
+  assert.match(source, /source:\s*"AI_DESCRIPTION"/);
+  assert.match(source, /不要编造成分、材质、百分比、毛重、图片上传状态/);
+  assert.match(source, /面料\|毛重\|重量\|净重\|克重\|图片\|主图/);
+  assert.match(source, /const fallback = sanitizeProductDescription\(heuristicProductDescription\(row\)\)/);
+  assert.match(source, /catch\(\(\) => sanitizeProductDescription\(heuristicProductDescription\(row\)\)\)/);
 });
 
 test("SHEIN SKC title defaults to the product title and AI fill reports warnings", async () => {
@@ -1222,13 +1230,30 @@ test("SHEIN AI fill avoids unsupported composition guesses and handles condition
   assert.match(source, /isCompositionAttributeField\(field\)\s*&&\s*!compositionSourceForReadiness\(row\)\)\s*return ""/);
   assert.match(source, /normalizeText\(attr\.attribute_name\)\.includes\("成分"\) && !compositionText/);
   assert.match(source, /note:\s*"缺少 MDM\/深绘成分来源，禁止 AI 猜测成分枚举。"/);
+  assert.match(source, /function isAiFillableAttributeField/);
+  assert.match(source, /if \(!isAiFillableAttributeField\(field\)\) return ""/);
+  assert.match(source, /\[58,\s*160,\s*1000062\]\.includes\(attributeId\)/);
+  assert.match(source, /\["性别",\s*"袖长"\]\.some/);
   assert.match(source, /function shouldIncludeFieldInAiFill/);
-  assert.match(source, /field\.status === "MISSING"[\s\S]+includes\("里衬"\)/);
+  assert.match(source, /if \(!isAiFillableAttributeField\(field\)\) return false/);
+  assert.match(source, /field\.status === "NEEDS_AI" \|\| field\.status === "MISSING"/);
   assert.match(source, /manual_fields:\s*attributeFields\.filter\(shouldIncludeFieldInAiFill\)/);
   assert.match(source, /field\.label\.includes\("里衬"\)\)\s*return pick\(\["无内衬"\]\)/);
   assert.match(source, /function inferredAttributeSource/);
   assert.match(source, /if \(normalizeText\(materialEvidenceFromDeepDraw\(fields\)\)\) return "DEEPDRAW"/);
   assert.match(source, /normalizeText\(row\.fabric_type_name\)[\s\S]+return "MDM"/);
+});
+
+test("SHEIN draft validation suggestions separate AI-fillable fields from source-owned blockers", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+
+  assert.match(source, /function blockingIssueSuggestion/);
+  assert.match(source, /AI 不生成毛重/);
+  assert.match(source, /AI 不补图片/);
+  assert.match(source, /AI 不编造成分/);
+  assert.match(source, /使用“AI 转换类目”获取候选后人工确认/);
+  assert.match(source, /canAiHelpIssue\(row,\s*issue\)/);
+  assert.doesNotMatch(source, /使用 AI 补齐后重新保存/);
 });
 
 test("SHEIN title fallback names pants instead of generic clothing", async () => {

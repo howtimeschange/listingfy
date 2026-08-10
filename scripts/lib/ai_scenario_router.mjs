@@ -37,6 +37,16 @@ const SCENARIO_ROUTES = {
       { providerKey: "semir_overseas_openai", model: "gemini-3-flash-preview" },
     ],
   },
+  shein_description: {
+    defaultMode: "shadow",
+    guardedRoute: [
+      { providerKey: "semir_overseas_openai", model: "gpt-5.6-sol" },
+      { providerKey: "semir_domestic_openai", model: "deepseek-v4-pro" },
+    ],
+    shadowRoute: [
+      { providerKey: "semir_overseas_openai", model: "gpt-5.6-sol" },
+    ],
+  },
   deepdraw_field_fill: {
     defaultMode: "shadow",
     guardedRoute: [

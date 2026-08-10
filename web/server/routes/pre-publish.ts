@@ -159,6 +159,7 @@ type FillField = {
   attribute_mode?: number | null
   attribute_status?: number | null
   attribute_input_num?: number | null
+  is_size_attribute?: number | null
   render_kind?: "text" | "textarea" | "single_enum" | "multi_enum" | "enum_with_text" | "readonly"
   conditional_on?: {
     field_key: string
@@ -303,6 +304,7 @@ function storedFillNote(stored: SourceRow, fallback?: string | null) {
   if (savedFrom) return fallback ?? null
   const source = normalizeText(stored.source)
   if (source === "AI_TRANSLATED") return "AI 基于中文标题、类目和款色生成英文标题"
+  if (source === "AI_DESCRIPTION") return "AI 基于商品标题、类目和款色生成商品描述"
   if (source.startsWith("AI_")) return "AI 基于商品档案上下文和 SHEIN 枚举值推荐"
   return fallback ?? null
 }
@@ -2098,6 +2100,45 @@ function draftBlockingIssues(db: ReturnType<typeof getDb>, listingId: number, ro
   return Array.from(issues)
 }
 
+function issueField(row: ReadinessRow, issue: string) {
+  return row.field_groups
+    .flatMap((group) => group.fields)
+    .find((field) => field.label === issue || field.key === issue) ?? null
+}
+
+function canAiHelpIssue(row: ReadinessRow, issue: string) {
+  const field = issueField(row, issue)
+  if (!field) return false
+  if (field.key === "category") return true
+  if (field.key === "title_en" || field.key === "product_description") return true
+  return isAiFillableAttributeField(field)
+}
+
+function blockingIssueSuggestion(row: ReadinessRow, issue: string) {
+  if (issue === "SHEIN OpenAPI 套装类目限制") {
+    return "使用“转为 OpenAPI 单品发布”切换到非套装叶子类目，或先拆分部件。"
+  }
+  if (issue === "SHEIN 类目") {
+    return "使用“AI 转换类目”获取候选后人工确认，或在类目树手动选择合法 SHEIN 叶子类目。"
+  }
+  if (issue === "产品毛重/g") {
+    return "导入毛重报表、刷新 SKU 毛重，或在尺码发布表人工填写；AI 不生成毛重。"
+  }
+  if (issue === "SKC 图片") {
+    return "上传/导入 SHEIN 图包并确认图片，完成平台图片转换后再发布；AI 不补图片。"
+  }
+  if (issue === "SHEIN尺码-录入" || /尺码|尺寸/.test(issue)) {
+    return "先选择合法 SHEIN 叶子类目，并维护尺码转换/销售属性枚举映射。"
+  }
+  if (issue === "成分" || issue === "成分来源" || /成分/.test(issue)) {
+    return "补充 MDM、深绘、吊牌或洗标/OCR 成分来源后再匹配枚举；AI 不编造成分。"
+  }
+  if (canAiHelpIssue(row, issue)) {
+    return "可在单款详情页使用 AI 生成候选值，人工复核后保存。"
+  }
+  return "在单款详情页人工编辑，或先补齐对应业务数据源后重新保存。"
+}
+
 function persistListingValidation(db: ReturnType<typeof getDb>, listingId: number, row: ReadinessRow) {
   db.prepare("delete from listing_validation_result where listing_id = ?").run(listingId)
   const issues = draftBlockingIssues(db, listingId, row)
@@ -2123,7 +2164,7 @@ function persistListingValidation(db: ReturnType<typeof getDb>, listingId: numbe
       issue,
       listingId,
       isSuitCategoryBlocker ? sheinOpenApiSuitCategoryMessage(row.category.category_name) : `${issue} 未补齐`,
-      isSuitCategoryBlocker ? "使用“转为 OpenAPI 单品发布”切换到非套装叶子类目，或先拆分部件。" : "在单款详情页人工编辑，或使用 AI 补齐后重新保存。",
+      blockingIssueSuggestion(row, issue),
     )
   }
   db.prepare(`
@@ -3439,6 +3480,105 @@ function heuristicEnglishTitle(row: ReadinessRow) {
   return [brand, productName, season, colorText].filter(Boolean).join(" ")
 }
 
+function productDescriptionField(row: ReadinessRow) {
+  return row.field_groups
+    .flatMap((group) => group.fields)
+    .find((field) => field.key === "product_description") ?? null
+}
+
+function shouldGenerateProductDescription(row: ReadinessRow) {
+  const field = productDescriptionField(row)
+  if (!field) return false
+  return !normalizeText(field.value) && (field.status === "MISSING" || field.status === "NEEDS_AI")
+}
+
+function heuristicProductDescription(row: ReadinessRow) {
+  const productName = normalizeText(row.title_cn) || normalizeText(row.spu_name) || normalizeText(row.category.category_name) || "童装单品"
+  const categoryName = normalizeText(row.category.category_name)
+  const brand = normalizeText(row.brand_name)
+  const colorNames = uniqueStrings(row.skcs.map((skc) => normalizeText(skc.color_name))).slice(0, 3)
+  const sentences = [
+    `${brand ? `${brand} ` : ""}${productName}，适合儿童日常穿着与出行搭配。`,
+  ]
+  if (categoryName && categoryName !== productName) {
+    sentences.push(`商品定位为${categoryName}，版型设计便于活动。`)
+  }
+  if (colorNames.length > 0) {
+    sentences.push(`当前款色包含${colorNames.join("、")}，可按搭配需求选择。`)
+  }
+  sentences.push("整体简洁耐看，适合上学、居家和户外等多种场景。")
+  return compactText(sentences.join(""), 320)
+}
+
+function sanitizeProductDescription(value: unknown) {
+  const text = compactText(value, 320)
+  if (text.length < 12) return ""
+  if (/(\d+(?:\.\d+)?\s*(?:%|g|kg|克|千克|公斤)|成分|材质|面料|毛重|重量|净重|克重|图片|主图|已上传|平台审核)/i.test(text)) return ""
+  return text
+}
+
+async function callAiGenerateProductDescription(row: ReadinessRow) {
+  const fallback = sanitizeProductDescription(heuristicProductDescription(row))
+  const config = resolveAiConfig()
+  const policy = resolveAiScenarioPolicy("shein_description")
+  if (policy.mode === "disabled") return fallback
+  if (policy.mode !== "guarded" && !config.apiKey) return fallback
+  const prompt = JSON.stringify({
+    task: "为 SHEIN 童装发布草稿生成商品描述",
+    output_schema: {
+      product_description: "80-160 字中文商品描述",
+    },
+    rules: [
+      "只返回 JSON，不要 Markdown。",
+      "描述只能基于商品标题、类目、品牌、款色和普通穿着场景。",
+      "不要编造成分、材质、百分比、毛重、图片上传状态、认证或平台审核承诺。",
+      "语气面向商品详情页，简洁自然，不写内部处理建议。",
+    ],
+    product: {
+      spu_code: row.spu_code,
+      spu_name: row.spu_name,
+      title_cn: row.title_cn,
+      title_en: row.title_en,
+      brand_name: row.brand_name,
+      category: row.category,
+      colors: row.skcs.map((skc) => normalizeText(skc.color_name)).filter(Boolean),
+    },
+  }, null, 2)
+  const response = await getDefaultAiScenarioRouter({ db: getDb() }).callJson(
+    withAiRoutingHashes({
+      scenario: "shein_description",
+      promptVersion: "shein-description-v1",
+      messages: [
+        {
+          role: "system",
+          content: "你是跨境童装商品文案助手，只能根据给定事实写保守商品描述。",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      validate: (json: { product_description?: unknown }) => Boolean(sanitizeProductDescription(json?.product_description)),
+      auditValue: (json: { product_description?: unknown }) => ({
+        product_description: sanitizeProductDescription(json?.product_description),
+      }),
+    }, {
+      input: {
+        spu_code: row.spu_code,
+        title_cn: row.title_cn,
+        category: row.category,
+        colors: row.skcs.map((skc) => normalizeText(skc.color_name)).filter(Boolean),
+      },
+    }),
+  )
+  const parsed = response.json as { product_description?: unknown }
+  return sanitizeProductDescription(parsed.product_description) || fallback
+}
+
+async function safeAiGenerateProductDescription(row: ReadinessRow) {
+  return callAiGenerateProductDescription(row).catch(() => sanitizeProductDescription(heuristicProductDescription(row)))
+}
+
 async function callAiTranslateTitle(row: ReadinessRow) {
   const config = resolveAiConfig()
   const policy = resolveAiScenarioPolicy("title_translation")
@@ -4062,7 +4202,19 @@ function isCompositionAttributeField(field: FillField) {
   return field.key.startsWith("attr:") && normalizeText(field.label).includes("成分")
 }
 
+function isAiFillableAttributeField(field: FillField) {
+  if (!field.key.startsWith("attr:")) return false
+  if (field.conditional_on) return false
+  if (isCompositionAttributeField(field)) return false
+  const label = normalizeText(field.label)
+  if (Number(field.is_size_attribute ?? 0) === 1 || /尺码|尺寸/.test(label)) return false
+  const attributeId = Number(field.attribute_id)
+  if ([58, 160, 1000062].includes(attributeId)) return true
+  return ["性别", "袖长"].some((keyword) => label.includes(keyword))
+}
+
 function safeAutomaticAttributeFillValue(field: FillField, row: ReadinessRow, aiFill?: Record<string, unknown>) {
+  if (!isAiFillableAttributeField(field)) return ""
   if (isCompositionAttributeField(field) && !compositionSourceForReadiness(row)) return ""
   const candidateValue = normalizeFillFieldValue(field.key, field.label, aiFill?.field_value)
   const validValues = new Set((field.options ?? []).map((option) => option.attribute_value))
@@ -4071,10 +4223,8 @@ function safeAutomaticAttributeFillValue(field: FillField, row: ReadinessRow, ai
 }
 
 function shouldIncludeFieldInAiFill(field: FillField) {
-  if (field.status === "NEEDS_AI") return true
-  return field.key.startsWith("attr:")
-    && field.status === "MISSING"
-    && normalizeText(field.label).includes("里衬")
+  if (!isAiFillableAttributeField(field)) return false
+  return field.status === "NEEDS_AI" || field.status === "MISSING"
 }
 
 function heuristicAiValue(field: FillField, row: ReadinessRow) {
@@ -4232,7 +4382,7 @@ async function generateSingleAiField(readiness: ReadinessRow, fieldKey: string) 
   if (!field) {
     throw new HTTPException(404, { message: "字段不存在" })
   }
-  if (field.key !== "title_en" && !field.key.startsWith("attr:")) {
+  if (field.key !== "title_en" && field.key !== "product_description" && !isAiFillableAttributeField(field)) {
     throw new HTTPException(400, { message: "当前字段不支持 AI 单字段生成" })
   }
 
@@ -4243,6 +4393,17 @@ async function generateSingleAiField(readiness: ReadinessRow, fieldKey: string) 
       fieldValue: normalizeFillFieldValue(field.key, field.label, fieldValue),
       source: "AI_TRANSLATED",
       confidence: 0.78,
+      payload: { title_cn: readiness.title_cn, category: readiness.category, context: "draft_ai_field" },
+    }
+  }
+
+  if (field.key === "product_description") {
+    const fieldValue = await safeAiGenerateProductDescription(readiness)
+    return {
+      field,
+      fieldValue: normalizeFillFieldValue(field.key, field.label, fieldValue),
+      source: "AI_DESCRIPTION",
+      confidence: 0.74,
       payload: { title_cn: readiness.title_cn, category: readiness.category, context: "draft_ai_field" },
     }
   }
@@ -6619,6 +6780,8 @@ prePublish.post("/drafts/:id/save", async (c) => {
   return c.json({ ok: true, version: refreshed.version, detail: getListingDetail(db, listingId) })
 })
 
+type DraftAiEnrichMode = "all" | "attributes" | "category" | "title" | "description"
+
 prePublish.post("/drafts/:id/ai-enrich", async (c) => {
   requirePermission(c, "LISTING_WRITE")
   const db = getDb()
@@ -6628,7 +6791,10 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
     throw new HTTPException(404, { message: "草稿不存在" })
   }
   const body = await c.req.json().catch(() => ({})) as { mode?: string }
-  const mode = normalizeText(body.mode || "all")
+  const requestedMode = normalizeText(body.mode || "all")
+  const mode: DraftAiEnrichMode = ["all", "attributes", "category", "title", "description"].includes(requestedMode)
+    ? requestedMode as DraftAiEnrichMode
+    : "all"
   const readiness = getReadinessForListing(db, listing)
   if (!readiness) {
     throw new HTTPException(404, { message: "商品档案不存在" })
@@ -6729,6 +6895,33 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
         field_label: "英文标题",
         field_value: titleEn,
       })
+    }
+  }
+
+  if (mode === "all" || mode === "description") {
+    if (shouldGenerateProductDescription(enrichmentReadiness)) {
+      const productDescription = await safeAiGenerateProductDescription(enrichmentReadiness)
+      if (productDescription) {
+        persistFill({
+          db,
+          spuCode: enrichmentReadiness.spu_code,
+          fieldKey: "product_description",
+          fieldLabel: "商品描述",
+          fieldValue: productDescription,
+          source: "AI_DESCRIPTION",
+          confidence: 0.74,
+          payload: {
+            title_cn: enrichmentReadiness.title_cn,
+            category: enrichmentReadiness.category,
+            context: "draft_ai_enrich",
+          },
+        })
+        saved.push({
+          field_key: "product_description",
+          field_label: "商品描述",
+          field_value: productDescription,
+        })
+      }
     }
   }
 
@@ -8548,8 +8741,9 @@ prePublish.post("/ai-fill", async (c) => {
     const titleNeedsAi = row.field_groups
       .flatMap((group) => group.fields)
       .find((field) => field.key === "title_en" && field.status === "NEEDS_AI")
+    const descriptionNeedsAi = shouldGenerateProductDescription(row)
     const fieldsToFill = row.manual_fields
-    if (!titleNeedsAi && fieldsToFill.length === 0) continue
+    if (!titleNeedsAi && !descriptionNeedsAi && fieldsToFill.length === 0) continue
     if (titleNeedsAi) {
       const titleValue = await safeAiTranslateTitle(row)
       if (titleValue) {
@@ -8572,6 +8766,31 @@ prePublish.post("/ai-fill", async (c) => {
           field_key: titleNeedsAi.key,
           field_label: titleNeedsAi.label,
           field_value: titleValue,
+        })
+      }
+    }
+    if (descriptionNeedsAi) {
+      const productDescription = await safeAiGenerateProductDescription(row)
+      if (productDescription) {
+        persistFill({
+          db,
+          spuCode: row.spu_code,
+          fieldKey: "product_description",
+          fieldLabel: "商品描述",
+          fieldValue: productDescription,
+          source: "AI_DESCRIPTION",
+          confidence: 0.74,
+          payload: {
+            title_cn: row.title_cn,
+            category: row.category,
+            context: "batch_ai_fill",
+          },
+        })
+        saved.push({
+          spu_code: row.spu_code,
+          field_key: "product_description",
+          field_label: "商品描述",
+          field_value: productDescription,
         })
       }
     }

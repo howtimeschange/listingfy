@@ -260,9 +260,13 @@ test("pre publish has a single listing detail route with editable fields and ver
   assert.doesNotMatch(detailPage, /generatingFieldKey=\{aiFieldMutation\.variables\?\.key \?\? null\}/);
   assert.match(detailPage, /AI 转换类目/);
   assert.match(detailPage, /AI 翻译标题/);
+  assert.match(detailPage, /AI 生成商品描述/);
   assert.match(detailPage, /AI 推荐补齐空字段/);
   assert.match(detailPage, /warning_count\?: number/);
   assert.match(detailPage, /AI 处理有 \$\{formatNumber\(result\.warning_count\)\} 条提示/);
+  assert.match(detailPage, /field\.key === "title_en" \|\| field\.key === "product_description"/);
+  assert.match(detailPage, /\[58,\s*160,\s*1000062\]\.includes\(Number\(field\.attribute_id\)\)/);
+  assert.match(detailPage, /field\.label\.includes\("成分"\)\) return false/);
   assert.match(detailPage, /<Button[\s\S]+onClick=\{\(\) => aiEnrichMutation\.mutate\("all"\)\}[\s\S]+AI 推荐补齐空字段[\s\S]+<\/Button>[\s\S]+<DropdownMenu>/);
   assert.doesNotMatch(detailPage, /<DropdownMenuItem[\s\S]+aiEnrichMutation\.mutate\("all"\)[\s\S]+AI 推荐补齐空字段[\s\S]+<\/DropdownMenuItem>/);
   assert.match(detailPage, /保存草稿/);
@@ -380,6 +384,7 @@ test("pre publish AI calls use scenario routing while legacy responses remain co
   assert.match(route, /getDefaultAiScenarioRouter/);
   assert.match(route, /scenario:\s*"title_translation"/);
   assert.match(route, /scenario:\s*"shein_attribute"/);
+  assert.match(route, /scenario:\s*"shein_description"/);
   assert.doesNotMatch(route, /function retryableAiError/);
   assert.match(aiClient, /reasoning_content/);
   assert.match(aiClient, /retryableAiError/);
@@ -387,4 +392,5 @@ test("pre publish AI calls use scenario routing while legacy responses remain co
   assert.match(aiClient, /response\.status === 429 \|\| response\.status >= 500/);
   assert.match(aiRouter, /if \(httpStatus === 429\)/);
   assert.match(aiRouter, /invokeProviderWithRetry/);
+  assert.match(aiRouter, /shein_description/);
 });

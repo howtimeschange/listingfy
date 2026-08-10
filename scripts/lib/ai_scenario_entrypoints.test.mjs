@@ -18,6 +18,8 @@ test("SHEIN title and enum attributes use the persistent scenario router", () =>
   assert.match(prePublish, /promptVersion:\s*"title-translation-v1"/);
   assert.match(prePublish, /scenario:\s*"shein_attribute"/);
   assert.match(prePublish, /promptVersion:\s*"shein-enum-attribute-v1"/);
+  assert.match(prePublish, /scenario:\s*"shein_description"/);
+  assert.match(prePublish, /promptVersion:\s*"shein-description-v1"/);
 });
 
 test("legacy batch AI fill routes title generation through the title scenario", () => {

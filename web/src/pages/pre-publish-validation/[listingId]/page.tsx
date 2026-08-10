@@ -115,6 +115,7 @@ interface FillField {
   attribute_mode?: number | null
   attribute_status?: number | null
   attribute_input_num?: number | null
+  is_size_attribute?: number | null
   render_kind?: "text" | "textarea" | "single_enum" | "multi_enum" | "enum_with_text" | "readonly"
   conditional_on?: {
     field_key: string
@@ -550,7 +551,12 @@ function isConditionalFieldVisible(field: FillField, manualValues: Record<string
 
 function isAiGeneratableField(field: FillField) {
   if (field.conditional_on) return false
-  return field.key === "title_en" || field.key.startsWith("attr:")
+  if (field.key === "title_en" || field.key === "product_description") return true
+  if (!field.key.startsWith("attr:")) return false
+  if (field.label.includes("成分")) return false
+  if (Number(field.is_size_attribute ?? 0) === 1 || /尺码|尺寸/.test(field.label)) return false
+  if ([58, 160, 1000062].includes(Number(field.attribute_id))) return true
+  return ["性别", "袖长"].some((keyword) => field.label.includes(keyword))
 }
 
 function isSizeSaleAttribute(attribute: SaleAttribute) {
@@ -2298,7 +2304,7 @@ export default function PrePublishDraftDetailPage() {
   const publishing = publishMutation.isPending || saveDraftMutation.isPending
 
   const aiEnrichMutation = useMutation({
-    mutationFn: (mode: "all" | "attributes" | "category" | "title") =>
+    mutationFn: (mode: "all" | "attributes" | "category" | "title" | "description") =>
       api.post<{ warning_count?: number; warnings?: Array<{ spu_code: string; message: string }> }>(
         `/pre-publish/drafts/${listingId}/ai-enrich`,
         { mode },
@@ -2309,7 +2315,9 @@ export default function PrePublishDraftDetailPage() {
           ? "AI 转换类目完成"
           : mode === "title"
             ? "AI 翻译标题完成"
-            : "AI 推荐补齐空字段完成",
+            : mode === "description"
+              ? "AI 生成商品描述完成"
+              : "AI 推荐补齐空字段完成",
       )
       if (result.warning_count) {
         const firstWarning = result.warnings?.[0]
@@ -2647,6 +2655,13 @@ export default function PrePublishDraftDetailPage() {
             >
               <Languages className="size-4" />
               AI 翻译标题
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => aiEnrichMutation.mutate("description")}
+              disabled={aiEnrichMutation.isPending}
+            >
+              <Sparkles className="size-4" />
+              AI 生成商品描述
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => setCategoryDialogOpen(true)}>
