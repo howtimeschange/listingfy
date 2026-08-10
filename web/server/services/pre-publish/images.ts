@@ -378,17 +378,15 @@ export function buildSheinImageInfo(input: BuildSheinImageInfoInput): SheinImage
   let usedMain = false
   for (const asset of selectedAssets) {
     const type = sheinAssetType(asset.asset_type)
+    const imageUrl = sheinAssetUrl(asset, { allowSourceImages, allowLocalImages })
+    if (!imageUrl) continue
     const isFirstMain = type === "MAIN" && !usedMain
     if (type === "MAIN") usedMain = true
     output.push({
       image_sort: 0,
       image_type: sheinImageType(type, { mainImage: isFirstMain }),
-      image_url: sheinAssetUrl(asset, { allowSourceImages, allowLocalImages }),
+      image_url: imageUrl,
     })
-  }
-
-  if (fallbackImage && !output.some((image) => Number(image.image_type) === 6)) {
-    output.push({ image_sort: 0, image_type: 6, image_url: fallbackImage })
   }
 
   return {

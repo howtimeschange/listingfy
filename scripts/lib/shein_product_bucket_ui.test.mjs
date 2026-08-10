@@ -54,6 +54,8 @@ test("SHEIN product bucket has its own table, API, page, and navigation", async 
   assert.match(page, /勾选发布商品/);
   assert.match(page, /字段完整度/);
   assert.match(page, /AI 补齐人工判断字段/);
+  assert.match(page, /warning_count\?: number/);
+  assert.match(page, /AI 补齐有 \$\{formatNumber\(result\.warning_count\)\} 条提示/);
   assert.match(page, /从商品档案同步款号/);
   assert.match(page, /importBucketMutation/);
   assert.match(page, /\/shein-products\/import/);
@@ -63,6 +65,8 @@ test("SHEIN product bucket has its own table, API, page, and navigation", async 
   assert.match(page, /readinessStatusFilter/);
   assert.match(page, /ServerPagination/);
   assert.match(page, /\/pre-publish\/ai-fill/);
+  assert.match(page, /编辑类目/);
+  assert.match(page, /创建草稿后可手动编辑/);
   assert.match(page, /\/shein-products/);
   assert.doesNotMatch(page, /StatCard/);
 });

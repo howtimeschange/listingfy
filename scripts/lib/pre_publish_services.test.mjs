@@ -537,6 +537,24 @@ test("SHEIN image payload guarantees one main image and stable type ordering per
   );
   assert.equal(fallback?.image_info_list[0]?.image_url, "https://example.test/fallback-main.jpg");
 
+  const fallbackWithoutColorAsset = images.buildSheinImageInfo?.({
+    skcCode: "SKC-1",
+    skcImageUrl: "https://example.test/fallback-main.jpg",
+    allowSourceImages: true,
+    assets: [],
+  });
+  assert.deepEqual(fallbackWithoutColorAsset?.image_info_list.map((image) => image.image_type), [1]);
+
+  const localOnly = images.buildSheinImageInfo?.({
+    skcCode: "SKC-LOCAL",
+    skcImageUrl: "",
+    allowLocalImages: true,
+    assets: [
+      { id: 11, skc_code: "SKC-LOCAL", asset_type: "MAIN", image_sort: 1, local_path: "/tmp/local-main.jpg" },
+    ],
+  });
+  assert.deepEqual(localOnly?.image_info_list, []);
+
   const duplicateMains = images.buildSheinImageInfo?.({
     skcCode: "SKC-2",
     skcImageUrl: "",
@@ -1139,9 +1157,37 @@ test("publish precheck treats local uploaded images as pending SHEIN image asset
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
 
   assert.match(source, /allowLocalImages\?:\s*boolean/);
+  assert.match(source, /allowSkcImageUrl\?:\s*boolean/);
   assert.match(source, /allowLocalImages\s*&&\s*normalizeText\(asset\.local_path\)/);
+  assert.match(source, /skcImageUrl:\s*options\.allowSkcImageUrl === false \? "" : skc\.image_url/);
+  assert.match(source, /skcHasPendingPublishImage/);
+  assert.match(source, /图片将在提交前转换为 SHEIN 可用 URL/);
   assert.match(source, /buildPublishPayload\(db,\s*listingId,\s*\{\s*allowLocalImages:\s*true,\s*requirePreparedImages:\s*false\s*\}\)/);
   assert.match(source, /allowSourceImages:\s*true,\s*allowLocalImages:\s*true,\s*requirePreparedImages:\s*false/);
+  assert.match(source, /allowSkcImageUrl:\s*!requirePreparedImages/);
+  assert.doesNotMatch(source, /ensureFallbackColorAssets\(db,\s*listingId\)/);
+  assert.doesNotMatch(source, /发布前自动补齐 SKC 色块图/);
+  assert.match(source, /isAutoFallbackColorAsset/);
+  assert.match(source, /缺 \$\{requirement\.name\}/);
+});
+
+test("pre-publish basic fields expose DeepDraw product description", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+
+  assert.match(source, /const productDescription = firstField\(fields,\s*\["商品描述", "商品卖点", "产品描述", "卖点", "推荐理由"\]\)/);
+  assert.match(source, /key:\s*"product_description"[\s\S]+label:\s*"商品描述"[\s\S]+compactText\(productDescription,\s*160\)/);
+  assert.match(source, /深绘字段池未返回商品描述\/卖点来源/);
+});
+
+test("SHEIN SKC title defaults to the product title and AI fill reports warnings", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+
+  assert.match(source, /normalizeText\(readiness\.title_cn\) \|\| normalizeText\(skc\.skc_name\) \|\| skcCode/);
+  assert.match(source, /skc_title:\s*normalizeText\(listing\.title\) \|\| normalizeText\(skc\.skc_title\) \|\| normalizeText\(listing\.spu_code\)/);
+  assert.match(source, /function aiFillWarningMessage/);
+  assert.match(source, /const warnings: Array<\{ spu_code: string; message: string \}> = \[\]/);
+  assert.match(source, /AI 填写字段失败：\$\{aiFillWarningMessage\(error\)\}/);
+  assert.match(source, /warning_count: warnings\.length/);
 });
 
 test("draft category AI recomputes from source data instead of replaying the draft category", async () => {
@@ -1160,7 +1206,8 @@ test("draft category AI recomputes from source data instead of replaying the dra
   assert.match(source, /if \(updatedReadiness\) enrichmentReadiness = selectedReadinessForListing\(db,\s*listingId,\s*updatedReadiness\)/);
   assert.match(source, /function safeAiTranslateTitle/);
   assert.match(source, /const titleEn = await safeAiTranslateTitle\(enrichmentReadiness\)/);
-  assert.match(source, /const aiFills = await callAiFill\(enrichmentReadiness\)/);
+  assert.match(source, /let aiFills: Array<Record<string, unknown>> = \[\]/);
+  assert.match(source, /aiFills = await callAiFill\(enrichmentReadiness\) as Array<Record<string, unknown>>/);
   assert.match(source, /resolveSheinKidsCategoryFallback/);
   assert.match(bucketSource, /resolveSheinKidsCategoryFallback/);
 });

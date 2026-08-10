@@ -720,6 +720,9 @@ export default function PrePublishValidationPage() {
                       <p className="mt-1 text-xs text-muted-foreground">
                         {[draft.middle_class_name, draft.subclass_name].filter(Boolean).join(" / ") || "源类目待同步"}
                       </p>
+                      <Button asChild variant="link" size="sm" className="mt-1 h-auto p-0 text-xs">
+                        <Link to={`/pre-publish-validation/${draft.id}`}>编辑类目</Link>
+                      </Button>
                     </TableCell>
                     <TableCell>
                       <div className="space-y-1">

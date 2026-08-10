@@ -203,6 +203,8 @@ test("pre publish validation page is now a draft list after selection moved to S
   assert.match(page, /categoryFilter/);
   assert.match(page, /useDraftCategories/);
   assert.match(page, /SHEIN 类目筛选/);
+  assert.match(page, /编辑类目/);
+  assert.match(page, /to=\{`\/pre-publish-validation\/\$\{draft\.id\}`\}/);
   assert.match(page, /category_auto_selected/);
   assert.match(page, /自动选类目/);
   assert.match(page, /类目待确认/);
@@ -259,6 +261,8 @@ test("pre publish has a single listing detail route with editable fields and ver
   assert.match(detailPage, /AI 转换类目/);
   assert.match(detailPage, /AI 翻译标题/);
   assert.match(detailPage, /AI 推荐补齐空字段/);
+  assert.match(detailPage, /warning_count\?: number/);
+  assert.match(detailPage, /AI 处理有 \$\{formatNumber\(result\.warning_count\)\} 条提示/);
   assert.match(detailPage, /<Button[\s\S]+onClick=\{\(\) => aiEnrichMutation\.mutate\("all"\)\}[\s\S]+AI 推荐补齐空字段[\s\S]+<\/Button>[\s\S]+<DropdownMenu>/);
   assert.doesNotMatch(detailPage, /<DropdownMenuItem[\s\S]+aiEnrichMutation\.mutate\("all"\)[\s\S]+AI 推荐补齐空字段[\s\S]+<\/DropdownMenuItem>/);
   assert.match(detailPage, /保存草稿/);

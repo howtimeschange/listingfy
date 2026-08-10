@@ -166,6 +166,8 @@ interface CreateDraftResult {
 
 interface AiFillResult {
   saved_count: number
+  warning_count?: number
+  warnings?: Array<{ spu_code: string; message: string }>
 }
 
 interface ImportBucketResult {
@@ -445,6 +447,14 @@ export default function SheinProductsPage() {
       }),
     onSuccess: async (result) => {
       toast.success(`AI 补齐完成，已保存 ${result.saved_count} 个字段`)
+      if (result.warning_count) {
+        const firstWarning = result.warnings?.[0]
+        toast.warning(
+          firstWarning
+            ? `AI 补齐有 ${formatNumber(result.warning_count)} 条提示：${firstWarning.spu_code} ${firstWarning.message}`
+            : `AI 补齐有 ${formatNumber(result.warning_count)} 条提示`,
+        )
+      }
       await queryClient.invalidateQueries({ queryKey: ["shein-products"] })
     },
     onError: () => toast.error("AI 补齐失败，请稍后重试"),
@@ -906,6 +916,13 @@ export default function SheinProductsPage() {
                               <Badge variant="outline" className="mt-1">
                                 {labelFor(item.category_status)}
                               </Badge>
+                              {item.latest_listing_id ? (
+                                <Button asChild variant="link" size="sm" className="mt-1 h-auto p-0 text-xs">
+                                  <Link to={`/pre-publish-validation/${item.latest_listing_id}`}>编辑类目</Link>
+                                </Button>
+                              ) : (
+                                <div className="mt-1 text-xs text-muted-foreground">创建草稿后可手动编辑</div>
+                              )}
                             </div>
                           </TableCell>
                           <TableCell className="text-sm">

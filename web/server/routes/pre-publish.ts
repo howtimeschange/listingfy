@@ -64,6 +64,7 @@ import {
   sheinMainImageError,
   type PictureConfigRow,
   type PictureRequirement,
+  type SheinImageInfo,
 } from "../services/pre-publish/images"
 import {
   buildPublishSupplierSkuMap,
@@ -1575,6 +1576,7 @@ function buildRow({
   const titleCn = normalizeText(storedTitleCn?.field_value) || normalizeText(row.deepdraw_title) || normalizeText(row.listing_title_cn) || normalizeText(row.spu_name)
   const storedTitleEn = getStoredFill(fills, spuCode, "title_en")
   const titleEn = normalizeText(storedTitleEn?.field_value) || normalizeText(row.listing_title_en)
+  const productDescription = firstField(fields, ["商品描述", "商品卖点", "产品描述", "卖点", "推荐理由"])
   const deepdrawCompositionText = materialEvidenceFromDeepDraw(fields)
   const mdmCompositionText = normalizeText(row.composition)
     || normalizeText(row.wash_label_ingr)
@@ -1615,6 +1617,14 @@ function buildRow({
       note: titleEn ? null : "深绘英文标题为空，可由 AI 基于中文标题生成",
     },
     { key: "brand", label: "商品品牌", value: row.deepdraw_brand_name ?? row.brand_name, source: "MDM/DEEPDRAW", status: fieldStatus(row.deepdraw_brand_name ?? row.brand_name) },
+    {
+      key: "product_description",
+      label: "商品描述",
+      value: compactText(productDescription, 160),
+      source: "DEEPDRAW",
+      status: fieldStatus(productDescription),
+      note: productDescription ? null : "深绘字段池未返回商品描述/卖点来源。",
+    },
     { key: "product_line", label: "产品线描述", value: row.product_line_name, source: "MDM", status: fieldStatus(row.product_line_name) },
     { key: "gender", label: "性别描述", value: row.gender_name, source: "MDM", status: fieldStatus(row.gender_name) },
     { key: "season", label: "季节描述", value: row.season_name, source: "MDM", status: fieldStatus(row.season_name) },
@@ -2236,7 +2246,7 @@ function upsertListingChildren(db: ReturnType<typeof getDb>, listingId: number, 
       mdmSkcs.length ? asNumber(skc.id) : null,
       skcCode,
       skcCode,
-      normalizeText(skc.skc_name) || normalizeText(readiness.title_cn) || skcCode,
+      normalizeText(readiness.title_cn) || normalizeText(skc.skc_name) || skcCode,
       normalizeText(skc.color_name),
       imageUrl,
       JSON.stringify(colorPayload),
@@ -3217,8 +3227,19 @@ function getListingAssets(db: ReturnType<typeof getDb>, listingId: number, optio
 }
 
 function assetMatchesRequirement(asset: SourceRow, requirement: PictureRequirement) {
+  if (isAutoFallbackColorAsset(asset)) return false
   const assetType = normalizeText(asset.asset_type)
   return requirement.asset_types.includes(assetType)
+}
+
+function isAutoFallbackColorAsset(asset: SourceRow) {
+  const assetType = normalizeText(asset.asset_type)
+  return normalizeText(asset.source_type) === "SOURCE_FALLBACK"
+    && (assetType === "COLOR_BLOCK" || assetType === "COLOR")
+}
+
+function realImageAssets(assets: SourceRow[]) {
+  return assets.filter((asset) => !isAutoFallbackColorAsset(asset))
 }
 
 function getImageChecklist(skcs: SourceRow[], assets: SourceRow[], imageRequirements: PictureRequirement[] = []) {
@@ -3226,25 +3247,23 @@ function getImageChecklist(skcs: SourceRow[], assets: SourceRow[], imageRequirem
   return skcs.map((skc) => {
     const skcCode = normalizeText(skc.skc_code)
     const selected = Number(skc.selected_for_publish ?? 1) === 1
-    const skcAssets = assets.filter((asset) => normalizeText(asset.skc_code) === skcCode)
+    const skcAssets = realImageAssets(assets).filter((asset) => normalizeText(asset.skc_code) === skcCode)
     const hasTmallColor = Boolean(normalizeText(skc.image_url))
-    const hasImportedMain = skcAssets.some((asset) => ["MAIN", "COLOR_BLOCK", "COLOR"].includes(normalizeText(asset.asset_type)))
     const detailCount = skcAssets.filter((asset) => normalizeText(asset.asset_type).includes("DETAIL")).length
     const missing: string[] = []
     const requirementStatus = visibleSkcRequirements.map((requirement) => {
       const requirementAssets = skcAssets.filter((asset) => assetMatchesRequirement(asset, requirement))
-      const hasSourceColor = requirement.requirement_key === "SKC_COLOR_BLOCK" && hasTmallColor
-      const hasSourceMain = requirement.requirement_key === "SKC_DETAIL" && (hasTmallColor || hasImportedMain)
+      const hasSourceMain = requirement.requirement_key === "SKC_DETAIL" && hasTmallColor
       const required = requirement.required === 1
         || (requirement.requirement_key === "SKC_COLOR_BLOCK" && skcs.filter((item) => Number(item.selected_for_publish ?? 1) === 1).length > 1)
-      const satisfied = !selected || !required || hasSourceColor || hasSourceMain || requirementAssets.length > 0
+      const satisfied = !selected || !required || hasSourceMain || requirementAssets.length > 0
       if (selected && required && !satisfied) missing.push(requirement.name)
       return {
         requirement_key: requirement.requirement_key,
         name: requirement.name,
         level: requirement.level,
         required,
-        asset_count: requirementAssets.length + (hasSourceColor || hasSourceMain ? 1 : 0),
+        asset_count: requirementAssets.length + (hasSourceMain ? 1 : 0),
         status: satisfied ? "READY" : "MISSING",
       }
     })
@@ -4202,6 +4221,10 @@ async function callAiFill(row: ReadinessRow) {
   return Array.isArray(json.fills) ? json.fills : []
 }
 
+function aiFillWarningMessage(error: unknown) {
+  return normalizeText(error instanceof Error ? error.message : String(error)) || "AI 服务暂不可用"
+}
+
 async function generateSingleAiField(readiness: ReadinessRow, fieldKey: string) {
   const field = readiness.field_groups
     .flatMap((group) => group.fields)
@@ -4411,74 +4434,14 @@ function buildProductAttributeList(db: ReturnType<typeof getDb>, listing: Listin
   return output
 }
 
-function ensureFallbackColorAssets(db: ReturnType<typeof getDb>, listingId: number) {
-  const missing = db.prepare(`
-    select
-      skc.id as listing_skc_id,
-      skc.skc_code,
-      skc.image_url,
-      (
-        select coalesce(max(asset.image_sort), 0) + 1
-        from listing_asset asset
-        where asset.listing_id = skc.listing_id
-          and coalesce(asset.skc_code, '') = coalesce(skc.skc_code, '')
-      ) as next_sort
-    from listing_skc skc
-    where skc.listing_id = ?
-      and skc.selected_for_publish = 1
-      and coalesce(skc.image_url, '') <> ''
-      and not exists (
-        select 1
-        from listing_asset asset
-        where asset.listing_id = skc.listing_id
-          and coalesce(asset.skc_code, '') = coalesce(skc.skc_code, '')
-          and asset.asset_type in ('COLOR_BLOCK', 'COLOR')
-      )
-  `).all(listingId) as SourceRow[]
-  if (missing.length === 0) return
-
-  const insert = db.prepare(`
-    insert into listing_asset (
-      listing_id,
-      listing_skc_id,
-      skc_code,
-      source_type,
-      asset_type,
-      image_sort,
-      source_url,
-      status,
-      confirmed,
-      note,
-      raw_payload_json,
-      updated_at
-    )
-    values (?, ?, ?, 'SOURCE_FALLBACK', 'COLOR_BLOCK', ?, ?, 'PENDING_CONFIRM', 1, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-  `)
-  for (const item of missing) {
-    insert.run(
-      listingId,
-      item.listing_skc_id,
-      item.skc_code,
-      Number(item.next_sort ?? 1),
-      item.image_url,
-      "发布前自动补齐 SKC 色块图",
-      JSON.stringify({
-        source: "listing_skc.image_url",
-        requirement_key: "SKC_COLOR_BLOCK",
-        prepared_by: "ensureFallbackColorAssets",
-      }),
-    )
-  }
-}
-
 async function prepareListingImagesForPublish(db: ReturnType<typeof getDb>, listingId: number) {
   const credentials = resolveSheinCredentials(db)
-  ensureFallbackColorAssets(db, listingId)
   const assets = db.prepare(`
     select *
     from listing_asset
     where listing_id = ?
       and coalesce(platform_url, '') = ''
+      and not (coalesce(source_type, '') = 'SOURCE_FALLBACK' and asset_type in ('COLOR_BLOCK', 'COLOR'))
     order by skc_code, image_sort, id
   `).all(listingId) as SourceRow[]
   const update = db.prepare(`
@@ -4550,22 +4513,77 @@ async function prepareListingImagesForPublish(db: ReturnType<typeof getDb>, list
 function selectedImageInfo(
   skc: SourceRow,
   assets: SourceRow[],
-  options: { allowSourceImages?: boolean; allowLocalImages?: boolean } = {},
+  options: { allowSourceImages?: boolean; allowLocalImages?: boolean; allowSkcImageUrl?: boolean } = {},
 ) {
   const allowSourceImages = Boolean(options.allowSourceImages)
   const allowLocalImages = Boolean(options.allowLocalImages)
-  const publishableAssets = assets.filter((asset) =>
+  const publishableAssets = realImageAssets(assets).filter((asset) =>
     normalizeText(asset.platform_url)
     || (allowSourceImages && normalizeText(asset.source_url))
     || (allowLocalImages && normalizeText(asset.local_path)),
   )
   return buildSheinImageInfo({
     skcCode: skc.skc_code,
-    skcImageUrl: skc.image_url,
+    skcImageUrl: options.allowSkcImageUrl === false ? "" : skc.image_url,
     allowSourceImages,
     allowLocalImages,
     assets: publishableAssets,
   })
+}
+
+function assetCanPrepareForPublish(
+  asset: SourceRow,
+  options: { allowSourceImages?: boolean; allowLocalImages?: boolean },
+) {
+  return Boolean(
+    normalizeText(asset.platform_url)
+    || (options.allowSourceImages && normalizeText(asset.source_url))
+    || (options.allowLocalImages && normalizeText(asset.local_path)),
+  )
+}
+
+function skcHasPendingPublishImage(
+  skc: SourceRow,
+  skcAssets: SourceRow[],
+  options: { allowSourceImages?: boolean; allowLocalImages?: boolean },
+) {
+  return Boolean(
+    normalizeText(skc.image_url)
+    || skcAssets.some((asset) => assetCanPrepareForPublish(asset, options)),
+  )
+}
+
+function skcHasPendingMainImage(
+  skc: SourceRow,
+  skcAssets: SourceRow[],
+  options: { allowSourceImages?: boolean; allowLocalImages?: boolean },
+) {
+  return Boolean(
+    normalizeText(skc.image_url)
+    || skcAssets.some((asset) => normalizeText(asset.asset_type) === "MAIN" && assetCanPrepareForPublish(asset, options)),
+  )
+}
+
+function skcHasRequirementImage({
+  requirement,
+  imageInfo,
+  skcAssets,
+  options,
+}: {
+  requirement: PictureRequirement
+  imageInfo: SheinImageInfo
+  skcAssets: SourceRow[]
+  options: { allowSourceImages?: boolean; allowLocalImages?: boolean; requirePreparedImages?: boolean }
+}) {
+  const images = Array.isArray(imageInfo.image_info_list) ? imageInfo.image_info_list : []
+  if (requirement.requirement_key === "SKC_DETAIL" && images.some((image) => [1, 2].includes(Number(image.image_type)))) return true
+  if (requirement.requirement_key === "SKC_SQUARE" && images.some((image) => Number(image.image_type) === 5)) return true
+  if (requirement.requirement_key === "SKC_COLOR_BLOCK" && images.some((image) => Number(image.image_type) === 6)) return true
+  if (options.requirePreparedImages ?? true) return false
+  return skcAssets.some((asset) =>
+    assetMatchesRequirement(asset, requirement)
+    && assetCanPrepareForPublish(asset, options),
+  )
 }
 
 function buildSupplierBarcodePayload(value: unknown, publishFields: Map<string, PublishFieldRule>) {
@@ -4907,7 +4925,7 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
   const attrs = detail.sale_attributes as RequiredAttribute[]
   const colorAttr = findColorSaleAttribute(attrs)
   const sizeAttr = findSizeSaleAttribute(attrs)
-  const assets = detail.assets as SourceRow[]
+  const assets = realImageAssets(detail.assets as SourceRow[])
   const selectedAssetBySkc = new Map<string, SourceRow[]>()
   for (const asset of assets) {
     const key = normalizeText(asset.skc_code)
@@ -4943,6 +4961,10 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
   }
   const errors: string[] = []
   const warnings: string[] = []
+  const requirePreparedImages = options?.requirePreparedImages ?? true
+  const selectedSkcCount = skcs.length
+  const skcImageRequirements = getImageRequirements(db, listing)
+    .filter((requirement) => requirement.level === "SKC" && requirement.show !== 0)
   const attributeFields = readiness.field_groups.find((group) => group.group === "商品属性")?.fields ?? []
   errors.push(...blockingAttributeMessages(attributeFields))
 
@@ -5057,13 +5079,24 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
     const imageInfo = selectedImageInfo(skc, assets, {
       allowSourceImages: Boolean(options?.allowSourceImages),
       allowLocalImages: Boolean(options?.allowLocalImages),
+      allowSkcImageUrl: !requirePreparedImages,
     })
     const mainImageError = sheinMainImageError(skc.skc_code, imageInfo)
-    if (mainImageError) errors.push(mainImageError)
+    if (mainImageError && (requirePreparedImages || !skcHasPendingMainImage(skc, skcAssets, options ?? {}))) {
+      errors.push(mainImageError)
+    }
+    for (const requirement of skcImageRequirements) {
+      const required = requirement.required === 1
+        || (requirement.requirement_key === "SKC_COLOR_BLOCK" && selectedSkcCount > 1)
+      if (!required) continue
+      if (!skcHasRequirementImage({ requirement, imageInfo, skcAssets, options: { ...options, requirePreparedImages } })) {
+        errors.push(`${skc.skc_code} 缺 ${requirement.name}`)
+      }
+    }
     return {
       supplier_code: normalizeText(skc.supplier_code) || normalizeText(skc.skc_code),
       ...(fieldShown(publishFields, "skc_title", true)
-        ? { skc_title: normalizeText(skc.skc_title) || normalizeText(listing.title) || normalizeText(listing.spu_code) }
+        ? { skc_title: normalizeText(listing.title) || normalizeText(skc.skc_title) || normalizeText(listing.spu_code) }
         : {}),
       sale_attribute: saleAttribute,
       image_info: imageInfo,
@@ -5074,16 +5107,24 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
     }
   })
 
-  for (const skc of skcList) {
+  for (const [index, skc] of skcList.entries()) {
     const imageCount = Array.isArray(skc.image_info.image_info_list) ? skc.image_info.image_info_list.length : 0
-    if (imageCount === 0) errors.push(`${skc.supplier_code} 缺 SHEIN 可用图片 URL`)
+    const sourceSkc = skcs[index]
+    const sourceAssets = sourceSkc ? selectedAssetBySkc.get(normalizeText(sourceSkc.skc_code)) ?? [] : []
+    if (imageCount === 0) {
+      if (requirePreparedImages || !sourceSkc || !skcHasPendingPublishImage(sourceSkc, sourceAssets, options ?? {})) {
+        errors.push(`${skc.supplier_code} 缺 SHEIN 可用图片 URL`)
+      } else {
+        warnings.push(`${skc.supplier_code} 图片将在提交前转换为 SHEIN 可用 URL`)
+      }
+    }
   }
   for (const skc of skcs) {
     const skcCode = normalizeText(skc.skc_code)
     const skcAssets = selectedAssetBySkc.get(skcCode) ?? []
     const hasPlatformUrl = skcAssets.some((asset) => normalizeText(asset.platform_url))
     const failedAsset = skcAssets.find((asset) => normalizeText(asset.transform_status) === "FAILED" || normalizeText(asset.status) === "FAILED")
-    if ((options?.requirePreparedImages ?? true) && !hasPlatformUrl) errors.push(`${skc.skc_code} 图片未转换为 SHEIN 可用 URL`)
+    if (requirePreparedImages && !hasPlatformUrl) errors.push(`${skc.skc_code} 图片未转换为 SHEIN 可用 URL`)
     if (failedAsset) {
       errors.push(`${skc.skc_code} 图片转换失败：${normalizeText(failedAsset.transform_error) || normalizeText(failedAsset.note) || "请重新上传或转换"}`)
     }
@@ -6600,6 +6641,7 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
     : selectedReadinessForListing(db, listingId, readiness)
   let enrichmentReadiness = selectedReadinessForListing(db, listingId, readiness)
   const saved: Array<Record<string, unknown>> = []
+  const warnings: Array<{ spu_code: string; message: string }> = []
   let categorySelection: CategoryAutoSelectionDecision | null = null
 
   if (mode === "all" || mode === "category") {
@@ -6691,8 +6733,15 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
   }
 
   if (mode === "all" || mode === "attributes") {
-    const aiFills = await callAiFill(enrichmentReadiness)
-      .catch(() => [] as Array<Record<string, unknown>>) as Array<Record<string, unknown>>
+    let aiFills: Array<Record<string, unknown>> = []
+    try {
+      aiFills = await callAiFill(enrichmentReadiness) as Array<Record<string, unknown>>
+    } catch (error) {
+      warnings.push({
+        spu_code: enrichmentReadiness.spu_code,
+        message: `AI 填写字段失败：${aiFillWarningMessage(error)}`,
+      })
+    }
     const byKey = new Map(aiFills.map((fill) => [String(fill.field_key), fill]))
     for (const field of enrichmentReadiness.manual_fields) {
       const aiFill = byKey.get(field.key)
@@ -6727,6 +6776,8 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
   return c.json({
     ok: true,
     saved_count: saved.length,
+    warning_count: warnings.length,
+    warnings,
     fills: saved,
     category_selection: categorySelection
       ? {
@@ -8491,6 +8542,7 @@ prePublish.post("/ai-fill", async (c) => {
   }
   const readiness = buildReadiness(query)
   const saved: Array<Record<string, unknown>> = []
+  const warnings: Array<{ spu_code: string; message: string }> = []
 
   for (const row of readiness.items) {
     const titleNeedsAi = row.field_groups
@@ -8523,8 +8575,15 @@ prePublish.post("/ai-fill", async (c) => {
         })
       }
     }
-    const aiFills = await callAiFill(row)
-      .catch(() => [] as Array<Record<string, unknown>>) as Array<Record<string, unknown>>
+    let aiFills: Array<Record<string, unknown>> = []
+    try {
+      aiFills = await callAiFill(row) as Array<Record<string, unknown>>
+    } catch (error) {
+      warnings.push({
+        spu_code: row.spu_code,
+        message: `AI 填写字段失败：${aiFillWarningMessage(error)}`,
+      })
+    }
 
     const byKey = new Map(aiFills.map((fill) => [String(fill.field_key), fill]))
     for (const field of fieldsToFill) {
@@ -8552,7 +8611,7 @@ prePublish.post("/ai-fill", async (c) => {
     }
   }
 
-  return c.json({ ok: true, saved_count: saved.length, fills: saved })
+  return c.json({ ok: true, saved_count: saved.length, warning_count: warnings.length, warnings, fills: saved })
 })
 
 export default prePublish

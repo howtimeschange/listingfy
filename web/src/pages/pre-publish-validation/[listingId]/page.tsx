@@ -2299,8 +2299,11 @@ export default function PrePublishDraftDetailPage() {
 
   const aiEnrichMutation = useMutation({
     mutationFn: (mode: "all" | "attributes" | "category" | "title") =>
-      api.post(`/pre-publish/drafts/${listingId}/ai-enrich`, { mode }),
-    onSuccess: (_, mode) => {
+      api.post<{ warning_count?: number; warnings?: Array<{ spu_code: string; message: string }> }>(
+        `/pre-publish/drafts/${listingId}/ai-enrich`,
+        { mode },
+      ),
+    onSuccess: (result, mode) => {
       toast.success(
         mode === "category"
           ? "AI 转换类目完成"
@@ -2308,6 +2311,14 @@ export default function PrePublishDraftDetailPage() {
             ? "AI 翻译标题完成"
             : "AI 推荐补齐空字段完成",
       )
+      if (result.warning_count) {
+        const firstWarning = result.warnings?.[0]
+        toast.warning(
+          firstWarning
+            ? `AI 处理有 ${formatNumber(result.warning_count)} 条提示：${firstWarning.spu_code} ${firstWarning.message}`
+            : `AI 处理有 ${formatNumber(result.warning_count)} 条提示`,
+        )
+      }
       queryClient.invalidateQueries({ queryKey: ["pre-publish", "draft", listingId] })
       queryClient.invalidateQueries({ queryKey: ["pre-publish", "drafts"] })
     },
