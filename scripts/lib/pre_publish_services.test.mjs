@@ -1173,6 +1173,23 @@ test("publish precheck treats local uploaded images as pending SHEIN image asset
   assert.match(source, /缺 \$\{requirement\.name\}/);
 });
 
+test("publish preparation auto-converts SKC source images before final SHEIN submit", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+
+  assert.match(source, /function ensureSkcSourceImageAssetsForPublish/);
+  assert.match(source, /'SKC_SOURCE_IMAGE', 'MAIN'/);
+  assert.match(source, /source:\s*"listing_skc\.image_url"/);
+  assert.match(source, /ensureSkcSourceImageAssetsForPublish\(db,\s*listingId\)/);
+  assert.match(source, /transformOnlineImageToShein\(sourceUrl,\s*imageType,\s*credentials\)/);
+  assert.match(source, /function assertPublishPayloadHasOnlyPreparedImages/);
+  assert.match(source, /product\.resources\.deepdraw\.biz/);
+  assert.match(source, /assertPublishPayloadHasOnlyPreparedImages\(prepared\.payload\)/);
+  assert.match(source, /const pendingImagePreparePayload = \{/);
+  assert.match(source, /image_prepare_status:\s*"PENDING"/);
+  assert.match(source, /requestPayload:\s*pendingImagePreparePayload/);
+  assert.doesNotMatch(source, /requestPayload:\s*preview\.payload/);
+});
+
 test("pre-publish basic fields expose DeepDraw product description", async () => {
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
 

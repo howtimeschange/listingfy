@@ -4798,8 +4798,136 @@ function buildProductAttributeList(db: ReturnType<typeof getDb>, listing: Listin
   return output
 }
 
+function imageUrlHost(value: unknown) {
+  const text = normalizeText(value)
+  if (!text) return ""
+  try {
+    return new URL(text).hostname.toLowerCase()
+  } catch {
+    return ""
+  }
+}
+
+function isKnownSourceImageUrl(value: unknown) {
+  const host = imageUrlHost(value)
+  return host === "product.resources.deepdraw.biz" || host.endsWith(".deepdraw.biz")
+}
+
+function publishPayloadImageUrls(payload: unknown) {
+  const object = parseJsonObject(payload)
+  return parseJsonList(object.skc_list).flatMap((skcPayload) => {
+    const skc = parseJsonObject(skcPayload)
+    const imageInfo = parseJsonObject(skc.image_info)
+    return parseJsonList(imageInfo.image_info_list)
+      .map((imagePayload) => normalizeText(parseJsonObject(imagePayload).image_url))
+      .filter(Boolean)
+  })
+}
+
+function assertPublishPayloadHasOnlyPreparedImages(payload: unknown) {
+  const leaked = uniqueStrings(publishPayloadImageUrls(payload).filter(isKnownSourceImageUrl))
+  if (leaked.length === 0) return
+  throw new Error(`图片尚未转换为 SHEIN 可用 URL：${leaked.join("；")}`)
+}
+
+function ensureSkcSourceImageAssetsForPublish(db: ReturnType<typeof getDb>, listingId: number) {
+  const sourceSkcs = db.prepare(`
+    select id, skc_code, image_url, image_confirmed
+    from listing_skc
+    where listing_id = ?
+      and selected_for_publish = 1
+      and coalesce(image_url, '') <> ''
+    order by skc_code
+  `).all(listingId) as SourceRow[]
+  if (sourceSkcs.length === 0) return
+
+  const mainAssets = db.prepare(`
+    select id, listing_skc_id, source_type, source_url
+    from listing_asset
+    where listing_id = ?
+      and asset_type = 'MAIN'
+      and (
+        coalesce(platform_url, '') <> ''
+        or coalesce(source_url, '') <> ''
+        or coalesce(local_path, '') <> ''
+      )
+    order by listing_skc_id, id
+  `).all(listingId) as SourceRow[]
+  const existingMainBySkcId = new Map<string, SourceRow>()
+  for (const asset of mainAssets) {
+    const key = normalizeText(asset.listing_skc_id)
+    if (key && !existingMainBySkcId.has(key)) existingMainBySkcId.set(key, asset)
+  }
+
+  const insert = db.prepare(`
+    insert into listing_asset (
+      listing_id,
+      listing_skc_id,
+      skc_code,
+      source_type,
+      asset_type,
+      image_sort,
+      source_url,
+      status,
+      confirmed,
+      note,
+      raw_payload_json,
+      transform_status,
+      updated_at
+    )
+    values (?, ?, ?, 'SKC_SOURCE_IMAGE', 'MAIN', 1, ?, 'PENDING_CONFIRM', ?, ?, ?, 'PENDING', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  `)
+  const update = db.prepare(`
+    update listing_asset
+    set source_url = ?,
+      platform_url = null,
+      status = 'PENDING_CONFIRM',
+      confirmed = ?,
+      note = ?,
+      raw_payload_json = ?,
+      transform_status = 'PENDING',
+      transform_error = null,
+      transformed_at = null,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+  `)
+  const refresh = db.prepare(`
+    update listing_asset
+    set confirmed = ?,
+      note = ?,
+      raw_payload_json = ?,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+  `)
+
+  for (const skc of sourceSkcs) {
+    const sourceUrl = normalizeText(skc.image_url)
+    if (!sourceUrl) continue
+    const existing = existingMainBySkcId.get(normalizeText(skc.id))
+    const confirmed = Number(skc.image_confirmed ?? 0) === 1
+    const note = "SKC 来源图自动转 SHEIN URL：SKC 主图"
+    const payload = JSON.stringify({
+      source: "listing_skc.image_url",
+      skc_code: normalizeText(skc.skc_code),
+      prepared_for_publish: true,
+    })
+    if (existing) {
+      if (normalizeText(existing.source_type) === "SKC_SOURCE_IMAGE") {
+        if (normalizeText(existing.source_url) === sourceUrl) {
+          refresh.run(confirmed ? 1 : 0, note, payload, existing.id)
+        } else {
+          update.run(sourceUrl, confirmed ? 1 : 0, note, payload, existing.id)
+        }
+      }
+      continue
+    }
+    insert.run(listingId, skc.id, skc.skc_code, sourceUrl, confirmed ? 1 : 0, note, payload)
+  }
+}
+
 async function prepareListingImagesForPublish(db: ReturnType<typeof getDb>, listingId: number) {
   const credentials = resolveSheinCredentials(db)
+  ensureSkcSourceImageAssetsForPublish(db, listingId)
   const assets = db.prepare(`
     select *
     from listing_asset
@@ -8660,12 +8788,17 @@ prePublish.post("/drafts/:id/publish", async (c) => {
     `).run(JSON.stringify(preview.payload), `发布前仍有阻断项：${preview.errors.join("；")}`, version.id)
     throw new HTTPException(400, { message: `发布前仍有阻断项：${preview.errors.join("；")}` })
   }
+  const pendingImagePreparePayload = {
+    image_prepare_status: "PENDING",
+    listing_id: listing.id,
+    note: "SHEIN 图片转换完成后写入正式发布 payload",
+  }
   db.prepare(`
     update listing_publish_version
     set status = 'PUBLISHING',
       request_payload_json = ?
     where id = ?
-  `).run(JSON.stringify(preview.payload), version.id)
+  `).run(JSON.stringify(pendingImagePreparePayload), version.id)
   const ensuredTask = ensurePublishTask(db, {
     listingId: listing.id,
     publishVersionId: Number(version.id),
@@ -8673,7 +8806,7 @@ prePublish.post("/drafts/:id/publish", async (c) => {
     taskType: "PUBLISH_LISTING",
     status: "PUBLISHING",
     attemptCount: 1,
-    requestPayload: preview.payload,
+    requestPayload: pendingImagePreparePayload,
   })
   const task = ensuredTask.task
   if (!ensuredTask.created) {
@@ -8685,7 +8818,7 @@ prePublish.post("/drafts/:id/publish", async (c) => {
         error_code = 'DUPLICATE_ACTIVE_TASK',
         error_message = ?
       where id = ?
-    `).run(JSON.stringify(preview.payload), errorMessage, version.id)
+    `).run(JSON.stringify(pendingImagePreparePayload), errorMessage, version.id)
     return c.json({
       ok: task.status === "PUBLISH_SUBMITTED",
       deduplicated: true,
@@ -8712,6 +8845,7 @@ prePublish.post("/drafts/:id/publish", async (c) => {
       if (prepared.errors.length > 0) {
         throw new Error(`发布前仍有阻断项：${prepared.errors.join("；")}`)
       }
+      assertPublishPayloadHasOnlyPreparedImages(prepared.payload)
       updatePublishTaskRequestPayload(db, taskId, prepared.payload)
       db.prepare(`
         update listing_publish_version

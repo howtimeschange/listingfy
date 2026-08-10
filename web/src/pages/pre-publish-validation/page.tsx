@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Archive,
+  CircleHelp,
   CopyPlus,
   FileClock,
   ImageIcon,
@@ -162,6 +163,26 @@ interface BatchImagePackageResult {
   warning_count: number
 }
 
+const PRE_PUBLISH_DRAFT_GUIDE_STORAGE_KEY = "listingify.pre_publish_draft_guide_seen.v1"
+
+function hasSeenPrePublishDraftGuide() {
+  if (typeof window === "undefined") return true
+  try {
+    return window.localStorage.getItem(PRE_PUBLISH_DRAFT_GUIDE_STORAGE_KEY) === "seen"
+  } catch {
+    return false
+  }
+}
+
+function markPrePublishDraftGuideSeen() {
+  if (typeof window === "undefined") return
+  try {
+    window.localStorage.setItem(PRE_PUBLISH_DRAFT_GUIDE_STORAGE_KEY, "seen")
+  } catch {
+    // The guide is non-critical; storage failures should not interrupt draft operations.
+  }
+}
+
 function usePlatforms() {
   return useQuery<{ items: PlatformOption[] }>({
     queryKey: ["pre-publish", "platforms"],
@@ -238,6 +259,87 @@ function ProductThumb({ src, alt }: { src: string | null; alt: string }) {
   )
 }
 
+interface PrePublishDraftGuideDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}
+
+function PrePublishDraftGuideDialog({ open, onOpenChange }: PrePublishDraftGuideDialogProps) {
+  const workflowSteps = [
+    {
+      title: "准备 SHEIN 草稿",
+      body: "先从 SHEIN 商品分桶勾选款号派生草稿，或直接输入款号新建草稿；系统会带出商品主数据、类目、款色和 SKU 基础信息。",
+    },
+    {
+      title: "下载商品图包",
+      body: "下载抓虾最新版，在抓虾里执行 SHEIN 商品图包下载，导出的图片按款号和 SKC 归档，方便回到草稿箱批量匹配。",
+    },
+    {
+      title: "批量上传图包",
+      body: "在本页点击批量上传图包，上传 ZIP。推荐结构为“款号 / SKC / SKC_序号.jpg”，系统按完整 SKC 精确匹配草稿。",
+    },
+    {
+      title: "确认图片填充",
+      body: "图包原图会按顺序填入主图和细节图，第一张图会同时生成主图、方形图和 80x80 色块图，进入草稿详情后再做人工确认。",
+    },
+    {
+      title: "补齐后发布",
+      body: "继续补齐字段、类目、尺码、价格和包装信息；完成校验后勾选草稿批量提交发布，并在发布任务里跟踪平台回显。",
+    },
+  ]
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>SHEIN 发布草稿箱使用指南</DialogTitle>
+          <DialogDescription>
+            按下面顺序处理，可以把草稿派生、抓虾图包下载、批量图片填充、字段补齐和 SHEIN 发布连成一条稳定流程。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-3">
+          <div className="rounded-md border border-[#b9f4d8] bg-[#f2fff8] px-3 py-2 text-sm text-[#08794f]">
+            推荐路径：SHEIN 商品分桶派生草稿 → 下载抓虾最新版并下载 SHEIN 商品图包 → 本页批量上传图包 → 草稿详情确认图片和字段 → 批量提交发布。
+          </div>
+          <div className="rounded-md border border-[#cfe8ff] bg-[#f6fbff] px-3 py-2 text-sm leading-6 text-[#0f5c8c]">
+            下载抓虾最新版，可以下载 SHEIN 商品图包；需要采集工具时前往{" "}
+            <a
+              href="https://crawshrimp.com/download"
+              target="_blank"
+              rel="noreferrer"
+              className="font-medium underline underline-offset-4 hover:text-[#083f63]"
+            >
+              crawshrimp.com/download
+            </a>{" "}
+            获取安装包。
+          </div>
+          <div className="grid gap-2">
+            {workflowSteps.map((step, index) => (
+              <div key={step.title} className="grid grid-cols-[2rem_1fr] gap-3 rounded-md border bg-background px-3 py-2.5">
+                <div className="flex size-8 items-center justify-center rounded-full bg-[#d4fae8] text-sm font-semibold text-[#0fa76e]">
+                  {index + 1}
+                </div>
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-foreground">{step.title}</div>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">{step.body}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="rounded-md bg-muted/40 px-3 py-2 text-xs leading-5 text-muted-foreground">
+            图包只会替换上一轮图包自动填充的图片，不会覆盖人工上传和素材库图片；如果 ZIP 里有未匹配款号或 SKC，上传结果会单独列出，方便继续排查。
+          </div>
+        </div>
+        <DialogFooter>
+          <Button type="button" onClick={() => onOpenChange(false)}>
+            知道了
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export default function PrePublishValidationPage() {
   const { hasPermission } = useAuth()
   const canWrite = hasPermission("LISTING_WRITE")
@@ -254,6 +356,7 @@ export default function PrePublishValidationPage() {
   const [batchImagePackageDialogOpen, setBatchImagePackageDialogOpen] = useState(false)
   const [batchImagePackageFile, setBatchImagePackageFile] = useState<File | null>(null)
   const [batchImagePackageResult, setBatchImagePackageResult] = useState<BatchImagePackageResult | null>(null)
+  const [guideDialogOpen, setGuideDialogOpen] = useState(() => !hasSeenPrePublishDraftGuide())
   const [batchImageDialogOpen, setBatchImageDialogOpen] = useState(false)
   const [batchImageFolderPath, setBatchImageFolderPath] = useState("")
   const { data: platformData } = usePlatforms()
@@ -404,14 +507,30 @@ export default function PrePublishValidationPage() {
     setCreateDraftDialogOpen(false)
   }
 
+  function handleGuideDialogOpenChange(open: boolean) {
+    setGuideDialogOpen(open)
+    if (!open) markPrePublishDraftGuideSeen()
+  }
+
   return (
     <CompactListPage>
+      <PrePublishDraftGuideDialog open={guideDialogOpen} onOpenChange={handleGuideDialogOpenChange} />
       <CompactListHeader
         title="SHEIN 发布草稿箱"
         summary={`草稿 ${formatNumber(draftData?.pagination.total ?? 0)} / 平均完整度 ${avgCompleteness}% / 已勾选 ${formatNumber(selectedDraftIds.size)} 个`}
         description="同一个 SHEIN 商品可以派生多个独立草稿；每个草稿有自己的状态、版本记录、发布任务和字段填充进度。"
         actions={(
           <>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="border-[#ff6b76]/45 bg-[#fff7f8] text-[#d93d4a] hover:bg-[#ffecee] hover:text-[#be2f3b]"
+              onClick={() => setGuideDialogOpen(true)}
+            >
+              <CircleHelp className="size-4" />
+              使用指南
+            </Button>
             <Dialog open={batchImagePackageDialogOpen} onOpenChange={setBatchImagePackageDialogOpen}>
               <DialogTrigger asChild>
                 <Button type="button" size="sm" variant="outline" disabled={!canWrite}>

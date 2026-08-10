@@ -177,6 +177,11 @@ test("pre publish validation page is now a draft list after selection moved to S
   assert.doesNotMatch(page, /ComingSoonPage/);
   assert.match(page, /SHEIN 发布草稿箱/);
   assert.match(page, /同一个 SHEIN 商品可以派生多个独立草稿/);
+  assert.match(page, /listingify\.pre_publish_draft_guide_seen\.v1/);
+  assert.match(page, /SHEIN 发布草稿箱使用指南/);
+  assert.match(page, /下载抓虾最新版，可以下载 SHEIN 商品图包/);
+  assert.match(page, /crawshrimp\.com\/download/);
+  assert.match(page, /批量上传图包/);
   assert.match(page, /新建草稿/);
   assert.match(page, /派生新草稿/);
   assert.match(page, /派生一份草稿/);
