@@ -569,6 +569,223 @@ function businessRuleFieldKey(value: unknown) {
   return compactFieldKey(value).replace(/[._\-\u2010-\u2015－]/g, "")
 }
 
+export type ProductArchiveAiFieldPriority = "P0" | "P1" | "P2"
+
+type ProductArchiveAiFieldStrategyDefinition = {
+  id: string
+  priority: ProductArchiveAiFieldPriority
+  label: string
+  fieldNames: string[]
+  fieldKeyPatterns?: RegExp[]
+  evidence: string[]
+  decision: string
+  guardrail: string
+  includeWhenSourceSkipped?: boolean
+}
+
+export type ProductArchiveAiFieldStrategy = {
+  id: string
+  priority: ProductArchiveAiFieldPriority
+  label: string
+  evidence: string[]
+  decision: string
+  guardrail: string
+  includeWhenSourceSkipped: boolean
+}
+
+const PRODUCT_ARCHIVE_AI_FIELD_STRATEGIES: ProductArchiveAiFieldStrategyDefinition[] = [
+  {
+    id: "p0_visual_style",
+    priority: "P0",
+    label: "款式结构与可见细节",
+    fieldNames: [
+      "款式",
+      "款式(多选)",
+      "款式(单选)",
+      "类型",
+      "分类",
+      "图案",
+      "图案(多选)",
+      "流行元素",
+      "流行元素(多选)",
+      "袖长",
+      "袖长(多选)",
+      "袖长多选",
+      "衣长",
+      "领型",
+      "衣门襟",
+      "衣门襟(多选)",
+      "裤门襟",
+      "裤门襟(多选)",
+      "裤长",
+      "腰型",
+      "版型",
+      "服装版型",
+      "是否带帽",
+      "是否有腰带",
+      "是否有毛领",
+      "是否多件套",
+      "件数(单选)",
+    ],
+    fieldKeyPatterns: [
+      /^(?:模板)?版型$/,
+      /^是否(?:带帽|有腰带|有毛领|多件套)$/,
+      /^(?:衣|裤)门襟(?:多选)?$/,
+      /^流行元素(?:多选)?$/,
+      /^图案(?:多选)?$/,
+      /^袖长(?:多选)?$/,
+      /^款式(?:多选|单选)?$/,
+    ],
+    evidence: ["reference_images", "product_title", "trade_path", "source_rows", "filled_fields"],
+    decision: "优先根据商品图判断款式、结构、图案、门襟、领型、帽子、腰带、毛领和套件数量；标题和类目只作为辅助。",
+    guardrail: "图片看不清、只有字段名、或无法从标题/类目交叉验证时不要填写。",
+    includeWhenSourceSkipped: true,
+  },
+  {
+    id: "p1_age_fit_context",
+    priority: "P1",
+    label: "年龄人群与季节风格",
+    fieldNames: [
+      "适用年龄",
+      "适用年龄(多选)",
+      "适用年龄文本",
+      "适用年龄段",
+      "适用年龄段(多选)",
+      "淘宝天猫适用年龄",
+      "适合年龄段",
+      "适合年龄段(多选)",
+      "适用人群",
+      "适用人群(多选)",
+      "适用季节",
+      "适用季节(多选)",
+      "适用性别",
+      "适用性别(多选)",
+      "性别",
+      "性别(多选)",
+      "风格",
+      "风格(多选)",
+    ],
+    fieldKeyPatterns: [
+      /^(?:淘宝天猫)?适用年龄(?:段)?(?:多选|文本)?$/,
+      /^适合年龄段(?:多选)?$/,
+      /^适用人群(?:多选)?$/,
+      /^适用季节(?:多选)?$/,
+      /^适用性别(?:多选)?$/,
+      /^性别(?:多选)?$/,
+      /^风格(?:多选)?$/,
+    ],
+    evidence: ["mdm_master", "sku_sizes", "source_rows", "product_title", "reference_images"],
+    decision: "年龄优先用 MDM 年龄段和上市计划尺码段推导，季节/性别/风格结合主数据、标题和图片保守选择。",
+    guardrail: "年龄字段不要凭图片猜；尺码段或 MDM 证据缺失时只允许标题有明确年龄表达才填写。",
+    includeWhenSourceSkipped: true,
+  },
+  {
+    id: "p1_material_evidence",
+    priority: "P1",
+    label: "材质成分与手感功能",
+    fieldNames: [
+      "面料",
+      "面料(多选)",
+      "面料俗称",
+      "抖音面料材质",
+      "材质",
+      "材质(多选)",
+      "材质成分",
+      "材质成分(多选)",
+      "材质成分(文本)",
+      "京东材质成分",
+      "质地/材质",
+      "主面料成分",
+      "主面料成分含量",
+      "成分含量",
+      "里料材质",
+      "里料材质(多选)",
+      "里料材质成分含量(多选)",
+      "填充物",
+      "填充物(多选)",
+      "填充物含量",
+      "含绒量(多选)",
+      "绒子含量",
+      "厚薄",
+      "厚度",
+      "25厚薄指数",
+      "弹力",
+      "25弹力指数",
+      "柔软度",
+      "25柔软指数",
+      "中幼童-弹性指数",
+      "中幼童-柔软指数",
+      "功能",
+      "功能(多选)",
+      "面料工艺",
+    ],
+    fieldKeyPatterns: [
+      /^(?:抖音)?面料(?:多选|俗称|工艺|材质)?$/,
+      /^材质(?:成分)?(?:多选|文本)?$/,
+      /^主面料成分(?:含量)?$/,
+      /^里料材质(?:成分含量)?(?:多选)?$/,
+      /^填充物(?:含量|多选)?$/,
+      /^含绒量(?:多选)?$/,
+      /^绒子含量$/,
+      /^(?:25)?厚(?:薄|度)指数?$/,
+      /^(?:25|中幼童)?弹(?:力|性)指数?$/,
+      /^(?:25|中幼童)?柔软(?:度|指数)$/,
+      /^功能(?:多选)?$/,
+    ],
+    evidence: ["copywriting_material", "ocr_hangtag", "ocr_washlabel", "source_rows", "filled_fields", "reference_images"],
+    decision: "材质/成分必须先看文案、吊牌、洗唛或已填成分；厚薄、弹力、功能可结合文案和图片观感保守选择。",
+    guardrail: "没有成分证据时不要凭图片猜材质或含量；图片只能辅助面料观感、厚薄、功能等非合规枚举。",
+    includeWhenSourceSkipped: true,
+  },
+  {
+    id: "p2_image_content_tags",
+    priority: "P2",
+    label: "图片内容与运营标记",
+    fieldNames: [
+      "主图4样式",
+      "详情页AI标注",
+      "模特实拍",
+    ],
+    fieldKeyPatterns: [
+      /^主图4样式$/,
+      /^详情页ai标注$/,
+      /^模特实拍$/,
+    ],
+    evidence: ["reference_images", "source_rows", "filled_fields"],
+    decision: "用于补充图片内容、详情页或运营标记，只在图片包结构和画面内容明确时填写。",
+    guardrail: "这类字段优先级低于建档阻断字段；图片证据不足时宁可留空。",
+    includeWhenSourceSkipped: true,
+  },
+]
+
+function strategyMatchesField(strategy: ProductArchiveAiFieldStrategyDefinition, fieldName: unknown) {
+  const key = businessRuleFieldKey(fieldName)
+  if (!key) return false
+  if (strategy.fieldNames.some((name) => businessRuleFieldKey(name) === key)) return true
+  return Boolean(strategy.fieldKeyPatterns?.some((pattern) => pattern.test(key)))
+}
+
+function serializeAiFieldStrategy(strategy: ProductArchiveAiFieldStrategyDefinition): ProductArchiveAiFieldStrategy {
+  return {
+    id: strategy.id,
+    priority: strategy.priority,
+    label: strategy.label,
+    evidence: [...strategy.evidence],
+    decision: strategy.decision,
+    guardrail: strategy.guardrail,
+    includeWhenSourceSkipped: Boolean(strategy.includeWhenSourceSkipped),
+  }
+}
+
+export function productArchiveAiFieldStrategyForField(fieldName: unknown): ProductArchiveAiFieldStrategy | null {
+  const strategy = PRODUCT_ARCHIVE_AI_FIELD_STRATEGIES.find((item) => strategyMatchesField(item, fieldName))
+  return strategy ? serializeAiFieldStrategy(strategy) : null
+}
+
+export function listProductArchiveAiFieldStrategies() {
+  return PRODUCT_ARCHIVE_AI_FIELD_STRATEGIES.map(serializeAiFieldStrategy)
+}
+
 const PRODUCT_ARCHIVE_ALWAYS_BLANK_FIELDS = new Set([
   "商品描述",
   "商品短标题",
@@ -1097,9 +1314,19 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (key === "童装产地多选") return "中国大陆"
   if (key === "适用场合") return "日常"
   if (key === "退款规则") return "支持7天无理由退货"
-  if (key === "适用人群多选") return launchValue(sourceRows, "年龄段") || stringValue(input.spu.age_group_name)
+  if (key === "适用人群" || key === "适用人群多选") return launchValue(sourceRows, "年龄段") || stringValue(input.spu.age_group_name)
   if (key === "适用季节" || key === "适用季节多选") return "秋季"
-  if (key === "适用年龄" || key === "适用年龄多选") return applicableAgeText(input.spu, sourceRows) || launchValue(sourceRows, "年龄段") || stringValue(input.spu.age_group_name)
+  if (
+    key === "适用年龄"
+    || key === "适用年龄多选"
+    || key === "适用年龄段"
+    || key === "适用年龄段多选"
+    || key === "淘宝天猫适用年龄"
+    || key === "适合年龄段"
+    || key === "适合年龄段多选"
+  ) {
+    return applicableAgeText(input.spu, sourceRows) || launchValue(sourceRows, "年龄段") || stringValue(input.spu.age_group_name)
+  }
   if (key === "适用年龄文本") return applicableAgeText(input.spu, sourceRows) || launchValue(sourceRows, "年龄段") || stringValue(input.spu.age_group_name)
   if (key === "面料工艺") return "涂层"
   if (key === "领型") return "连帽"
@@ -3068,6 +3295,7 @@ export type ProductArchiveAiFillCandidate = {
   currentValue: string
   validationStatus: string
   validationMessage: string
+  strategy: ProductArchiveAiFieldStrategy | null
   options: Array<{ value: string; label: string }>
 }
 
@@ -3225,6 +3453,7 @@ export function buildProductArchiveAiFillCandidateFields(
       const validationStatus = stringValue(field.validation_status)
       const invalidValue = validationStatus === "invalid"
       const colorNeedsAiFill = compactFieldKey(field.field_name).includes("颜色") && colorIssueValues.length > 0
+      const strategy = productArchiveAiFieldStrategyForField(field.field_name)
       const currentValue = colorNeedsAiFill
         ? colorIssueValues.join(";")
         : aiRuleFallback
@@ -3237,6 +3466,7 @@ export function buildProductArchiveAiFillCandidateFields(
         validationStatus,
         validationMessage: stringValue(field.validation_message),
         sourceType: stringValue(field.source_type),
+        strategy,
         needsAiFill: emptyValue || invalidValue || colorNeedsAiFill,
         options: fieldOptionsFromTemplate(field.options_json),
       }
@@ -3246,14 +3476,21 @@ export function buildProductArchiveAiFillCandidateFields(
       && field.fieldName
       && field.options.length > 0
       && field.needsAiFill
-      && field.sourceType !== "skip"
+      && (field.sourceType !== "skip" || Boolean(field.strategy?.includeWhenSourceSkipped))
     ))
+    .sort((left, right) => {
+      const priorityRank: Record<ProductArchiveAiFieldPriority, number> = { P0: 0, P1: 1, P2: 2 }
+      const leftRank = left.strategy ? priorityRank[left.strategy.priority] : 3
+      const rightRank = right.strategy ? priorityRank[right.strategy.priority] : 3
+      return leftRank - rightRank || left.fieldName.localeCompare(right.fieldName)
+    })
     .map((field) => ({
       id: field.id,
       fieldName: field.fieldName,
       currentValue: field.currentValue,
       validationStatus: field.validationStatus,
       validationMessage: field.validationMessage,
+      strategy: field.strategy,
       options: field.options,
     }))
 }
@@ -3348,6 +3585,8 @@ function buildDeepdrawAiFillPrompt(input: {
       "不要因为 options 的顺序选择第一个选项；不要选择看起来冷门但无证据的材质、版型、元素或工艺。",
       "忽略 source_type 为 ai_rule_fallback 的历史值，它们不是可信证据。",
       "是否类字段没有明确证据时也不要填写。",
+      "field_strategy.priority 为 P0 的字段优先处理；P1 字段必须优先使用主数据、尺码段、成分或文案证据；P2 字段只在图片/上下文足够明确时补充。",
+      "每个字段的 field_strategy.guardrail 是硬约束；违反该边界时省略字段。",
       `confidence 低于 ${AI_FILL_MIN_CONFIDENCE} 的字段不要返回。`,
       "颜色字段如果 current_value 有多个用分号分隔的原颜色名，field_value 返回同数量标准色，按顺序用分号分隔；每个标准色都必须来自 options[].value，系统会自动保留原颜色别名。",
     ],
@@ -3375,6 +3614,7 @@ function buildDeepdrawAiFillPrompt(input: {
       current_value: field.currentValue,
       validation_status: field.validationStatus,
       validation_message: field.validationMessage,
+      field_strategy: field.strategy,
       options: compactFieldKey(field.fieldName).includes("颜色") ? field.options : field.options.slice(0, 120),
     })),
   }, null, 2)
@@ -3399,7 +3639,7 @@ async function callDeepdrawAiFill(
     messages,
     validate: (json: { fills?: unknown }) => (
       Array.isArray(json?.fills)
-      && json.fills.every((fill) => {
+      && json.fills.some((fill) => {
         if (!fill || typeof fill !== "object") return false
         const row = fill as JsonRecord
         const field = allowedFields.get(Number(row.field_id))
@@ -4917,6 +5157,7 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
             }
           : {
               ai_fill: aiFill,
+              field_strategy: field.strategy,
               source: "AI_SUGGESTED",
             }),
         materialFill ? "source_rule" : "ai",

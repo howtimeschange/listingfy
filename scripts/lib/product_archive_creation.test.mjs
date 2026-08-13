@@ -1474,6 +1474,8 @@ test("product archive AI fill prompt uses trusted draft MDM and source context o
   assert.match(service, /if \(!aiFill\) continue/);
   assert.match(service, /if \(!Number\.isFinite\(confidence\) \|\| confidence < AI_FILL_MIN_CONFIDENCE\) continue/);
   assert.match(service, /if \(!fieldValue \|\| !productArchiveFieldValueMatchesOptions\(fieldValue, field\.options\)\) continue/);
+  assert.match(service, /Array\.isArray\(json\?\.fills\)[\s\S]*json\.fills\.some/);
+  assert.doesNotMatch(service, /Array\.isArray\(json\?\.fills\)[\s\S]*json\.fills\.every/);
   assert.match(service, /scenario:\s*"deepdraw_field_fill"/);
   assert.match(service, /source: "AI_SUGGESTED"/);
   assert.match(service, /source_type = \?/);
@@ -2331,7 +2333,7 @@ test("product archive service follows DeepDraw field adjustment doc for optional
 
 test("product archive service maps launch-plan size segments to Balabala age ranges", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
-  const deriveAge = (sizeSegment, spu = {}) => service.buildProductArchiveSourceDerivedFieldValue("适用年龄", {
+  const deriveAge = (sizeSegment, spu = {}, fieldName = "适用年龄") => service.buildProductArchiveSourceDerivedFieldValue(fieldName, {
     spu,
     sourceRows: [
       {
@@ -2351,6 +2353,8 @@ test("product archive service maps launch-plan size segments to Balabala age ran
   assert.equal(deriveAge("19-24", { product_line_name: "鞋品" }), "4-24个月");
   assert.equal(deriveAge("25-33", { product_line_name: "鞋品" }), "3-7岁");
   assert.equal(deriveAge("34-39", { product_line_name: "鞋品" }), "8-14岁");
+  assert.equal(deriveAge("90-130", {}, "淘宝天猫适用年龄"), "2-7岁");
+  assert.equal(deriveAge("130-175", {}, "适合年龄段(多选)"), "7-16岁");
 });
 
 test("product archive service does not locally block document-approved empty DeepDraw fields", async () => {
@@ -2378,7 +2382,7 @@ test("product archive service does not locally block document-approved empty Dee
   );
 });
 
-test("product archive AI fill considers invalid enum fields and their current values", async () => {
+test("product archive AI fill considers invalid enum fields and prioritizes strategy fields", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
   const candidates = service.buildProductArchiveAiFillCandidateFields([
@@ -2427,19 +2431,100 @@ test("product archive AI fill considers invalid enum fields and their current va
     fieldName: field.fieldName,
     currentValue: field.currentValue,
     validationStatus: field.validationStatus,
+    strategy: field.strategy?.priority ?? null,
   })), [
-    {
-      id: 101,
-      fieldName: "材质",
-      currentValue: "成分 面料：100%棉（配料除外）",
-      validationStatus: "invalid",
-    },
     {
       id: 102,
       fieldName: "版型",
       currentValue: "",
       validationStatus: "missing",
+      strategy: "P0",
     },
+    {
+      id: 101,
+      fieldName: "材质",
+      currentValue: "成分 面料：100%棉（配料除外）",
+      validationStatus: "invalid",
+      strategy: "P1",
+    },
+  ]);
+});
+
+test("product archive AI field strategies productize P0 P1 P2 field coverage", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const strategies = service.listProductArchiveAiFieldStrategies();
+
+  assert.deepEqual(strategies.map((strategy) => strategy.priority), ["P0", "P1", "P1", "P2"]);
+  assert.equal(service.productArchiveAiFieldStrategyForField("是否有腰带")?.priority, "P0");
+  assert.equal(service.productArchiveAiFieldStrategyForField("淘宝天猫适用年龄")?.priority, "P1");
+  assert.equal(service.productArchiveAiFieldStrategyForField("面料(多选)")?.priority, "P1");
+  assert.equal(service.productArchiveAiFieldStrategyForField("详情页AI标注")?.priority, "P2");
+  assert.equal(service.productArchiveAiFieldStrategyForField("原产国(AKC)"), null);
+  assert.equal(service.productArchiveAiFieldStrategyForField("尺码表"), null);
+});
+
+test("product archive AI field strategy route exposes the productized mapping policy", async () => {
+  const route = await readText(files.draftRoute);
+
+  assert.match(route, /listProductArchiveAiFieldStrategies/);
+  assert.match(route, /productArchiveDrafts\.get\("\/ai-field-strategies"/);
+  assert.match(route, /requirePermission\(c, "PRODUCT_ARCHIVE_DRAFT_READ"\)/);
+  assert.match(route, /strategies: listProductArchiveAiFieldStrategies\(\)/);
+});
+
+test("product archive AI strategies allow selected skipped fields into conservative AI candidates", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  const candidates = service.buildProductArchiveAiFillCandidateFields([
+    {
+      id: 401,
+      field_name: "图案(多选)",
+      source_type: "skip",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [{ value: "纯色" }, { value: "卡通动漫" }],
+    },
+    {
+      id: 402,
+      field_name: "面料(多选)",
+      source_type: "skip",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [{ value: "棉" }, { value: "聚酯纤维" }],
+    },
+    {
+      id: 403,
+      field_name: "详情页AI标注",
+      source_type: "skip",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [{ value: "有图文详情" }, { value: "无图文详情" }],
+    },
+    {
+      id: 404,
+      field_name: "原产国(AKC)",
+      source_type: "skip",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [{ value: "中国" }, { value: "越南" }],
+    },
+  ], [], []);
+
+  assert.deepEqual(candidates.map((field) => ({
+    fieldName: field.fieldName,
+    strategy: field.strategy?.priority ?? null,
+  })), [
+    { fieldName: "图案(多选)", strategy: "P0" },
+    { fieldName: "面料(多选)", strategy: "P1" },
+    { fieldName: "详情页AI标注", strategy: "P2" },
   ]);
 });
 

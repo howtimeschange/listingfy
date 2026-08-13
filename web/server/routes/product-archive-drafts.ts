@@ -44,6 +44,7 @@ import {
   getProductArchiveDraftDetail,
   importProductArchiveSourceRows,
   latestProductArchiveDraftForSpuCode,
+  listProductArchiveAiFieldStrategies,
   listProductArchiveDrafts,
   listProductArchiveSubmitLogs,
   missingDraftSpuCodes,
@@ -928,6 +929,11 @@ productArchiveDrafts.get("/", (c) => {
     limit: c.req.query("limit"),
     offset: c.req.query("offset"),
   }))
+})
+
+productArchiveDrafts.get("/ai-field-strategies", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  return c.json({ strategies: listProductArchiveAiFieldStrategies() })
 })
 
 productArchiveDrafts.get("/templates/:templateType", async (c) => {

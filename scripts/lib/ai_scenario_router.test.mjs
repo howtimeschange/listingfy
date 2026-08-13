@@ -785,6 +785,114 @@ test("OpenAI-compatible Gemini routes inline remote image URLs as base64 data UR
   );
 });
 
+test("Gemini image inlining allows proxy fake-IP DNS answers for named hosts", async () => {
+  const requestBodies = [];
+  const imageBytes = Buffer.from("proxied-image-bytes");
+  const router = routerModule.createAiScenarioRouter({
+    env: {
+      AI_ROUTING_ENABLED: "true",
+      AI_SCENARIO_SHEIN_ATTRIBUTE_MODE: "guarded",
+      AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_API_KEY: "overseas-test-key",
+    },
+    lookupImpl: async () => [{ address: "198.18.1.34" }],
+    fetchImpl: async (url, init = {}) => {
+      if (String(url) === "https://product.resources.deepdraw.biz/product.jpg") {
+        return new Response(imageBytes, {
+          status: 200,
+          headers: {
+            "content-type": "image/jpeg",
+            "content-length": String(imageBytes.length),
+          },
+        });
+      }
+      const body = JSON.parse(init.body);
+      requestBodies.push(body);
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              fills: [{
+                field_key: "attr:40",
+                field_value: "常规",
+                confidence: 0.82,
+              }],
+            }),
+          },
+        }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  await router.callJson({
+    scenario: "shein_attribute",
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: "use SKC visual evidence" },
+        {
+          type: "image_url",
+          image_url: { url: "https://product.resources.deepdraw.biz/product.jpg" },
+        },
+      ],
+    }],
+    validate: (json) => Array.isArray(json?.fills),
+  });
+
+  const imageUrl = requestBodies[0].messages[0].content
+    .find((part) => part.type === "image_url")
+    .image_url.url;
+  assert.equal(
+    imageUrl,
+    `data:image/jpeg;base64,${imageBytes.toString("base64")}`,
+  );
+});
+
+test("Gemini image inlining still rejects literal proxy fake-IP image URLs", async () => {
+  const requestBodies = [];
+  const router = routerModule.createAiScenarioRouter({
+    env: {
+      AI_ROUTING_ENABLED: "true",
+      AI_SCENARIO_SHEIN_ATTRIBUTE_MODE: "guarded",
+      AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_API_KEY: "overseas-test-key",
+    },
+    lookupImpl: async () => [{ address: "198.18.1.34" }],
+    fetchImpl: async (url, init = {}) => {
+      assert.notEqual(String(url), "https://198.18.1.34/product.jpg");
+      const body = JSON.parse(init.body);
+      requestBodies.push(body);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "{\"fills\":[]}" } }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  await router.callJson({
+    scenario: "shein_attribute",
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: "literal proxy fake IP should not be fetched" },
+        {
+          type: "image_url",
+          image_url: { url: "https://198.18.1.34/product.jpg" },
+        },
+      ],
+    }],
+    validate: (json) => Array.isArray(json?.fills),
+  });
+
+  const imageUrl = requestBodies[0].messages[0].content
+    .find((part) => part.type === "image_url")
+    .image_url.url;
+  assert.equal(imageUrl, "https://198.18.1.34/product.jpg");
+});
+
 test("non-Gemini OpenAI-compatible routes keep remote image URLs unchanged", async () => {
   const requestBodies = [];
   const router = routerModule.createAiScenarioRouter({

@@ -121,6 +121,7 @@ const UNSPECIFIED_TARIFF_VALUE = "未列明关税种类"
 const DEPRECATED_TARIFF_MATERIAL_LABEL = "废弃关税种类或废弃材质"
 const AI_MULTIMODAL_ATTRIBUTE_IDS = new Set([
   40, // 合身类型
+  54, // 长度
   66, // 领型
   106, // 鞋尖
   109, // 类型
@@ -173,6 +174,7 @@ type RequiredAttribute = {
   attribute_mode: number | null
   attribute_status: number | null
   attribute_input_num: number | null
+  is_required?: number | null
   is_size_attribute?: number | null
   values_count: number
   sample_values_json: string
@@ -194,6 +196,7 @@ type FillField = {
   attribute_mode?: number | null
   attribute_status?: number | null
   attribute_input_num?: number | null
+  is_required?: number | null
   is_size_attribute?: number | null
   render_kind?: "text" | "textarea" | "single_enum" | "multi_enum" | "enum_with_text" | "readonly"
   conditional_on?: {
@@ -1036,6 +1039,12 @@ function getRequiredAttributes(
   if (!productTypeId) return []
   const attributeCategoryId = requiredAttributeCategoryId(db, categoryId, productTypeId)
   if (!attributeCategoryId) return []
+  const supplementalAiAttributeIds = uniqueStrings([
+    ...Array.from(AI_RECOMMENDED_ATTRIBUTE_IDS),
+    ...Array.from(AI_MULTIMODAL_ATTRIBUTE_IDS),
+    ...Array.from(AI_RULE_ATTRIBUTE_IDS),
+  ]).map(Number).filter((id) => Number.isInteger(id) && id > 0)
+  const supplementalPlaceholders = supplementalAiAttributeIds.map(() => "?").join(", ")
   const rows = db.prepare(`
     select
       req.platform,
@@ -1049,6 +1058,7 @@ function getRequiredAttributes(
       req.attribute_mode,
       req.attribute_status,
       req.attribute_input_num,
+      1 as is_required,
       coalesce(attr.is_size_attribute, 0) as is_size_attribute,
       req.values_count,
       req.sample_values_json
@@ -1073,13 +1083,18 @@ function getRequiredAttributes(
       attr.attribute_mode,
       attr.attribute_status,
       attr.attribute_input_num,
+      attr.is_required,
       attr.is_size_attribute,
       attr.values_count,
       attr.values_json as sample_values_json
     from channel_attribute attr
     where attr.platform = 'SHEIN'
       and attr.product_type_id = ?
-      and (attr.attribute_type = 1 or attr.attribute_id in (58))
+      and (
+        attr.attribute_type = 1
+        or attr.attribute_id in (58${supplementalPlaceholders ? `, ${supplementalPlaceholders}` : ""})
+        or attr.attribute_name in ('性别', '袖长')
+      )
       and not exists (
         select 1
         from channel_required_attribute req
@@ -1094,6 +1109,7 @@ function getRequiredAttributes(
     productTypeId,
     attributeCategoryId,
     productTypeId,
+    ...supplementalAiAttributeIds,
     attributeCategoryId,
   ) as SourceRow[]
 
@@ -1119,6 +1135,7 @@ function getRequiredAttributes(
     attribute_mode: asNumber(row.attribute_mode),
     attribute_status: asNumber(row.attribute_status),
     attribute_input_num: asNumber(row.attribute_input_num),
+    is_required: asNumber(row.is_required),
     is_size_attribute: asNumber(row.is_size_attribute),
     values_count: Number(row.values_count ?? 0),
     sample_values_json: normalizeText(row.sample_values_json),
@@ -1145,6 +1162,7 @@ function getAttributeById(
       attribute_mode,
       attribute_status,
       attribute_input_num,
+      is_required,
       is_size_attribute,
       values_count,
       values_json as sample_values_json
@@ -1176,6 +1194,7 @@ function getAttributeById(
     attribute_mode: asNumber(row.attribute_mode),
     attribute_status: asNumber(row.attribute_status),
     attribute_input_num: asNumber(row.attribute_input_num),
+    is_required: asNumber(row.is_required),
     is_size_attribute: asNumber(row.is_size_attribute),
     values_count: Number(row.values_count ?? 0),
     sample_values_json: normalizeText(row.sample_values_json),
@@ -1354,10 +1373,22 @@ function attributeFillMeta(attr: RequiredAttribute) {
     attribute_mode: attr.attribute_mode,
     attribute_status: attr.attribute_status,
     attribute_input_num: attr.attribute_input_num,
+    is_required: attr.is_required,
     is_size_attribute: attr.is_size_attribute,
     render_kind: renderKindForAttribute(attr),
     options: attr.values.slice(0, 320),
   }
+}
+
+function isRequiredFillField(field: FillField) {
+  const value = field.is_required
+  if (value == null) return true
+  return Number(value) !== 0
+}
+
+function isBlockingFillField(field: FillField) {
+  if (field.status !== "MISSING" && field.status !== "NEEDS_AI") return false
+  return isRequiredFillField(field)
 }
 
 function saleColorNeedles(colorName: unknown) {
@@ -2114,6 +2145,7 @@ function buildRow({
     })
     if (!contextual) continue
     field.status = contextual.status
+    if (contextual.required) field.is_required = 1
     if (!field.value) field.source = "SHEIN 关务条件属性"
     field.note = contextual.required
       ? "当前关税种类与材质组合触发平台关务规则，此属性必填。"
@@ -2125,7 +2157,7 @@ function buildRow({
   const missing = allFields.filter((field) => field.status === "MISSING").length
   const needsAi = allFields.filter((field) => field.status === "NEEDS_AI").length
   const blockingIssues = allFields
-    .filter((field) => field.status === "MISSING" || field.status === "NEEDS_AI")
+    .filter(isBlockingFillField)
     .map((field) => field.label)
   if (isSheinOpenApiUnsupportedSuitCategory(category.category_name, category.path)) {
     blockingIssues.unshift("SHEIN OpenAPI 套装类目限制")

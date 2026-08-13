@@ -102,6 +102,15 @@ function privateOrReservedIpv4Address(hostname) {
     || first >= 224;
 }
 
+function proxyFakeIpv4Address(hostname) {
+  const parts = hostname.split(".").map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  const [first, second] = parts;
+  return first === 198 && (second === 18 || second === 19);
+}
+
 function privateOrReservedIpv6Address(hostname) {
   const normalized = hostname.toLowerCase();
   if (normalized.startsWith("::ffff:")) {
@@ -132,6 +141,13 @@ function privateOrReservedIpAddress(address) {
   return true;
 }
 
+function allowedResolvedRemoteImageAddress(address) {
+  const normalized = String(address ?? "")
+    .replace(/^\[|\]$/g, "")
+    .toLowerCase();
+  return proxyFakeIpv4Address(normalized) || !privateOrReservedIpAddress(normalized);
+}
+
 async function allowedRemoteImageUrl(url, lookupImpl = dnsLookup) {
   let parsed;
   try {
@@ -160,7 +176,7 @@ async function allowedRemoteImageUrl(url, lookupImpl = dnsLookup) {
   }
   return Array.isArray(addresses)
     && addresses.length > 0
-    && addresses.every((item) => !privateOrReservedIpAddress(item.address));
+    && addresses.every((item) => allowedResolvedRemoteImageAddress(item.address));
 }
 
 async function readResponseBufferCapped(response, maxBytes) {

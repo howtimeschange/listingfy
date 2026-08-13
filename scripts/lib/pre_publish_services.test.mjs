@@ -213,6 +213,7 @@ test("pre-publish attribute blockers reject missing template fields before calli
     fieldFills.blockingAttributeMessages?.([
       { label: "长度", status: "MISSING" },
       { label: "是否带里衬", status: "WARNING" },
+      { label: "是否有口袋", status: "NEEDS_AI", is_required: 0 },
       { label: "材质", status: "READY" },
       { label: "护理说明/注意事项", status: "NEEDS_AI" },
     ]),
@@ -419,8 +420,9 @@ test("pre-publish includes contextual lining metadata and blocks it only when th
     source.indexOf("function getRequiredAttributes"),
     source.indexOf("function getAttributeById"),
   );
-  assert.match(requiredAttributes, /attr\.attribute_id\s+in\s+\(58\)/);
+  assert.match(requiredAttributes, /attr\.attribute_id in \(58\$\{supplementalPlaceholders/);
   assert.match(source, /contextualAttributeState\(/);
+  assert.match(source, /if \(contextual\.required\) field\.is_required = 1/);
   assert.match(source, /SHEIN 关务条件属性/);
   assert.match(source, /blockingAttributeMessages\(/);
 
@@ -1422,8 +1424,13 @@ test("SHEIN attribute AI can fill recommended visual and text fields with Gemini
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
   const aiChatClient = await readFile(path.join(PROJECT_ROOT, "scripts/lib/ai_chat_client.mjs"), "utf8");
 
-  assert.match(source, /const AI_MULTIMODAL_ATTRIBUTE_IDS = new Set\(\[[\s\S]+1001518[\s\S]+1002281[\s\S]+\]\)/);
+  assert.match(source, /const AI_MULTIMODAL_ATTRIBUTE_IDS = new Set\(\[[\s\S]+54[\s\S]+1000438[\s\S]+1001518[\s\S]+1002281[\s\S]+\]\)/);
   assert.match(source, /const AI_RECOMMENDED_ATTRIBUTE_IDS = new Set\(\[[\s\S]+39[\s\S]+77[\s\S]+128[\s\S]+154[\s\S]+1000437[\s\S]+1000600[\s\S]+1001236[\s\S]+\]\)/);
+  assert.match(source, /supplementalAiAttributeIds = uniqueStrings\(\[[\s\S]+AI_RECOMMENDED_ATTRIBUTE_IDS[\s\S]+AI_MULTIMODAL_ATTRIBUTE_IDS[\s\S]+AI_RULE_ATTRIBUTE_IDS/);
+  assert.match(source, /attr\.attribute_id in \(58\$\{supplementalPlaceholders/);
+  assert.match(source, /attr\.is_required/);
+  assert.match(source, /function isBlockingFillField/);
+  assert.match(source, /\.filter\(isBlockingFillField\)/);
   assert.match(source, /AI_MULTIMODAL_ATTRIBUTE_IDS\.has\(attributeId\)/);
   assert.match(source, /AI_RECOMMENDED_ATTRIBUTE_IDS\.has\(attributeId\)/);
   assert.match(source, /if \(Number\(field\.attribute_type \?\? 0\) === 1\) return false/);

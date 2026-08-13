@@ -51,9 +51,15 @@ export function contextualAttributeState(input: {
 export function blockingAttributeMessages(fields: Array<{
   label?: unknown
   status?: unknown
+  is_required?: unknown
+  required?: unknown
 }>) {
   return fields
     .filter((field) => field.status === "MISSING" || field.status === "NEEDS_AI")
+    .filter((field) => {
+      const required = field.is_required ?? field.required
+      return required == null || Number(required) !== 0
+    })
     .map((field) => normalizeText(field.label))
     .filter(Boolean)
     .map((label) => `商品属性「${label}」未填写`)
