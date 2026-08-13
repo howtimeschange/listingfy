@@ -1404,6 +1404,7 @@ test("SHEIN AI fill avoids unsupported composition guesses and handles condition
   assert.match(source, /note:\s*"缺少 MDM\/深绘成分来源，禁止 AI 猜测成分枚举。"/);
   assert.match(source, /function isAiFillableAttributeField/);
   assert.match(source, /if \(!isAiFillableAttributeField\(field\)\) return ""/);
+  assert.match(source, /AI_MULTIMODAL_ATTRIBUTE_IDS\.has\(attributeId\)/);
   assert.match(source, /\[58,\s*160,\s*1000062\]\.includes\(attributeId\)/);
   assert.match(source, /\["性别",\s*"袖长"\]\.some/);
   assert.match(source, /function shouldIncludeFieldInAiFill/);
@@ -1414,6 +1415,31 @@ test("SHEIN AI fill avoids unsupported composition guesses and handles condition
   assert.match(source, /function inferredAttributeSource/);
   assert.match(source, /if \(normalizeText\(materialEvidenceFromDeepDraw\(fields\)\)\) return "DEEPDRAW"/);
   assert.match(source, /normalizeText\(row\.fabric_type_name\)[\s\S]+return "MDM"/);
+});
+
+test("SHEIN attribute AI can fill visual fit pocket and MDM age fields with Gemini image parts", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const aiChatClient = await readFile(path.join(PROJECT_ROOT, "scripts/lib/ai_chat_client.mjs"), "utf8");
+
+  assert.match(source, /const AI_MULTIMODAL_ATTRIBUTE_IDS = new Set\(\[40,\s*154,\s*1000438\]\)/);
+  assert.match(source, /AI_MULTIMODAL_ATTRIBUTE_IDS\.has\(attributeId\)/);
+  assert.match(source, /function sheinAgeNeedlesForReadiness/);
+  assert.match(source, /\.includes\("中童"\)[\s\S]+8-12Y中大童/);
+  assert.match(source, /175[\s\S]+8-12Y中大童/);
+  assert.match(source, /if \(field\.label\.includes\("年龄"\)\) return pick\(sheinAgeNeedlesForReadiness\(row\)\)/);
+  assert.match(source, /if \(field\.label\.includes\("合身"\)\)[\s\S]+合体/);
+  assert.match(source, /if \(field\.label\.includes\("口袋"\)\)[\s\S]+\[text\.includes\("口袋"\) \? "是" : "否"\]/);
+  assert.match(source, /function aiImageUrlForSkc/);
+  assert.match(source, /normalizeText\(skc\.image_url\)/);
+  assert.match(source, /function buildSheinAttributeAiMessages/);
+  assert.match(source, /type:\s*"image_url"[\s\S]+image_url:\s*\{\s*url\s*\}/);
+  assert.match(source, /const messages = buildSheinAttributeAiMessages\(row,\s*prompt\)/);
+  assert.match(aiChatClient, /AI_GEMINI_INLINE_REMOTE_IMAGES/);
+  assert.match(aiChatClient, /data:\$\{mimeType\};base64/);
+  assert.match(source, /function deterministicAttributeFillsForAiEnrich/);
+  assert.match(source, /manualFieldKeys = new Set\(readiness\.manual_fields\.map\(\(field\) => field\.key\)\)/);
+  assert.match(source, /source === "RULE" \|\| source === "MDM"/);
+  assert.match(source, /for \(const field of deterministicAttributeFillsForAiEnrich\(enrichmentReadiness\)\)/);
 });
 
 test("SHEIN draft validation suggestions separate AI-fillable fields from source-owned blockers", async () => {

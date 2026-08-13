@@ -119,6 +119,7 @@ const TARIFF_ATTRIBUTE_ID = 1000407
 const DEPRECATED_TARIFF_MATERIAL_ATTRIBUTE_ID = 1000714
 const UNSPECIFIED_TARIFF_VALUE = "未列明关税种类"
 const DEPRECATED_TARIFF_MATERIAL_LABEL = "废弃关税种类或废弃材质"
+const AI_MULTIMODAL_ATTRIBUTE_IDS = new Set([40, 154, 1000438])
 
 type SourceRow = Record<string, unknown>
 
@@ -194,6 +195,10 @@ type ReadinessRow = {
   title_cn: string | null
   title_en: string | null
   brand_name: string | null
+  mdm_age_group_name?: string | null
+  mdm_main_size_group_name?: string | null
+  mdm_order_size_group_name?: string | null
+  mdm_spec_range?: string | null
   category: {
     category_id: number | null
     product_type_id: number | null
@@ -1182,6 +1187,58 @@ function findEnumValue(values: AttributeValue[], needles: string[]) {
   return findEnumOption(values, needles)?.attribute_value ?? ""
 }
 
+function sheinAgeNeedlesFromContext({
+  ageGroup,
+  specRange,
+  mainSizeGroup,
+  orderSizeGroup,
+}: {
+  ageGroup?: unknown
+  specRange?: unknown
+  mainSizeGroup?: unknown
+  orderSizeGroup?: unknown
+}) {
+  const ageGroupText = normalizeText(ageGroup)
+  const specRangeText = normalizeText(specRange)
+  const sizeText = [
+    specRangeText,
+    mainSizeGroup,
+    orderSizeGroup,
+  ].map(normalizeText).filter(Boolean).join(" ")
+  const needles: string[] = []
+  if (/婴|宝宝|0-3|0岁|1岁|2岁|3岁/.test(`${ageGroupText} ${sizeText}`)) {
+    needles.push("婴儿", "婴幼儿", "宝宝", "Baby")
+  }
+  if (
+    ageGroupText.includes("幼童")
+    || /小童/.test(ageGroupText)
+    || /0?7[03]-13[0]?|080-130|073-130|090-130/.test(sizeText)
+  ) {
+    needles.push("小童4-7Y", "4-7Y", "幼童", "儿童")
+  }
+  if (
+    ageGroupText.includes("中童")
+    || ageGroupText.includes("大童")
+    || /090-175|100-175|110-175|120-175|130-175|14[0-9].*175|175/.test(sizeText)
+  ) {
+    needles.push("8-12Y中大童", "8-12Y", "中大童", "青少年", "儿童")
+  }
+  if (/青少年|少年|teen/i.test(`${ageGroupText} ${sizeText}`)) {
+    needles.push("青少年", "8-12Y中大童")
+  }
+  needles.push("ALL/全球/所有", "全人群", "儿童")
+  return [...new Set(needles)]
+}
+
+function sheinAgeNeedlesForReadiness(row: ReadinessRow) {
+  return sheinAgeNeedlesFromContext({
+    ageGroup: row.mdm_age_group_name,
+    specRange: row.mdm_spec_range,
+    mainSizeGroup: row.mdm_main_size_group_name,
+    orderSizeGroup: row.mdm_order_size_group_name,
+  })
+}
+
 function isSizeSaleAttribute(attr: Pick<RequiredAttribute, "attribute_type" | "attribute_label" | "attribute_name" | "attribute_name_en" | "is_size_attribute">) {
   const text = `${normalizeText(attr.attribute_name)} ${normalizeText(attr.attribute_name_en)}`.toLowerCase()
   return Number(attr.attribute_type ?? 0) === 1
@@ -1349,6 +1406,9 @@ function inferAttributeValue({
     row.subclass_name,
     row.gender_name,
     row.age_group_name,
+    row.main_size_group_name,
+    row.order_size_group_name,
+    row.spec_range,
     row.fabric_type_name,
     row.model_name,
     row.length_name,
@@ -1403,9 +1463,11 @@ function inferAttributeValue({
   }
   if (name.includes("合身") || name.includes("版型")) {
     return findEnumValue(attr.values, [
+      context.includes("超宽松") ? "超宽松" : "",
       context.includes("宽松") ? "宽松" : "",
+      context.includes("修身") ? "修身" : "",
+      context.includes("合体") ? "合体" : "",
       context.includes("标准") ? "常规" : "",
-      "常规",
     ])
   }
   if (name === "长度") {
@@ -1415,7 +1477,12 @@ function inferAttributeValue({
     ])
   }
   if (name === "年龄") {
-    return findEnumValue(attr.values, ["幼童", "婴幼儿", "儿童", "3-7Y"])
+    return findEnumValue(attr.values, sheinAgeNeedlesFromContext({
+      ageGroup: row.age_group_name,
+      specRange: row.spec_range ?? row.size_range_name,
+      mainSizeGroup: row.main_size_group_name,
+      orderSizeGroup: row.order_size_group_name,
+    }))
   }
   if (name === "所在地") {
     return findEnumValue(attr.values, ["ALL/全球/所有", "All"])
@@ -1799,6 +1866,30 @@ function buildRow({
     )
     if (stored && !ignoreStoredAiComposition) {
       const storedValue = stored.field_value == null ? "" : String(stored.field_value)
+      if (!normalizeText(storedValue) && isAiFillableAttributeField({ ...attributeFillMeta(attr), key, label: attr.attribute_name, value: null, source: "AI/人工", status: "NEEDS_AI" })) {
+        const inferred = inferAttributeValue({ attr, row, fields })
+        if (inferred) {
+          return {
+            key,
+            label: attr.attribute_name,
+            value: inferred,
+            source: inferredAttributeSource({ attr, row, fields }),
+            status: "READY",
+            confidence: 0.72,
+            note: "已忽略空的人工保存值，按当前 MDM/业务数据重新推荐。",
+            ...attributeFillMeta(attr),
+          }
+        }
+        return {
+          key,
+          label: attr.attribute_name,
+          value: null,
+          source: "AI/人工",
+          status: "NEEDS_AI",
+          note: "已忽略空的人工保存值，可由 AI 结合商品档案和枚举值重新判断。",
+          ...attributeFillMeta(attr),
+        }
+      }
       const storedValues = renderKindForAttribute(attr) === "multi_enum" ? parseJsonList(storedValue) : [storedValue]
       const storedValid = (attr.values ?? []).length === 0
         || storedValues.every((value) => optionForFieldValue({ ...attributeFillMeta(attr), key, label: attr.attribute_name, value: storedValue, source: String(stored.source ?? "MANUAL"), status: "READY" }, normalizeText(value)))
@@ -1947,6 +2038,7 @@ function buildRow({
         continue
       }
       if (field.conditional_on && !normalizeText(storedValue)) continue
+      if (field.key.startsWith("attr:") && !normalizeText(storedValue) && isAiFillableAttributeField(field)) continue
       const storedValues = field.render_kind === "multi_enum" ? parseJsonList(storedValue) : [storedValue]
       if (
         field.key.startsWith("attr:")
@@ -1997,6 +2089,10 @@ function buildRow({
     title_cn: titleCn || null,
     title_en: titleEn || null,
     brand_name: normalizeText(row.deepdraw_brand_name) || normalizeText(row.brand_name) || null,
+    mdm_age_group_name: normalizeText(row.age_group_name) || null,
+    mdm_main_size_group_name: normalizeText(row.main_size_group_name) || null,
+    mdm_order_size_group_name: normalizeText(row.order_size_group_name) || null,
+    mdm_spec_range: normalizeText(row.spec_range ?? row.size_range_name) || null,
     category,
     skcs,
     sku_count: skus.length,
@@ -4452,6 +4548,7 @@ function isAiFillableAttributeField(field: FillField) {
   const label = normalizeText(field.label)
   if (Number(field.is_size_attribute ?? 0) === 1 || /尺码|尺寸/.test(label)) return false
   const attributeId = Number(field.attribute_id)
+  if (AI_MULTIMODAL_ATTRIBUTE_IDS.has(attributeId)) return true
   if ([58, 160, 1000062].includes(attributeId)) return true
   return ["性别", "袖长"].some((keyword) => label.includes(keyword))
 }
@@ -4479,6 +4576,10 @@ function heuristicAiValue(field: FillField, row: ReadinessRow) {
     row.spu_name,
     row.title_cn,
     row.category.category_name,
+    row.mdm_age_group_name,
+    row.mdm_spec_range,
+    row.mdm_main_size_group_name,
+    row.mdm_order_size_group_name,
     row.skcs.map((skc) => skc.color_name).join(" "),
   ].map(normalizeText).join(" ")
 
@@ -4493,12 +4594,28 @@ function heuristicAiValue(field: FillField, row: ReadinessRow) {
   if (field.label.includes("透明")) return pick(["否"])
   if (field.label.includes("加绒")) return pick(["否"])
   if (field.label.includes("撞色")) return pick([text.includes("撞色") ? "是" : "否"])
-  if (field.label.includes("年龄")) return pick(["幼童", "儿童", "婴幼儿"])
+  if (field.label.includes("年龄")) return pick(sheinAgeNeedlesForReadiness(row))
+  if (field.label.includes("合身")) return pick([
+    text.includes("超宽松") ? "超宽松" : "",
+    text.includes("宽松") ? "宽松" : "",
+    text.includes("修身") ? "修身" : "",
+    text.includes("合体") ? "合体" : "",
+    "合体",
+    "常规",
+  ])
+  if (field.label.includes("口袋")) return pick([text.includes("口袋") ? "是" : "否"])
   if (field.label.includes("所在地")) return pick(["ALL/全球/所有", "All"])
   if (field.label.includes("关税")) {
     return pick(tariffValueCandidatesForContext(text, field.options ?? []))
   }
   return optionValues[0] || ""
+}
+
+function aiImageUrlForSkc(skc: SourceRow) {
+  return normalizeText(skc.image_url)
+    || normalizeText(skc.tmall_color_image_url)
+    || normalizeText(skc.tmall_color_url)
+    || normalizeText(skc.pic_url)
 }
 
 function aiPrompt(row: ReadinessRow) {
@@ -4532,14 +4649,70 @@ function aiPrompt(row: ReadinessRow) {
       title_cn: row.title_cn,
       title_en: row.title_en,
       category: row.category,
+      mdm_age_group_name: row.mdm_age_group_name,
+      mdm_main_size_group_name: row.mdm_main_size_group_name,
+      mdm_order_size_group_name: row.mdm_order_size_group_name,
+      mdm_spec_range: row.mdm_spec_range,
       skcs: row.skcs.map((skc) => ({
         skc_code: skc.skc_code,
         color_name: skc.color_name,
-        tmall_color_image_url: skc.tmall_color_image_url ?? skc.tmall_color_url ?? null,
+        has_image: Boolean(aiImageUrlForSkc(skc)),
       })),
     },
     attributes,
   }, null, 2)
+}
+
+function buildSheinAttributeAiMessages(row: ReadinessRow, prompt: string) {
+  const content: Array<
+    | { type: "text"; text: string }
+    | { type: "image_url"; image_url: { url: string } }
+  > = [{ type: "text", text: prompt }]
+  for (const skc of row.skcs.slice(0, 8)) {
+    const url = aiImageUrlForSkc(skc)
+    const skcCode = normalizeText(skc.skc_code) || "UNKNOWN_SKC"
+    const colorName = normalizeText(skc.color_name) || "未提供颜色名"
+    if (!url) {
+      content.push({
+        type: "text",
+        text: `SKC ${skcCode}｜颜色 ${colorName}｜没有可用款色图；视觉字段需保守判断。`,
+      })
+      continue
+    }
+    content.push({
+      type: "text",
+      text: `下图对应 SKC ${skcCode}｜颜色 ${colorName}。用于判断合身类型、是否有口袋、里衬等可视属性；图片证据不明确时选择保守通用枚举。`,
+    })
+    content.push({
+      type: "image_url",
+      image_url: { url },
+    })
+  }
+  return [
+    {
+      role: "system",
+      content: "你是跨境童装 SHEIN 发品属性专家，负责在给定枚举里做保守选择。",
+    },
+    {
+      role: "user",
+      content,
+    },
+  ]
+}
+
+function deterministicAttributeFillsForAiEnrich(readiness: ReadinessRow) {
+  const manualFieldKeys = new Set(readiness.manual_fields.map((field) => field.key))
+  return readiness.field_groups
+    .flatMap((group) => group.fields)
+    .filter((field) => {
+      if (!field.key.startsWith("attr:")) return false
+      if (manualFieldKeys.has(field.key)) return false
+      if (!isAiFillableAttributeField(field)) return false
+      if (field.status !== "READY") return false
+      if (!normalizeText(field.value)) return false
+      const source = normalizeText(field.source)
+      return source === "RULE" || source === "MDM"
+    })
 }
 
 async function callAiFill(row: ReadinessRow) {
@@ -4548,16 +4721,7 @@ async function callAiFill(row: ReadinessRow) {
   if (row.manual_fields.length === 0 || policy.mode === "disabled") return []
   if (policy.mode !== "guarded" && !config.apiKey) return []
   const prompt = aiPrompt(row)
-  const messages = [
-    {
-      role: "system",
-      content: "你是跨境童装 SHEIN 发品属性专家，负责在给定枚举里做保守选择。",
-    },
-    {
-      role: "user",
-      content: prompt,
-    },
-  ]
+  const messages = buildSheinAttributeAiMessages(row, prompt)
   const allowedValues = new Map(row.manual_fields.map((field) => [
     field.key,
     new Set((field.options ?? []).map((option) => option.attribute_value)),
@@ -4599,9 +4763,12 @@ async function callAiFill(row: ReadinessRow) {
         title_cn: row.title_cn,
         title_en: row.title_en,
         category: row.category,
+        mdm_age_group_name: row.mdm_age_group_name,
+        mdm_spec_range: row.mdm_spec_range,
         skcs: row.skcs.map((skc) => ({
           skc_code: skc.skc_code,
           color_name: skc.color_name,
+          has_image: Boolean(aiImageUrlForSkc(skc)),
         })),
       },
       candidates: row.manual_fields.map((field) => ({
@@ -7430,6 +7597,30 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
   }
 
   if (mode === "all" || mode === "attributes") {
+    for (const field of deterministicAttributeFillsForAiEnrich(enrichmentReadiness)) {
+      const fieldValue = normalizeFillFieldValue(field.key, field.label, field.value)
+      if (!fieldValue) continue
+      persistFill({
+        db,
+        spuCode: enrichmentReadiness.spu_code,
+        fieldKey: field.key,
+        fieldLabel: field.label,
+        fieldValue,
+        source: normalizeText(field.source) || "RULE",
+        confidence: field.confidence ?? 0.72,
+        payload: {
+          fallback: true,
+          context: "draft_ai_enrich",
+          reason: field.note ?? "根据商品档案和 SHEIN 枚举确定性推荐。",
+        },
+      })
+      saved.push({
+        field_key: field.key,
+        field_label: field.label,
+        field_value: fieldValue,
+      })
+    }
+
     let aiFills: Array<Record<string, unknown>> = []
     try {
       aiFills = await callAiFill(enrichmentReadiness) as Array<Record<string, unknown>>
@@ -9323,10 +9514,10 @@ prePublish.post("/ai-fill", async (c) => {
         })
       }
     }
-    if (descriptionNeedsAi) {
-      const productDescription = await safeAiGenerateProductDescription(row)
-      if (productDescription) {
-        persistFill({
+        if (descriptionNeedsAi) {
+          const productDescription = await safeAiGenerateProductDescription(row)
+          if (productDescription) {
+            persistFill({
           db,
           spuCode: row.spu_code,
           fieldKey: "product_description",
@@ -9345,12 +9536,36 @@ prePublish.post("/ai-fill", async (c) => {
           field_key: "product_description",
           field_label: "商品描述",
           field_value: productDescription,
-        })
-      }
-    }
-    let aiFills: Array<Record<string, unknown>> = []
-    try {
-      aiFills = await callAiFill(row) as Array<Record<string, unknown>>
+            })
+          }
+        }
+        for (const field of deterministicAttributeFillsForAiEnrich(row)) {
+          const fieldValue = normalizeFillFieldValue(field.key, field.label, field.value)
+          if (!fieldValue) continue
+          persistFill({
+            db,
+            spuCode: row.spu_code,
+            fieldKey: field.key,
+            fieldLabel: field.label,
+            fieldValue,
+            source: normalizeText(field.source) || "RULE",
+            confidence: field.confidence ?? 0.72,
+            payload: {
+              fallback: true,
+              context: "batch_ai_fill",
+              reason: field.note ?? "根据商品档案和 SHEIN 枚举确定性推荐。",
+            },
+          })
+          saved.push({
+            spu_code: row.spu_code,
+            field_key: field.key,
+            field_label: field.label,
+            field_value: fieldValue,
+          })
+        }
+        let aiFills: Array<Record<string, unknown>> = []
+        try {
+          aiFills = await callAiFill(row) as Array<Record<string, unknown>>
     } catch (error) {
       warnings.push({
         spu_code: row.spu_code,
