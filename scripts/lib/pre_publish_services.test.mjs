@@ -1405,7 +1405,8 @@ test("SHEIN AI fill avoids unsupported composition guesses and handles condition
   assert.match(source, /function isAiFillableAttributeField/);
   assert.match(source, /if \(!isAiFillableAttributeField\(field\)\) return ""/);
   assert.match(source, /AI_MULTIMODAL_ATTRIBUTE_IDS\.has\(attributeId\)/);
-  assert.match(source, /\[58,\s*160,\s*1000062\]\.includes\(attributeId\)/);
+  assert.match(source, /AI_RECOMMENDED_ATTRIBUTE_IDS\.has\(attributeId\)/);
+  assert.match(source, /AI_RULE_ATTRIBUTE_IDS\.has\(attributeId\)/);
   assert.match(source, /\["性别",\s*"袖长"\]\.some/);
   assert.match(source, /function shouldIncludeFieldInAiFill/);
   assert.match(source, /if \(!isAiFillableAttributeField\(field\)\) return false/);
@@ -1417,18 +1418,27 @@ test("SHEIN AI fill avoids unsupported composition guesses and handles condition
   assert.match(source, /normalizeText\(row\.fabric_type_name\)[\s\S]+return "MDM"/);
 });
 
-test("SHEIN attribute AI can fill visual fit pocket and MDM age fields with Gemini image parts", async () => {
+test("SHEIN attribute AI can fill recommended visual and text fields with Gemini image parts", async () => {
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
   const aiChatClient = await readFile(path.join(PROJECT_ROOT, "scripts/lib/ai_chat_client.mjs"), "utf8");
 
-  assert.match(source, /const AI_MULTIMODAL_ATTRIBUTE_IDS = new Set\(\[40,\s*154,\s*1000438\]\)/);
+  assert.match(source, /const AI_MULTIMODAL_ATTRIBUTE_IDS = new Set\(\[[\s\S]+1001518[\s\S]+1002281[\s\S]+\]\)/);
+  assert.match(source, /const AI_RECOMMENDED_ATTRIBUTE_IDS = new Set\(\[[\s\S]+39[\s\S]+77[\s\S]+128[\s\S]+154[\s\S]+1000437[\s\S]+1000600[\s\S]+1001236[\s\S]+\]\)/);
   assert.match(source, /AI_MULTIMODAL_ATTRIBUTE_IDS\.has\(attributeId\)/);
+  assert.match(source, /AI_RECOMMENDED_ATTRIBUTE_IDS\.has\(attributeId\)/);
+  assert.match(source, /if \(Number\(field\.attribute_type \?\? 0\) === 1\) return false/);
   assert.match(source, /function sheinAgeNeedlesForReadiness/);
   assert.match(source, /\.includes\("中童"\)[\s\S]+8-12Y中大童/);
   assert.match(source, /175[\s\S]+8-12Y中大童/);
   assert.match(source, /if \(field\.label\.includes\("年龄"\)\) return pick\(sheinAgeNeedlesForReadiness\(row\)\)/);
   assert.match(source, /if \(field\.label\.includes\("合身"\)\)[\s\S]+合体/);
   assert.match(source, /if \(field\.label\.includes\("口袋"\)\)[\s\S]+\[text\.includes\("口袋"\) \? "是" : "否"\]/);
+  assert.match(source, /function aiAttributeGuidance/);
+  assert.match(source, /1001518[\s\S]+版型/);
+  assert.match(source, /1001236[\s\S]+厚薄/);
+  assert.match(source, /1000600[\s\S]+睡衣类型/);
+  assert.match(source, /known_field_facts:\s*aiKnownFieldFacts\(row\)/);
+  assert.match(source, /return optionValues\.length === 1 \? optionValues\[0\] : ""/);
   assert.match(source, /function aiImageUrlForSkc/);
   assert.match(source, /normalizeText\(skc\.image_url\)/);
   assert.match(source, /function buildSheinAttributeAiMessages/);

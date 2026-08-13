@@ -119,7 +119,40 @@ const TARIFF_ATTRIBUTE_ID = 1000407
 const DEPRECATED_TARIFF_MATERIAL_ATTRIBUTE_ID = 1000714
 const UNSPECIFIED_TARIFF_VALUE = "未列明关税种类"
 const DEPRECATED_TARIFF_MATERIAL_LABEL = "废弃关税种类或废弃材质"
-const AI_MULTIMODAL_ATTRIBUTE_IDS = new Set([40, 154, 1000438])
+const AI_MULTIMODAL_ATTRIBUTE_IDS = new Set([
+  40, // 合身类型
+  66, // 领型
+  106, // 鞋尖
+  109, // 类型
+  113, // 腰线
+  207, // 是否透明
+  1000070, // 是否深浅撞色
+  1000410, // 工艺选项
+  1000438, // 是否有口袋
+  1000595, // 鞋靴款式
+  1000627, // 细化图案
+  1001159, // 款式特征
+  1001197, // 图案款
+  1001515, // 附带拉绳
+  1001518, // 版型
+  1001899, // 脚背
+  1001907, // 是否无缝
+  1002212, // 穿戴类型
+  1002281, // 是否含有色镜片
+  1002315, // 是否带袖或袖孔
+  9, // 腰带
+])
+const AI_RECOMMENDED_ATTRIBUTE_IDS = new Set([
+  ...AI_MULTIMODAL_ATTRIBUTE_IDS,
+  39, // 面料弹性
+  77, // 季节
+  128, // 场合
+  154, // 年龄
+  1000437, // 是否加绒
+  1000600, // 睡衣类型
+  1001236, // 厚薄程度
+])
+const AI_RULE_ATTRIBUTE_IDS = new Set([58, 160, 1000062])
 
 type SourceRow = Record<string, unknown>
 
@@ -1399,6 +1432,7 @@ function inferAttributeValue({
   fields: Map<string, string>
 }) {
   const name = attr.attribute_name
+  const attributeId = Number(attr.attribute_id)
   const context = [
     row.spu_name,
     row.deepdraw_title,
@@ -1446,29 +1480,44 @@ function inferAttributeValue({
     return findEnumValue(attr.values, tariffValueCandidatesForContext(context, attr.values))
   }
   if (name.includes("加绒")) {
-    return findEnumValue(attr.values, [context.includes("加绒") ? "是" : "否"])
+    if (/不加绒|无绒|薄款|超薄/.test(context)) return findEnumValue(attr.values, ["否"])
+    if (context.includes("加绒")) return findEnumValue(attr.values, ["是"])
+    if (AI_RECOMMENDED_ATTRIBUTE_IDS.has(attributeId)) return ""
+    return findEnumValue(attr.values, ["否"])
   }
   if (name.includes("透明")) {
-    return findEnumValue(attr.values, [context.includes("透明") ? "是" : "否"])
+    if (/不透明|非透明/.test(context)) return findEnumValue(attr.values, ["否"])
+    if (/半透|透明|透视/.test(context)) return findEnumValue(attr.values, ["半透", "是"])
+    if (AI_RECOMMENDED_ATTRIBUTE_IDS.has(attributeId)) return ""
+    return findEnumValue(attr.values, ["否"])
   }
   if (name.includes("深浅撞色")) {
-    return findEnumValue(attr.values, [context.includes("撞色") ? "是" : "否"])
+    if (/无撞色|不撞色|非撞色|纯色|同色|净色/.test(context)) return findEnumValue(attr.values, ["否"])
+    if (/撞色|拼色|色块|对比色/.test(context)) return findEnumValue(attr.values, ["是"])
+    if (AI_RECOMMENDED_ATTRIBUTE_IDS.has(attributeId)) return ""
+    return findEnumValue(attr.values, ["否"])
   }
   if (name.includes("面料弹性")) {
+    if (AI_RECOMMENDED_ATTRIBUTE_IDS.has(attributeId) && !/高弹|中弹|低弹|无弹|弹力|弹性/.test(context)) return ""
     return findEnumValue(attr.values, [
       context.includes("高弹") ? "高弹" : "",
-      context.includes("弹") && !context.includes("无弹") ? "中弹" : "无弹",
+      context.includes("中弹") ? "中弹" : "",
+      context.includes("低弹") ? "低弹" : "",
+      context.includes("无弹") ? "无弹" : "",
+      context.includes("弹") ? "中弹" : "",
       "低弹",
     ])
   }
   if (name.includes("合身") || name.includes("版型")) {
-    return findEnumValue(attr.values, [
+    const fit = findEnumValue(attr.values, [
       context.includes("超宽松") ? "超宽松" : "",
       context.includes("宽松") ? "宽松" : "",
       context.includes("修身") ? "修身" : "",
       context.includes("合体") ? "合体" : "",
       context.includes("标准") ? "常规" : "",
     ])
+    if (fit) return fit
+    if (AI_RECOMMENDED_ATTRIBUTE_IDS.has(attributeId)) return ""
   }
   if (name === "长度") {
     return findEnumValue(attr.values, [
@@ -4546,10 +4595,12 @@ function isAiFillableAttributeField(field: FillField) {
   if (field.conditional_on) return false
   if (isCompositionAttributeField(field)) return false
   const label = normalizeText(field.label)
+  if (Number(field.attribute_type ?? 0) === 1) return false
   if (Number(field.is_size_attribute ?? 0) === 1 || /尺码|尺寸/.test(label)) return false
   const attributeId = Number(field.attribute_id)
   if (AI_MULTIMODAL_ATTRIBUTE_IDS.has(attributeId)) return true
-  if ([58, 160, 1000062].includes(attributeId)) return true
+  if (AI_RECOMMENDED_ATTRIBUTE_IDS.has(attributeId)) return true
+  if (AI_RULE_ATTRIBUTE_IDS.has(attributeId)) return true
   return ["性别", "袖长"].some((keyword) => label.includes(keyword))
 }
 
@@ -4581,6 +4632,7 @@ function heuristicAiValue(field: FillField, row: ReadinessRow) {
     row.mdm_main_size_group_name,
     row.mdm_order_size_group_name,
     row.skcs.map((skc) => skc.color_name).join(" "),
+    aiKnownFieldFacts(row, { includeNeedsAi: false }),
   ].map(normalizeText).join(" ")
 
   const pick = (needles: string[]) => findEnumValue(
@@ -4588,12 +4640,22 @@ function heuristicAiValue(field: FillField, row: ReadinessRow) {
     needles,
   )
 
-  if (field.label.includes("图案")) return pick(["纯色", "条纹", "格子"]) || optionValues[0] || ""
-  if (field.label.includes("风格") || field.label.includes("企划")) return pick(["Casual休闲", "休闲"]) || optionValues[0] || ""
+  if (field.label.includes("图案")) return pick([text.includes("纯色") ? "纯色" : "", text.includes("条纹") ? "条纹" : "", text.includes("格子") ? "格子" : ""])
+  if (field.label.includes("风格") || field.label.includes("企划")) return pick(["Casual休闲", "休闲"])
   if (field.label.includes("里衬")) return pick(["无内衬"])
-  if (field.label.includes("透明")) return pick(["否"])
-  if (field.label.includes("加绒")) return pick(["否"])
-  if (field.label.includes("撞色")) return pick([text.includes("撞色") ? "是" : "否"])
+  if (field.label.includes("透明")) return pick([
+    /不透明|非透明/.test(text) ? "否" : "",
+    /半透|透明|透视/.test(text) ? "半透" : "",
+    /半透|透明|透视/.test(text) ? "是" : "",
+  ])
+  if (field.label.includes("加绒")) return pick([
+    /不加绒|无绒|薄款|超薄/.test(text) ? "否" : "",
+    text.includes("加绒") ? "是" : "",
+  ])
+  if (field.label.includes("撞色")) return pick([
+    /无撞色|不撞色|非撞色|纯色|同色|净色/.test(text) ? "否" : "",
+    /撞色|拼色|色块|对比色/.test(text) ? "是" : "",
+  ])
   if (field.label.includes("年龄")) return pick(sheinAgeNeedlesForReadiness(row))
   if (field.label.includes("合身")) return pick([
     text.includes("超宽松") ? "超宽松" : "",
@@ -4608,7 +4670,7 @@ function heuristicAiValue(field: FillField, row: ReadinessRow) {
   if (field.label.includes("关税")) {
     return pick(tariffValueCandidatesForContext(text, field.options ?? []))
   }
-  return optionValues[0] || ""
+  return optionValues.length === 1 ? optionValues[0] : ""
 }
 
 function aiImageUrlForSkc(skc: SourceRow) {
@@ -4618,11 +4680,70 @@ function aiImageUrlForSkc(skc: SourceRow) {
     || normalizeText(skc.pic_url)
 }
 
+function aiKnownFieldFacts(row: ReadinessRow, options: { includeNeedsAi?: boolean } = {}) {
+  const facts: string[] = []
+  for (const group of row.field_groups) {
+    for (const field of group.fields) {
+      const label = normalizeText(field.label)
+      if (!label) continue
+      const value = normalizeText(field.value)
+      if (value) {
+        facts.push(`${label}: ${value}`)
+        continue
+      }
+      if (options.includeNeedsAi && (field.status === "NEEDS_AI" || field.status === "MISSING")) {
+        facts.push(`${label}: 待判断`)
+      }
+    }
+  }
+  return compactText(uniqueStrings(facts).join("；"), 2400)
+}
+
+function aiAttributeGuidance(field: FillField) {
+  const id = Number(field.attribute_id)
+  const label = normalizeText(field.label)
+  if (id === 40 || label.includes("合身")) return "结合商品图轮廓和文案版型词判断宽松/修身/合体等；证据不清选保守常规/合体。"
+  if (id === 154 || label === "年龄") return "优先依据 MDM 年龄段、SHEIN 尺码段、主尺码段、订货尺码段判断，不主要依赖图片。"
+  if (id === 1000438 || label.includes("口袋")) return "结合商品图判断是否有真实口袋；装饰线、假袋口按枚举选择假口袋或否。"
+  if (id === 1001518 || label.includes("版型")) return "结合商品图廓形、领肩腰线和标题文案判断；只在当前枚举中选择最贴近款式。"
+  if (id === 39 || label.includes("面料弹性")) return "主要依据深绘/MDM 文案里的弹力指数、高弹/中弹/低弹/无弹描述；图片只作辅助。"
+  if (id === 207 || label.includes("透明")) return "结合图片和文案判断透明/半透/不透明；灯光导致的透光不等于透明材质。"
+  if (id === 1000437 || label.includes("加绒")) return "主要依据标题、卖点、厚薄、内里图判断是否加绒；外观不清时保守。"
+  if (id === 1000070 || label.includes("撞色")) return "依据图片判断深浅撞色、拼色、明显对比色块；印花或多色图案不一定是撞色。"
+  if (id === 66 || label.includes("领型")) return "依据上衣图片判断圆领、翻领、V领等领型；看不清时选最通用枚举。"
+  if (id === 106 || label.includes("鞋尖")) return "依据鞋图判断包头/露趾等鞋尖形态。"
+  if (id === 113 || label.includes("腰线")) return "依据裤裙腰部位置、标题和模特图判断高腰/中腰/低腰。"
+  if (id === 1000595 || label.includes("鞋靴款式")) return "依据鞋图判断低帮、过踝、靴筒高度等款式。"
+  if (id === 1001899 || label.includes("脚背")) return "依据鞋面覆盖程度判断露脚背/不露脚背。"
+  if (id === 1001907 || label.includes("无缝")) return "依据袜/内衣文案和图片判断是否无缝；没有明确证据时保守。"
+  if (id === 1002315 || label.includes("袖孔") || label.includes("带袖")) return "依据服装图片判断是否带袖或袖孔。"
+  if (id === 1001236 || label.includes("厚薄")) return "主要依据标题、面料、季节、加绒、厚薄字段判断常规/超薄/加厚等。"
+  if (id === 77 || label.includes("季节")) return "依据袖长、厚薄、面料、加绒、标题季节词判断适用季节；运营主观性强时降低置信。"
+  if (id === 128 || label.includes("场合")) return "依据标题、图案和商品用途判断圣诞、万圣节、外出、沙滩等场合。"
+  if (id === 1000627 || label.includes("细化图案")) return "依据图片和颜色/图案文案判断动物、条纹、格纹、花朵等细化图案。"
+  if (id === 1001197 || label.includes("图案款")) return "依据图片和标题判断是否为图案款；纯色、普通拼色不算图案款。"
+  if (id === 1000410 || label.includes("工艺")) return "依据图片和文案判断刺绣、扎染、印花、钉珠等工艺；不可见则保守。"
+  if (id === 109 || label === "类型") return "结合当前 SHEIN 类目、标题和图片判断类型字段含义，只在枚举中选择最贴近项。"
+  if (id === 1001159 || label.includes("款式特征")) return "依据图片和文案判断胸杯款、特殊结构或无等款式特征。"
+  if (id === 1000600 || label.includes("睡衣类型")) return "依据标题、类目和文案判断紧身/阻燃/其它；阻燃必须有文字证据。"
+  if (id === 1002212 || label.includes("穿戴类型")) return "依据类目、标题和图片判断装扮套装或基础服装。"
+  if (id === 1001515 || label.includes("拉绳")) return "依据图片判断是否附带可见拉绳。"
+  if (id === 9 || label.includes("腰带")) return "依据图片判断是否含腰带或腰部系带。"
+  if (id === 1002281 || label.includes("有色镜片")) return "依据眼镜图片判断镜片是否有色。"
+  if (label.includes("性别")) return "优先依据 SHEIN 类目路径和 MDM 性别描述判断男童/女童/中性。"
+  if (label.includes("袖长")) return "依据图片和标题判断长袖、短袖、无袖、七分袖等。"
+  if (id === 58 || label.includes("里衬")) return "依据图片和文案判断是否有内衬；关务条件触发时更保守。"
+  if (id === 160 || label.includes("材质")) return "依据 MDM/深绘面料和成分来源判断材质枚举；不要编造成分比例。"
+  if (id === 1000062 || label.includes("织造方式")) return "依据 MDM 面种、深绘文案和类目判断针织/梭织/毛织等。"
+  return "结合当前类目、MDM/深绘文案和图片，在枚举中保守选择；无法判断时选择最通用项并降低置信。"
+}
+
 function aiPrompt(row: ReadinessRow) {
   const attributes = row.manual_fields.map((field) => ({
     field_key: field.key,
     field_label: field.label,
     options: (field.options ?? []).map((option) => option.attribute_value).slice(0, 80),
+    guidance: aiAttributeGuidance(field),
   }))
   return JSON.stringify({
     task: "为 SHEIN 发布前需要人工判断的必填属性选择最合适枚举值",
@@ -4640,8 +4761,10 @@ function aiPrompt(row: ReadinessRow) {
     rules: [
       "只返回 JSON，不要 Markdown。",
       "不能编造枚举值，只能从对应字段 options 中选择。",
+      "只处理 attributes 中列出的字段；不要输出 attributes 中不存在的字段。",
       "如果字段无法可靠判断，选择最保守的通用值并降低 confidence。",
       "童装默认风格可偏休闲；是否类字段没有证据时默认否。",
+      "成分、尺码、重量、销售属性、检测证书类字段不在本任务中，不要补充或猜测。",
     ],
     product: {
       spu_code: row.spu_code,
@@ -4653,6 +4776,7 @@ function aiPrompt(row: ReadinessRow) {
       mdm_main_size_group_name: row.mdm_main_size_group_name,
       mdm_order_size_group_name: row.mdm_order_size_group_name,
       mdm_spec_range: row.mdm_spec_range,
+      known_field_facts: aiKnownFieldFacts(row),
       skcs: row.skcs.map((skc) => ({
         skc_code: skc.skc_code,
         color_name: skc.color_name,
@@ -4681,7 +4805,7 @@ function buildSheinAttributeAiMessages(row: ReadinessRow, prompt: string) {
     }
     content.push({
       type: "text",
-      text: `下图对应 SKC ${skcCode}｜颜色 ${colorName}。用于判断合身类型、是否有口袋、里衬等可视属性；图片证据不明确时选择保守通用枚举。`,
+      text: `下图对应 SKC ${skcCode}｜颜色 ${colorName}。用于判断合身类型、版型、口袋、领型、腰线、鞋类形态、图案、工艺、撞色、透明等可视属性；图片证据不明确时选择保守通用枚举并降低置信。`,
     })
     content.push({
       type: "image_url",
