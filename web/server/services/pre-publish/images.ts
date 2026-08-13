@@ -33,11 +33,13 @@ export type PictureCapacityRule = {
 export type SheinImageAsset = {
   id?: unknown
   skc_code?: unknown
+  source_type?: unknown
   asset_type?: unknown
   image_sort?: unknown
   platform_url?: unknown
   source_url?: unknown
   local_path?: unknown
+  raw_payload_json?: unknown
 }
 
 export type SheinImageInfoItem = {
@@ -335,6 +337,28 @@ function sheinImagePriority(asset: SheinImageAsset) {
   return 4
 }
 
+function sheinImageSourcePriority(asset: SheinImageAsset) {
+  const sourceType = normalizeText(asset.source_type).toUpperCase()
+  if (["MANUAL_UPLOAD", "SHEIN_IMAGE_PACKAGE", "MANUAL_FOLDER_IMPORT", "IMAGE_LIBRARY"].includes(sourceType)) return 0
+  if (sourceType === "SKC_SOURCE_IMAGE") return 2
+  if (sourceType === "SOURCE_FALLBACK") return 3
+  return 1
+}
+
+export function assetPreparedForImageType(asset: SheinImageAsset, imageType: number) {
+  let payload: Record<string, unknown> = {}
+  if (typeof asset.raw_payload_json === "string") {
+    try {
+      payload = JSON.parse(asset.raw_payload_json || "{}") as Record<string, unknown>
+    } catch {
+      payload = {}
+    }
+  } else if (asset.raw_payload_json && typeof asset.raw_payload_json === "object") {
+    payload = asset.raw_payload_json as Record<string, unknown>
+  }
+  return Number(payload.shein_image_type ?? payload.image_type ?? 0) === imageType
+}
+
 export function sheinImageType(assetType: unknown, options: { mainImage?: boolean } = {}) {
   const type = sheinAssetType(assetType)
   if (type === "SQUARE") return 5
@@ -355,6 +379,10 @@ function sheinAssetAvailable(asset: SheinImageAsset, options: { allowSourceImage
   )
 }
 
+function singleSheinImageType(imageType: number) {
+  return imageType === 5 || imageType === 6
+}
+
 export function buildSheinImageInfo(input: BuildSheinImageInfoInput): SheinImageInfo {
   const skcCode = normalizeText(input.skcCode)
   const allowSourceImages = Boolean(input.allowSourceImages)
@@ -365,6 +393,7 @@ export function buildSheinImageInfo(input: BuildSheinImageInfoInput): SheinImage
     .filter((asset) => sheinAssetAvailable(asset, { allowSourceImages, allowLocalImages }))
     .sort((left, right) =>
       sheinImagePriority(left) - sheinImagePriority(right)
+      || sheinImageSourcePriority(left) - sheinImageSourcePriority(right)
       || Number(left.image_sort ?? 0) - Number(right.image_sort ?? 0)
       || Number(left.id ?? 0) - Number(right.id ?? 0),
     )
@@ -376,15 +405,21 @@ export function buildSheinImageInfo(input: BuildSheinImageInfoInput): SheinImage
   }
 
   let usedMain = false
+  const usedSingleImageTypes = new Set<number>()
   for (const asset of selectedAssets) {
     const type = sheinAssetType(asset.asset_type)
     const imageUrl = sheinAssetUrl(asset, { allowSourceImages, allowLocalImages })
     if (!imageUrl) continue
     const isFirstMain = type === "MAIN" && !usedMain
     if (type === "MAIN") usedMain = true
+    const imageType = sheinImageType(type, { mainImage: isFirstMain })
+    if (singleSheinImageType(imageType)) {
+      if (usedSingleImageTypes.has(imageType)) continue
+      usedSingleImageTypes.add(imageType)
+    }
     output.push({
       image_sort: 0,
-      image_type: sheinImageType(type, { mainImage: isFirstMain }),
+      image_type: imageType,
       image_url: imageUrl,
     })
   }

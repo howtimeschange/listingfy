@@ -1,87 +1,135 @@
 import {
   callAiChatCompletion,
   extractAiJsonText,
+  normalizeAiMessagesForModel,
   resolveAiConfig,
 } from "./ai_chat_client.mjs";
 
-const SCENARIO_ROUTES = {
-  title_translation: {
-    defaultMode: "shadow",
-    guardedRoute: [
-      { providerKey: "semir_overseas_openai", model: "gpt-5.6-terra" },
-      { providerKey: "semir_overseas_openai", model: "gpt-5.6-sol" },
+const DEFAULT_SEMIR_OVERSEAS_GEMINI_MODEL = "gemini-3.5-flash";
+const DEFAULT_1XM_GEMINI_MODEL = "gemini-3-flash-preview";
+
+function envText(env, names, fallback) {
+  for (const name of names) {
+    const value = String(env[name] ?? "").trim();
+    if (value) return value;
+  }
+  return fallback;
+}
+
+function uniqueRoutes(routes) {
+  const seen = new Set();
+  const output = [];
+  for (const route of routes) {
+    const key = [
+      route.providerKey,
+      route.model,
+      route.textOnly ? "textOnly" : "",
+    ].join("\u0000");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(route);
+  }
+  return output;
+}
+
+function scenarioRoutes(env = process.env) {
+  const semirOverseasGeminiModel = envText(
+    env,
+    [
+      "AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_GEMINI_MODEL",
+      "AI_PROVIDER_SEMIR_OVERSEAS_GEMINI_MODEL",
     ],
-    shadowRoute: [
-      { providerKey: "semir_overseas_openai", model: "gpt-5.6-terra" },
-    ],
-  },
-  size_mapping: {
-    defaultMode: "shadow",
-    guardedRoute: [
-      { providerKey: "semir_domestic_openai", model: "kimi-k2.7-code" },
-      { providerKey: "semir_overseas_openai", model: "gpt-5.6-sol" },
-      { providerKey: "current_1xm", model: "gemini-3-flash-preview" },
-    ],
-    shadowRoute: [
-      { providerKey: "semir_domestic_openai", model: "kimi-k2.7-code" },
-    ],
-  },
-  shein_attribute: {
-    defaultMode: "shadow",
-    guardedRoute: [
-      { providerKey: "semir_overseas_openai", model: "gemini-3-flash-preview" },
-      { providerKey: "semir_domestic_openai", model: "deepseek-v4-pro" },
-      { providerKey: "current_1xm", model: "gemini-3-flash-preview" },
-    ],
-    shadowRoute: [
-      { providerKey: "semir_overseas_openai", model: "gemini-3-flash-preview" },
-    ],
-  },
-  shein_description: {
-    defaultMode: "shadow",
-    guardedRoute: [
-      { providerKey: "semir_overseas_openai", model: "gpt-5.6-sol" },
-      { providerKey: "semir_domestic_openai", model: "deepseek-v4-pro" },
-    ],
-    shadowRoute: [
-      { providerKey: "semir_overseas_openai", model: "gpt-5.6-sol" },
-    ],
-  },
-  deepdraw_field_fill: {
-    defaultMode: "shadow",
-    guardedRoute: [
-      { providerKey: "semir_domestic_openai", model: "kimi-k2.7-code" },
-      { providerKey: "semir_overseas_openai", model: "gpt-5.6-sol" },
-    ],
-    shadowRoute: [
-      { providerKey: "semir_domestic_openai", model: "kimi-k2.7-code" },
-    ],
-  },
-  shein_category: {
-    defaultMode: "shadow",
-    maxMode: "shadow",
-    guardedRoute: [],
-    shadowRoute: [
-      {
-        providerKey: "semir_domestic_openai",
-        model: "deepseek-v4-pro",
-        textOnly: true,
-      },
-    ],
-  },
-  neutral_skc: {
-    defaultMode: "disabled",
-    maxMode: "disabled",
-    guardedRoute: [],
-    shadowRoute: [],
-  },
-  deepdraw_trade: {
-    defaultMode: "disabled",
-    maxMode: "disabled",
-    guardedRoute: [],
-    shadowRoute: [],
-  },
-};
+    DEFAULT_SEMIR_OVERSEAS_GEMINI_MODEL,
+  );
+  const oneXmGeminiModel = envText(
+    env,
+    ["AI_PROVIDER_1XM_GEMINI_MODEL"],
+    DEFAULT_1XM_GEMINI_MODEL,
+  );
+
+  return {
+    title_translation: {
+      defaultMode: "shadow",
+      guardedRoute: uniqueRoutes([
+        { providerKey: "semir_overseas_openai", model: semirOverseasGeminiModel },
+        { providerKey: "semir_overseas_openai", model: "gpt-5.6-terra" },
+        { providerKey: "semir_overseas_openai", model: "gpt-5.6-sol" },
+      ]),
+      shadowRoute: uniqueRoutes([
+        { providerKey: "semir_overseas_openai", model: semirOverseasGeminiModel },
+      ]),
+    },
+    size_mapping: {
+      defaultMode: "shadow",
+      guardedRoute: [
+        { providerKey: "semir_overseas_openai", model: semirOverseasGeminiModel },
+        { providerKey: "semir_domestic_openai", model: "kimi-k2.7-code" },
+        { providerKey: "semir_overseas_openai", model: "gpt-5.6-sol" },
+        { providerKey: "current_1xm", model: oneXmGeminiModel },
+      ],
+      shadowRoute: [
+        { providerKey: "semir_overseas_openai", model: semirOverseasGeminiModel },
+      ],
+    },
+    shein_attribute: {
+      defaultMode: "shadow",
+      guardedRoute: [
+        { providerKey: "semir_overseas_openai", model: semirOverseasGeminiModel },
+        { providerKey: "semir_domestic_openai", model: "deepseek-v4-pro" },
+        { providerKey: "current_1xm", model: oneXmGeminiModel },
+      ],
+      shadowRoute: [
+        { providerKey: "semir_overseas_openai", model: semirOverseasGeminiModel },
+      ],
+    },
+    shein_description: {
+      defaultMode: "shadow",
+      guardedRoute: [
+        { providerKey: "semir_overseas_openai", model: semirOverseasGeminiModel },
+        { providerKey: "semir_overseas_openai", model: "gpt-5.6-sol" },
+        { providerKey: "semir_domestic_openai", model: "deepseek-v4-pro" },
+      ],
+      shadowRoute: [
+        { providerKey: "semir_overseas_openai", model: semirOverseasGeminiModel },
+      ],
+    },
+    deepdraw_field_fill: {
+      defaultMode: "guarded",
+      guardedRoute: [
+        { providerKey: "semir_overseas_openai", model: semirOverseasGeminiModel },
+        { providerKey: "semir_domestic_openai", model: "kimi-k2.7-code" },
+        { providerKey: "semir_overseas_openai", model: "gpt-5.6-sol" },
+      ],
+      shadowRoute: [
+        { providerKey: "semir_overseas_openai", model: semirOverseasGeminiModel },
+      ],
+    },
+    shein_category: {
+      defaultMode: "shadow",
+      maxMode: "shadow",
+      guardedRoute: [],
+      shadowRoute: [
+        {
+          providerKey: "semir_domestic_openai",
+          model: "deepseek-v4-pro",
+          textOnly: true,
+        },
+      ],
+    },
+    neutral_skc: {
+      defaultMode: "disabled",
+      maxMode: "disabled",
+      guardedRoute: [],
+      shadowRoute: [],
+    },
+    deepdraw_trade: {
+      defaultMode: "disabled",
+      maxMode: "disabled",
+      guardedRoute: [],
+      shadowRoute: [],
+    },
+  };
+}
 
 function enabled(value) {
   return /^(1|true|yes|on)$/i.test(String(value ?? "").trim());
@@ -156,7 +204,7 @@ function requestedMode(route, scenario, env) {
 }
 
 export function resolveAiScenarioPolicy(scenario, env = process.env) {
-  const route = SCENARIO_ROUTES[scenario];
+  const route = scenarioRoutes(env)[scenario];
   if (!route) throw new Error(`Unknown AI scenario: ${scenario}`);
 
   return {
@@ -315,7 +363,21 @@ async function callOpenAi({
   timeoutMs,
   temperature,
   responseFormat,
+  inlineRemoteImages,
+  maxImageBytes,
+  maxImages,
+  lookupImpl,
 }) {
+  const normalizedMessages = await normalizeAiMessagesForModel({
+    messages,
+    model,
+    fetchImpl,
+    timeoutMs,
+    inlineRemoteImages,
+    maxImageBytes,
+    maxImages,
+    lookupImpl,
+  });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -329,7 +391,7 @@ async function callOpenAi({
         model,
         temperature,
         response_format: responseFormat,
-        messages,
+        messages: normalizedMessages,
       }),
       signal: controller.signal,
     });
@@ -487,6 +549,7 @@ export function createAiScenarioRouter({
   audit = null,
   now = () => new Date(),
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  lookupImpl,
   modelStateStore = null,
   usageStore = null,
 } = {}) {
@@ -638,6 +701,10 @@ export function createAiScenarioRouter({
           timeoutMs: Number(env.AI_TIMEOUT_MS) || 120000,
           temperature,
           responseFormat,
+          inlineRemoteImages: env.AI_GEMINI_INLINE_REMOTE_IMAGES,
+          maxImageBytes: env.AI_GEMINI_INLINE_IMAGE_MAX_BYTES,
+          maxImages: env.AI_GEMINI_INLINE_IMAGE_LIMIT,
+          lookupImpl,
           sleep,
         });
         const json = JSON.parse(extractAiJsonText(response.content));
@@ -796,6 +863,7 @@ export function createAiScenarioRouter({
         messages,
         config,
         fetchImpl,
+        lookupImpl,
         temperature,
         responseFormat,
         errorLabel: `AI ${scenario}`,

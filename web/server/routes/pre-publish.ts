@@ -56,6 +56,7 @@ import {
   buildSheinImageInfo,
   canAddImagesToRequirement,
   classifyImportedImage,
+  assetPreparedForImageType,
   imageCompliance,
   inferAssetTypeFromLibraryAsset,
   inferAssetTypeFromRequirement,
@@ -2202,7 +2203,7 @@ function getReadinessForListing(
   })
   let adjustedReadiness = readiness
   const listingTitle = normalizeText(listing.title)
-  if (isLikelyEnglishTitle(listingTitle)) {
+  if (isLikelyEnglishTitle(listingTitle) && !hasStoredReadinessField(adjustedReadiness, "title_en")) {
     adjustedReadiness = readinessWithListingTitle(adjustedReadiness, listingTitle)
   }
   const listingDescription = sanitizeProductDescription(listing.description)
@@ -3412,6 +3413,36 @@ function assertListingImageCapacity(input: {
   }
 }
 
+function deleteAutoSourceImagesForUserAsset(input: {
+  db: ReturnType<typeof getDb>
+  listingId: number
+  listingSkcId?: unknown
+  assetType: string
+}) {
+  const assetType = normalizeText(input.assetType)
+  if (!["MAIN", "SQUARE", "COLOR_BLOCK", "COLOR"].includes(assetType)) return
+  const imageType = sheinImageType(assetType)
+  const typesToDelete = imageType === 6
+    ? ["COLOR_BLOCK", "COLOR"]
+    : [assetType]
+  const clauses = [
+    "listing_id = ?",
+    "source_type = 'SKC_SOURCE_IMAGE'",
+    `asset_type in (${typesToDelete.map(() => "?").join(",")})`,
+  ]
+  const params: unknown[] = [input.listingId, ...typesToDelete]
+  if (Number.isFinite(Number(input.listingSkcId)) && Number(input.listingSkcId) > 0) {
+    clauses.push("listing_skc_id = ?")
+    params.push(Number(input.listingSkcId))
+  } else {
+    clauses.push("listing_skc_id is null")
+  }
+  input.db.prepare(`
+    delete from listing_asset
+    where ${clauses.join(" and ")}
+  `).run(...params)
+}
+
 function lockListingImageMutation(db: ReturnType<typeof getDb>, listingId: number) {
   const listing = db.prepare("select id from listing where id = ? for update").get(listingId) as SourceRow | undefined
   if (!listing) throw new HTTPException(404, { message: "草稿不存在" })
@@ -3583,7 +3614,8 @@ function getListingDetail(db: ReturnType<typeof getDb>, listingId: number) {
       identity.id
   `).all(listing.platform, listing.channel_account_id, listing.id, listing.id, listing.id) as SourceRow[]
   const { size_tables, size_table_rows } = getSizeTables(db, listing)
-  const assets = getListingAssets(db, listingId, { onlySelected: true })
+  ensureSkcSourceImageAssetsForPublish(db, listingId)
+  const assets = realImageAssets(getListingAssets(db, listingId, { onlySelected: true }))
   const mapped_size_charts = getMappedSizeCharts({ db, listing, sizeTables: size_tables, sizeTableRows: size_table_rows })
   const size_chart_attributes = getSizeChartAttributes(db, listing.product_type_id)
   const manual_size_chart = getManualSizeChart(db, listing)
@@ -3613,6 +3645,14 @@ function getListingDetail(db: ReturnType<typeof getDb>, listingId: number) {
     versions,
     publish_tasks: publishTasks,
     platform_identities: platformIdentities,
+  }
+}
+
+function getListingDetailForAiWarning(db: ReturnType<typeof getDb>, listingId: number) {
+  try {
+    return getListingDetail(db, listingId)
+  } catch {
+    return null
   }
 }
 
@@ -4574,8 +4614,43 @@ async function callAiFill(row: ReadinessRow) {
   return Array.isArray(json.fills) ? json.fills : []
 }
 
+function aiErrorText(error: unknown) {
+  const parts: string[] = []
+  const seen = new Set<unknown>()
+  const visit = (value: unknown, depth = 0) => {
+    if (value == null || depth > 3 || seen.has(value)) return
+    seen.add(value)
+    if (typeof value === "string") {
+      parts.push(value)
+      return
+    }
+    if (!(value instanceof Error) && typeof value !== "object") {
+      parts.push(String(value))
+      return
+    }
+    const record = value as Record<string, unknown>
+    for (const key of ["name", "message", "code"]) {
+      if (record[key] != null) parts.push(String(record[key]))
+    }
+    visit(record.cause, depth + 1)
+    if (Array.isArray(record.errors)) {
+      for (const nested of record.errors.slice(0, 4)) visit(nested, depth + 1)
+    }
+  }
+  visit(error)
+  return normalizeText(parts.join(" "))
+}
+
 function aiFillWarningMessage(error: unknown) {
-  return normalizeText(error instanceof Error ? error.message : String(error)) || "AI 服务暂不可用"
+  const message = aiErrorText(error)
+  if (!message) return "AI 服务暂不可用"
+  if (
+    /internal server error|no admitted ai model succeeded|ai request failed|fetch failed|abort|timeout|timed out|etimedout|econnreset|und_err_socket|gateway|quota|rate limit|429|5\d\d|401|403/i
+      .test(message)
+  ) {
+    return "AI 服务暂不可用，请检查网关/模型配置后重试"
+  }
+  return message
 }
 
 async function generateSingleAiField(readiness: ReadinessRow, fieldKey: string) {
@@ -4841,22 +4916,27 @@ function ensureSkcSourceImageAssetsForPublish(db: ReturnType<typeof getDb>, list
   `).all(listingId) as SourceRow[]
   if (sourceSkcs.length === 0) return
 
-  const mainAssets = db.prepare(`
-    select id, listing_skc_id, source_type, source_url
+  const sourceAssets = db.prepare(`
+    select id, listing_skc_id, source_type, asset_type, source_url, raw_payload_json
     from listing_asset
     where listing_id = ?
-      and asset_type = 'MAIN'
+      and asset_type in ('MAIN', 'COLOR_BLOCK')
       and (
         coalesce(platform_url, '') <> ''
         or coalesce(source_url, '') <> ''
         or coalesce(local_path, '') <> ''
       )
-    order by listing_skc_id, id
+    order by listing_skc_id, asset_type, id
   `).all(listingId) as SourceRow[]
-  const existingMainBySkcId = new Map<string, SourceRow>()
-  for (const asset of mainAssets) {
-    const key = normalizeText(asset.listing_skc_id)
-    if (key && !existingMainBySkcId.has(key)) existingMainBySkcId.set(key, asset)
+  const existingSourceBySkcIdAndType = new Map<string, SourceRow>()
+  for (const asset of sourceAssets) {
+    if (isAutoFallbackColorAsset(asset)) continue
+    const skcId = normalizeText(asset.listing_skc_id)
+    const assetType = normalizeText(asset.asset_type).toUpperCase()
+    const key = `${skcId}:${assetType}`
+    if (skcId && assetType && !existingSourceBySkcIdAndType.has(key)) {
+      existingSourceBySkcIdAndType.set(key, asset)
+    }
   }
 
   const insert = db.prepare(`
@@ -4875,7 +4955,7 @@ function ensureSkcSourceImageAssetsForPublish(db: ReturnType<typeof getDb>, list
       transform_status,
       updated_at
     )
-    values (?, ?, ?, 'SKC_SOURCE_IMAGE', 'MAIN', 1, ?, 'PENDING_CONFIRM', ?, ?, ?, 'PENDING', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    values (?, ?, ?, 'SKC_SOURCE_IMAGE', ?, 1, ?, 'PENDING_CONFIRM', ?, ?, ?, 'PENDING', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   `)
   const update = db.prepare(`
     update listing_asset
@@ -4903,25 +4983,60 @@ function ensureSkcSourceImageAssetsForPublish(db: ReturnType<typeof getDb>, list
   for (const skc of sourceSkcs) {
     const sourceUrl = normalizeText(skc.image_url)
     if (!sourceUrl) continue
-    const existing = existingMainBySkcId.get(normalizeText(skc.id))
     const confirmed = Number(skc.image_confirmed ?? 0) === 1
-    const note = "SKC 来源图自动转 SHEIN URL：SKC 主图"
-    const payload = JSON.stringify({
-      source: "listing_skc.image_url",
-      skc_code: normalizeText(skc.skc_code),
-      prepared_for_publish: true,
-    })
-    if (existing) {
-      if (normalizeText(existing.source_type) === "SKC_SOURCE_IMAGE") {
-        if (normalizeText(existing.source_url) === sourceUrl) {
-          refresh.run(confirmed ? 1 : 0, note, payload, existing.id)
-        } else {
-          update.run(sourceUrl, confirmed ? 1 : 0, note, payload, existing.id)
+    const skcId = normalizeText(skc.id)
+    for (const target of [
+      { assetType: "MAIN", sheinImageType: 1, note: "SKC 来源图自动转 SHEIN URL：SKC 主图" },
+      { assetType: "COLOR_BLOCK", sheinImageType: 6, note: "SKC 来源图自动转 SHEIN URL：SKC 色块图" },
+    ]) {
+      const existing = existingSourceBySkcIdAndType.get(`${skcId}:${target.assetType}`)
+      const payload = JSON.stringify({
+        source: "listing_skc.image_url",
+        skc_code: normalizeText(skc.skc_code),
+        prepared_for_publish: true,
+        shein_image_type: target.sheinImageType,
+      })
+      if (existing) {
+        if (normalizeText(existing.source_type) === "SKC_SOURCE_IMAGE") {
+          if (normalizeText(existing.source_url) === sourceUrl) {
+            refresh.run(confirmed ? 1 : 0, target.note, payload, existing.id)
+          } else {
+            update.run(sourceUrl, confirmed ? 1 : 0, target.note, payload, existing.id)
+          }
         }
+        continue
       }
-      continue
+      insert.run(listingId, skc.id, skc.skc_code, target.assetType, sourceUrl, confirmed ? 1 : 0, target.note, payload)
     }
-    insert.run(listingId, skc.id, skc.skc_code, sourceUrl, confirmed ? 1 : 0, note, payload)
+  }
+}
+
+function preparedAssetImageType(asset: SourceRow) {
+  if (assetPreparedForImageType(asset, 6)) return 6
+  if (assetPreparedForImageType(asset, 5)) return 5
+  const assetType = normalizeText(asset.asset_type)
+  return sheinImageType(assetType)
+}
+
+function targetImageTypeForAsset(asset: SourceRow) {
+  const explicit = asNumber(parseJsonObject(asset.raw_payload_json).shein_image_type)
+  if (explicit) return explicit
+  return sheinImageType(asset.asset_type)
+}
+
+function shouldPrepareListingAsset(asset: SourceRow) {
+  if (!normalizeText(asset.platform_url)) return true
+  return targetImageTypeForAsset(asset) !== preparedAssetImageType(asset)
+}
+
+function nextImagePrepareInput(asset: SourceRow) {
+  const targetType = targetImageTypeForAsset(asset)
+  const existingType = preparedAssetImageType(asset)
+  if (targetType === existingType && normalizeText(asset.platform_url)) {
+    return null
+  }
+  return {
+    imageType: targetType,
   }
 }
 
@@ -4932,10 +5047,14 @@ async function prepareListingImagesForPublish(db: ReturnType<typeof getDb>, list
     select *
     from listing_asset
     where listing_id = ?
-      and coalesce(platform_url, '') = ''
       and not (coalesce(source_type, '') = 'SOURCE_FALLBACK' and asset_type in ('COLOR_BLOCK', 'COLOR'))
+      and (
+        coalesce(platform_url, '') <> ''
+        or coalesce(source_url, '') <> ''
+        or coalesce(local_path, '') <> ''
+      )
     order by skc_code, image_sort, id
-  `).all(listingId) as SourceRow[]
+  `).all(listingId).filter(shouldPrepareListingAsset) as SourceRow[]
   const update = db.prepare(`
     update listing_asset
     set platform_url = ?,
@@ -4956,7 +5075,9 @@ async function prepareListingImagesForPublish(db: ReturnType<typeof getDb>, list
     where id = ?
   `)
   for (const asset of assets) {
-    const imageType = sheinImageType(asset.asset_type)
+    const prepareInput = nextImagePrepareInput(asset)
+    if (!prepareInput) continue
+    const imageType = prepareInput.imageType
     const localPath = normalizeText(asset.local_path)
     const sourceUrl = normalizeText(asset.source_url)
     let prepared: { imageUrl: string; payload: unknown } | null = null
@@ -4989,6 +5110,7 @@ async function prepareListingImagesForPublish(db: ReturnType<typeof getDb>, list
         prepared.imageUrl,
         JSON.stringify({
           ...parseJsonObject(asset.raw_payload_json),
+          shein_image_type: imageType,
           shein_prepare_response: prepared.payload,
           prepared_at: nowIso(),
         }),
@@ -5094,6 +5216,19 @@ function readinessFieldValue(readiness: ReadinessRow, fieldKey: string) {
     if (field) return field.value
   }
   return null
+}
+
+function readinessFieldSource(readiness: ReadinessRow, fieldKey: string) {
+  for (const group of readiness.field_groups) {
+    const field = group.fields.find((item) => item.key === fieldKey)
+    if (field) return normalizeText(field.source)
+  }
+  return ""
+}
+
+function hasStoredReadinessField(readiness: ReadinessRow, fieldKey: string) {
+  const source = readinessFieldSource(readiness, fieldKey)
+  return Boolean(source && source !== "AI/人工" && source !== "LISTING_TITLE")
 }
 
 function buildSuggestedRetailPricePayload(readiness: ReadinessRow, publishFields: Map<string, PublishFieldRule>) {
@@ -7235,7 +7370,8 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
     }
   }
 
-  if (mode === "all" || mode === "title") {
+  const titleAlreadyReady = Boolean(normalizeText(readinessFieldValue(enrichmentReadiness, "title_en")) || normalizeText(enrichmentReadiness.title_en))
+  if (mode === "title" || (mode === "all" && !titleAlreadyReady)) {
     const titleEn = await safeAiTranslateTitle(enrichmentReadiness)
     if (titleEn) {
       persistFill({
@@ -7256,7 +7392,11 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
     }
   }
 
-  if (mode === "all" || mode === "description") {
+  const descriptionAlreadyReady = Boolean(
+    sanitizeProductDescription(readinessFieldValue(enrichmentReadiness, "product_description"))
+    || sanitizeProductDescription(enrichmentReadiness.description),
+  )
+  if (mode === "description" || (mode === "all" && !descriptionAlreadyReady)) {
     if (shouldGenerateProductDescription(enrichmentReadiness)) {
       const productDescription = await safeAiGenerateProductDescription(enrichmentReadiness)
       if (productDescription) {
@@ -7364,7 +7504,26 @@ prePublish.post("/drafts/:id/ai-field", async (c) => {
     throw new HTTPException(404, { message: "商品档案不存在" })
   }
   const selectedReadiness = selectedReadinessForListing(db, listingId, readiness)
-  const generated = await generateSingleAiField(selectedReadiness, fieldKey)
+  const generatedResult = await generateSingleAiField(selectedReadiness, fieldKey)
+    .then((generated) => ({ generated, warningMessage: "" }))
+    .catch((error) => {
+      if (error instanceof HTTPException && error.status < 500) throw error
+      return { generated: null, warningMessage: aiFillWarningMessage(error) }
+    })
+  const generated = generatedResult.generated
+  if (!generated) {
+    return c.json({
+      ok: true,
+      saved_count: 0,
+      warning_count: 1,
+      warnings: [{
+        spu_code: selectedReadiness.spu_code,
+        message: `AI 生成字段失败：${generatedResult.warningMessage || "AI 服务暂不可用"}`,
+      }],
+      field: null,
+      detail: getListingDetailForAiWarning(db, listingId),
+    })
+  }
   persistFill({
     db,
     spuCode: selectedReadiness.spu_code,
@@ -7540,6 +7699,12 @@ function importListingImagesFromFolder(db: ReturnType<typeof getDb>, listingId: 
         warnings.push({ file_name: fileName, reason: "当前类目没有对应图片规则" })
         continue
       }
+      deleteAutoSourceImagesForUserAsset({
+        db,
+        listingId,
+        listingSkcId: matchedSkc.id,
+        assetType: classified.assetType,
+      })
       try {
         assertListingImageCapacity({
           db,
@@ -7797,6 +7962,12 @@ function savePreparedPackageAssets(input: {
     `).run(input.listing.id, input.listingSkc.listing_skc_id)
 
     for (const asset of input.assets) {
+      deleteAutoSourceImagesForUserAsset({
+        db: input.db,
+        listingId: Number(input.listing.id),
+        listingSkcId: input.listingSkc.listing_skc_id,
+        assetType: asset.assetType,
+      })
       try {
         assertListingImageCapacity({
           db: input.db,
@@ -8238,6 +8409,12 @@ prePublish.post("/drafts/:id/images/from-library", async (c) => {
   }
   const transaction = db.transaction(() => {
     lockListingImageMutation(db, listingId)
+    deleteAutoSourceImagesForUserAsset({
+      db,
+      listingId,
+      listingSkcId: listingSkc?.id,
+      assetType,
+    })
     assertListingImageCapacity({
       db,
       listingId,
@@ -8345,6 +8522,12 @@ prePublish.post("/drafts/:id/images/upload", async (c) => {
   const localPath = path.join(dir, safeName)
   const transaction = db.transaction(() => {
     lockListingImageMutation(db, listingId)
+    deleteAutoSourceImagesForUserAsset({
+      db,
+      listingId,
+      listingSkcId: listingSkc?.id,
+      assetType,
+    })
     assertListingImageCapacity({
       db,
       listingId,
@@ -8770,6 +8953,7 @@ prePublish.post("/drafts/:id/publish", async (c) => {
     versionType: "PUBLISH",
     changeSummary: "提交 SHEIN 发布",
   })
+  ensureSkcSourceImageAssetsForPublish(db, listingId)
   const preview = buildPublishPayload(db, listingId, {
     skcCodes,
     allowSourceImages: true,
@@ -9078,7 +9262,7 @@ prePublish.post("/field-fills", async (c) => {
     body.sku_code ?? null,
     fieldKey,
     normalizeText(body.field_label),
-    normalizeText(body.field_value),
+    normalizeFillFieldValue(fieldKey, body.field_label, body.field_value),
     normalizeText(body.source ?? "MANUAL") || "MANUAL",
     body.confidence ?? null,
     JSON.stringify(body.payload ?? {}),

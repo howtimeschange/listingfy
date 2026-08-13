@@ -16,6 +16,10 @@ test("enabled routing defaults admitted title translation to shadow mode", () =>
       guardedRoute: [
         {
           providerKey: "semir_overseas_openai",
+          model: "gemini-3.5-flash",
+        },
+        {
+          providerKey: "semir_overseas_openai",
           model: "gpt-5.6-terra",
         },
         {
@@ -26,10 +30,41 @@ test("enabled routing defaults admitted title translation to shadow mode", () =>
       shadowRoute: [
         {
           providerKey: "semir_overseas_openai",
-          model: "gpt-5.6-terra",
+          model: "gemini-3.5-flash",
         },
       ],
     },
+  );
+});
+
+test("scenario routes honor configured Gemini model aliases per provider", () => {
+  const env = {
+    AI_ROUTING_ENABLED: "true",
+    AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_GEMINI_MODEL: "gemini-3-flash-preview",
+    AI_PROVIDER_1XM_GEMINI_MODEL: "gemini-3.5-flash",
+  };
+
+  assert.deepEqual(
+    routerModule.resolveAiScenarioPolicy("title_translation", env).shadowRoute,
+    [{ providerKey: "semir_overseas_openai", model: "gemini-3-flash-preview" }],
+  );
+  assert.deepEqual(
+    routerModule.resolveAiScenarioPolicy("shein_attribute", env).guardedRoute,
+    [
+      { providerKey: "semir_overseas_openai", model: "gemini-3-flash-preview" },
+      { providerKey: "semir_domestic_openai", model: "deepseek-v4-pro" },
+      { providerKey: "current_1xm", model: "gemini-3.5-flash" },
+    ],
+  );
+  assert.deepEqual(
+    routerModule.resolveAiScenarioPolicy("title_translation", {
+      AI_ROUTING_ENABLED: "true",
+      AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_GEMINI_MODEL: "gpt-5.6-terra",
+    }).guardedRoute,
+    [
+      { providerKey: "semir_overseas_openai", model: "gpt-5.6-terra" },
+      { providerKey: "semir_overseas_openai", model: "gpt-5.6-sol" },
+    ],
   );
 });
 
@@ -44,6 +79,7 @@ test("scenario policy only exposes models admitted for that exact scene", () => 
   assert.deepEqual(
     routerModule.resolveAiScenarioPolicy("size_mapping", env).guardedRoute,
     [
+      { providerKey: "semir_overseas_openai", model: "gemini-3.5-flash" },
       { providerKey: "semir_domestic_openai", model: "kimi-k2.7-code" },
       { providerKey: "semir_overseas_openai", model: "gpt-5.6-sol" },
       { providerKey: "current_1xm", model: "gemini-3-flash-preview" },
@@ -52,7 +88,7 @@ test("scenario policy only exposes models admitted for that exact scene", () => 
   assert.deepEqual(
     routerModule.resolveAiScenarioPolicy("shein_attribute", env).guardedRoute,
     [
-      { providerKey: "semir_overseas_openai", model: "gemini-3-flash-preview" },
+      { providerKey: "semir_overseas_openai", model: "gemini-3.5-flash" },
       { providerKey: "semir_domestic_openai", model: "deepseek-v4-pro" },
       { providerKey: "current_1xm", model: "gemini-3-flash-preview" },
     ],
@@ -60,6 +96,7 @@ test("scenario policy only exposes models admitted for that exact scene", () => 
   assert.deepEqual(
     routerModule.resolveAiScenarioPolicy("deepdraw_field_fill", env).guardedRoute,
     [
+      { providerKey: "semir_overseas_openai", model: "gemini-3.5-flash" },
       { providerKey: "semir_domestic_openai", model: "kimi-k2.7-code" },
       { providerKey: "semir_overseas_openai", model: "gpt-5.6-sol" },
     ],
@@ -84,6 +121,78 @@ test("scenario policy only exposes models admitted for that exact scene", () => 
     routerModule.resolveAiScenarioPolicy("deepdraw_trade", env).mode,
     "disabled",
   );
+});
+
+test("DeepDraw field fill defaults to Semir Gemini guarded routing when routing is enabled", () => {
+  const policy = routerModule.resolveAiScenarioPolicy("deepdraw_field_fill", {
+    AI_ROUTING_ENABLED: "true",
+  });
+
+  assert.equal(policy.mode, "guarded");
+  assert.deepEqual(policy.guardedRoute.slice(0, 3), [
+    { providerKey: "semir_overseas_openai", model: "gemini-3.5-flash" },
+    { providerKey: "semir_domestic_openai", model: "kimi-k2.7-code" },
+    { providerKey: "semir_overseas_openai", model: "gpt-5.6-sol" },
+  ]);
+});
+
+test("DeepDraw field fill guarded call returns a Semir Gemini enum fill", async () => {
+  const requestBodies = [];
+  const router = routerModule.createAiScenarioRouter({
+    env: {
+      AI_ROUTING_ENABLED: "true",
+      AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_API_KEY: "overseas-test-key",
+      AI_PROVIDER_SEMIR_DOMESTIC_OPENAI_API_KEY: "domestic-test-key",
+    },
+    fetchImpl: async (url, init) => {
+      const body = JSON.parse(init.body);
+      requestBodies.push({ url: String(url), model: body.model });
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              fills: [{
+                field_id: 101,
+                field_name: "适用季节",
+                field_value: "夏季",
+                confidence: 0.93,
+                reason: "标题和来源表均指向夏季短袖",
+              }],
+            }),
+          },
+        }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  const result = await router.callJson({
+    scenario: "deepdraw_field_fill",
+    promptVersion: "deepdraw-field-fill-v1",
+    messages: [
+      { role: "system", content: "你是深绘商品建档字段专家。" },
+      {
+        role: "user",
+        content: JSON.stringify({
+          product: { title: "Balabala 儿童夏季短袖T恤" },
+          fields: [{
+            field_id: 101,
+            field_name: "适用季节",
+            options: [{ value: "春季" }, { value: "夏季" }, { value: "秋季" }],
+          }],
+        }),
+      },
+    ],
+    validate: (json) => Array.isArray(json?.fills),
+  });
+
+  assert.equal(result.provider.key, "semir_overseas_openai");
+  assert.equal(result.provider.model, "gemini-3.5-flash");
+  assert.equal(result.json.fills[0].field_value, "夏季");
+  assert.deepEqual(requestBodies.map((body) => body.model), ["gemini-3.5-flash"]);
+  assert.match(requestBodies[0].url, /ai-aigw\.semir\.com\/overseas-openai-vip\/v1\/chat\/completions$/);
 });
 
 test("provider registry uses provider-scoped secrets and keeps legacy 1xm compatibility", () => {
@@ -132,6 +241,15 @@ test("provider registry uses provider-scoped secrets and keeps legacy 1xm compat
   );
 });
 
+test("1xm provider remains a direct text-chat endpoint unless explicitly overridden", () => {
+  const registry = routerModule.resolveAiProviderRegistry({
+    AI_PROVIDER_1XM_API_KEY: "paid-test-key",
+  });
+
+  assert.equal(registry.current_1xm.baseUrl, "https://api.1xm.ai/v1");
+  assert.doesNotMatch(registry.current_1xm.baseUrl, /one-xm-proxy|crawshrimp/i);
+});
+
 test("guarded routing does not retry a 429 and falls back within the admitted scene route", async () => {
   assert.equal(typeof routerModule.createAiScenarioRouter, "function");
 
@@ -167,6 +285,7 @@ test("guarded routing does not retry a 429 and falls back within the admitted sc
     env: {
       AI_ROUTING_ENABLED: "true",
       AI_SCENARIO_TITLE_TRANSLATION_MODE: "guarded",
+      AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_GEMINI_MODEL: "gpt-5.6-terra",
       AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_API_KEY: "overseas-test-key",
     },
     fetchImpl,
@@ -234,6 +353,7 @@ test("daily model quota exhaustion cools only that provider-model until reset", 
     env: {
       AI_ROUTING_ENABLED: "true",
       AI_SCENARIO_TITLE_TRANSLATION_MODE: "guarded",
+      AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_GEMINI_MODEL: "gpt-5.6-terra",
       AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_API_KEY: "overseas-test-key",
     },
     modelStateStore,
@@ -289,6 +409,7 @@ test("authentication failures mark only the affected model as misconfigured", as
     env: {
       AI_ROUTING_ENABLED: "true",
       AI_SCENARIO_TITLE_TRANSLATION_MODE: "guarded",
+      AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_GEMINI_MODEL: "gpt-5.6-terra",
       AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_API_KEY: "overseas-test-key",
     },
     modelStateStore: {
@@ -343,6 +464,7 @@ test("authentication failures mark only the affected model as misconfigured", as
 
 test("guarded routing retries one transient transport failure before cross-provider fallback", async () => {
   let attempts = 0;
+  const models = [];
   const router = routerModule.createAiScenarioRouter({
     env: {
       AI_ROUTING_ENABLED: "true",
@@ -353,8 +475,17 @@ test("guarded routing retries one transient transport failure before cross-provi
     fetchImpl: async (_url, init) => {
       attempts += 1;
       const body = JSON.parse(init.body);
+      models.push(body.model);
+      if (body.model === "gemini-3.5-flash") {
+        return new Response(JSON.stringify({
+          error: { message: "temporary gateway failure" },
+        }), {
+          status: 502,
+          headers: { "content-type": "application/json" },
+        });
+      }
       assert.equal(body.model, "kimi-k2.7-code");
-      if (attempts === 1) {
+      if (models.filter((model) => model === "kimi-k2.7-code").length === 1) {
         const error = new Error("fetch failed");
         error.code = "ECONNRESET";
         throw error;
@@ -380,10 +511,18 @@ test("guarded routing retries one transient transport failure before cross-provi
     validate: (json) => Array.isArray(json?.mappings),
   });
 
-  assert.equal(attempts, 2);
+  assert.equal(attempts, 4);
+  assert.deepEqual(models, [
+    "gemini-3.5-flash",
+    "gemini-3.5-flash",
+    "kimi-k2.7-code",
+    "kimi-k2.7-code",
+  ]);
   assert.equal(result.provider.model, "kimi-k2.7-code");
-  assert.equal(result.routing.attempts.length, 1);
-  assert.equal(result.routing.attempts[0].transportAttempts, 2);
+  assert.equal(result.routing.attempts.length, 2);
+  assert.equal(result.routing.attempts[0].model, "gemini-3.5-flash");
+  assert.equal(result.routing.attempts[0].status, "FAILED");
+  assert.equal(result.routing.attempts[1].transportAttempts, 2);
 });
 
 test("repeated transient model failures open a provider-model circuit", async () => {
@@ -393,6 +532,7 @@ test("repeated transient model failures open a provider-model circuit", async ()
     env: {
       AI_ROUTING_ENABLED: "true",
       AI_SCENARIO_TITLE_TRANSLATION_MODE: "guarded",
+      AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_GEMINI_MODEL: "gpt-5.6-terra",
       AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_API_KEY: "overseas-test-key",
       AI_ROUTING_CIRCUIT_FAILURE_THRESHOLD: "2",
       AI_ROUTING_CIRCUIT_COOLDOWN_MS: "60000",
@@ -463,6 +603,7 @@ test("shadow routing returns the legacy business result and only audits the new 
   const router = routerModule.createAiScenarioRouter({
     env: {
       AI_ROUTING_ENABLED: "true",
+      AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_GEMINI_MODEL: "gpt-5.6-terra",
       AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_API_KEY: "overseas-test-key",
       AI_API_KEY: "legacy-test-key",
       AI_BASE_URL: "https://legacy.example.test/v1",
@@ -589,6 +730,150 @@ test("SHEIN category shadow strips images from the admitted text-only model", as
   ));
 });
 
+test("OpenAI-compatible Gemini routes inline remote image URLs as base64 data URLs", async () => {
+  const requestBodies = [];
+  const imageBytes = Buffer.from("fake-image-bytes");
+  const router = routerModule.createAiScenarioRouter({
+    env: {
+      AI_ROUTING_ENABLED: "true",
+      AI_SCENARIO_TITLE_TRANSLATION_MODE: "guarded",
+      AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_API_KEY: "overseas-test-key",
+    },
+    lookupImpl: async () => [{ address: "93.184.216.34" }],
+    fetchImpl: async (url, init = {}) => {
+      if (String(url) === "https://images.example.test/color.png") {
+        return new Response(imageBytes, {
+          status: 200,
+          headers: {
+            "content-type": "image/png",
+            "content-length": String(imageBytes.length),
+          },
+        });
+      }
+      const body = JSON.parse(init.body);
+      requestBodies.push(body);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "{\"title_en\":\"Image Title\"}" } }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  await router.callJson({
+    scenario: "title_translation",
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: "use visual evidence" },
+        {
+          type: "image_url",
+          image_url: { url: "https://images.example.test/color.png" },
+        },
+      ],
+    }],
+    validate: (json) => typeof json?.title_en === "string",
+  });
+
+  const imageUrl = requestBodies[0].messages[0].content
+    .find((part) => part.type === "image_url")
+    .image_url.url;
+  assert.equal(
+    imageUrl,
+    `data:image/png;base64,${imageBytes.toString("base64")}`,
+  );
+});
+
+test("non-Gemini OpenAI-compatible routes keep remote image URLs unchanged", async () => {
+  const requestBodies = [];
+  const router = routerModule.createAiScenarioRouter({
+    env: {
+      AI_ROUTING_ENABLED: "true",
+      AI_SCENARIO_TITLE_TRANSLATION_MODE: "guarded",
+      AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_GEMINI_MODEL: "gpt-5.6-terra",
+      AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_API_KEY: "overseas-test-key",
+    },
+    lookupImpl: async () => [{ address: "93.184.216.34" }],
+    fetchImpl: async (_url, init = {}) => {
+      const body = JSON.parse(init.body);
+      requestBodies.push(body);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "{\"title_en\":\"Image Title\"}" } }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  await router.callJson({
+    scenario: "title_translation",
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: "use visual evidence" },
+        {
+          type: "image_url",
+          image_url: { url: "https://images.example.test/color.png" },
+        },
+      ],
+    }],
+    validate: (json) => typeof json?.title_en === "string",
+  });
+
+  const imageUrl = requestBodies[0].messages[0].content
+    .find((part) => part.type === "image_url")
+    .image_url.url;
+  assert.equal(imageUrl, "https://images.example.test/color.png");
+});
+
+test("Gemini image inlining does not fetch private or localhost URLs", async () => {
+  const requestBodies = [];
+  let privateImageFetches = 0;
+  const privateUrl = "http://127.0.0.1/private-product.jpg";
+  const router = routerModule.createAiScenarioRouter({
+    env: {
+      AI_ROUTING_ENABLED: "true",
+      AI_SCENARIO_TITLE_TRANSLATION_MODE: "guarded",
+      AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_API_KEY: "overseas-test-key",
+    },
+    lookupImpl: async () => [{ address: "127.0.0.1" }],
+    fetchImpl: async (url, init = {}) => {
+      if (String(url) === privateUrl) {
+        privateImageFetches += 1;
+        return new Response("private", { status: 200 });
+      }
+      const body = JSON.parse(init.body);
+      requestBodies.push(body);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "{\"title_en\":\"Private Image Title\"}" } }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  await router.callJson({
+    scenario: "title_translation",
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: "use visual evidence" },
+        { type: "image_url", image_url: { url: privateUrl } },
+      ],
+    }],
+    validate: (json) => typeof json?.title_en === "string",
+  });
+
+  const imageUrl = requestBodies[0].messages[0].content
+    .find((part) => part.type === "image_url")
+    .image_url.url;
+  assert.equal(privateImageFetches, 0);
+  assert.equal(imageUrl, privateUrl);
+});
+
 test("1xm fallback stops at the configured daily request budget", async () => {
   let fetchCalls = 0;
   const router = routerModule.createAiScenarioRouter({
@@ -637,6 +922,7 @@ test("guarded routing reuses a successful result for the same versioned input", 
     env: {
       AI_ROUTING_ENABLED: "true",
       AI_SCENARIO_TITLE_TRANSLATION_MODE: "guarded",
+      AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_GEMINI_MODEL: "gpt-5.6-terra",
       AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_API_KEY: "overseas-test-key",
     },
     fetchImpl: async () => {
@@ -738,6 +1024,7 @@ test("router honors a shared model state store when a single model is cooling do
     env: {
       AI_ROUTING_ENABLED: "true",
       AI_SCENARIO_TITLE_TRANSLATION_MODE: "guarded",
+      AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_GEMINI_MODEL: "gpt-5.6-terra",
       AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_API_KEY: "overseas-test-key",
     },
     modelStateStore,

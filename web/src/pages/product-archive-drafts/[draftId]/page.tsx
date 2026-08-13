@@ -1048,15 +1048,25 @@ export default function ProductArchiveDraftDetailPage() {
   })
 
   const aiFill = useMutation({
-    mutationFn: () => api.post<{ saved: Array<{ field_id: number }>; detail: DraftDetail }>(`/product-archive-drafts/${draftId}/ai-fill`),
+    mutationFn: () => api.post<{
+      saved: Array<{ field_id: number }>
+      detail: DraftDetail
+      warnings?: Array<{ message?: string }>
+    }>(`/product-archive-drafts/${draftId}/ai-fill`),
     onSuccess: (result) => {
       setFieldValues({})
       queryClient.setQueryData(["product-archive-drafts", draftId], result.detail)
-      toast.success(
-        result.saved.length > 0
-          ? `AI 已推荐补齐 ${formatNumber(result.saved.length)} 个字段`
-          : "已刷新字段规则和 AI 推荐结果",
-      )
+      const warningMessage = result.warnings?.[0]?.message
+      if (warningMessage && result.saved.length === 0) {
+        toast.warning(warningMessage)
+      } else {
+        toast.success(
+          result.saved.length > 0
+            ? `AI 已推荐补齐 ${formatNumber(result.saved.length)} 个字段`
+            : "已刷新字段规则和 AI 推荐结果",
+        )
+        if (warningMessage) toast.warning(warningMessage)
+      }
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
     },
   })

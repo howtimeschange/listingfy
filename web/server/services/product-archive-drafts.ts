@@ -133,6 +133,11 @@ interface AiFillOptions {
   }
 }
 
+type ProductArchiveAiFillWarning = {
+  code: string
+  message: string
+}
+
 interface ProductArchiveDraftImageInput {
   draftId: number
   spuCode: string
@@ -4837,9 +4842,10 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
   const sourceRows = referenceSourceRowsForDraft(db, draft)
   const mdmSpu = resolveProductArchiveDraftSpu(db, draft)
   const candidates = buildProductArchiveAiFillCandidateFields(fields, issues, skus)
+  const warnings: ProductArchiveAiFillWarning[] = []
 
   if (candidates.length === 0) {
-    return { saved: [], detail }
+    return { saved: [], detail, warnings }
   }
   const materialEvidenceFills = buildProductArchiveMaterialEvidenceFills(fields, candidates, sourceRows)
   const materialEvidenceById = new Map(materialEvidenceFills.map((fill) => [Number(fill.field_id), fill]))
@@ -4856,10 +4862,25 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
         referenceImages,
       })
     : ""
-  const aiFills = aiCandidates.length > 0
-    ? await callDeepdrawAiFill(db, prompt, aiCandidates, referenceImages, options)
-      .catch(() => [] as JsonRecord[])
-    : []
+  let aiFills: JsonRecord[] = []
+  if (aiCandidates.length > 0) {
+    try {
+      aiFills = await callDeepdrawAiFill(db, prompt, aiCandidates, referenceImages, options)
+    } catch (error) {
+      const attempts = Array.isArray((error as { attempts?: unknown }).attempts)
+        ? (error as { attempts: JsonRecord[] }).attempts
+        : []
+      const attemptedModels = attempts
+        .map((attempt) => `${stringValue(attempt.providerKey)}:${stringValue(attempt.model)}`)
+        .filter(Boolean)
+      warnings.push({
+        code: "ai_provider_unavailable",
+        message: attemptedModels.length > 0
+          ? `AI 字段推荐暂未生成：${attemptedModels.join("、")} 均未返回可用结果`
+          : "AI 字段推荐暂未生成：当前 AI 服务未返回可用结果",
+      })
+    }
+  }
   const aiById = new Map(aiFills.map((fill) => [Number(fill.field_id), fill]))
   const now = nowIso()
   const saved: Array<{ field_id: number; field_name: string; field_value: string; source: string; confidence: number | null }> = []
@@ -4915,7 +4936,7 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
   })()
 
   const validated = validateProductArchiveDraft(db, draftId)
-  return { saved, detail: validated.detail }
+  return { saved, detail: validated.detail, warnings }
 }
 
 function sizeChartTemplateFieldsForDraft(db: SyncPostgresDatabase, draft: JsonRecord) {

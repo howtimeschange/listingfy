@@ -1,6 +1,11 @@
+import { lookup as dnsLookup } from "node:dns/promises";
+import { isIP } from "node:net";
+
 export const DEFAULT_AI_BASE_URL = "https://api.1xm.ai/v1";
 export const DEFAULT_AI_MODEL = "gemini-3-flash-preview";
 export const DEFAULT_AI_TIMEOUT_MS = 120000;
+export const DEFAULT_AI_IMAGE_INLINE_MAX_BYTES = 4 * 1024 * 1024;
+export const DEFAULT_AI_IMAGE_INLINE_LIMIT = 8;
 
 function readEnv(name, fallback = undefined) {
   const value = process.env[name];
@@ -32,6 +37,269 @@ export function extractAiJsonText(text) {
     return trimmed.slice(firstBrace, lastBrace + 1);
   }
   return trimmed;
+}
+
+function positiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+export function isGeminiModel(model) {
+  return /\bgemini(?:[-_.]|$)/i.test(String(model ?? ""));
+}
+
+function inlineRemoteImagesEnabled(value) {
+  return !/^(0|false|no|off)$/i.test(String(value ?? "").trim());
+}
+
+function messageImageUrl(part) {
+  const url = part?.image_url?.url ?? part?.image_url;
+  return typeof url === "string" ? url.trim() : "";
+}
+
+function isRemoteImageUrl(url) {
+  return /^https?:\/\//i.test(String(url ?? ""));
+}
+
+function isDataImageUrl(url) {
+  return /^data:image\/[a-z0-9.+-]+;base64,/i.test(String(url ?? ""));
+}
+
+function contentTypeMimeType(value) {
+  return String(value ?? "")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+}
+
+function imageMimeTypeFromUrl(url) {
+  const cleanPath = String(url ?? "").split("?")[0]?.split("#")[0] ?? "";
+  const extension = cleanPath.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+  if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+  if (extension === "png") return "image/png";
+  if (extension === "webp") return "image/webp";
+  return "image/jpeg";
+}
+
+function privateOrReservedIpv4Address(hostname) {
+  const parts = hostname.split(".").map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return true;
+  }
+  const [first, second, third] = parts;
+  return first === 0
+    || first === 10
+    || first === 127
+    || (first === 100 && second >= 64 && second <= 127)
+    || (first === 169 && second === 254)
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 0)
+    || (first === 192 && second === 168)
+    || (first === 192 && second === 0 && third === 2)
+    || (first === 198 && (second === 18 || second === 19))
+    || (first === 198 && second === 51 && third === 100)
+    || (first === 203 && second === 0 && third === 113)
+    || first >= 224;
+}
+
+function privateOrReservedIpv6Address(hostname) {
+  const normalized = hostname.toLowerCase();
+  if (normalized.startsWith("::ffff:")) {
+    const mapped = normalized.slice("::ffff:".length);
+    return isIP(mapped) !== 4 || privateOrReservedIpv4Address(mapped);
+  }
+  return normalized === "::1"
+    || normalized === "::"
+    || normalized.startsWith("fe80:")
+    || normalized.startsWith("fc")
+    || normalized.startsWith("fd")
+    || /^fe[89ab]/.test(normalized)
+    || normalized.startsWith("fec")
+    || normalized.startsWith("fed")
+    || normalized.startsWith("fee")
+    || normalized.startsWith("fef")
+    || normalized.startsWith("ff")
+    || normalized.startsWith("2001:db8");
+}
+
+function privateOrReservedIpAddress(address) {
+  const normalized = String(address ?? "")
+    .replace(/^\[|\]$/g, "")
+    .toLowerCase();
+  const ipVersion = isIP(normalized);
+  if (ipVersion === 4) return privateOrReservedIpv4Address(normalized);
+  if (ipVersion === 6) return privateOrReservedIpv6Address(normalized);
+  return true;
+}
+
+async function allowedRemoteImageUrl(url, lookupImpl = dnsLookup) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
+  if (
+    !hostname
+    || hostname === "localhost"
+    || hostname.endsWith(".localhost")
+    || hostname.endsWith(".local")
+    || hostname.endsWith(".internal")
+    || hostname.endsWith(".lan")
+  ) {
+    return false;
+  }
+  if (isIP(hostname)) return !privateOrReservedIpAddress(hostname);
+  let addresses;
+  try {
+    addresses = await lookupImpl(hostname, { all: true, verbatim: true });
+  } catch {
+    return false;
+  }
+  return Array.isArray(addresses)
+    && addresses.length > 0
+    && addresses.every((item) => !privateOrReservedIpAddress(item.address));
+}
+
+async function readResponseBufferCapped(response, maxBytes) {
+  if (!response.body?.getReader) {
+    const arrayBuffer = await response.arrayBuffer();
+    if (arrayBuffer.byteLength <= 0 || arrayBuffer.byteLength > maxBytes) return null;
+    return Buffer.from(arrayBuffer);
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) return null;
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (totalBytes <= 0) return null;
+  return Buffer.concat(chunks, totalBytes);
+}
+
+async function fetchImageDataUrl({
+  url,
+  fetchImpl,
+  timeoutMs,
+  maxBytes,
+  lookupImpl,
+}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    if (!await allowedRemoteImageUrl(url, lookupImpl)) return null;
+    const response = await fetchImpl(url, {
+      method: "GET",
+      redirect: "error",
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const contentLength = Number(response.headers?.get?.("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) return null;
+    const buffer = await readResponseBufferCapped(response, maxBytes);
+    if (!buffer) return null;
+    const contentType = contentTypeMimeType(response.headers?.get?.("content-type"));
+    const mimeType = /^image\/(?:jpeg|png|webp)$/i.test(contentType)
+      ? contentType
+      : imageMimeTypeFromUrl(url);
+    return `data:${mimeType};base64,${buffer.toString("base64")}`;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function inlineGeminiContentImages({
+  content,
+  fetchImpl,
+  timeoutMs,
+  maxBytes,
+  lookupImpl,
+  state,
+}) {
+  if (!Array.isArray(content)) return content;
+  const output = [];
+  for (const part of content) {
+    const url = messageImageUrl(part);
+    if (
+      !url
+      || isDataImageUrl(url)
+      || !isRemoteImageUrl(url)
+      || state.inlined >= state.limit
+    ) {
+      output.push(part);
+      continue;
+    }
+
+    const dataUrl = await fetchImageDataUrl({
+      url,
+      fetchImpl,
+      timeoutMs,
+      maxBytes,
+      lookupImpl,
+    });
+    if (!dataUrl) {
+      output.push(part);
+      continue;
+    }
+    state.inlined += 1;
+    output.push({
+      ...part,
+      image_url: {
+        ...(typeof part.image_url === "object" && part.image_url != null ? part.image_url : {}),
+        url: dataUrl,
+      },
+    });
+  }
+  return output;
+}
+
+export async function normalizeAiMessagesForModel({
+  messages,
+  model,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = DEFAULT_AI_TIMEOUT_MS,
+  inlineRemoteImages = readEnv("AI_GEMINI_INLINE_REMOTE_IMAGES", "true"),
+  maxImageBytes = readEnv("AI_GEMINI_INLINE_IMAGE_MAX_BYTES", DEFAULT_AI_IMAGE_INLINE_MAX_BYTES),
+  maxImages = readEnv("AI_GEMINI_INLINE_IMAGE_LIMIT", DEFAULT_AI_IMAGE_INLINE_LIMIT),
+  lookupImpl = dnsLookup,
+} = {}) {
+  if (!isGeminiModel(model) || !inlineRemoteImagesEnabled(inlineRemoteImages)) {
+    return messages;
+  }
+  const state = {
+    inlined: 0,
+    limit: positiveInteger(maxImages, DEFAULT_AI_IMAGE_INLINE_LIMIT),
+  };
+  const maxBytes = positiveInteger(maxImageBytes, DEFAULT_AI_IMAGE_INLINE_MAX_BYTES);
+  const imageFetchTimeoutMs = Math.min(Number(timeoutMs) || DEFAULT_AI_TIMEOUT_MS, 15000);
+  const normalized = [];
+  for (const message of messages ?? []) {
+    normalized.push({
+      ...message,
+      content: await inlineGeminiContentImages({
+        content: message?.content,
+        fetchImpl,
+        timeoutMs: imageFetchTimeoutMs,
+        maxBytes,
+        lookupImpl,
+        state,
+      }),
+    });
+  }
+  return normalized;
 }
 
 function responseMessageContent(body) {
@@ -73,17 +341,25 @@ export async function callAiChatCompletion({
   messages,
   config = resolveAiConfig(),
   fetchImpl = globalThis.fetch,
+  lookupImpl,
   temperature = 0.1,
   responseFormat = { type: "json_object" },
   errorLabel = "AI request",
 }) {
   if (!config.apiKey) throw new Error("Missing required env: AI_API_KEY");
+  const normalizedMessages = await normalizeAiMessagesForModel({
+    messages,
+    model: config.model,
+    fetchImpl,
+    timeoutMs: config.timeoutMs,
+    lookupImpl,
+  });
 
   const requestBody = JSON.stringify({
     model: config.model,
     temperature,
     response_format: responseFormat,
-    messages,
+    messages: normalizedMessages,
   });
 
   for (let attempt = 0; attempt < 2; attempt += 1) {

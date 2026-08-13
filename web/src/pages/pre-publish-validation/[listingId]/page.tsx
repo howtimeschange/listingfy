@@ -946,6 +946,7 @@ function assetTypeLabel(value: string | null | undefined) {
 }
 
 function assetMatchesImageRequirement(asset: ListingAsset, requirement: ImageRequirement) {
+  if (asset.source_type === "SOURCE_FALLBACK" && ["COLOR_BLOCK", "COLOR"].includes(asset.asset_type)) return false
   return requirement.asset_types.includes(asset.asset_type)
 }
 
@@ -2354,7 +2355,11 @@ export default function PrePublishDraftDetailPage() {
 
   const aiFieldMutation = useMutation({
     mutationFn: (field: FillField) =>
-      api.post<{ field?: { field_key: string; field_label: string; field_value: string } }>(
+      api.post<{
+        field?: { field_key: string; field_label: string; field_value: string } | null
+        warning_count?: number
+        warnings?: Array<{ message?: string }>
+      }>(
         `/pre-publish/drafts/${listingId}/ai-field`,
         { field_key: field.key },
       ),
@@ -2362,8 +2367,12 @@ export default function PrePublishDraftDetailPage() {
       const fieldValue = result.field?.field_value ?? ""
       if (fieldValue) {
         setManualValues((prev) => ({ ...prev, [field.key]: fieldValue }))
+        toast.success(`${field.label} 已 AI 生成`)
+      } else if (result.warning_count) {
+        toast.warning(result.warnings?.[0]?.message ?? `${field.label} AI 暂未生成，字段未改动`)
+      } else {
+        toast.warning(`${field.label} AI 暂未生成，字段未改动`)
       }
-      toast.success(`${field.label} 已 AI 生成`)
       queryClient.invalidateQueries({ queryKey: ["pre-publish", "draft", listingId] })
       queryClient.invalidateQueries({ queryKey: ["pre-publish", "drafts"] })
     },

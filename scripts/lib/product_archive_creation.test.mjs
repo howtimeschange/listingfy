@@ -1474,6 +1474,10 @@ test("product archive AI fill prompt uses trusted draft MDM and source context o
   assert.match(service, /if \(!aiFill\) continue/);
   assert.match(service, /if \(!Number\.isFinite\(confidence\) \|\| confidence < AI_FILL_MIN_CONFIDENCE\) continue/);
   assert.match(service, /if \(!fieldValue \|\| !productArchiveFieldValueMatchesOptions\(fieldValue, field\.options\)\) continue/);
+  assert.match(service, /scenario:\s*"deepdraw_field_fill"/);
+  assert.match(service, /source: "AI_SUGGESTED"/);
+  assert.match(service, /source_type = \?/);
+  assert.match(service, /warnings\.push\(\{[\s\S]*code: "ai_provider_unavailable"/);
   assert.doesNotMatch(service, /options\[0\]/);
 });
 

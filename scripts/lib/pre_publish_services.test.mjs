@@ -545,6 +545,54 @@ test("SHEIN image payload guarantees one main image and stable type ordering per
   });
   assert.deepEqual(fallbackWithoutColorAsset?.image_info_list.map((image) => image.image_type), [1]);
 
+  const preparedColorFromSource = images.buildSheinImageInfo?.({
+    skcCode: "SKC-1",
+    skcImageUrl: "",
+    allowSourceImages: false,
+    assets: [{
+      id: 7,
+      skc_code: "SKC-1",
+      asset_type: "COLOR_BLOCK",
+      image_sort: 1,
+      platform_url: "https://img.shein.test/color-block.jpg",
+      raw_payload_json: JSON.stringify({ source: "listing_skc.image_url", shein_image_type: 6 }),
+    }],
+  });
+  assert.deepEqual(preparedColorFromSource?.image_info_list.map((image) => image.image_type), [6]);
+  assert.equal(
+    images.assetPreparedForImageType?.({ raw_payload_json: JSON.stringify({ shein_image_type: 6 }) }, 6),
+    true,
+  );
+
+  const packageColorOverridesAutoSource = images.buildSheinImageInfo?.({
+    skcCode: "SKC-1",
+    skcImageUrl: "",
+    allowSourceImages: false,
+    assets: [
+      {
+        id: 8,
+        skc_code: "SKC-1",
+        source_type: "SKC_SOURCE_IMAGE",
+        asset_type: "COLOR_BLOCK",
+        image_sort: 1,
+        platform_url: "https://img.shein.test/auto-color-block.jpg",
+        raw_payload_json: JSON.stringify({ source: "listing_skc.image_url", shein_image_type: 6 }),
+      },
+      {
+        id: 9,
+        skc_code: "SKC-1",
+        source_type: "SHEIN_IMAGE_PACKAGE",
+        asset_type: "COLOR_BLOCK",
+        image_sort: 1,
+        platform_url: "https://img.shein.test/package-color-block.jpg",
+      },
+    ],
+  });
+  assert.deepEqual(
+    packageColorOverridesAutoSource?.image_info_list.map((image) => image.image_url),
+    ["https://img.shein.test/package-color-block.jpg"],
+  );
+
   const localOnly = images.buildSheinImageInfo?.({
     skcCode: "SKC-LOCAL",
     skcImageUrl: "",
@@ -1095,6 +1143,30 @@ test("deployment preserves runtime listing image uploads outside release sync", 
   assert.match(deployScript, /mkdir -p "\$APP_DIR\/data\/listing-assets"/);
 });
 
+test("deployment writes AI routing and Semir gateway environment variables", async () => {
+  const deployScript = await readFile(path.join(PROJECT_ROOT, "ci/yunxiao-deploy.sh"), "utf8");
+
+  assert.match(deployScript, /write_optional_env\(\)/);
+  for (const name of [
+    "AI_ROUTING_ENABLED",
+    "AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_BASE_URL",
+    "AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_GEMINI_MODEL",
+    "AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_API_KEY",
+    "AI_PROVIDER_SEMIR_OVERSEAS_ANTHROPIC_BASE_URL",
+    "AI_PROVIDER_SEMIR_OVERSEAS_ANTHROPIC_API_KEY",
+    "AI_PROVIDER_SEMIR_DOMESTIC_OPENAI_BASE_URL",
+    "AI_PROVIDER_SEMIR_DOMESTIC_OPENAI_API_KEY",
+    "AI_GEMINI_INLINE_REMOTE_IMAGES",
+    "AI_SCENARIO_TITLE_TRANSLATION_MODE",
+    "AI_SCENARIO_SHEIN_ATTRIBUTE_MODE",
+    "AI_SCENARIO_SHEIN_DESCRIPTION_MODE",
+    "AI_SCENARIO_DEEPDRAW_FIELD_FILL_MODE",
+    "AI_1XM_DAILY_REQUEST_BUDGET",
+  ]) {
+    assert.match(deployScript, new RegExp(`\\b${name}\\b`));
+  }
+});
+
 test("deployment prepares a complete release before publishing to the live app directory", async () => {
   const deployScript = await readFile(path.join(PROJECT_ROOT, "ci/yunxiao-deploy.sh"), "utf8");
   const publishBlock = deployScript.slice(deployScript.indexOf("===== Publish prepared release ====="));
@@ -1170,6 +1242,8 @@ test("publish precheck treats local uploaded images as pending SHEIN image asset
   assert.doesNotMatch(source, /ensureFallbackColorAssets\(db,\s*listingId\)/);
   assert.doesNotMatch(source, /发布前自动补齐 SKC 色块图/);
   assert.match(source, /isAutoFallbackColorAsset/);
+  assert.match(source, /realImageAssets\(getListingAssets\(db,\s*listingId,\s*\{ onlySelected: true \}\)\)/);
+  assert.match(source, /if \(isAutoFallbackColorAsset\(asset\)\) continue/);
   assert.match(source, /缺 \$\{requirement\.name\}/);
 });
 
@@ -1177,9 +1251,18 @@ test("publish preparation auto-converts SKC source images before final SHEIN sub
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
 
   assert.match(source, /function ensureSkcSourceImageAssetsForPublish/);
-  assert.match(source, /'SKC_SOURCE_IMAGE', 'MAIN'/);
+  assert.match(source, /values \(\?, \?, \?, 'SKC_SOURCE_IMAGE', \?, 1,/);
+  assert.match(source, /assetType: "MAIN", sheinImageType: 1/);
+  assert.match(source, /assetType: "COLOR_BLOCK", sheinImageType: 6/);
+  assert.match(source, /shein_image_type: target\.sheinImageType/);
+  assert.doesNotMatch(source, /target\.sheinImageType === 6 && assetPreparedForImageType\(existing,\s*6\)/);
+  assert.match(source, /function targetImageTypeForAsset/);
+  assert.match(source, /function preparedAssetImageType/);
+  assert.match(source, /assetPreparedForImageType/);
+  assert.match(source, /shein_image_type: imageType/);
   assert.match(source, /source:\s*"listing_skc\.image_url"/);
   assert.match(source, /ensureSkcSourceImageAssetsForPublish\(db,\s*listingId\)/);
+  assert.match(source, /ensureSkcSourceImageAssetsForPublish\(db,\s*listingId\)[\s\S]+const preview = buildPublishPayload/);
   assert.match(source, /transformOnlineImageToShein\(sourceUrl,\s*imageType,\s*credentials\)/);
   assert.match(source, /function assertPublishPayloadHasOnlyPreparedImages/);
   assert.match(source, /product\.resources\.deepdraw\.biz/);
@@ -1208,13 +1291,32 @@ test("pre-publish basic fields expose DeepDraw product description", async () =>
 
 test("SHEIN SKC title defaults to the product title and AI fill reports warnings", async () => {
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const detailPage = await readFile(path.join(PROJECT_ROOT, "web/src/pages/pre-publish-validation/[listingId]/page.tsx"), "utf8");
 
   assert.match(source, /normalizeText\(readiness\.title_cn\) \|\| normalizeText\(skc\.skc_name\) \|\| skcCode/);
   assert.match(source, /skc_title:\s*normalizeText\(listing\.title\) \|\| normalizeText\(skc\.skc_title\) \|\| normalizeText\(listing\.spu_code\)/);
+  assert.match(source, /function aiErrorText/);
+  assert.match(source, /visit\(record\.cause,\s*depth \+ 1\)/);
+  assert.match(source, /Array\.isArray\(record\.errors\)/);
   assert.match(source, /function aiFillWarningMessage/);
   assert.match(source, /const warnings: Array<\{ spu_code: string; message: string \}> = \[\]/);
   assert.match(source, /AI 填写字段失败：\$\{aiFillWarningMessage\(error\)\}/);
   assert.match(source, /warning_count: warnings\.length/);
+  assert.match(source, /warningMessage:\s*aiFillWarningMessage\(error\)/);
+  assert.match(source, /AI 生成字段失败：\$\{generatedResult\.warningMessage \|\| "AI 服务暂不可用"\}/);
+  assert.match(source, /etimedout\|econnreset\|und_err_socket/);
+  assert.match(source, /AI 服务暂不可用，请检查网关\/模型配置后重试/);
+  assert.match(source, /function getListingDetailForAiWarning/);
+  assert.match(source, /detail:\s*getListingDetailForAiWarning\(db,\s*listingId\)/);
+  assert.match(source, /field: null/);
+  assert.match(detailPage, /warning_count\?: number/);
+  assert.match(detailPage, /toast\.warning\(result\.warnings\?\.\[0\]\?\.message/);
+});
+
+test("legacy fallback color cards do not masquerade as valid color-block assets", async () => {
+  const detailPage = await readFile(path.join(PROJECT_ROOT, "web/src/pages/pre-publish-validation/[listingId]/page.tsx"), "utf8");
+
+  assert.match(detailPage, /asset\.source_type === "SOURCE_FALLBACK" && \["COLOR_BLOCK", "COLOR"\]\.includes\(asset\.asset_type\)/);
 });
 
 test("draft category AI recomputes from source data instead of replaying the draft category", async () => {
@@ -1230,7 +1332,7 @@ test("draft category AI recomputes from source data instead of replaying the dra
   assert.match(source, /displayReadinessForSelectedSkcs\(readiness,\s*selectedSkcs,\s*readiness\.skcs\)/);
   assert.match(source, /function isLikelyEnglishTitle/);
   assert.match(source, /function readinessWithListingTitle/);
-  assert.match(source, /isLikelyEnglishTitle\(listingTitle\)[\s\S]+readinessWithListingTitle\(adjustedReadiness,\s*listingTitle\)/);
+  assert.match(source, /isLikelyEnglishTitle\(listingTitle\) && !hasStoredReadinessField\(adjustedReadiness,\s*"title_en"\)[\s\S]+readinessWithListingTitle\(adjustedReadiness,\s*listingTitle\)/);
   assert.match(source, /function readinessWithListingDescription/);
   assert.match(source, /function readinessWithoutSharedAiDescription/);
   assert.match(source, /sanitizeProductDescription\(listing\.description\)/);
@@ -1247,6 +1349,10 @@ test("draft category AI recomputes from source data instead of replaying the dra
   assert.match(source, /if \(updatedReadiness\) enrichmentReadiness = selectedReadinessForListing\(db,\s*listingId,\s*updatedReadiness\)/);
   assert.match(source, /function safeAiTranslateTitle/);
   assert.match(source, /const titleEn = await safeAiTranslateTitle\(enrichmentReadiness\)/);
+  assert.match(source, /const titleAlreadyReady = Boolean/);
+  assert.match(source, /mode === "title" \|\| \(mode === "all" && !titleAlreadyReady\)/);
+  assert.match(source, /const descriptionAlreadyReady = Boolean/);
+  assert.match(source, /mode === "description" \|\| \(mode === "all" && !descriptionAlreadyReady\)/);
   assert.match(source, /let aiFills: Array<Record<string, unknown>> = \[\]/);
   assert.match(source, /aiFills = await callAiFill\(enrichmentReadiness\) as Array<Record<string, unknown>>/);
   assert.match(source, /resolveSheinKidsCategoryFallback/);
@@ -1254,6 +1360,30 @@ test("draft category AI recomputes from source data instead of replaying the dra
   assert.match(source, /AI_CATEGORY_LIVE_REVIEW/);
   assert.match(source, /category\.status === "WARNING" \|\| \(category\.category_id && category\.product_type_id\)[\s\S]+?\? "WARNING"/);
   assert.match(source, /跑步鞋/);
+});
+
+test("manual optimized titles survive draft refresh, AI enrich all, publish payload, and snapshots", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const versionSource = await readFile(path.join(PROJECT_ROOT, "web/server/services/pre-publish/versions.ts"), "utf8");
+
+  assert.match(source, /const storedTitleCn = getStoredFill\(fills,\s*spuCode,\s*"title_cn"\)/);
+  assert.match(source, /const titleCn = normalizeText\(storedTitleCn\?\.field_value\) \|\| normalizeText\(row\.deepdraw_title\)/);
+  assert.match(source, /const storedTitleEn = getStoredFill\(fills,\s*spuCode,\s*"title_en"\)/);
+  assert.match(source, /const titleEn = normalizeText\(storedTitleEn\?\.field_value\) \|\| normalizeText\(row\.listing_title_en\)/);
+  assert.match(source, /source:\s*storedTitleEn \? String\(storedTitleEn\.source \?\? "MANUAL"\) : "AI\/人工"/);
+  assert.match(source, /function readinessFieldSource\(readiness:\s*ReadinessRow,\s*fieldKey:\s*string\)/);
+  assert.match(source, /function hasStoredReadinessField\(readiness:\s*ReadinessRow,\s*fieldKey:\s*string\)/);
+  assert.match(source, /source !== "AI\/人工" && source !== "LISTING_TITLE"/);
+  assert.match(source, /isLikelyEnglishTitle\(listingTitle\) && !hasStoredReadinessField\(adjustedReadiness,\s*"title_en"\)/);
+  assert.match(source, /persistDraftFields\(\{ db,\s*listing,\s*listingId,\s*fields,\s*savedFrom:\s*"draft_whole_save"\s*\}\)/);
+  assert.match(source, /normalizeFillFieldValue\(fieldKey,\s*field\.field_label,\s*field\.field_value\)/);
+  assert.match(source, /normalizeFillFieldValue\(fieldKey,\s*body\.field_label,\s*body\.field_value\)/);
+  assert.match(source, /const titleAlreadyReady = Boolean\(normalizeText\(readinessFieldValue\(enrichmentReadiness,\s*"title_en"\)\) \|\| normalizeText\(enrichmentReadiness\.title_en\)\)/);
+  assert.match(source, /mode === "title" \|\| \(mode === "all" && !titleAlreadyReady\)/);
+  assert.match(source, /const titleEn = sanitizeSingleItemTitleEn\(\s*normalizeText\(readinessFieldValue\(readiness,\s*"title_en"\)\) \|\| normalizeText\(readiness\.title_en\) \|\| heuristicEnglishTitle\(readiness\)/);
+  assert.match(source, /language:\s*"en"[\s\S]+name:\s*titleEn/);
+  assert.match(versionSource, /select scope_key, spu_code, skc_code, sku_code, field_key, field_label, field_value, source, confidence, updated_at[\s\S]+from listing_field_fill[\s\S]+where status = 'ACTIVE'/);
+  assert.match(versionSource, /field_fills:\s*fieldFills/);
 });
 
 test("SHEIN AI fill avoids unsupported composition guesses and handles conditional lining", async () => {
