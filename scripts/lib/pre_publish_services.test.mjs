@@ -1199,6 +1199,9 @@ test("deployment prepares the DeepDraw Java SDK runtime for production publishin
   assert.match(deployScript, /FROM \$\{MAVEN_IMAGE\} AS java_toolchain/);
   assert.match(deployScript, /COPY --from=java_toolchain \/opt\/java\/openjdk \/opt\/java\/openjdk/);
   assert.match(deployScript, /COPY --from=java_toolchain \/usr\/share\/maven \/usr\/share\/maven/);
+  assert.match(deployScript, /LISTINGIFY_FORCE_RUNTIME_IMAGE_REBUILD/);
+  assert.match(deployScript, /docker image inspect "\$RUNTIME_IMAGE"/);
+  assert.match(deployScript, /Reusing existing Docker runtime image/);
   assert.doesNotMatch(deployScript, /apt-get install[\s\S]*openjdk-17-jdk-headless/);
   assert.doesNotMatch(deployScript, /apt-get install[\s\S]*\bmaven\b/);
   assert.match(deployScript, /-v "\$DEEPDRAW_M2_DIR:\/app\/\.m2"/);

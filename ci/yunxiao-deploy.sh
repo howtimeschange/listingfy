@@ -208,12 +208,18 @@ else
 
   echo "Using Docker base image: $NODE_IMAGE"
   echo "Using Java/Maven toolchain image: $MAVEN_IMAGE"
-  echo "Preparing Docker runtime image: $RUNTIME_IMAGE"
-  docker build \
-    --build-arg NODE_IMAGE="$NODE_IMAGE" \
-    --build-arg MAVEN_IMAGE="$MAVEN_IMAGE" \
-    -t "$RUNTIME_IMAGE" \
-    -f - "$PREPARED_DIR" <<'DOCKERFILE'
+  if [ "${LISTINGIFY_FORCE_RUNTIME_IMAGE_REBUILD:-0}" != "1" ] \
+    && docker image inspect "$RUNTIME_IMAGE" >/dev/null 2>&1 \
+    && docker run --rm "$RUNTIME_IMAGE" bash -c 'node -v; java -version >/dev/null; javac -version >/dev/null; mvn -version >/dev/null' >/dev/null 2>&1
+  then
+    echo "Reusing existing Docker runtime image: $RUNTIME_IMAGE"
+  else
+    echo "Preparing Docker runtime image: $RUNTIME_IMAGE"
+    docker build \
+      --build-arg NODE_IMAGE="$NODE_IMAGE" \
+      --build-arg MAVEN_IMAGE="$MAVEN_IMAGE" \
+      -t "$RUNTIME_IMAGE" \
+      -f - "$PREPARED_DIR" <<'DOCKERFILE'
 ARG NODE_IMAGE=node:24-bookworm
 ARG MAVEN_IMAGE=maven:3.9-eclipse-temurin-17
 FROM ${MAVEN_IMAGE} AS java_toolchain
@@ -225,6 +231,7 @@ ENV MAVEN_HOME=/usr/share/maven
 ENV PATH="/opt/java/openjdk/bin:/usr/share/maven/bin:${PATH}"
 RUN java -version && javac -version && mvn -version
 DOCKERFILE
+  fi
 
   docker run --rm --network host \
     -v "$PREPARED_DIR:/app" \
