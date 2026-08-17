@@ -80,6 +80,10 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
     /productArchiveDrafts\.post\("\/hangtag-washlabel-ocr\/apply"/,
     /productArchiveDrafts\.post\("\/hangtag-washlabel-ocr\/jobs"/,
     /productArchiveDrafts\.get\("\/hangtag-washlabel-ocr\/jobs\/:jobId"/,
+    /productArchiveDrafts\.post\("\/ai-fill-jobs"/,
+    /productArchiveDrafts\.get\("\/ai-fill-jobs\/:jobId"/,
+    /productArchiveDrafts\.post\("\/publish-jobs"/,
+    /productArchiveDrafts\.get\("\/publish-jobs\/:jobId"/,
     /productArchiveDrafts\.post\("\/images\/import"/,
     /productArchiveDrafts\.get\("\/images\/:imageId\/file"/,
     /productArchiveDrafts\.get\("\/templates\/:templateType"/,
@@ -111,6 +115,17 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
   assert.match(draftRoute, /applyProductArchiveHangtagWashlabelOcr/);
   assert.match(draftRoute, /createHangtagWashlabelOcrQueue/);
   assert.match(draftRoute, /queueName: "product_archive_hangtag_washlabel_ocr"/);
+  assert.match(draftRoute, /createProductArchiveAiFillQueue/);
+  assert.match(draftRoute, /queueName: "product_archive_ai_fill"/);
+  assert.match(draftRoute, /draft\.ai_fill\.background_queued/);
+  assert.match(draftRoute, /draft\.ai_fill\.background_applied/);
+  assert.match(draftRoute, /productArchiveAiFillTargetsByIds/);
+  assert.match(draftRoute, /createProductArchivePublishQueue/);
+  assert.match(draftRoute, /queueName: "product_archive_publish"/);
+  assert.match(draftRoute, /draft\.publish\.background_queued/);
+  assert.match(draftRoute, /draft\.publish\.background_completed/);
+  assert.match(draftRoute, /isRetryableProductArchiveSyncError/);
+  assert.match(draftRoute, /submit_transport_unknown/);
   assert.match(draftRoute, /background_queued/);
   assert.match(draftRoute, /background_applied/);
   assert.match(draftRoute, /readDraftImageUploadFiles/);
@@ -400,6 +415,14 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(asyncTaskCenter, /失败明细/);
   assert.match(asyncTaskCenter, /Progress/);
   assert.match(asyncTaskCenter, /hangtagWashlabelOcrTaskSummary/);
+  assert.match(asyncTaskCenter, /aiFillTaskSummary/);
+  assert.match(asyncTaskCenter, /product_archive_ai_fill/);
+  assert.match(asyncTaskCenter, /publishTaskSummary/);
+  assert.match(asyncTaskCenter, /product_archive_publish/);
+  assert.match(asyncTaskCenter, /自动重试/);
+  assert.match(asyncTaskCenter, /publishTaskItems/);
+  assert.match(asyncTaskCenter, /publishItemReason/);
+  assert.match(asyncTaskCenter, /发布明细/);
   assert.match(asyncTaskCenter, /已自动/);
   assert.match(asyncTaskCenter, /填充空字段/);
 
@@ -436,6 +459,16 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /form\.append\("scmSupplementFile"/);
   assert.match(draftListPage, /overwriteExisting/);
   assert.match(draftListPage, /product_archive_hangtag_washlabel_ocr/);
+  assert.match(draftListPage, /product_archive_ai_fill/);
+  assert.match(draftListPage, /\/product-archive-drafts\/ai-fill-jobs/);
+  assert.match(draftListPage, /批量 AI 填充字段/);
+  assert.match(draftListPage, /batchAiFillFields/);
+  assert.match(draftListPage, /refreshedAiFillJobIds/);
+  assert.match(draftListPage, /product_archive_publish/);
+  assert.match(draftListPage, /\/product-archive-drafts\/publish-jobs/);
+  assert.match(draftListPage, /batchPublishToDeepdraw/);
+  assert.match(draftListPage, /refreshedPublishJobIds/);
+  assert.match(draftListPage, /提交后台发布任务/);
   assert.match(draftListPage, /提交后台识别/);
   assert.match(draftListPage, /table-fixed/);
   assert.match(draftListPage, /line-clamp-2/);
@@ -476,9 +509,11 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /批量校验/);
   assert.match(draftListPage, /批量查重/);
   assert.match(draftListPage, /批量提交预览/);
+  assert.match(draftListPage, /批量 AI 填充字段/);
   assert.match(draftListPage, /批量发布到深绘/);
-  assert.match(draftListPage, /submit_publish/);
-  assert.match(draftListPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/submit`, \{ dryRun: false \}\)/s);
+  assert.match(draftListPage, /api\.post<AsyncTaskJob>\("\/product-archive-drafts\/publish-jobs"/);
+  assert.doesNotMatch(draftListPage, /submit_publish/);
+  assert.doesNotMatch(draftListPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/submit`, \{ dryRun: false \}\)/s);
   assert.match(draftListPage, /StartProductArchiveDialog/);
   assert.doesNotMatch(draftListPage, /导入字段对应关系/);
   assert.match(draftListPage, /按标准文案表和上市计划表里的款号生成草稿/);

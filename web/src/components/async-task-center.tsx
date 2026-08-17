@@ -7,6 +7,7 @@ import {
   useAsyncTasks,
   type AddTaskInput,
   type AsyncTaskJob,
+  type AsyncTaskJobItem,
   type AsyncTaskRecord,
   type AsyncTaskContextValue,
 } from "@/lib/async-task-context"
@@ -95,7 +96,7 @@ function failedItems(task: AsyncTaskRecord) {
 }
 
 function legacyRunningItem(items: AsyncTaskJob["items"]) {
-  return items?.find((item) => item.status === "running") ?? null
+  return items?.find((item) => item.status === "running" || item.status === "retrying") ?? null
 }
 
 function runningTaskItem(task: AsyncTaskRecord) {
@@ -105,6 +106,13 @@ function runningTaskItem(task: AsyncTaskRecord) {
 function numberResultValue(value: unknown) {
   const number = Number(value)
   return Number.isFinite(number) ? number : 0
+}
+
+function textResultValue(value: unknown) {
+  if (value == null) return ""
+  if (typeof value === "string") return value.trim()
+  if (typeof value === "number" || typeof value === "boolean") return String(value).trim()
+  return ""
 }
 
 function recordResultValue(value: unknown) {
@@ -124,6 +132,82 @@ function hangtagWashlabelOcrTaskSummary(task: AsyncTaskRecord) {
     matchedCount: numberResultValue(previewSummary?.matchedCount),
     overwriteExisting: result?.overwriteExisting === true,
   }
+}
+
+function aiFillTaskSummary(task: AsyncTaskRecord) {
+  if (task.type !== "product_archive_ai_fill") return null
+  const result = recordResultValue(task.job?.result)
+  const items = task.job?.items ?? []
+  const processedItems = items.filter((item) => item.status === "completed")
+  const itemSavedFieldCount = processedItems.reduce((sum, item) => (
+    sum + numberResultValue(recordResultValue(item.result)?.savedCount)
+  ), 0)
+  const itemWarningCount = processedItems.reduce((sum, item) => (
+    sum + numberResultValue(recordResultValue(item.result)?.warningCount)
+  ), 0)
+  return {
+    processedDraftCount: numberResultValue(result?.processedDraftCount) || processedItems.length,
+    savedFieldCount: numberResultValue(result?.savedFieldCount) || itemSavedFieldCount,
+    warningCount: numberResultValue(result?.warningCount) || itemWarningCount,
+  }
+}
+
+function publishTaskSummary(task: AsyncTaskRecord) {
+  if (task.type !== "product_archive_publish") return null
+  const result = recordResultValue(task.job?.result)
+  return {
+    publishedCount: numberResultValue(result?.publishedCount),
+    duplicateCount: numberResultValue(result?.duplicateCount),
+    readbackMismatchCount: numberResultValue(result?.readbackMismatchCount),
+    retryAttemptCount: numberResultValue(result?.retryAttemptCount),
+  }
+}
+
+function publishTaskItems(task: AsyncTaskRecord) {
+  if (task.type !== "product_archive_publish") return []
+  return task.job?.items ?? []
+}
+
+function publishItemResultKind(item: AsyncTaskJobItem) {
+  return textResultValue(recordResultValue(item.result)?.resultKind)
+}
+
+function publishItemStatusLabel(item: AsyncTaskJobItem) {
+  if (item.status === "completed") {
+    const resultKind = publishItemResultKind(item)
+    if (resultKind === "duplicate_found") return "已存在"
+    if (resultKind === "readback_mismatch") return "需复核"
+    if (resultKind === "submitted") return "已提交"
+    return "成功"
+  }
+  if (item.status === "failed") return "失败"
+  if (item.status === "retrying") return "等待重试"
+  if (item.status === "running") return "处理中"
+  return "排队中"
+}
+
+function publishItemStatusClass(item: AsyncTaskJobItem) {
+  if (item.status === "failed") return "text-[#d45656]"
+  if (item.status !== "completed") return "text-[#3772cf]"
+  const resultKind = publishItemResultKind(item)
+  if (resultKind === "readback_mismatch") return "text-[#a66b00]"
+  if (resultKind === "duplicate_found" || resultKind === "submitted") return "text-[#3772cf]"
+  return "text-[#0f7f58]"
+}
+
+function publishItemReason(item: AsyncTaskJobItem) {
+  const result = recordResultValue(item.result)
+  const message = textResultValue(result?.message ?? result?.reason)
+  if (message) return message
+  if (item.status === "failed") return item.error || "未知失败原因"
+  if (item.status === "retrying") return item.error ? `接口繁忙，${item.error}` : "接口繁忙，等待自动重试"
+  if (item.status === "running") return "正在提交和回读校验"
+  if (item.status === "queued") return "等待后台处理"
+  const resultKind = publishItemResultKind(item)
+  if (resultKind === "published") return "已发布并回读一致"
+  if (resultKind === "duplicate_found") return "深绘已存在同货号商品"
+  if (resultKind === "readback_mismatch") return "已创建，但深绘回读不一致，请进详情复核"
+  return "已处理完成"
 }
 
 export function AsyncTaskProvider({ children }: { children: ReactNode }) {
@@ -319,6 +403,9 @@ function AsyncTaskDrawer({
               const runningItem = runningTaskItem(task)
               const done = job?.status === "completed"
               const ocrSummary = hangtagWashlabelOcrTaskSummary(task)
+              const aiFillSummary = aiFillTaskSummary(task)
+              const publishSummary = publishTaskSummary(task)
+              const publishItems = publishTaskItems(task)
               return (
                 <section key={task.id} className="rounded-lg border bg-card p-3">
                   <div className="flex items-start justify-between gap-3">
@@ -332,7 +419,10 @@ function AsyncTaskDrawer({
                       ) : null}
                       <p className="mt-1 text-[11px] text-muted-foreground">{formatDateTime(task.createdAt)}</p>
                       {!done && runningItem ? (
-                        <p className="mt-1 text-[11px] text-muted-foreground">当前：{runningItem.spu_code}</p>
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          当前：{runningItem.spu_code}
+                          {runningItem.status === "retrying" ? `，等待重试 ${formatDateTime(runningItem.next_retry_at)}` : ""}
+                        </p>
                       ) : null}
                     </div>
                     <Button variant="ghost" size="icon" className="size-8" onClick={() => onRemoveTask(task.id)}>
@@ -358,6 +448,37 @@ function AsyncTaskDrawer({
                       已自动{ocrSummary.overwriteExisting ? "按覆盖模式写入" : "填充空字段"} {formatNumber(ocrSummary.appliedFieldCount)} 个，
                       匹配草稿 {formatNumber(ocrSummary.appliedDraftCount || ocrSummary.matchedCount)} 个，
                       跳过 {formatNumber(ocrSummary.skippedCount)} 个。
+                    </div>
+                  ) : null}
+                  {aiFillSummary ? (
+                    <div className="mt-3 rounded-md border border-[#b9d7ff] bg-[#f4f8ff] px-2 py-1.5 text-xs text-[#2f66b3]">
+                      AI 已补齐 {formatNumber(aiFillSummary.savedFieldCount)} 个字段，
+                      处理草稿 {formatNumber(aiFillSummary.processedDraftCount)} 个，
+                      提示 {formatNumber(aiFillSummary.warningCount)} 条。
+                    </div>
+                  ) : null}
+                  {publishSummary ? (
+                    <div className="mt-3 rounded-md border border-[#b9f4d8] bg-[#f2fff8] px-2 py-1.5 text-xs text-[#0f7f58]">
+                      发布成功 {formatNumber(publishSummary.publishedCount)} 个，
+                      已存在 {formatNumber(publishSummary.duplicateCount)} 个，
+                      回读不一致 {formatNumber(publishSummary.readbackMismatchCount)} 个，
+                      自动重试 {formatNumber(publishSummary.retryAttemptCount)} 次。
+                    </div>
+                  ) : null}
+                  {publishItems.length > 0 ? (
+                    <div className="mt-3 rounded-md border border-[#d7e0ee] bg-[#fbfdff] p-2">
+                      <div className="mb-1 text-xs font-medium text-foreground">发布明细</div>
+                      <div className="max-h-40 overflow-auto text-xs text-muted-foreground">
+                        {publishItems.map((item) => (
+                          <div key={item.spu_code} className="grid grid-cols-[minmax(7rem,auto)_4rem_1fr] gap-2 border-t border-[#d7e0ee]/70 py-1 first:border-t-0">
+                            <span className="font-mono text-foreground">{item.spu_code}</span>
+                            <span className={publishItemStatusClass(item)}>
+                              {publishItemStatusLabel(item)}
+                            </span>
+                            <span className="min-w-0">{publishItemReason(item)}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   ) : null}
                   {task.lastError ? (

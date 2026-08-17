@@ -24,6 +24,7 @@ import {
 import {
   createPostgresProductArchiveSyncJobStore,
   createProductArchiveSyncQueue,
+  isRetryableProductArchiveSyncError,
 } from "../../../scripts/lib/product_archive_sync_queue.mjs"
 import { resolveDeepdrawConfig } from "../../../scripts/lib/deepdraw_client.mjs"
 import { syncMdmProduct } from "../services/product-archive-sync"
@@ -162,8 +163,678 @@ type HangtagWashlabelOcrJob = {
   result: Record<string, unknown> | null
 }
 
+type ProductArchiveDraftBatchTarget = {
+  draftId: number
+  spuCode: string
+  title: string | null
+  status: string
+}
+
+type ProductArchiveAiFillJobItem = {
+  draft_id: number
+  spu_code: string
+  status: "queued" | "running" | "completed" | "failed"
+  started_at: string | null
+  finished_at: string | null
+  result: Record<string, unknown> | null
+  error: string | null
+}
+
+type ProductArchiveAiFillJob = {
+  id: string
+  source: "ai_fill"
+  status: "queued" | "running" | "completed"
+  outcome?: "succeeded" | "partial_failure" | "failed" | null
+  total_count: number
+  completed_count: number
+  failed_count: number
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  options: {
+    actor: AuditActor | null
+    ipAddress: string | null
+  }
+  items: ProductArchiveAiFillJobItem[]
+  result: Record<string, unknown> | null
+}
+
+type ProductArchivePublishJobItem = {
+  draft_id: number
+  spu_code: string
+  status: "queued" | "running" | "retrying" | "completed" | "failed"
+  attempt_count: number
+  max_attempts: number
+  next_retry_at: string | null
+  started_at: string | null
+  finished_at: string | null
+  result: Record<string, unknown> | null
+  error: string | null
+}
+
+type ProductArchivePublishJob = {
+  id: string
+  source: "publish"
+  status: "queued" | "running" | "completed"
+  outcome?: "succeeded" | "partial_failure" | "failed" | null
+  total_count: number
+  completed_count: number
+  failed_count: number
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  options: {
+    actor: AuditActor | null
+    ipAddress: string | null
+    retryDelayMs: number
+  }
+  items: ProductArchivePublishJobItem[]
+  result: Record<string, unknown> | null
+}
+
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
+}
+
+function objectValue(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function cloneProductArchiveAiFillJob(job: ProductArchiveAiFillJob) {
+  const currentItem = job.items.find((item) => item.status === "running") ?? null
+  return {
+    ...job,
+    options: {
+      ...job.options,
+      actor: job.options.actor ? { ...job.options.actor } : null,
+    },
+    items: job.items.map((item) => ({ ...item, result: item.result ? { ...item.result } : null })),
+    current_item: currentItem ? { ...currentItem } : null,
+    failed_items: job.items.filter((item) => item.status === "failed").map((item) => ({ ...item })),
+    queued_count: job.items.filter((item) => item.status === "queued").length,
+    running_count: job.items.filter((item) => item.status === "running").length,
+  }
+}
+
+function createProductArchiveAiFillQueue({
+  store,
+  onInternalError = (error: unknown) => console.error("Product archive AI fill queue internal error", error),
+  now = () => Date.now(),
+}: {
+  store: ReturnType<typeof createPostgresProductArchiveSyncJobStore>
+  onInternalError?: (error: unknown, context?: Record<string, unknown>) => void
+  now?: () => number
+}) {
+  const jobs = new Map<string, ProductArchiveAiFillJob>()
+  const pending: ProductArchiveAiFillJob[] = []
+  let running = false
+  let processScheduled = false
+
+  function reportInternalError(error: unknown, context: Record<string, unknown>) {
+    try {
+      onInternalError(error, context)
+    } catch {
+      // Error reporting must never stop the AI fill worker.
+    }
+  }
+
+  function persist(job: ProductArchiveAiFillJob) {
+    try {
+      store.save(cloneProductArchiveAiFillJob(job))
+    } catch (error) {
+      reportInternalError(error, { phase: "persist", jobId: job.id })
+    }
+  }
+
+  function getJob(id: string) {
+    const job = jobs.get(id)
+    if (job) return cloneProductArchiveAiFillJob(job)
+    const stored = store.get(id) as ProductArchiveAiFillJob | null
+    return stored ? cloneProductArchiveAiFillJob(stored) : null
+  }
+
+  function setItemFinished(
+    job: ProductArchiveAiFillJob,
+    item: ProductArchiveAiFillJobItem,
+    status: "completed" | "failed",
+    result: Record<string, unknown> | null,
+    error: string | null,
+  ) {
+    item.status = status
+    item.result = result
+    item.error = error
+    item.finished_at = new Date(now()).toISOString()
+    if (status === "completed") job.completed_count += 1
+    if (status === "failed") job.failed_count += 1
+    persist(job)
+  }
+
+  async function processItem(job: ProductArchiveAiFillJob, item: ProductArchiveAiFillJobItem) {
+    item.status = "running"
+    item.started_at ??= new Date(now()).toISOString()
+    persist(job)
+
+    const db = getDb()
+    const result = await fillProductArchiveDraftFieldsWithAi(db, item.draft_id)
+    const detail = result.detail as { draft?: Record<string, unknown> }
+    const draft = detail.draft ?? {}
+    const validationSummary = draft.validation_summary_json && typeof draft.validation_summary_json === "object"
+      ? draft.validation_summary_json as Record<string, unknown>
+      : {}
+    const savedCount = result.saved.length
+    const warningCount = result.warnings.length
+    const itemResult = {
+      draftId: item.draft_id,
+      spuCode: item.spu_code,
+      savedCount,
+      warningCount,
+      status: stringValue(draft.status),
+      blockerCount: Number(validationSummary.blocker_count ?? 0) || 0,
+      warningIssueCount: Number(validationSummary.warning_count ?? 0) || 0,
+    }
+    try {
+      writeOperationLog(db, {
+        action: "draft.ai_fill.background_applied",
+        module: "PRODUCT_ARCHIVE_DRAFT",
+        entityType: "product_archive_draft",
+        entityId: item.draft_id,
+        summary: `后台 AI 推荐补齐深绘建档草稿字段 ${item.spu_code}`,
+        metadata: {
+          jobId: job.id,
+          draftId: item.draft_id,
+          spuCode: item.spu_code,
+          savedCount,
+          warningCount,
+        },
+      }, job.options.actor, job.options.ipAddress ?? undefined)
+    } catch (error) {
+      reportInternalError(error, { phase: "item_audit", jobId: job.id, draftId: item.draft_id })
+    }
+    setItemFinished(job, item, "completed", itemResult, null)
+  }
+
+  async function processLoop() {
+    processScheduled = false
+    if (running) return
+    running = true
+    try {
+      while (pending.length > 0) {
+        const job = pending.shift()
+        if (!job) continue
+        job.status = "running"
+        job.started_at ??= new Date(now()).toISOString()
+        persist(job)
+        try {
+          for (const item of job.items) {
+            if (item.status === "completed" || item.status === "failed") continue
+            try {
+              await processItem(job, item)
+            } catch (error) {
+              setItemFinished(job, item, "failed", {
+                draftId: item.draft_id,
+                spuCode: item.spu_code,
+              }, errorMessage(error))
+            }
+          }
+        } finally {
+          const completedItems = job.items.filter((item) => item.status === "completed")
+          job.result = {
+            processedDraftCount: completedItems.length,
+            failedDraftCount: job.items.filter((item) => item.status === "failed").length,
+            savedFieldCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.savedCount) || 0), 0),
+            warningCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.warningCount) || 0), 0),
+          }
+          job.status = "completed"
+          job.outcome = job.failed_count === 0
+            ? "succeeded"
+            : job.completed_count === 0
+              ? "failed"
+              : "partial_failure"
+          job.finished_at = new Date(now()).toISOString()
+          persist(job)
+        }
+      }
+    } finally {
+      running = false
+    }
+  }
+
+  function schedule() {
+    if (processScheduled) return
+    processScheduled = true
+    queueMicrotask(() => {
+      void processLoop().catch((error) => {
+        reportInternalError(error, { phase: "process_loop" })
+      })
+    })
+  }
+
+  function enqueue({
+    targets,
+    actor,
+    ipAddress,
+  }: {
+    targets: ProductArchiveDraftBatchTarget[]
+    actor: AuditActor | null
+    ipAddress: string | null
+  }) {
+    if (targets.length === 0) throw new Error("请先选择需要 AI 填充的草稿")
+    const nowText = new Date(now()).toISOString()
+    const job: ProductArchiveAiFillJob = {
+      id: randomUUID(),
+      source: "ai_fill",
+      status: "queued",
+      outcome: null,
+      total_count: targets.length,
+      completed_count: 0,
+      failed_count: 0,
+      created_at: nowText,
+      started_at: null,
+      finished_at: null,
+      options: { actor, ipAddress },
+      items: targets.map((target) => ({
+        draft_id: target.draftId,
+        spu_code: target.spuCode,
+        status: "queued",
+        started_at: null,
+        finished_at: null,
+        result: null,
+        error: null,
+      })),
+      result: null,
+    }
+    jobs.set(job.id, job)
+    pending.push(job)
+    persist(job)
+    schedule()
+    return cloneProductArchiveAiFillJob(job)
+  }
+
+  function resume() {
+    const recovered = (store.recover() as ProductArchiveAiFillJob[])
+      .filter((job) => job?.source === "ai_fill")
+    for (const storedJob of recovered) {
+      const job = storedJob
+      job.status = "queued"
+      job.started_at = null
+      job.finished_at = null
+      for (const item of job.items) {
+        if (item.status === "running") {
+          item.status = "queued"
+          item.started_at = null
+          item.finished_at = null
+          item.error = null
+        }
+      }
+      job.completed_count = job.items.filter((item) => item.status === "completed").length
+      job.failed_count = job.items.filter((item) => item.status === "failed").length
+      jobs.set(job.id, job)
+      pending.push(job)
+      persist(job)
+    }
+    if (pending.length > 0) schedule()
+  }
+
+  return {
+    enqueue,
+    getJob,
+    resume,
+  }
+}
+
+function clampPublishAttempts(value: unknown) {
+  const number = Number(value ?? 3)
+  if (!Number.isFinite(number)) return 3
+  return Math.max(1, Math.min(6, Math.floor(number)))
+}
+
+function clampPublishRetryDelayMs(value: unknown) {
+  const number = Number(value ?? 5000)
+  if (!Number.isFinite(number)) return 5000
+  return Math.max(1000, Math.min(60000, Math.floor(number)))
+}
+
+function publishErrorIsRetryable(error: unknown) {
+  const message = errorMessage(error)
+  if (/草稿存在阻断|请选择|本地未找到|不存在|缺少|无效|不能提交|重复|duplicate/i.test(message)) return false
+  return isRetryableProductArchiveSyncError(error)
+}
+
+function publishRetrySafety(db: ReturnType<typeof getDb>, draftId: number) {
+  const draft = db.prepare(`
+    select status, duplicate_result_json
+    from product_archive_draft
+    where id = ?
+  `).get(draftId) as { status?: unknown; duplicate_result_json?: unknown } | undefined
+  const status = stringValue(draft?.status)
+  const duplicateResult = objectValue(draft?.duplicate_result_json)
+  if (status === "submitting" && stringValue(duplicateResult.submit_transport_unknown)) {
+    return {
+      retryable: false,
+      reason: "创建请求结果未知，已保持 submitting 防重复；请先在详情页回读确认后再处理",
+    }
+  }
+  return { retryable: true, reason: "" }
+}
+
+function publishItemResultFromSubmitResult(result: unknown, draftId: number, spuCode: string) {
+  const record = objectValue(result)
+  if (record.alreadySubmitting === true) {
+    const message = "草稿正在提交中，请先在详情页回读确认后再重试"
+    return {
+      ok: false,
+      error: message,
+      result: {
+        draftId,
+        spuCode,
+        resultKind: "already_submitting",
+        status: stringValue(record.status),
+        message,
+      },
+    }
+  }
+  if (record.duplicateFound === true) {
+    const message = "深绘已存在同货号商品"
+    return {
+      ok: true,
+      result: {
+        draftId,
+        spuCode,
+        resultKind: "duplicate_found",
+        status: "duplicate_found",
+        message,
+      },
+    }
+  }
+  const status = stringValue(record.status) || "submitted"
+  const resultKind = status === "readback_verified" ? "published" : status === "readback_mismatch" ? "readback_mismatch" : "submitted"
+  const message = resultKind === "published"
+    ? "已发布并回读一致"
+    : resultKind === "readback_mismatch"
+      ? "已创建，但深绘回读不一致，请进详情复核"
+      : `已提交到深绘，状态：${status}`
+  return {
+    ok: true,
+    result: {
+      draftId,
+      spuCode,
+      resultKind,
+      status,
+      message,
+      ok: record.ok === false ? false : true,
+    },
+  }
+}
+
+function cloneProductArchivePublishJob(job: ProductArchivePublishJob) {
+  const currentItem = job.items.find((item) => item.status === "running" || item.status === "retrying") ?? null
+  return {
+    ...job,
+    options: {
+      ...job.options,
+      actor: job.options.actor ? { ...job.options.actor } : null,
+    },
+    items: job.items.map((item) => ({ ...item, result: item.result ? { ...item.result } : null })),
+    current_item: currentItem ? { ...currentItem } : null,
+    failed_items: job.items.filter((item) => item.status === "failed").map((item) => ({ ...item })),
+    queued_count: job.items.filter((item) => item.status === "queued").length,
+    running_count: job.items.filter((item) => item.status === "running" || item.status === "retrying").length,
+  }
+}
+
+function createProductArchivePublishQueue({
+  store,
+  onInternalError = (error: unknown) => console.error("Product archive publish queue internal error", error),
+  wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+  now = () => Date.now(),
+}: {
+  store: ReturnType<typeof createPostgresProductArchiveSyncJobStore>
+  onInternalError?: (error: unknown, context?: Record<string, unknown>) => void
+  wait?: (ms: number) => Promise<unknown>
+  now?: () => number
+}) {
+  const jobs = new Map<string, ProductArchivePublishJob>()
+  const pending: ProductArchivePublishJob[] = []
+  let running = false
+  let processScheduled = false
+
+  function reportInternalError(error: unknown, context: Record<string, unknown>) {
+    try {
+      onInternalError(error, context)
+    } catch {
+      // Error reporting must never stop the publish worker.
+    }
+  }
+
+  function persist(job: ProductArchivePublishJob) {
+    try {
+      store.save(cloneProductArchivePublishJob(job))
+    } catch (error) {
+      reportInternalError(error, { phase: "persist", jobId: job.id })
+    }
+  }
+
+  function getJob(id: string) {
+    const job = jobs.get(id)
+    if (job) return cloneProductArchivePublishJob(job)
+    const stored = store.get(id) as ProductArchivePublishJob | null
+    return stored ? cloneProductArchivePublishJob(stored) : null
+  }
+
+  function setItemFinished(
+    job: ProductArchivePublishJob,
+    item: ProductArchivePublishJobItem,
+    status: "completed" | "failed",
+    result: Record<string, unknown> | null,
+    error: string | null,
+  ) {
+    item.status = status
+    item.result = result
+    item.error = error
+    item.next_retry_at = null
+    item.finished_at = new Date(now()).toISOString()
+    if (status === "completed") job.completed_count += 1
+    if (status === "failed") job.failed_count += 1
+    persist(job)
+  }
+
+  async function processItem(job: ProductArchivePublishJob, item: ProductArchivePublishJobItem) {
+    item.started_at ??= new Date(now()).toISOString()
+    while (item.attempt_count < item.max_attempts) {
+      item.status = "running"
+      item.attempt_count += 1
+      item.next_retry_at = null
+      persist(job)
+      try {
+        const submitResult = await submitProductArchiveDraft(getDb(), item.draft_id, { dryRun: false })
+        const finished = publishItemResultFromSubmitResult(submitResult, item.draft_id, item.spu_code)
+        if (!finished.ok) {
+          setItemFinished(job, item, "failed", finished.result, finished.error)
+          return
+        }
+        try {
+          writeOperationLog(getDb(), {
+            action: "draft.publish.background_completed",
+            module: "PRODUCT_ARCHIVE_DRAFT",
+            entityType: "product_archive_draft",
+            entityId: item.draft_id,
+            summary: `后台批量发布深绘建档草稿 ${item.spu_code}`,
+            metadata: {
+              jobId: job.id,
+              draftId: item.draft_id,
+              spuCode: item.spu_code,
+              attemptCount: item.attempt_count,
+              result: finished.result,
+            },
+          }, job.options.actor, job.options.ipAddress ?? undefined)
+        } catch (error) {
+          reportInternalError(error, { phase: "item_audit", jobId: job.id, draftId: item.draft_id })
+        }
+        setItemFinished(job, item, "completed", finished.result, null)
+        return
+      } catch (error) {
+        const safety = publishRetrySafety(getDb(), item.draft_id)
+        const retryable = safety.retryable && publishErrorIsRetryable(error) && item.attempt_count < item.max_attempts
+        item.error = safety.retryable ? errorMessage(error) : safety.reason || errorMessage(error)
+        if (!retryable) {
+          setItemFinished(job, item, "failed", {
+            draftId: item.draft_id,
+            spuCode: item.spu_code,
+            resultKind: safety.retryable ? "failed" : "unsafe_retry_blocked",
+            retryable: false,
+            attemptCount: item.attempt_count,
+          }, item.error)
+          return
+        }
+        const retryDelay = job.options.retryDelayMs * item.attempt_count
+        item.status = "retrying"
+        item.next_retry_at = new Date(now() + retryDelay).toISOString()
+        persist(job)
+        try {
+          await wait(retryDelay)
+        } catch (waitError) {
+          reportInternalError(waitError, { phase: "retry_delay", jobId: job.id, draftId: item.draft_id })
+        }
+      }
+    }
+  }
+
+  function finishJob(job: ProductArchivePublishJob) {
+    const completedItems = job.items.filter((item) => item.status === "completed")
+    const results = completedItems.map((item) => objectValue(item.result))
+    job.result = {
+      processedDraftCount: completedItems.length,
+      failedDraftCount: job.items.filter((item) => item.status === "failed").length,
+      publishedCount: results.filter((result) => stringValue(result.resultKind) === "published").length,
+      duplicateCount: results.filter((result) => stringValue(result.resultKind) === "duplicate_found").length,
+      readbackMismatchCount: results.filter((result) => stringValue(result.resultKind) === "readback_mismatch").length,
+      retryAttemptCount: job.items.reduce((sum, item) => sum + Math.max(0, item.attempt_count - 1), 0),
+    }
+    job.status = "completed"
+    job.outcome = job.failed_count === 0
+      ? "succeeded"
+      : job.completed_count === 0
+        ? "failed"
+        : "partial_failure"
+    job.finished_at = new Date(now()).toISOString()
+    persist(job)
+  }
+
+  async function processLoop() {
+    processScheduled = false
+    if (running) return
+    running = true
+    try {
+      while (pending.length > 0) {
+        const job = pending.shift()
+        if (!job) continue
+        job.status = "running"
+        job.started_at ??= new Date(now()).toISOString()
+        persist(job)
+        try {
+          for (const item of job.items) {
+            if (item.status === "completed" || item.status === "failed") continue
+            await processItem(job, item)
+          }
+        } finally {
+          finishJob(job)
+        }
+      }
+    } finally {
+      running = false
+    }
+  }
+
+  function schedule() {
+    if (processScheduled) return
+    processScheduled = true
+    queueMicrotask(() => {
+      void processLoop().catch((error) => {
+        reportInternalError(error, { phase: "process_loop" })
+      })
+    })
+  }
+
+  function enqueue({
+    targets,
+    actor,
+    ipAddress,
+    maxAttempts,
+    retryDelayMs,
+  }: {
+    targets: ProductArchiveDraftBatchTarget[]
+    actor: AuditActor | null
+    ipAddress: string | null
+    maxAttempts?: unknown
+    retryDelayMs?: unknown
+  }) {
+    if (targets.length === 0) throw new Error("请先选择需要发布的草稿")
+    const nowText = new Date(now()).toISOString()
+    const attempts = clampPublishAttempts(maxAttempts ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_MAX_ATTEMPTS)
+    const delayMs = clampPublishRetryDelayMs(retryDelayMs ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_RETRY_DELAY_MS)
+    const job: ProductArchivePublishJob = {
+      id: randomUUID(),
+      source: "publish",
+      status: "queued",
+      outcome: null,
+      total_count: targets.length,
+      completed_count: 0,
+      failed_count: 0,
+      created_at: nowText,
+      started_at: null,
+      finished_at: null,
+      options: { actor, ipAddress, retryDelayMs: delayMs },
+      items: targets.map((target) => ({
+        draft_id: target.draftId,
+        spu_code: target.spuCode,
+        status: "queued",
+        attempt_count: 0,
+        max_attempts: attempts,
+        next_retry_at: null,
+        started_at: null,
+        finished_at: null,
+        result: null,
+        error: null,
+      })),
+      result: null,
+    }
+    jobs.set(job.id, job)
+    pending.push(job)
+    persist(job)
+    schedule()
+    return cloneProductArchivePublishJob(job)
+  }
+
+  function resume() {
+    const recovered = (store.recover() as ProductArchivePublishJob[])
+      .filter((job) => job?.source === "publish")
+    for (const storedJob of recovered) {
+      const job = storedJob
+      job.status = "queued"
+      job.started_at = null
+      job.finished_at = null
+      for (const item of job.items) {
+        if (item.status === "running" || item.status === "retrying") {
+          item.status = "queued"
+          item.started_at = null
+          item.finished_at = null
+          item.next_retry_at = null
+        }
+      }
+      job.completed_count = job.items.filter((item) => item.status === "completed").length
+      job.failed_count = job.items.filter((item) => item.status === "failed").length
+      jobs.set(job.id, job)
+      pending.push(job)
+      persist(job)
+    }
+    if (pending.length > 0) schedule()
+  }
+
+  return {
+    enqueue,
+    getJob,
+    resume,
+  }
 }
 
 function cloneHangtagWashlabelOcrJob(job: HangtagWashlabelOcrJob) {
@@ -515,9 +1186,25 @@ const hangtagWashlabelOcrQueue = createHangtagWashlabelOcrQueue({
   }),
 })
 
+const productArchiveAiFillQueue = createProductArchiveAiFillQueue({
+  store: createPostgresProductArchiveSyncJobStore({
+    getDb,
+    queueName: "product_archive_ai_fill",
+  }),
+})
+
+const productArchivePublishQueue = createProductArchivePublishQueue({
+  store: createPostgresProductArchiveSyncJobStore({
+    getDb,
+    queueName: "product_archive_publish",
+  }),
+})
+
 export function resumeProductArchiveDraftQueue() {
   draftQueue.resume()
   hangtagWashlabelOcrQueue.resume()
+  productArchiveAiFillQueue.resume()
+  productArchivePublishQueue.resume()
 }
 
 function readId(value: string) {
@@ -852,6 +1539,79 @@ function missingDraftCodesForCodes(db: ReturnType<typeof getDb>, spuCodes: strin
   `).all(input.tenantName, input.merchantId, ...codes) as Array<{ spu_code: unknown }>
   const existing = new Set(uniqueStrings(rows.map((row) => row.spu_code)))
   return codes.filter((code) => !existing.has(code))
+}
+
+function numericIdValue(value: unknown) {
+  const id = Number(value)
+  return Number.isInteger(id) && id > 0 ? id : null
+}
+
+function draftIdsFromBody(body: Record<string, unknown>) {
+  const rawIds = Array.isArray(body.draftIds)
+    ? body.draftIds
+    : Array.isArray(body.draft_ids)
+      ? body.draft_ids
+      : Array.isArray(body.ids)
+        ? body.ids
+        : []
+  const seen = new Set<number>()
+  const ids: number[] = []
+  for (const rawId of rawIds) {
+    const id = numericIdValue(rawId)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    ids.push(id)
+  }
+  return ids
+}
+
+function productArchiveDraftTargetsByIds(db: ReturnType<typeof getDb>, draftIds: number[], options: {
+  emptyMessage: string
+  limitEnv: string
+  defaultLimit: number
+  maxLimit: number
+  limitMessage: (limit: number) => string
+}) {
+  const ids = Array.from(new Set(draftIds.filter((id) => Number.isInteger(id) && id > 0)))
+  if (ids.length === 0) {
+    throw new HTTPException(400, { message: options.emptyMessage })
+  }
+  const maxBatchSize = Math.max(
+    1,
+    Math.min(Number(process.env[options.limitEnv] ?? options.defaultLimit) || options.defaultLimit, options.maxLimit),
+  )
+  if (ids.length > maxBatchSize) {
+    throw new HTTPException(400, { message: options.limitMessage(maxBatchSize) })
+  }
+  const rows = db.prepare(`
+    select id, spu_code, title, status
+    from product_archive_draft
+    where id in (${ids.map(() => "?").join(", ")})
+  `).all(...ids) as Array<{ id: unknown; spu_code: unknown; title: unknown; status: unknown }>
+  const byId = new Map(rows.map((row) => [Number(row.id), row]))
+  const missingIds = ids.filter((id) => !byId.has(id))
+  if (missingIds.length > 0) {
+    throw new HTTPException(400, { message: `部分草稿不存在：${missingIds.join(", ")}` })
+  }
+  return ids.map((id) => {
+    const row = byId.get(id)
+    return {
+      draftId: id,
+      spuCode: stringValue(row?.spu_code) || String(id),
+      title: stringValue(row?.title) || null,
+      status: stringValue(row?.status),
+    }
+  })
+}
+
+function productArchiveAiFillTargetsByIds(db: ReturnType<typeof getDb>, draftIds: number[]) {
+  return productArchiveDraftTargetsByIds(db, draftIds, {
+    emptyMessage: "请先选择需要 AI 填充的草稿",
+    limitEnv: "LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_BATCH_LIMIT",
+    defaultLimit: 200,
+    maxLimit: 500,
+    limitMessage: (limit) => `单次最多选择 ${limit} 个草稿进行 AI 填充`,
+  })
 }
 
 async function importWorkflowSourceFile(
@@ -1523,6 +2283,98 @@ productArchiveDrafts.get("/hangtag-washlabel-ocr/jobs/:jobId", (c) => {
   const job = hangtagWashlabelOcrQueue.getJob(c.req.param("jobId"))
   if (!job) {
     throw new HTTPException(404, { message: "吊牌/洗唛 OCR 任务不存在" })
+  }
+  return c.json(job)
+})
+
+productArchiveDrafts.post("/ai-fill-jobs", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const db = getDb()
+  const body = await readJson(c)
+  const targets = productArchiveAiFillTargetsByIds(db, draftIdsFromBody(body))
+  const job = productArchiveAiFillQueue.enqueue({
+    targets,
+    actor: {
+      id: user.id,
+      username: user.username,
+    },
+    ipAddress: trustedClientAddress({
+      forwardedFor: c.req.header("x-forwarded-for"),
+      realIp: c.req.header("x-real-ip"),
+    }),
+  })
+  auditFromContext(c, {
+    action: "draft.ai_fill.background_queued",
+    module: "PRODUCT_ARCHIVE_DRAFT",
+    entityType: "product_archive_draft_batch",
+    entityId: job.id,
+    summary: `提交后台 AI 推荐补齐深绘建档草稿 ${job.total_count} 个`,
+    metadata: {
+      jobId: job.id,
+      count: job.total_count,
+      draftIds: targets.map((target) => target.draftId),
+      spuCodes: targets.map((target) => target.spuCode),
+      userId: user.id,
+    },
+  })
+  return c.json(job, 202)
+})
+
+productArchiveDrafts.get("/ai-fill-jobs/:jobId", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const job = productArchiveAiFillQueue.getJob(c.req.param("jobId"))
+  if (!job) {
+    throw new HTTPException(404, { message: "AI 填充任务不存在" })
+  }
+  return c.json(job)
+})
+
+productArchiveDrafts.post("/publish-jobs", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_SUBMIT")
+  const db = getDb()
+  const body = await readJson(c)
+  const targets = productArchiveDraftTargetsByIds(db, draftIdsFromBody(body), {
+    emptyMessage: "请先选择需要发布的草稿",
+    limitEnv: "LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_BATCH_LIMIT",
+    defaultLimit: 100,
+    maxLimit: 300,
+    limitMessage: (limit) => `单次最多选择 ${limit} 个草稿发布到深绘`,
+  })
+  const job = productArchivePublishQueue.enqueue({
+    targets,
+    maxAttempts: body.maxAttempts ?? body.max_attempts,
+    retryDelayMs: body.retryDelayMs ?? body.retry_delay_ms,
+    actor: {
+      id: user.id,
+      username: user.username,
+    },
+    ipAddress: trustedClientAddress({
+      forwardedFor: c.req.header("x-forwarded-for"),
+      realIp: c.req.header("x-real-ip"),
+    }),
+  })
+  auditFromContext(c, {
+    action: "draft.publish.background_queued",
+    module: "PRODUCT_ARCHIVE_DRAFT",
+    entityType: "product_archive_draft_batch",
+    entityId: job.id,
+    summary: `提交后台批量发布深绘建档草稿 ${job.total_count} 个`,
+    metadata: {
+      jobId: job.id,
+      count: job.total_count,
+      draftIds: targets.map((target) => target.draftId),
+      spuCodes: targets.map((target) => target.spuCode),
+      userId: user.id,
+    },
+  })
+  return c.json(job, 202)
+})
+
+productArchiveDrafts.get("/publish-jobs/:jobId", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const job = productArchivePublishQueue.getJob(c.req.param("jobId"))
+  if (!job) {
+    throw new HTTPException(404, { message: "批量发布任务不存在" })
   }
   return c.json(job)
 })
