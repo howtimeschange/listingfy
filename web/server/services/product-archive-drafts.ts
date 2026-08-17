@@ -161,7 +161,7 @@ type ProductArchiveAiFillWarning = {
 interface ProductArchiveDraftImageInput {
   draftId: number
   spuCode: string
-  sourceType: "manual_upload" | "batch_upload"
+  sourceType: "manual_upload" | "batch_upload" | "crawshrimp_asset_package"
   sourceRef?: string | null
   localPath: string
   fileName: string
@@ -173,6 +173,14 @@ interface ProductArchiveDraftImageInput {
   uploadedBy?: number | null
   rawPayload?: JsonRecord
 }
+
+export type ProductArchiveAssetPackageFileKind =
+  | "hangtag"
+  | "washlabel"
+  | "reference_image"
+  | "spreadsheet"
+  | "hidden"
+  | "unsupported"
 
 interface SourceImportInput {
   sourceType?: string | null
@@ -366,6 +374,44 @@ function compactFieldKey(value: unknown) {
   return stringValue(value).replace(/\s+/g, "").replace(/[()（）]/g, "").toLowerCase()
 }
 
+function uploadPathText(value: unknown) {
+  return stringValue(value).replace(/\\/g, "/")
+}
+
+function uploadBaseName(value: unknown) {
+  const text = uploadPathText(value)
+  return text.split("/").filter(Boolean).at(-1) ?? text
+}
+
+function uploadExtension(value: unknown) {
+  const base = uploadBaseName(value)
+  const index = base.lastIndexOf(".")
+  return index >= 0 ? base.slice(index).toLowerCase() : ""
+}
+
+export function productArchiveImageHasModelShot(value: unknown) {
+  return /有模拍/.test(uploadPathText(value))
+}
+
+export function classifyProductArchiveAssetPackageFileName(value: unknown): ProductArchiveAssetPackageFileKind {
+  const text = uploadPathText(value)
+  const base = uploadBaseName(text)
+  if (!base || base === ".DS_Store" || base.startsWith("~$")) return "hidden"
+  const ext = uploadExtension(base)
+  if ([".xlsx", ".xlsm"].includes(ext)) return "spreadsheet"
+  if ([".pdf"].includes(ext)) {
+    if (/(洗唛|洗标|水洗|wash)/i.test(text)) return "washlabel"
+    return "hangtag"
+  }
+  if ([".jpg", ".jpeg", ".png"].includes(ext)) {
+    if (/(洗唛|洗标|水洗|wash)/i.test(text)) return "washlabel"
+    if (/(吊牌|合格证|hangtag|tag)/i.test(text)) return "hangtag"
+    return "reference_image"
+  }
+  if (ext === ".webp") return "reference_image"
+  return "unsupported"
+}
+
 const LIST_PRICE_REFERENCE_KEYS = new Set([
   "吊牌价格",
   "吊牌价",
@@ -420,6 +466,7 @@ const COPYWRITING_REFERENCE_FIELDS = new Set([
   "柔软度",
   "厚薄",
   "弹性",
+  "版型",
 ])
 
 function listPriceReferenceKey(value: unknown) {
@@ -572,6 +619,10 @@ function sourceAliases(sourceField: string) {
     细节文案: ["细节文案", "细节文案（不限定8个字，细节数量3-4个）"],
     材质成分: ["材质成分", "面料成分"],
     面料成分: ["面料成分", "材质成分"],
+    版型: ["版型", "服装版型"],
+    服装版型: ["服装版型", "版型"],
+    填充物: ["填充物", "填充物种类"],
+    填充物种类: ["填充物种类", "填充物"],
     文案表: ["搜索标题", "唯品标题", "内容平台标题", "内容标题", "导购标题"],
   }
   return uniqueTextValues([field, ...(aliases[field] ?? [])])
@@ -1179,6 +1230,57 @@ function materialCompositionText(sourceRows: JsonRecord[]) {
   return primaryMaterialSection(materialCompositionSourceText(sourceRows))
 }
 
+const DOWN_FILLER_NAMES = ["白鸭绒", "灰鸭绒", "白鹅绒", "灰鹅绒", "鸭绒", "鹅绒", "羽绒", "棉", "聚酯纤维"]
+
+function sourceRowJsonByType(sourceRows: JsonRecord[], sourceType: string) {
+  return sourceRows
+    .filter((row) => stringValue(row.source_type) === sourceType)
+    .map((row) => recordValue(row.row_json))
+    .filter((row) => hasValue(row))
+}
+
+function downFillerNameFromText(value: unknown) {
+  const text = stringValue(value)
+  for (const name of DOWN_FILLER_NAMES) {
+    if (text.includes(name)) return name
+  }
+  return ""
+}
+
+function colorHintsFromCopywritingRow(row: JsonRecord) {
+  return uniqueTextValues([
+    row.颜色名称,
+    row.款色号,
+    row.颜色,
+  ].flatMap((value) => stringValue(value).split(/[，,；;\s]+/)))
+    .map((value) => value.replace(/\d{3,}$/g, ""))
+    .filter(Boolean)
+}
+
+function downFillerFromCompositionForColor(composition: string, colorHints: string[]) {
+  for (const color of colorHints) {
+    if (!color || color.length < 2) continue
+    const pattern = new RegExp(`${color}[^\\n]{0,20}成分([\\s\\S]*?)(?=\\n[^\\n]{0,20}成分|$)`)
+    const section = composition.match(pattern)?.[1] ?? ""
+    const filler = downFillerNameFromText(section.match(/填充物[\s\S]{0,160}/)?.[0] ?? section)
+    if (filler) return filler
+  }
+  return ""
+}
+
+function copywritingFillerMaterialValue(sourceRows: JsonRecord[]) {
+  for (const row of sourceRowJsonByType(sourceRows, "copywriting")) {
+    const composition = stringValue(row.面料成分 ?? row.材质成分)
+    if (!composition) continue
+    const colorMatched = downFillerFromCompositionForColor(composition, colorHintsFromCopywritingRow(row))
+    if (colorMatched) return colorMatched
+    const afterFillerLabel = composition.match(/填充物[\s\S]{0,220}/)?.[0] ?? ""
+    const filler = downFillerNameFromText(afterFillerLabel) || downFillerNameFromText(composition)
+    if (filler) return filler
+  }
+  return ""
+}
+
 function sizeSegmentRanges(value: unknown) {
   const normalized = stringValue(value).replace(/[－—–~～至到]/g, "-")
   const ranges: Array<[number, number]> = []
@@ -1239,7 +1341,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
 }) {
   const key = compactFieldKey(fieldName)
   const sourceField = stringValue(input.sourceField)
-  const sourceRows = input.sourceRows ?? []
+  const sourceRows = activeProductArchiveSourceRows(input.sourceRows ?? [])
   if (isProductArchiveBusinessBlankField(fieldName, input.spu, sourceRows)) return ""
   if (key === "材质成分文本" || key === "面料成分文本" || key === "成分含量文本") return materialCompositionText(sourceRows)
   if (key === "材质成分") return materialCompositionValue(sourceRows)
@@ -1293,8 +1395,11 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (sourceField === "去掉巴拉巴拉") return stripBalabalaBrand(copywritingValue(sourceRows, "搜索标题"))
 
   if (key === "上市时间" || key === "上市时间文本") return dateFromText(launchDateValue(sourceRows))
+  if (key === "单位" || key === "计量单位") return "件"
+  if (key === "型号") return stringValue(input.spu.spu_code) || launchValue(sourceRows, "款号")
   if (key === "选择期数") return launchValue(sourceRows, "产品季") || stringValue(input.spu.season_name) || stringValue(input.spu.year)
   if (key === "厚薄") return copywritingValue(sourceRows, "厚薄")
+  if (key === "服装版型" || key === "版型") return copywritingValue(sourceRows, "版型")
   if (key === "分类" || key === "类型") return "外套"
   if (key === "品牌单选") return stringValue(input.spu.brand_name) || "巴拉巴拉"
   if (key === "品牌" || key === "品牌文本") return stringValue(input.spu.brand_name) || copywritingValue(sourceRows, "品牌") || "巴拉巴拉"
@@ -1324,7 +1429,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (key === "是否可定制") return "不可定制"
   if (key === "售后服务承诺") return "不设置"
   if (key === "balaone仅专供新品") return launchValue(sourceRows, "属性").includes("专供新品") ? "是" : ""
-  if (key === "填充物种类") return stringValue(input.spu.filler) || launchValue(sourceRows, "填充物") || "无"
+  if (key === "填充物种类") return copywritingFillerMaterialValue(sourceRows) || stringValue(input.spu.filler) || launchValue(sourceRows, "填充物") || "无"
   if (key === "款式" || key === "款式多选" || key === "款式单选") return launchValue(sourceRows, "主款式 （唯品四级品类）") || stringValue(input.spu.spu_name)
   if (key === "袖长多选") return "长袖"
   if (key === "袖长") return "长袖"
@@ -1374,7 +1479,7 @@ export function buildProductArchiveMdmDerivedFieldValue(fieldName: string, input
   if (key === "上市时间") {
     return { valueText: stringValue(input.dateText), valueJson: {} }
   }
-  if (key === "颜色") {
+  if (key === "颜色" || key === "颜色文本" || key === "颜色名称文本") {
     return { valueText: uniqueTextValues(input.skus.map((sku) => deepdrawColorValue(sku.color_name))).join(";"), valueJson: {} }
   }
   if (key === "尺码" || key === "尺寸") {
@@ -1631,24 +1736,41 @@ function sourceRowsForSpu(db: SyncPostgresDatabase, spuCode: string, sourceBatch
     where.push("source.source_batch_id = ?")
     params.push(batchId)
   }
-  return db.prepare(`
+  const rows = db.prepare(`
     select source.*
     from product_archive_source_row source
     where ${where.join(" and ")}
     order by source.source_type, source.skc_code nulls first, source.id desc
   `).all(...params) as JsonRecord[]
+  return activeProductArchiveSourceRows(rows)
 }
 
 function sourceRowsForSpuBatchIds(db: SyncPostgresDatabase, spuCode: string, sourceBatchIds: number[]) {
   const batchIds = Array.from(new Set(sourceBatchIds.filter((id) => Number.isInteger(id) && id > 0)))
   if (batchIds.length === 0) return sourceRowsForSpu(db, spuCode, null)
-  return db.prepare(`
+  const rows = db.prepare(`
     select source.*
     from product_archive_source_row source
     where source.spu_code = ?
       and source.source_batch_id in (${batchIds.map(() => "?").join(", ")})
     order by source.source_type, source.skc_code nulls first, source.id desc
   `).all(spuCode, ...batchIds) as JsonRecord[]
+  return activeProductArchiveSourceRows(rows)
+}
+
+function activeProductArchiveSourceRows(rows: JsonRecord[]) {
+  const latestLaunchPlanBatchId = Math.max(
+    0,
+    ...rows
+      .filter((row) => stringValue(row.source_type) === "launch_plan")
+      .map((row) => numberValue(row.source_batch_id))
+      .filter((value): value is number => value !== null && value > 0),
+  )
+  if (latestLaunchPlanBatchId <= 0) return rows
+  return rows.filter((row) => (
+    stringValue(row.source_type) !== "launch_plan"
+    || numberValue(row.source_batch_id) === latestLaunchPlanBatchId
+  ))
 }
 
 function sourceBatchIdsFromSnapshot(snapshot: JsonRecord) {
@@ -1714,10 +1836,11 @@ function appendSourceBatchId(snapshot: JsonRecord, sourceType: string, sourceBat
   const current = arrayValue(byType[sourceType])
     .map((value) => numberValue(value))
     .filter((value): value is number => value !== null && value > 0)
-  if (!current.includes(sourceBatchId)) current.push(sourceBatchId)
-  byType[sourceType] = current
+  byType[sourceType] = sourceType === "launch_plan"
+    ? [sourceBatchId]
+    : current.includes(sourceBatchId) ? current : [...current, sourceBatchId]
   next.sourceBatchIds = byType
-  if (!numberValue(next.sourceBatchId) && sourceType === "launch_plan") {
+  if (sourceType === "launch_plan") {
     next.sourceBatchId = sourceBatchId
   }
   return next
@@ -3072,6 +3195,73 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
   if (!text || !options.length) return text
   const exact = pickOption(options, [(option) => option === text])
   if (exact) return exact
+  if (key === "单位" || key === "计量单位") {
+    return pickOption(options, [(option) => option === "件"]) || text
+  }
+  if (key === "模特实拍") {
+    if (/有模拍|有模特|真人|模特/.test(text)) {
+      return pickOption(options, [(option) => option === "实拍有模特", (option) => option.includes("有模特")]) || text
+    }
+    if (/无模拍|无模特|没有模特/.test(text)) {
+      return pickOption(options, [(option) => option === "实拍无模特", (option) => option.includes("无模特")]) || text
+    }
+  }
+  if (key === "是否可开档" || key === "是否开裆" || key === "是否可开裆") {
+    if (/^(?:否|不|无)|不开|闭档/.test(text)) {
+      return pickOption(options, [
+        (option) => option === "不开裆",
+        (option) => option === "闭档",
+        (option) => option.includes("不开"),
+        (option) => option.includes("闭档"),
+      ]) || text
+    }
+    if (/^(?:是|有)|开[档裆]/.test(text)) {
+      return pickOption(options, [
+        (option) => option === "开裆",
+        (option) => option === "开档",
+        (option) => option.includes("可开"),
+        (option) => option.includes("开裆") || option.includes("开档"),
+      ]) || text
+    }
+  }
+  if (key === "服装版型" || key === "版型" || key.endsWith("版型")) {
+    if (/宽松/.test(text)) return pickOption(options, [(option) => option === "宽松型", (option) => option === "宽松", (option) => option.includes("宽松")]) || text
+    if (/标准|常规/.test(text)) return pickOption(options, [(option) => option === "标准型", (option) => option === "标准", (option) => option === "常规"]) || text
+    if (/紧身/.test(text)) return pickOption(options, [(option) => option === "紧身型", (option) => option === "紧身", (option) => option.includes("紧身")]) || text
+    if (/直筒/.test(text)) return pickOption(options, [(option) => option === "直筒型", (option) => option === "直筒", (option) => option.includes("直筒")]) || text
+    if (/收腰/.test(text)) return pickOption(options, [(option) => option === "收腰型", (option) => option.includes("收腰")]) || text
+  }
+  if (key === "厚薄" || key === "厚度" || key.endsWith("厚薄指数")) {
+    if (/偏厚|厚实|厚款|加厚/.test(text)) {
+      return pickOption(options, [(option) => option === "超厚", (option) => option === "厚", (option) => option.includes("厚") && !option.includes("薄")]) || text
+    }
+    if (/适中|普通|常规/.test(text)) return pickOption(options, [(option) => option === "适中", (option) => option === "普通", (option) => option === "常规"]) || text
+    if (/超薄/.test(text)) return pickOption(options, [(option) => option === "超薄"]) || text
+    if (/轻薄|薄款|偏薄|薄/.test(text)) return pickOption(options, [(option) => option === "轻薄", (option) => option === "薄", (option) => option.includes("薄")]) || text
+  }
+  if (key === "弹力" || key === "弹性" || key.endsWith("弹力指数") || key.endsWith("弹性指数")) {
+    if (/无弹/.test(text)) return pickOption(options, [(option) => option === "无弹", (option) => option.includes("无弹")]) || text
+    if (/微弹/.test(text)) return pickOption(options, [(option) => option === "微弹", (option) => option.includes("微弹")]) || text
+    if (/高弹/.test(text)) return pickOption(options, [(option) => option === "高弹", (option) => option.includes("高弹")]) || text
+    if (/弹力|弹性/.test(text)) return pickOption(options, [(option) => option === "常规", (option) => option === "微弹", (option) => option.includes("弹")]) || text
+  }
+  if (key === "腰型" && /不适用|无|其他/.test(text)) {
+    return pickOption(options, [(option) => option === "自然腰", (option) => option === "松紧腰", (option) => option.includes("腰")]) || text
+  }
+  if (key === "裤门襟" && /不适用|无|其他/.test(text)) {
+    return pickOption(options, [(option) => option === "松紧", (option) => option === "松紧带", (option) => option === "其他"]) || text
+  }
+  if (key === "填充物种类" || key === "填充物") {
+    const filler = downFillerNameFromText(text)
+    if (filler) {
+      return pickOption(options, [
+        (option) => option === filler,
+        (option) => option.includes(filler) || filler.includes(option),
+        (option) => filler === "鸭绒" && option.includes("鸭绒"),
+        (option) => filler === "鹅绒" && option.includes("鹅绒"),
+      ]) || pickOption(options, [(option) => option === "其他"]) || text
+    }
+  }
   if (isProductArchiveOriginCountryField(fieldName) && /中国|china/i.test(text)) {
     return productArchiveChinaOriginOption(options) || text
   }
@@ -3574,6 +3764,121 @@ export function buildProductArchiveMaterialEvidenceFills(
   return fills
 }
 
+function fieldNeedsEvidenceRuleFill(field: JsonRecord) {
+  const valueText = stringValue(field.value_text)
+  const valueJson = recordValue(field.value_json)
+  if (isAiRuleFallbackField(field)) return true
+  if (!hasValue(valueText) && !hasValue(valueJson)) return true
+  return stringValue(field.validation_status) === "invalid"
+}
+
+function packageReferenceImages(referenceImages: JsonRecord[]) {
+  return referenceImages.filter((image) => {
+    const payload = recordValue(image.raw_payload_json)
+    return stringValue(image.source_type) === "crawshrimp_asset_package" || payload.asset_package === true
+  })
+}
+
+function modelShotValueFromReferenceImages(referenceImages: JsonRecord[]) {
+  const packageImages = packageReferenceImages(referenceImages)
+  if (packageImages.length === 0) return ""
+  const hasModelShot = packageImages.some((image) => {
+    const payload = recordValue(image.raw_payload_json)
+    return payload.has_model_shot === true
+      || productArchiveImageHasModelShot(image.original_file_name)
+      || productArchiveImageHasModelShot(image.source_ref)
+      || productArchiveImageHasModelShot(image.file_name)
+  })
+  return hasModelShot ? "实拍有模特" : "实拍无模特"
+}
+
+function evidenceRuleValueForField(input: {
+  draft: JsonRecord
+  field: JsonRecord
+  sourceRows: JsonRecord[]
+  referenceImages: JsonRecord[]
+}) {
+  const fieldName = stringValue(input.field.field_name)
+  const key = compactFieldKey(fieldName)
+  const currentValue = stringValue(input.field.value_text)
+  if (key === "单位" || key === "计量单位") {
+    return { value: "件", sourceType: "fixed_rule", sourceRef: "单位固定=件", reason: "单位统一固定为件" }
+  }
+  if (key === "型号") {
+    return { value: stringValue(input.draft.spu_code), sourceType: "source_rule", sourceRef: "款号", reason: "型号按款号填充" }
+  }
+  if (key === "模特实拍") {
+    const value = modelShotValueFromReferenceImages(input.referenceImages)
+    return value
+      ? { value, sourceType: "image_package_rule", sourceRef: "抓虾图包文件名", reason: "根据图包文件名是否包含有模拍判断" }
+      : null
+  }
+  if (key === "服装版型" || key === "版型") {
+    const value = copywritingValue(input.sourceRows, "版型")
+    return value ? { value, sourceType: "source_rule", sourceRef: "标准文案表:版型", reason: "根据标准文案表版型归一化" } : null
+  }
+  if (key === "厚薄" || key === "厚度" || key.endsWith("厚薄指数")) {
+    const value = copywritingValue(input.sourceRows, "厚薄")
+    return value ? { value, sourceType: "source_rule", sourceRef: "标准文案表:厚薄", reason: "根据标准文案表厚薄归一化" } : null
+  }
+  if (key === "弹力" || key === "弹性" || key.endsWith("弹力指数") || key.endsWith("弹性指数")) {
+    const value = copywritingValue(input.sourceRows, "弹性")
+    return value ? { value, sourceType: "source_rule", sourceRef: "标准文案表:弹性", reason: "根据标准文案表弹性归一化" } : null
+  }
+  if (key === "填充物种类" || key === "填充物") {
+    const value = copywritingFillerMaterialValue(input.sourceRows)
+    return value ? { value, sourceType: "source_rule", sourceRef: "标准文案表:面料成分", reason: "根据标准文案表面料成分中的填充物归一化" } : null
+  }
+  if ((key === "是否可开档" || key === "是否开裆" || key === "是否可开裆") && currentValue) {
+    return { value: currentValue, sourceType: "source_rule", sourceRef: "字段当前值", reason: "将是否可开档当前值归一到深绘枚举" }
+  }
+  return null
+}
+
+export function buildProductArchiveEvidenceRuleFills(input: {
+  draft: JsonRecord
+  fields: JsonRecord[]
+  sourceRows?: JsonRecord[]
+  referenceImages?: JsonRecord[]
+}) {
+  const fills: Array<{
+    field_id: number
+    field_name: string
+    field_value: string
+    source_type: string
+    source_ref: string
+    confidence: number
+    reason: string
+  }> = []
+  for (const field of input.fields) {
+    if (!fieldNeedsEvidenceRuleFill(field)) continue
+    if (stringValue(field.source_type) === "skip") continue
+    const fieldId = Number(field.id)
+    const fieldName = stringValue(field.field_name)
+    if (!Number.isInteger(fieldId) || fieldId <= 0 || !fieldName) continue
+    const rule = evidenceRuleValueForField({
+      draft: input.draft,
+      field,
+      sourceRows: input.sourceRows ?? [],
+      referenceImages: input.referenceImages ?? [],
+    })
+    if (!rule?.value) continue
+    const options = fieldOptionsFromTemplate(field.options_json)
+    const fieldValue = normalizeProductArchiveDeepdrawFieldValue(fieldName, rule.value, options)
+    if (!fieldValue || !productArchiveFieldValueMatchesOptions(fieldValue, options)) continue
+    fills.push({
+      field_id: fieldId,
+      field_name: fieldName,
+      field_value: fieldValue,
+      source_type: rule.sourceType,
+      source_ref: rule.sourceRef,
+      confidence: 0.96,
+      reason: rule.reason,
+    })
+  }
+  return fills
+}
+
 function buildDeepdrawAiFillPrompt(input: {
   draft: JsonRecord
   fields: ProductArchiveAiFillCandidate[]
@@ -3992,9 +4297,11 @@ export function extractProductArchiveImageSpuCode(value: unknown) {
   return fallback.at(-1) ?? ""
 }
 
-function draftImagePreviewUrl(imageId: unknown) {
+function draftImagePreviewUrl(imageId: unknown, options: { thumbnail?: boolean } = {}) {
   const id = Number(imageId)
-  return Number.isInteger(id) && id > 0 ? `/api/product-archive-drafts/images/${id}/file` : null
+  if (!Number.isInteger(id) || id <= 0) return null
+  const variant = options.thumbnail ? "?variant=thumbnail" : ""
+  return `/api/product-archive-drafts/images/${id}/file${variant}`
 }
 
 function serializeProductArchiveDraftImage(image: JsonRecord) {
@@ -4173,7 +4480,7 @@ export function listProductArchiveDrafts(db: SyncPostgresDatabase, input: ListDr
     params.push(input.tenant)
   }
   const clause = where.length ? `where ${where.join(" and ")}` : ""
-  const items = db.prepare(`
+  const rows = db.prepare(`
     select
       draft.id,
       draft.draft_no,
@@ -4188,7 +4495,43 @@ export function listProductArchiveDrafts(db: SyncPostgresDatabase, input: ListDr
       coalesce((draft.validation_summary_json::jsonb #>> '{blocker_count}')::integer, 0) as blocker_count,
       coalesce((draft.validation_summary_json::jsonb #>> '{warning_count}')::integer, 0) as warning_count,
       (select count(*) from product_archive_draft_sku sku where sku.draft_id = draft.id) as sku_count,
-      (select count(*) from product_archive_draft_image image where image.draft_id = draft.id) as image_count
+      (select count(*) from product_archive_draft_image image where image.draft_id = draft.id) as image_count,
+      (
+        select image.id
+        from product_archive_draft_image image
+        where image.draft_id = draft.id
+        order by case when image.source_type = 'crawshrimp_asset_package' then 0 else 1 end,
+          image.sort_no,
+          image.id
+        limit 1
+      ) as thumbnail_image_id,
+      (
+        select coalesce(image.original_file_name, image.file_name)
+        from product_archive_draft_image image
+        where image.draft_id = draft.id
+        order by case when image.source_type = 'crawshrimp_asset_package' then 0 else 1 end,
+          image.sort_no,
+          image.id
+        limit 1
+      ) as thumbnail_file_name,
+      (
+        select count(*)
+        from product_archive_draft_image image
+        where image.draft_id = draft.id
+          and image.source_type = 'crawshrimp_asset_package'
+      ) as asset_package_image_count,
+      (
+        select count(*)
+        from product_archive_draft_field field
+        where field.draft_id = draft.id
+          and field.source_type = 'hangtag_ocr'
+      ) as hangtag_upload_count,
+      (
+        select count(*)
+        from product_archive_draft_field field
+        where field.draft_id = draft.id
+          and field.source_type = 'washlabel_ocr'
+      ) as washlabel_upload_count
     from product_archive_draft draft
     ${clause}
     order by draft.updated_at desc, draft.id desc
@@ -4199,6 +4542,10 @@ export function listProductArchiveDrafts(db: SyncPostgresDatabase, input: ListDr
     from product_archive_draft draft
     ${clause}
   `).get(...params) as { count: number }
+  const items = (rows as JsonRecord[]).map((row) => ({
+    ...row,
+    thumbnail_image_url: draftImagePreviewUrl(row.thumbnail_image_id, { thumbnail: true }),
+  }))
   return { items, pagination: { total: Number(total.count ?? 0), limit, offset } }
 }
 
@@ -5102,14 +5449,22 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
   const sourceRows = referenceSourceRowsForDraft(db, draft)
   const mdmSpu = resolveProductArchiveDraftSpu(db, draft)
   const candidates = buildProductArchiveAiFillCandidateFields(fields, issues, skus)
+  const evidenceRuleFills = buildProductArchiveEvidenceRuleFills({
+    draft,
+    fields,
+    sourceRows,
+    referenceImages,
+  })
+  const evidenceRuleFillById = new Map(evidenceRuleFills.map((fill) => [Number(fill.field_id), fill]))
+  const aiFillCandidates = candidates.filter((field) => !evidenceRuleFillById.has(field.id))
   const warnings: ProductArchiveAiFillWarning[] = []
 
-  if (candidates.length === 0) {
+  if (candidates.length === 0 && evidenceRuleFills.length === 0) {
     return { saved: [], detail, warnings }
   }
-  const materialEvidenceFills = buildProductArchiveMaterialEvidenceFills(fields, candidates, sourceRows)
+  const materialEvidenceFills = buildProductArchiveMaterialEvidenceFills(fields, aiFillCandidates, sourceRows)
   const materialEvidenceById = new Map(materialEvidenceFills.map((fill) => [Number(fill.field_id), fill]))
-  const aiCandidates = candidates.filter((field) => !materialEvidenceById.has(field.id))
+  const aiCandidates = aiFillCandidates.filter((field) => !materialEvidenceById.has(field.id))
 
   const prompt = aiCandidates.length > 0
     ? buildDeepdrawAiFillPrompt({
@@ -5149,6 +5504,7 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
     set value_text = ?,
       value_json = ?::jsonb,
       source_type = ?,
+      source_ref = ?,
       manual_override = true,
       validation_status = 'valid',
       validation_message = null,
@@ -5157,7 +5513,34 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
   `)
 
   db.transaction(() => {
+    for (const fill of evidenceRuleFills) {
+      updateField.run(
+        fill.field_value,
+        jsonText({
+          evidence_rule: {
+            field_name: fill.field_name,
+            confidence: fill.confidence,
+            reason: fill.reason,
+            applied_at: now,
+          },
+          source: "EVIDENCE_RULE",
+        }),
+        fill.source_type,
+        fill.source_ref,
+        now,
+        draftId,
+        fill.field_id,
+      )
+      saved.push({
+        field_id: fill.field_id,
+        field_name: fill.field_name,
+        field_value: fill.field_value,
+        source: "EVIDENCE_RULE",
+        confidence: fill.confidence,
+      })
+    }
     for (const field of candidates) {
+      if (evidenceRuleFillById.has(field.id)) continue
       const materialFill = materialEvidenceById.get(field.id)
       const aiFill = materialFill ?? aiById.get(field.id)
       if (!aiFill) continue
@@ -5181,6 +5564,7 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
               source: "AI_SUGGESTED",
             }),
         materialFill ? "source_rule" : "ai",
+        null,
         now,
         draftId,
         field.id,

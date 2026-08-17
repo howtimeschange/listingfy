@@ -765,6 +765,26 @@ function DraftImageUploadDialog({
   )
 }
 
+function DraftReferenceImagePreview({ src, label }: { src: string | null; label: string }) {
+  const [failed, setFailed] = useState(false)
+  if (!src || failed) {
+    return (
+      <div className="flex h-full w-full items-center justify-center rounded-sm bg-muted text-xs text-muted-foreground">
+        无图
+      </div>
+    )
+  }
+  return (
+    <img
+      src={src}
+      alt={label}
+      className="h-full w-full object-contain"
+      loading="eager"
+      onError={() => setFailed(true)}
+    />
+  )
+}
+
 function DraftReferenceImagesSection({
   images,
   uploadDialog,
@@ -792,13 +812,10 @@ function DraftReferenceImagesSection({
           {images.map((image) => (
             <div key={image.id} className="min-w-0 overflow-hidden rounded-md border bg-background">
               <div className="aspect-square bg-muted/60 p-2">
-                {image.preview_url ? (
-                  <img
-                    src={image.preview_url}
-                    alt={image.original_file_name ?? image.file_name ?? "SPU 参考图"}
-                    className="h-full w-full object-contain"
-                  />
-                ) : null}
+                <DraftReferenceImagePreview
+                  src={image.preview_url}
+                  label={image.original_file_name ?? image.file_name ?? "SPU 参考图"}
+                />
               </div>
               <div className="grid gap-1.5 p-2 text-xs">
                 <div className="truncate font-medium">{image.original_file_name ?? image.file_name}</div>

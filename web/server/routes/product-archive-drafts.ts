@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto"
 import path from "node:path"
 import os from "node:os"
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import sharp from "sharp"
 import { Hono, type Context } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
@@ -9,6 +10,7 @@ import { requirePermission, trustedClientAddress } from "../lib/auth"
 import { assertLocalImageFile } from "../lib/local-path-guard"
 import {
   detectImageUploadType,
+  maxUploadBytes,
   readImageDimensions,
   readValidatedUploadBuffer,
   safeUploadFileName,
@@ -35,6 +37,7 @@ import {
 import {
   applyProductArchiveDraftTrade,
   checkDuplicateProductArchiveDraft,
+  classifyProductArchiveAssetPackageFileName,
   confirmProductArchiveDraftRecommendedTrade,
   createProductArchiveDraftFromSpu,
   createProductArchiveDraftImage,
@@ -50,6 +53,7 @@ import {
   listProductArchiveSubmitLogs,
   missingDraftSpuCodes,
   patchProductArchiveDraftFields,
+  productArchiveImageHasModelShot,
   readbackProductArchiveDraft,
   recommendProductArchiveSizeChartMappings,
   refreshDraftTradeSelectionFromLaunchPlan,
@@ -61,6 +65,7 @@ import {
 import { importListingLaunchPlanSheets } from "../services/listing-launch-plans"
 import { readSpreadsheetSheetsFromFile } from "../../../scripts/lib/listing_launch_plan_importer.mjs"
 import { readPlmSizeChartWorkbook } from "../../../scripts/lib/product_archive_size_chart.mjs"
+import { getDefaultAiScenarioRouter } from "../../../scripts/lib/ai_routing_context.mjs"
 
 const productArchiveDrafts = new Hono()
 const PROJECT_ROOT =
@@ -117,7 +122,12 @@ type HangtagWashlabelOcrUploadFile = {
   fileName: string
   mimeType: string
   size: number
-  kind?: "ocr_asset" | "scm_supplement"
+  kind?: "ocr_asset" | "scm_supplement" | "reference_image"
+  width?: number
+  height?: number
+  extension?: string
+  hasModelShot?: boolean
+  assetKind?: string
 }
 
 type DraftImageUploadFile = {
@@ -129,12 +139,14 @@ type DraftImageUploadFile = {
   width: number
   height: number
   extension: string
+  hasModelShot?: boolean
+  assetKind?: string
 }
 
 type HangtagWashlabelOcrJobItem = {
   spu_code: string
   status: "queued" | "running" | "completed" | "failed"
-  phase: "recognize" | "apply"
+  phase: "recognize" | "import_image" | "apply"
   started_at: string | null
   finished_at: string | null
   result: Record<string, unknown> | null
@@ -1330,6 +1342,54 @@ function documentsFromOcrJobItems(items: HangtagWashlabelOcrJobItem[]) {
   return documents
 }
 
+async function importReferenceImageJobFile(file: HangtagWashlabelOcrUploadFile, actorId: number | null) {
+  const spuCode = extractProductArchiveImageSpuCode(file.fileName)
+  if (!spuCode) {
+    return {
+      fileName: file.fileName,
+      status: "skipped",
+      reason: "文件名或目录名未识别到款号",
+    }
+  }
+  const db = getDb()
+  const draft = latestProductArchiveDraftForSpuCode(db, spuCode)
+  if (!draft) {
+    return {
+      fileName: file.fileName,
+      spuCode,
+      status: "skipped",
+      reason: "未找到对应建档草稿",
+    }
+  }
+  const buffer = await readFile(file.filePath)
+  const image = await saveDraftImageUpload({
+    db,
+    draft,
+    file: {
+      buffer,
+      fileName: path.basename(file.fileName),
+      originalFileName: file.fileName,
+      mimeType: file.mimeType,
+      size: buffer.length,
+      width: Number(file.width ?? 0),
+      height: Number(file.height ?? 0),
+      extension: stringValue(file.extension) || path.extname(file.fileName).toLowerCase(),
+      hasModelShot: file.hasModelShot,
+      assetKind: file.assetKind,
+    },
+    sourceType: "crawshrimp_asset_package",
+    sourceRef: file.fileName,
+    uploadedBy: actorId,
+  })
+  return {
+    fileName: file.fileName,
+    spuCode,
+    draftId: Number(draft.id),
+    status: image ? "imported" : "skipped",
+    image,
+  }
+}
+
 function createHangtagWashlabelOcrQueue({
   store,
   onInternalError = (error: unknown) => console.error("Hangtag washlabel OCR queue internal error", error),
@@ -1393,13 +1453,26 @@ function createHangtagWashlabelOcrQueue({
       }, null)
       return
     }
+    if (file.kind === "reference_image") {
+      const imported = await importReferenceImageJobFile(file, job.options.actor?.id ?? null)
+      setItemFinished(job, item, "completed", {
+        ...imported,
+        importedImageCount: imported.status === "imported" ? 1 : 0,
+      }, null)
+      return
+    }
 
     const [document] = await recognizeProductArchiveOcrFiles([{
       filePath: file.filePath,
       fileName: file.fileName,
       mimeType: file.mimeType,
       size: file.size,
-    }])
+    }], {
+      aiRouterFactory: () => getDefaultAiScenarioRouter({
+        db: getDb(),
+        fetchImpl: fetch,
+      }),
+    })
     const result = {
       fileName: document?.fileName ?? file.fileName,
       detectedSpuCode: document?.detectedSpuCode ?? null,
@@ -1436,9 +1509,17 @@ function createHangtagWashlabelOcrQueue({
         sheetCount: Number(result?.sheetCount ?? 0),
         documentCount: Number(result?.documentCount ?? 0),
       }))
+    const importedImageCount = job.items.reduce((sum, ocrItem) => sum + (Number(ocrItem.result?.importedImageCount) || 0), 0)
+    const imageMatchedDraftIds = new Set(job.items
+      .map((ocrItem) => Number(ocrItem.result?.draftId))
+      .filter((draftId) => Number.isInteger(draftId) && draftId > 0))
     const result = {
       previewSummary: preview.summary,
       applySummary: apply.summary,
+      imageImportSummary: {
+        importedCount: importedImageCount,
+        matchedDraftCount: imageMatchedDraftIds.size,
+      },
       overwriteExisting: job.options.overwriteExisting,
       provider: getProductArchiveOcrRuntimeInfo(documents),
       scmSupplement: { files: supplementFiles },
@@ -1452,12 +1533,13 @@ function createHangtagWashlabelOcrQueue({
         module: "PRODUCT_ARCHIVE_DRAFT",
         entityType: "product_archive_draft_batch",
         entityId: job.id,
-        summary: `后台写入吊牌/洗唛 OCR 字段 ${apply.summary.appliedFieldCount} 个`,
+        summary: `后台写入吊牌/洗唛 OCR 字段 ${apply.summary.appliedFieldCount} 个，关联参考图 ${importedImageCount} 张`,
         metadata: {
           fileCount: preview.summary.fileCount,
           matchedCount: preview.summary.matchedCount,
           appliedDraftCount: apply.summary.appliedDraftCount,
           appliedFieldCount: apply.summary.appliedFieldCount,
+          importedImageCount,
           skippedCount: apply.summary.skippedCount,
           overwriteExisting: job.options.overwriteExisting,
         },
@@ -1540,6 +1622,7 @@ function createHangtagWashlabelOcrQueue({
   function enqueue({
     files,
     supplementFiles,
+    referenceImageFiles,
     overwriteExisting,
     actor,
     ipAddress,
@@ -1547,6 +1630,7 @@ function createHangtagWashlabelOcrQueue({
   }: {
     files: HangtagWashlabelOcrUploadFile[]
     supplementFiles: HangtagWashlabelOcrUploadFile[]
+    referenceImageFiles: HangtagWashlabelOcrUploadFile[]
     overwriteExisting: boolean
     actor: AuditActor | null
     ipAddress: string | null
@@ -1555,6 +1639,7 @@ function createHangtagWashlabelOcrQueue({
     const allFiles = [
       ...files.map((file) => ({ ...file, kind: "ocr_asset" as const })),
       ...supplementFiles.map((file) => ({ ...file, kind: "scm_supplement" as const })),
+      ...referenceImageFiles.map((file) => ({ ...file, kind: "reference_image" as const })),
     ]
     const nowText = new Date(now()).toISOString()
     const total = allFiles.length
@@ -1580,7 +1665,7 @@ function createHangtagWashlabelOcrQueue({
         ...allFiles.map((file, index) => ({
           spu_code: ocrJobItemLabel(file, index, total),
           status: "queued" as const,
-          phase: "recognize" as const,
+          phase: file.kind === "reference_image" ? "import_image" as const : "recognize" as const,
           started_at: null,
           finished_at: null,
           result: null,
@@ -1703,6 +1788,10 @@ function stringValue(value: unknown) {
   return ""
 }
 
+function nowIso() {
+  return new Date().toISOString()
+}
+
 function booleanFormValue(value: unknown) {
   const text = stringValue(value).toLowerCase()
   return ["1", "true", "yes", "y", "是"].includes(text)
@@ -1755,6 +1844,19 @@ function isProductArchiveReferenceImageName(value: string) {
   return [".jpg", ".jpeg", ".png", ".webp"].includes(uploadDisplayExtension(value))
 }
 
+function draftImageAssetKind(fileName: string) {
+  return productArchiveImageHasModelShot(fileName) ? "model_image" : "flat_image"
+}
+
+function productArchiveDraftImageSourceType(value: unknown) {
+  return stringValue(value) === "crawshrimp_asset_package" ? "crawshrimp_asset_package" : "batch_upload"
+}
+
+function imageFileVariant(value: unknown) {
+  const variant = stringValue(value)
+  return variant === "thumbnail" || variant === "thumb" ? "thumbnail" : "original"
+}
+
 function isIgnorableOcrFolderEntry(value: string) {
   const baseName = path.basename(value)
   return baseName === ".DS_Store" || baseName.startsWith("~$")
@@ -1763,6 +1865,7 @@ function isIgnorableOcrFolderEntry(value: string) {
 async function readDraftImageUploadFiles(c: Context) {
   const form = await c.req.formData()
   const displayNames = form.getAll("filePaths").map(stringValue)
+  const sourceType = productArchiveDraftImageSourceType(form.get("sourceType") ?? form.get("source_type"))
   const rawFiles = [
     ...form.getAll("files"),
     ...form.getAll("file"),
@@ -1800,19 +1903,21 @@ async function readDraftImageUploadFiles(c: Context) {
       width: dimensions.width,
       height: dimensions.height,
       extension: detected.extension,
+      hasModelShot: productArchiveImageHasModelShot(originalFileName),
+      assetKind: sourceType === "crawshrimp_asset_package" ? draftImageAssetKind(originalFileName) : undefined,
     })
   }
   if (files.length === 0) {
     throw new HTTPException(400, { message: skippedCount > 0 ? "没有可导入的 JPG、PNG、WEBP 图片" : "请上传 SPU 参考图片" })
   }
-  return { files, skippedCount }
+  return { files, skippedCount, sourceType }
 }
 
 async function saveDraftImageUpload(input: {
   db: ReturnType<typeof getDb>
   draft: Record<string, unknown>
   file: DraftImageUploadFile
-  sourceType: "manual_upload" | "batch_upload"
+  sourceType: "manual_upload" | "batch_upload" | "crawshrimp_asset_package"
   sourceRef: string
   uploadedBy: number | null
 }) {
@@ -1843,8 +1948,44 @@ async function saveDraftImageUpload(input: {
       height: input.file.height,
       file_size: input.file.size,
       mime_type: input.file.mimeType,
+      has_model_shot: input.file.hasModelShot === true,
+      asset_kind: input.file.assetKind || null,
+      asset_package: input.sourceType === "crawshrimp_asset_package",
     },
   })
+}
+
+async function repairLegacyDraftImageLocalPath(db: ReturnType<typeof getDb>, image: Record<string, unknown>) {
+  if (stringValue(image.source_type) !== "crawshrimp_asset_package") return null
+  const imageId = Number(image.id)
+  const draftId = Number(image.draft_id)
+  const sourcePath = stringValue(image.local_path)
+  if (!Number.isInteger(imageId) || imageId <= 0 || !Number.isInteger(draftId) || draftId <= 0 || !sourcePath) return null
+  const sourceStat = await stat(sourcePath).catch(() => null)
+  if (!sourceStat?.isFile()) return null
+  if (sourceStat.size > maxUploadBytes("image")) {
+    throw new HTTPException(413, { message: "图片文件过大，请重新导入图片" })
+  }
+  const buffer = await readFile(sourcePath)
+  const detected = detectImageUploadType(buffer)
+  const dimensions = readImageDimensions(buffer)
+  const imageDir = path.join(DRAFT_IMAGE_DIR, String(draftId))
+  await mkdir(imageDir, { recursive: true })
+  const fileName = safeDraftImageUploadName(stringValue(image.file_name) || path.basename(sourcePath), detected.extension)
+  const localPath = path.join(imageDir, fileName)
+  await writeFile(localPath, buffer)
+  db.prepare(`
+    update product_archive_draft_image
+    set local_path = ?,
+      file_name = ?,
+      mime_type = ?,
+      file_size = ?,
+      width = ?,
+      height = ?,
+      updated_at = ?::timestamptz
+    where id = ?
+  `).run(localPath, fileName, detected.contentType, buffer.length, dimensions.width, dimensions.height, nowIso(), imageId)
+  return assertLocalImageFile({ rootDir: DRAFT_IMAGE_DIR, filePath: localPath })
 }
 
 async function saveUploadedSpreadsheet(c: Context) {
@@ -1859,7 +2000,7 @@ async function saveUploadedSpreadsheet(c: Context) {
 
 async function saveFormFile(file: File) {
   await mkdir(UPLOAD_DIR, { recursive: true })
-  const filePath = path.join(UPLOAD_DIR, safeUploadName(file.name))
+  const filePath = path.join(UPLOAD_DIR, `${randomUUID()}-${safeUploadName(file.name)}`)
   await writeValidatedUploadFile(file, "spreadsheet", filePath)
   return filePath
 }
@@ -1867,30 +2008,60 @@ async function saveFormFile(file: File) {
 async function saveOcrFormFiles(c: Context) {
   const form = await c.req.formData()
   const displayNames = form.getAll("filePaths").map(stringValue)
-  const rawFiles = [
-    ...form.getAll("files"),
-    ...form.getAll("file"),
-    ...form.getAll("scmSupplementFile"),
-    ...form.getAll("scmSupplement"),
-    ...form.getAll("supplementFile"),
-    ...form.getAll("workbook"),
-  ].filter((value): value is File => value instanceof File && value.size > 0)
-  const maxFileCount = Math.max(1, Math.min(Number(process.env.LISTINGIFY_MAX_PRODUCT_ARCHIVE_OCR_FILES ?? 80) || 80, 200))
-  if (rawFiles.length === 0) {
-    throw new HTTPException(400, { message: "请上传 PDF 吊牌、JPG/PNG 洗唛或 SCM 下载结果 Excel" })
+  const assetPackageMode = booleanFormValue(form.get("assetPackage") ?? form.get("asset_package"))
+  const rawEntries = [
+    ...form.getAll("files").map((file) => ({ field: "files", file })),
+    ...form.getAll("file").map((file) => ({ field: "file", file })),
+    ...form.getAll("referenceImages").map((file) => ({ field: "referenceImages", file })),
+    ...form.getAll("referenceImageFiles").map((file) => ({ field: "referenceImages", file })),
+    ...form.getAll("scmSupplementFile").map((file) => ({ field: "scmSupplementFile", file })),
+    ...form.getAll("scmSupplement").map((file) => ({ field: "scmSupplement", file })),
+    ...form.getAll("supplementFile").map((file) => ({ field: "supplementFile", file })),
+    ...form.getAll("workbook").map((file) => ({ field: "workbook", file })),
+  ].filter((entry): entry is { field: string; file: File } => entry.file instanceof File && entry.file.size > 0)
+  const maxFileCount = Math.max(1, Math.min(Number(process.env.LISTINGIFY_MAX_PRODUCT_ARCHIVE_OCR_FILES ?? 160) || 160, 300))
+  if (rawEntries.length === 0) {
+    throw new HTTPException(400, { message: "请上传 PDF 吊牌、JPG/PNG 洗唛、平铺图或 SCM 下载结果 Excel" })
   }
-  if (rawFiles.length > maxFileCount) {
-    throw new HTTPException(400, { message: `单次最多导入 ${maxFileCount} 个吊牌/洗唛文件` })
+  if (rawEntries.length > maxFileCount) {
+    throw new HTTPException(400, { message: `单次最多导入 ${maxFileCount} 个吊牌/洗唛/平铺图文件` })
   }
   const uploadDir = path.join(UPLOAD_DIR, `product-archive-ocr-${randomUUID()}`)
   await mkdir(uploadDir, { recursive: true })
   const files = []
   const supplementFiles = []
+  const referenceImageFiles = []
   try {
-    for (let index = 0; index < rawFiles.length; index += 1) {
-      const file = rawFiles[index]
+    for (let index = 0; index < rawEntries.length; index += 1) {
+      const { field, file } = rawEntries[index]
       const fileName = cleanUploadDisplayName(displayNames[index], file.name)
       if (isIgnorableOcrFolderEntry(fileName)) continue
+      const packageKind = classifyProductArchiveAssetPackageFileName(fileName)
+      const shouldImportReferenceImage = field === "referenceImages" || (assetPackageMode && packageKind === "reference_image")
+      if (shouldImportReferenceImage) {
+        if (!isProductArchiveReferenceImageName(fileName)) {
+          throw new HTTPException(400, { message: "平铺图/参考图仅支持 JPG、PNG、WEBP 图片" })
+        }
+        const buffer = await readValidatedUploadBuffer(file, "image")
+        const detected = detectImageUploadType(buffer)
+        const dimensions = readImageDimensions(buffer)
+        const filePath = path.join(uploadDir, safeDraftImageUploadName(file.name, detected.extension))
+        await writeFile(filePath, buffer)
+        referenceImageFiles.push({
+          file,
+          filePath,
+          fileName,
+          mimeType: detected.contentType,
+          size: buffer.length,
+          width: dimensions.width,
+          height: dimensions.height,
+          extension: detected.extension,
+          hasModelShot: productArchiveImageHasModelShot(fileName),
+          assetKind: draftImageAssetKind(fileName),
+          kind: "reference_image" as const,
+        })
+        continue
+      }
       if (isScmSupplementWorkbookName(fileName)) {
         const filePath = path.join(uploadDir, safeScmSupplementUploadName(file.name))
         await writeValidatedUploadFile(file, "spreadsheet", filePath)
@@ -1903,8 +2074,11 @@ async function saveOcrFormFiles(c: Context) {
         })
         continue
       }
+      if (assetPackageMode && packageKind === "unsupported") {
+        throw new HTTPException(400, { message: "图包目录仅支持 PDF、JPG、PNG、WEBP 和 SCM 下载结果 .xlsx" })
+      }
       if (!isProductArchiveOcrAssetName(fileName)) {
-        throw new HTTPException(400, { message: "仅支持 PDF、JPG、PNG 吊牌/洗唛文件和 SCM 下载结果 .xlsx" })
+        throw new HTTPException(400, { message: "仅支持 PDF、JPG、PNG 吊牌/洗唛文件、平铺图和 SCM 下载结果 .xlsx" })
       }
       const filePath = path.join(uploadDir, safeOcrUploadName(file.name))
       await writeValidatedUploadFile(file, "product_archive_ocr", filePath)
@@ -1920,11 +2094,11 @@ async function saveOcrFormFiles(c: Context) {
     await rm(uploadDir, { recursive: true, force: true })
     throw error
   }
-  if (files.length === 0 && supplementFiles.length === 0) {
+  if (files.length === 0 && supplementFiles.length === 0 && referenceImageFiles.length === 0) {
     await rm(uploadDir, { recursive: true, force: true })
-    throw new HTTPException(400, { message: "请上传 PDF 吊牌、JPG/PNG 洗唛或 SCM 下载结果 Excel" })
+    throw new HTTPException(400, { message: "请上传 PDF 吊牌、JPG/PNG 洗唛、平铺图或 SCM 下载结果 Excel" })
   }
-  return { form, files, supplementFiles, uploadDir }
+  return { form, files, supplementFiles, referenceImageFiles, uploadDir }
 }
 
 export function applyDocumentsFromBody(body: Record<string, unknown>) {
@@ -1981,11 +2155,11 @@ function launchPlanBatchIdsForSpuCodes(db: ReturnType<typeof getDb>, spuCodes: s
   const codes = uniqueStrings(spuCodes)
   if (codes.length === 0) return []
   const rows = db.prepare(`
-    select distinct source_batch_id
+    select distinct on (spu_code) source_batch_id
     from product_archive_source_row
     where source_type = 'launch_plan'
       and spu_code in (${codes.map(() => "?").join(", ")})
-    order by source_batch_id desc
+    order by spu_code, source_batch_id desc
   `).all(...codes) as Array<{ source_batch_id: unknown }>
   return rows.map((row) => Number(row.source_batch_id)).filter((id) => Number.isInteger(id) && id > 0)
 }
@@ -2633,14 +2807,19 @@ productArchiveDrafts.post("/workflow/start", async (c) => {
 productArchiveDrafts.post("/hangtag-washlabel-ocr/preview", async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const db = getDb()
-  const { form, files, supplementFiles, uploadDir } = await saveOcrFormFiles(c)
+  const { form, files, supplementFiles, referenceImageFiles, uploadDir } = await saveOcrFormFiles(c)
   try {
     const documents = await recognizeProductArchiveOcrFiles(files.map((file) => ({
       filePath: file.filePath,
       fileName: file.fileName,
       mimeType: file.mimeType,
       size: file.size,
-    })))
+    })), {
+      aiRouterFactory: () => getDefaultAiScenarioRouter({
+        db,
+        fetchImpl: fetch,
+      }),
+    })
     const supplementSummaries = []
     for (const file of supplementFiles) {
       const supplement = await readScmHangtagWashlabelSupplementWorkbook(file.filePath, {
@@ -2663,10 +2842,11 @@ productArchiveDrafts.post("/hangtag-washlabel-ocr/preview", async (c) => {
       module: "PRODUCT_ARCHIVE_DRAFT",
       entityType: "product_archive_draft_batch",
       entityId: null,
-      summary: `识别吊牌/洗唛文件 ${files.length} 个，SCM 补充表 ${supplementFiles.length} 个`,
+      summary: `识别吊牌/洗唛文件 ${files.length} 个，平铺图 ${referenceImageFiles.length} 张，SCM 补充表 ${supplementFiles.length} 个`,
       metadata: {
         fileCount: files.length,
         supplementFileCount: supplementFiles.length,
+        referenceImageFileCount: referenceImageFiles.length,
         matchedCount: result.summary.matchedCount,
         writableFieldCount: result.summary.writableFieldCount,
         failedCount: result.summary.failedCount,
@@ -2678,6 +2858,9 @@ productArchiveDrafts.post("/hangtag-washlabel-ocr/preview", async (c) => {
       provider: getProductArchiveOcrRuntimeInfo(documents),
       scmSupplement: {
         files: supplementSummaries,
+      },
+      referenceImages: {
+        fileCount: referenceImageFiles.length,
       },
     })
   } finally {
@@ -2691,7 +2874,7 @@ productArchiveDrafts.post("/hangtag-washlabel-ocr/apply", async (c) => {
   const body = await readJson(c)
   const documents = applyDocumentsFromBody(body)
   if (documents.length === 0) {
-    throw new HTTPException(400, { message: "请先完成吊牌/洗唛 OCR 预览后再写入" })
+    throw new HTTPException(400, { message: "请先完成吊牌/洗唛 OCR 预览后再写入；仅导入平铺图请使用后台识别或 SPU 图片入口" })
   }
   const result = applyProductArchiveHangtagWashlabelOcr(db, {
     documents,
@@ -2716,13 +2899,14 @@ productArchiveDrafts.post("/hangtag-washlabel-ocr/apply", async (c) => {
 
 productArchiveDrafts.post("/hangtag-washlabel-ocr/jobs", async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
-  const { form, files, supplementFiles, uploadDir } = await saveOcrFormFiles(c)
+  const { form, files, supplementFiles, referenceImageFiles, uploadDir } = await saveOcrFormFiles(c)
   const overwriteExisting = booleanFormValue(form.get("overwriteExisting") ?? form.get("overwrite_existing"))
   let job: ReturnType<typeof hangtagWashlabelOcrQueue.enqueue>
   try {
     job = hangtagWashlabelOcrQueue.enqueue({
       files,
       supplementFiles,
+      referenceImageFiles,
       overwriteExisting,
       actor: {
         id: user.id,
@@ -2743,10 +2927,11 @@ productArchiveDrafts.post("/hangtag-washlabel-ocr/jobs", async (c) => {
     module: "PRODUCT_ARCHIVE_DRAFT",
     entityType: "product_archive_draft_batch",
     entityId: job.id,
-    summary: `提交后台吊牌/洗唛 OCR 文件 ${files.length} 个，SCM 补充表 ${supplementFiles.length} 个`,
+    summary: `提交后台吊牌/洗唛 OCR 文件 ${files.length} 个，平铺图 ${referenceImageFiles.length} 张，SCM 补充表 ${supplementFiles.length} 个`,
     metadata: {
       fileCount: files.length,
       supplementFileCount: supplementFiles.length,
+      referenceImageFileCount: referenceImageFiles.length,
       overwriteExisting,
       userId: user.id,
     },
@@ -2911,7 +3096,7 @@ productArchiveDrafts.get("/batch-jobs/:jobId", (c) => {
 productArchiveDrafts.post("/images/import", async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const db = getDb()
-  const { files, skippedCount: unsupportedSkippedCount } = await readDraftImageUploadFiles(c)
+  const { files, skippedCount: unsupportedSkippedCount, sourceType } = await readDraftImageUploadFiles(c)
   const items = []
   const importedImages = []
   const matchedDraftIds = new Set<number>()
@@ -2945,7 +3130,7 @@ productArchiveDrafts.post("/images/import", async (c) => {
       db,
       draft,
       file,
-      sourceType: "batch_upload",
+      sourceType,
       sourceRef: file.originalFileName,
       uploadedBy: user.id,
     })
@@ -2974,6 +3159,7 @@ productArchiveDrafts.post("/images/import", async (c) => {
       importedCount: importedImages.length,
       matchedDraftCount: matchedDraftIds.size,
       skippedCount,
+      sourceType,
       userId: user.id,
     },
   })
@@ -2984,6 +3170,7 @@ productArchiveDrafts.post("/images/import", async (c) => {
       importedCount: importedImages.length,
       matchedDraftCount: matchedDraftIds.size,
       skippedCount,
+      sourceType,
     },
     items,
   })
@@ -3001,7 +3188,27 @@ productArchiveDrafts.get("/images/:imageId/file", async (c) => {
   if (!image || !localPath) {
     throw new HTTPException(404, { message: "图片不存在" })
   }
-  const file = await assertLocalImageFile({ rootDir: DRAFT_IMAGE_DIR, filePath: localPath })
+  let file: Awaited<ReturnType<typeof assertLocalImageFile>>
+  try {
+    file = await assertLocalImageFile({ rootDir: DRAFT_IMAGE_DIR, filePath: localPath })
+  } catch (error) {
+    const repaired = await repairLegacyDraftImageLocalPath(db, image as Record<string, unknown>)
+    if (!repaired) throw error
+    file = repaired
+  }
+  if (imageFileVariant(c.req.query("variant") ?? c.req.query("size")) === "thumbnail") {
+    const buffer = await sharp(file.realPath)
+      .rotate()
+      .resize(160, 160, { fit: "cover", withoutEnlargement: true })
+      .jpeg({ quality: 78, mozjpeg: true })
+      .toBuffer()
+    return new Response(buffer, {
+      headers: {
+        "Content-Type": "image/jpeg",
+        "Cache-Control": "private, max-age=3600",
+      },
+    })
+  }
   return new Response(await readFile(file.realPath), {
     headers: {
       "Content-Type": file.contentType,

@@ -440,6 +440,7 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(asyncTaskCenter, /发布明细/);
   assert.match(asyncTaskCenter, /已自动/);
   assert.match(asyncTaskCenter, /填充空字段/);
+  assert.match(asyncTaskCenter, /importedImageCount/);
 
   assert.doesNotMatch(draftListPage, /ComingSoonPage/);
   assert.match(draftListPage, /CompactListPage/);
@@ -456,7 +457,7 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /刷新列表/);
   assert.match(draftListPage, /深绘建档草稿使用指南/);
   assert.match(draftListPage, /推荐路径：标准文案表建草稿/);
-  assert.match(draftListPage, /尺码表、吊牌\/洗唛文件可以通过抓虾自动化抓取/);
+  assert.match(draftListPage, /尺码表、吊牌\/洗唛\/平铺图可以通过抓虾自动化抓取/);
   assert.match(draftListPage, /https:\/\/crawshrimp\.com\/download/);
   assert.match(draftListPage, /补充识别资料/);
   assert.match(draftListPage, /批量发布预检和发布/);
@@ -466,14 +467,17 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /offset=/);
   assert.match(draftListPage, /api\.post<.*>\("\/product-archive-drafts\/mdm-batch"/s);
   assert.doesNotMatch(draftListPage, /api\.post<.*>\("\/product-archive-drafts\/batch"/s);
-  assert.match(draftListPage, /导入吊牌\/洗唛/);
+  assert.match(draftListPage, /导入吊牌\/洗唛\/平铺图/);
   assert.match(draftListPage, /hangtag-washlabel-ocr\/preview/);
   assert.match(draftListPage, /hangtag-washlabel-ocr\/apply/);
   assert.match(draftListPage, /hangtag-washlabel-ocr\/jobs/);
-  assert.match(draftListPage, /选择抓虾 SCM 导出目录/);
+  assert.match(draftListPage, /选择抓虾图包目录/);
   assert.match(draftListPage, /SCM洗唛吊牌下载结果/);
   assert.match(draftListPage, /webkitdirectory/);
   assert.match(draftListPage, /form\.append\("filePaths", uploadDisplayName\(file\)\)/);
+  assert.match(draftListPage, /form\.append\("referenceImages", file\)/);
+  assert.match(draftListPage, /form\.append\("assetPackage", "true"\)/);
+  assert.match(draftListPage, /crawshrimp_asset_package/);
   assert.match(draftListPage, /form\.append\("scmSupplementFile"/);
   assert.match(draftListPage, /overwriteExisting/);
   assert.match(draftListPage, /product_archive_hangtag_washlabel_ocr/);
@@ -506,6 +510,18 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /isSpuReferenceImageUploadFile/);
   assert.match(draftListPage, /参考图/);
   assert.match(draftListPage, /item\.image_count/);
+  assert.match(draftListPage, /thumbnail_image_url/);
+  assert.match(draftListPage, /thumbnail_file_name/);
+  assert.match(draftListPage, /function DraftThumbnail/);
+  assert.match(draftListPage, /loading="eager"/);
+  assert.match(draftListPage, /onError=\{\(\) => setFailed\(true\)\}/);
+  assert.match(draftListPage, /asset_package_image_count/);
+  assert.match(draftListPage, /hangtag_upload_count/);
+  assert.match(draftListPage, /washlabel_upload_count/);
+  assert.match(draftListPage, /图包资料/);
+  assert.match(draftListPage, /吊牌\{item\.hangtag_upload_count > 0 \? "已传" : "未传"\}/);
+  assert.match(draftListPage, /洗唛\{item\.washlabel_upload_count > 0 \? "已传" : "未传"\}/);
+  assert.match(draftListPage, /平铺图\{item\.asset_package_image_count > 0 \? "已传" : "未传"\}/);
   assert.match(draftListPage, /确认写入草稿/);
   assert.match(draftListPage, /api\.get<.*>\(`\/product-archive-drafts\/batch-jobs\/\$\{batchJobId\}`\)/s);
   assert.match(draftListPage, /开始商品建档/);
@@ -585,6 +601,8 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftDetailPage, /应用类目并生成字段/);
   assert.match(draftDetailPage, /待确认类目/);
   assert.match(draftDetailPage, /DraftReferenceImagesSection/);
+  assert.match(draftDetailPage, /function DraftReferenceImagePreview/);
+  assert.match(draftDetailPage, /onError=\{\(\) => setFailed\(true\)\}/);
   assert.match(draftDetailPage, /SPU 参考图/);
   assert.match(draftDetailPage, /上传 SPU 图/);
   assert.match(draftDetailPage, /grid-cols-\[repeat\(auto-fill,minmax\(132px,156px\)\)\]/);

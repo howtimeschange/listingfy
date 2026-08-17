@@ -104,6 +104,26 @@ function scenarioRoutes(env = process.env) {
         { providerKey: "semir_overseas_openai", model: semirOverseasGeminiModel },
       ],
     },
+    product_archive_ocr_vision: {
+      defaultMode: "guarded",
+      guardedRoute: [
+        { providerKey: "semir_overseas_openai", model: semirOverseasGeminiModel },
+        { providerKey: "current_1xm", model: oneXmGeminiModel },
+      ],
+      shadowRoute: [
+        { providerKey: "semir_overseas_openai", model: semirOverseasGeminiModel },
+      ],
+    },
+    product_archive_ocr_quality: {
+      defaultMode: "guarded",
+      guardedRoute: [
+        { providerKey: "semir_overseas_openai", model: semirOverseasGeminiModel },
+        { providerKey: "current_1xm", model: oneXmGeminiModel },
+      ],
+      shadowRoute: [
+        { providerKey: "semir_overseas_openai", model: semirOverseasGeminiModel },
+      ],
+    },
     shein_category: {
       defaultMode: "shadow",
       maxMode: "shadow",

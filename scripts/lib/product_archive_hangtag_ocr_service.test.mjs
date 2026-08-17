@@ -143,6 +143,59 @@ test("SCM list composition is previewed as a supplement without writing raw text
   assert.equal(preview.items[1].targetFields.some((field) => field.fieldName === "洗唛截取"), false);
 });
 
+test("washlabel OCR down fill weight maps onto down fill text field", async () => {
+  const service = await import("../../web/server/services/product-archive-hangtag-ocr.ts");
+  const db = {
+    prepare(sql) {
+      return {
+        all(...params) {
+          if (/from product_archive_draft\s+where spu_code in/i.test(sql)) {
+            assert.deepEqual(params, ["208426107229"]);
+            return [{
+              id: 12,
+              spu_code: "208426107229",
+              tenant_name: "电商巴拉巴拉",
+              merchant_id: "739",
+              trade_id: "190101",
+              title: "羽绒服",
+              status: "manual_review",
+              updated_at: "2026-08-17T10:00:00Z",
+            }];
+          }
+          if (/from product_archive_draft_field/i.test(sql)) {
+            return [
+              { id: 2201, field_name: "充绒量(文本)", value_text: "", value_json: {}, source_type: "manual", required: true, blocking: true },
+              { id: 2202, field_name: "洗唛截取", value_text: "", value_json: {}, source_type: "manual", required: false, blocking: false },
+            ];
+          }
+          return [];
+        },
+      };
+    },
+  };
+
+  const preview = service.previewProductArchiveHangtagWashlabelOcr(db, {
+    documents: [{
+      fileName: "208426107229洗唛.jpg",
+      fileType: "image",
+      sourceKind: "washlabel",
+      detectedSpuCode: "208426107229",
+      status: "recognized",
+      pageCount: 1,
+      rawText: "充绒量 OCR 原文",
+      fields: [
+        { key: "downFillWeight", label: "充绒量", value: "80 | 90 | 100 | 110 | 120 | 130\n60 | 67 | 78 | 90 | 103 | 118", confidence: "high", sourceKind: "washlabel" },
+      ],
+    }],
+  });
+
+  assert.equal(preview.summary.writableFieldCount, 2);
+  assert.deepEqual(preview.items[0].targetFields.map((field) => [field.fieldName, field.valueText, field.sourceType]), [
+    ["充绒量(文本)", "80码60克；90码67克；100码78克；110码90克；120码103克；130码118克", "washlabel_ocr"],
+    ["洗唛截取", "充绒量 OCR 原文", "washlabel_ocr"],
+  ]);
+});
+
 test("SCM composition normalizes into DeepDraw enum fields instead of writing free text", async () => {
   const service = await import("../../web/server/services/product-archive-hangtag-ocr.ts");
   const db = {

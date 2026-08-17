@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { mkdir, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -37,7 +38,7 @@ async function saveUploadedSpreadsheet(c: Context) {
     throw new HTTPException(400, { message: "请上传上市计划表文件" })
   }
   await mkdir(UPLOAD_DIR, { recursive: true })
-  const filePath = path.join(UPLOAD_DIR, safeUploadName(file.name))
+  const filePath = path.join(UPLOAD_DIR, `${randomUUID()}-${safeUploadName(file.name)}`)
   await writeValidatedUploadFile(file, "spreadsheet", filePath)
   return { file, filePath }
 }

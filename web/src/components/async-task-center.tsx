@@ -125,11 +125,13 @@ function hangtagWashlabelOcrTaskSummary(task: AsyncTaskRecord) {
   const applySummary = recordResultValue(result?.applySummary)
   if (!applySummary) return null
   const previewSummary = recordResultValue(result?.previewSummary)
+  const imageImportSummary = recordResultValue(result?.imageImportSummary)
   return {
     appliedDraftCount: numberResultValue(applySummary.appliedDraftCount),
     appliedFieldCount: numberResultValue(applySummary.appliedFieldCount),
     skippedCount: numberResultValue(applySummary.skippedCount),
     matchedCount: numberResultValue(previewSummary?.matchedCount),
+    importedImageCount: numberResultValue(imageImportSummary?.importedCount),
     overwriteExisting: result?.overwriteExisting === true,
   }
 }
@@ -500,6 +502,7 @@ function AsyncTaskDrawer({
                     <div className="mt-3 rounded-md border border-[#b9f4d8] bg-[#f2fff8] px-2 py-1.5 text-xs text-[#0f7f58]">
                       已自动{ocrSummary.overwriteExisting ? "按覆盖模式写入" : "填充空字段"} {formatNumber(ocrSummary.appliedFieldCount)} 个，
                       匹配草稿 {formatNumber(ocrSummary.appliedDraftCount || ocrSummary.matchedCount)} 个，
+                      参考图 {formatNumber(ocrSummary.importedImageCount)} 张，
                       跳过 {formatNumber(ocrSummary.skippedCount)} 个。
                     </div>
                   ) : null}

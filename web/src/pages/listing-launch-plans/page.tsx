@@ -179,12 +179,12 @@ export default function ListingLaunchPlansPage() {
     <CompactListPage>
       <CompactListHeader
         title="上市计划表"
-        description="存放上市计划表导入后的结构化明细，供深绘建档草稿匹配类目、上市时间和商品基础字段。"
+        description="存放上市计划表导入后的结构化明细，供深绘建档草稿匹配类目、上市时间和商品基础字段；支持重复上传，同款号以最近一次导入为准。"
         summary={summary}
         actions={
           <ImportDialog
             title="导入上市计划表"
-            description="服务端解析大体积 .xlsx / .csv，按模板表头匹配款号、款色、官方发布类目和上市时间。"
+            description="服务端解析大体积 .xlsx / .csv，按模板表头匹配款号、款色、官方发布类目和上市时间；重复上传会覆盖同款号的生效明细。"
             trigger={
               <Button type="button" size="sm" disabled={importLaunchPlan.isPending}>
                 <FileSpreadsheet className="size-4" />

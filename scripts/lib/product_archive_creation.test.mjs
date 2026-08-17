@@ -8,6 +8,7 @@ const files = {
   migration: path.join(PROJECT_ROOT, "db/migrations/024_deepdraw_product_archive_creation.sql"),
   sizeChartMigration: path.join(PROJECT_ROOT, "db/migrations/036_product_archive_size_chart_source.sql"),
   draftImageMigration: path.join(PROJECT_ROOT, "db/migrations/044_product_archive_draft_images.sql"),
+  draftImageAssetPackageMigration: path.join(PROJECT_ROOT, "db/migrations/045_product_archive_draft_image_asset_package_source.sql"),
   sqliteDb: path.join(PROJECT_ROOT, "scripts/lib/sqlite_db.mjs"),
   metadataService: path.join(PROJECT_ROOT, "web/server/services/deepdraw-metadata.ts"),
   draftService: path.join(PROJECT_ROOT, "web/server/services/product-archive-drafts.ts"),
@@ -27,9 +28,10 @@ async function readText(file) {
 }
 
 test("new deepdraw archive schema is a PostgreSQL-only schema revision, not a SQLite compatibility layer", async () => {
-  const [migration, draftImageMigration, sqliteDb] = await Promise.all([
+  const [migration, draftImageMigration, draftImageAssetPackageMigration, sqliteDb] = await Promise.all([
     readFile(files.migration, "utf8"),
     readFile(files.draftImageMigration, "utf8"),
+    readFile(files.draftImageAssetPackageMigration, "utf8"),
     readFile(files.sqliteDb, "utf8"),
   ]);
 
@@ -40,6 +42,8 @@ test("new deepdraw archive schema is a PostgreSQL-only schema revision, not a SQ
   assert.match(draftImageMigration, /local_path text not null/);
   assert.match(draftImageMigration, /uploaded_by integer references app_user\(id\) on delete set null/);
   assert.match(draftImageMigration, /idx_product_archive_draft_image_draft/);
+  assert.match(draftImageAssetPackageMigration, /crawshrimp_asset_package/);
+  assert.match(draftImageAssetPackageMigration, /product_archive_draft_image_source_type_check/);
   assert.match(migration, /bigserial primary key/i);
   assert.match(migration, /timestamptz not null default now\(\)/i);
   assert.match(migration, /jsonb not null default '\{\}'::jsonb/i);
@@ -77,6 +81,10 @@ test("product archive draft service is PG-first and covers build validate patch 
 
   assert.match(service, /SyncPostgresDatabase/);
   assert.match(service, /export function listProductArchiveDrafts/);
+  assert.match(service, /thumbnail_image_url/);
+  assert.match(service, /asset_package_image_count/);
+  assert.match(service, /hangtag_upload_count/);
+  assert.match(service, /washlabel_upload_count/);
   assert.match(service, /export function importProductArchiveSourceRows/);
   assert.match(service, /export function createProductArchiveDraftFromSpu/);
   assert.match(service, /export function getProductArchiveDraftDetail/);
@@ -121,6 +129,7 @@ test("product archive draft source rows stay scoped to the import batch when pre
 
   assert.match(service, /function sourceRowsForSpu\(db: SyncPostgresDatabase, spuCode: string, sourceBatchId\?: number \| null\)/);
   assert.match(service, /source\.source_batch_id = \?/);
+  assert.match(service, /activeProductArchiveSourceRows/);
   assert.match(service, /sourceRowsForSpu\(db, input\.spuCode, input\.sourceBatchId/);
   assert.match(service, /sourceRowsForDraft\(db, draft\)/);
 });
@@ -753,6 +762,28 @@ test("trade selection decision ignores older launch-plan batches for the same SP
   ]);
 });
 
+test("source-derived fields use the latest launch-plan batch for repeated SPU uploads", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sourceRows = [
+    {
+      source_batch_id: 10,
+      source_type: "launch_plan",
+      row_json: { "颜色名称": "旧蓝色" },
+    },
+    {
+      source_batch_id: 11,
+      source_type: "launch_plan",
+      row_json: { "颜色名称": "新粉色" },
+    },
+  ];
+
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("颜色", {
+    spu: { spu_code: "208426100001" },
+    sourceRows,
+    sourceField: "颜色",
+  }), "新粉色");
+});
+
 test("trade selection decision explains every manual-selection outcome", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const evaluatedAt = "2026-07-15T00:00:00.000Z";
@@ -1070,7 +1101,8 @@ test("source-batch refresh preserves a concurrent human trade adjustment", async
 
   assert.equal(currentDraft.trade_id, "99");
   assert.equal(currentDraft.source_snapshot_json.tradeSelection.status, "human_adjusted");
-  assert.deepEqual(currentDraft.source_snapshot_json.sourceBatchIds.launch_plan, [10, 11]);
+  assert.deepEqual(currentDraft.source_snapshot_json.sourceBatchIds.launch_plan, [11]);
+  assert.equal(currentDraft.source_snapshot_json.sourceBatchId, 11);
   assert.equal(result.autoAppliedTradeCount, 0);
   assert.equal(result.failedDrafts.length, 0);
 });
@@ -1797,6 +1829,10 @@ test("product archive service derives core sales fields from MDM master data", a
     valueText: "蓝色,蓝色调00388;粉红,粉色调01315",
     valueJson: {},
   });
+  assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("颜色(文本)", { spu, skus }), {
+    valueText: "蓝色,蓝色调00388;粉红,粉色调01315",
+    valueJson: {},
+  });
   assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("尺码", { spu, skus }), {
     valueText: "80cm;90cm",
     valueJson: {},
@@ -2234,6 +2270,82 @@ test("product archive service derives down and platform text fields before AI fi
   assert.equal(derive("里料材质成分含量(多选)"), "聚酰胺纤维");
   assert.equal(derive("快手标题"), "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖");
   assert.equal(derive("拼多多标题"), "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖");
+});
+
+test("product archive asset package helpers classify reference images and model shots", async () => {
+  const [service, serviceSource, route] = await Promise.all([
+    import("../../web/server/services/product-archive-drafts.ts"),
+    readText(files.draftService),
+    readText(files.draftRoute),
+  ]);
+
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_洗唛_1.jpg"), "washlabel");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_吊牌_yq1.jpg"), "hangtag");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013-00455_有模拍.jpg"), "reference_image");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("深绘吊牌洗唛平铺图下载结果_20260817.xlsx"), "spreadsheet");
+  assert.equal(service.productArchiveImageHasModelShot("208426108013/208426108013-00455_有模拍.jpg"), true);
+  assert.equal(service.productArchiveImageHasModelShot("208426108013/208426108013-00455.jpg"), false);
+  assert.match(route, /function repairLegacyDraftImageLocalPath/);
+  assert.match(route, /imageFileVariant\(c\.req\.query\("variant"\)/);
+  assert.match(route, /resize\(160, 160, \{ fit: "cover"/);
+  assert.match(route, /source_type\) !== "crawshrimp_asset_package"/);
+  assert.match(route, /assertLocalImageFile\(\{ rootDir: DRAFT_IMAGE_DIR, filePath: localPath \}\)/);
+  assert.match(serviceSource, /thumbnail_image_url: draftImagePreviewUrl\(row\.thumbnail_image_id, \{ thumbnail: true \}\)/);
+});
+
+test("product archive source and evidence rules fill 208426 batch workbook fields", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sourceRows = [
+    {
+      source_type: "copywriting",
+      row_json: {
+        "款号": "208426107229",
+        "版型": "宽松型",
+        "厚薄": "偏厚",
+        "弹性": "无弹",
+        "面料成分": "成分\n面料：100%锦纶\n填充物\n大身/袖子：灰鸭绒\n绒子含量：80%",
+      },
+    },
+  ];
+  const derive = (fieldName) => service.buildProductArchiveSourceDerivedFieldValue(fieldName, {
+    spu: { spu_code: "208426107229" },
+    sourceRows,
+  });
+
+  assert.equal(derive("单位"), "件");
+  assert.equal(derive("型号"), "208426107229");
+  assert.equal(derive("服装版型"), "宽松型");
+  assert.equal(derive("填充物种类"), "灰鸭绒");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("厚薄", "偏厚", [{ value: "常规" }, { value: "超厚" }]), "超厚");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("弹力", "弹力", [{ value: "无弹" }, { value: "微弹" }, { value: "常规" }]), "常规");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("是否可开档", "否", [{ value: "开裆" }, { value: "不开裆" }]), "不开裆");
+
+  const fills = service.buildProductArchiveEvidenceRuleFills({
+    draft: { id: 7, spu_code: "208426107229" },
+    sourceRows,
+    referenceImages: [{
+      source_type: "crawshrimp_asset_package",
+      original_file_name: "208426107229/208426107229-00455_有模拍.jpg",
+      raw_payload_json: { has_model_shot: true },
+    }],
+    fields: [
+      { id: 1, field_name: "单位", value_text: "", value_json: {}, options_json: [{ value: "件" }] },
+      { id: 2, field_name: "型号", value_text: "", value_json: {}, options_json: [] },
+      { id: 3, field_name: "模特实拍", value_text: "", value_json: {}, options_json: [{ value: "实拍有模特" }, { value: "实拍无模特" }] },
+      { id: 4, field_name: "服装版型", value_text: "", value_json: {}, options_json: [{ value: "标准型" }, { value: "宽松型" }] },
+      { id: 5, field_name: "厚薄", value_text: "", value_json: {}, options_json: [{ value: "常规" }, { value: "超厚" }] },
+      { id: 6, field_name: "弹力", value_text: "", value_json: {}, options_json: [{ value: "无弹" }, { value: "微弹" }, { value: "常规" }] },
+      { id: 7, field_name: "填充物种类", value_text: "", value_json: {}, options_json: [{ value: "白鸭绒" }, { value: "灰鸭绒" }] },
+    ],
+  });
+  const fillMap = new Map(fills.map((fill) => [fill.field_name, fill.field_value]));
+  assert.equal(fillMap.get("单位"), "件");
+  assert.equal(fillMap.get("型号"), "208426107229");
+  assert.equal(fillMap.get("模特实拍"), "实拍有模特");
+  assert.equal(fillMap.get("服装版型"), "宽松型");
+  assert.equal(fillMap.get("厚薄"), "超厚");
+  assert.equal(fillMap.get("弹力"), "无弹");
+  assert.equal(fillMap.get("填充物种类"), "灰鸭绒");
 });
 
 test("product archive service maps every main-fabric component for 208326105206-TEST", async () => {

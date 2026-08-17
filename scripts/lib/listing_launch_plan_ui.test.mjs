@@ -63,6 +63,7 @@ test("listing launch plan API and page expose server-side upload and parsed row 
   assert.match(route, /listingLaunchPlans\.post\("\/imports"/);
   assert.match(route, /listingLaunchPlans\.get\("\/import-jobs\/:jobId"/);
   assert.match(route, /c\.req\.formData\(\)/);
+  assert.match(route, /randomUUID/);
   assert.match(route, /enqueueListingLaunchPlanImportJob/);
   assert.match(route, /getListingLaunchPlanImportJob/);
   assert.match(service, /export function importListingLaunchPlanSheets/);
@@ -71,6 +72,9 @@ test("listing launch plan API and page expose server-side upload and parsed row 
   assert.match(service, /insert into listing_launch_plan_import/);
   assert.match(service, /insert into listing_launch_plan_row/);
   assert.match(service, /export function listListingLaunchPlanRows/);
+  assert.match(service, /max\(import_id\) as import_id/);
+  assert.match(service, /latest\.spu_code = row\.spu_code/);
+  assert.match(service, /latest\.import_id = row\.import_id/);
   assert.match(service, /export function listListingLaunchPlanImports/);
   assert.match(importJobService, /readSpreadsheetSheetsFromFile/);
   assert.match(importJobService, /importProductArchiveSourceRows/);
@@ -88,6 +92,8 @@ test("listing launch plan API and page expose server-side upload and parsed row 
   assert.match(sidebar, /上市计划表/);
   assert.match(sidebar, /\/listing-launch-plans/);
   assert.match(page, /上市计划表/);
+  assert.match(page, /同款号以最近一次导入为准/);
+  assert.match(page, /覆盖同款号的生效明细/);
   assert.match(page, /FormData/);
   assert.match(page, /\/listing-launch-plans\/imports/);
   assert.match(page, /\/listing-launch-plans\/import-jobs\/\$\{job\.id\}/);

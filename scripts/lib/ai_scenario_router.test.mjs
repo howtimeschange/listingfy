@@ -101,6 +101,20 @@ test("scenario policy only exposes models admitted for that exact scene", () => 
       { providerKey: "semir_overseas_openai", model: "gpt-5.6-sol" },
     ],
   );
+  assert.deepEqual(
+    routerModule.resolveAiScenarioPolicy("product_archive_ocr_vision", env).guardedRoute,
+    [
+      { providerKey: "semir_overseas_openai", model: "gemini-3.5-flash" },
+      { providerKey: "current_1xm", model: "gemini-3-flash-preview" },
+    ],
+  );
+  assert.deepEqual(
+    routerModule.resolveAiScenarioPolicy("product_archive_ocr_quality", env).guardedRoute,
+    [
+      { providerKey: "semir_overseas_openai", model: "gemini-3.5-flash" },
+      { providerKey: "current_1xm", model: "gemini-3-flash-preview" },
+    ],
+  );
 
   const category = routerModule.resolveAiScenarioPolicy("shein_category", env);
   assert.equal(category.mode, "shadow");

@@ -120,6 +120,106 @@ function sourceRefForOcrField(field: OcrField, document: OcrDocument) {
   return `${stringValue(document.fileName) || "OCR文件"}${Number.isInteger(pageNumber) && pageNumber > 0 ? `#p${pageNumber}` : ""}`
 }
 
+function numericTextValues(value: unknown) {
+  return stringValue(value).match(/\d+(?:\.\d+)?/g) ?? []
+}
+
+function cleanNumberText(value: string) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return value
+  return Number.isInteger(number) ? String(number) : String(number).replace(/\.0+$/g, "")
+}
+
+function plausibleDownFillSize(value: string) {
+  const number = Number(value)
+  return Number.isFinite(number) && number >= 50 && number <= 220
+}
+
+function plausibleDownFillWeight(value: string) {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 && number <= 500
+}
+
+function mostlyAscending(values: string[]) {
+  let ascendingCount = 0
+  for (let index = 1; index < values.length; index += 1) {
+    if (Number(values[index]) >= Number(values[index - 1])) ascendingCount += 1
+  }
+  return ascendingCount >= Math.max(1, values.length - 2)
+}
+
+function downFillPairsFromSizeAndWeightRows(sizes: string[], weights: string[]) {
+  if (sizes.length < 2 || sizes.length !== weights.length) return []
+  if (!sizes.every(plausibleDownFillSize) || !weights.every(plausibleDownFillWeight)) return []
+  if (!mostlyAscending(sizes)) return []
+  return sizes.map((size, index) => [size, weights[index]])
+}
+
+function downFillPairsFromFlatTokens(tokens: string[]) {
+  const candidates = [tokens]
+  if (tokens.length % 2 === 1) {
+    tokens.forEach((token, index) => {
+      if (!/^\d{4,6}$/.test(token)) return
+      for (const splitAt of [2, 3]) {
+        const left = token.slice(0, splitAt)
+        const right = token.slice(splitAt)
+        candidates.push([...tokens.slice(0, index), left, right, ...tokens.slice(index + 1)])
+      }
+    })
+  }
+  for (const candidate of candidates) {
+    if (candidate.length < 4 || candidate.length % 2 !== 0) continue
+    const half = candidate.length / 2
+    const pairs = downFillPairsFromSizeAndWeightRows(candidate.slice(0, half), candidate.slice(half))
+    if (pairs.length > 0) return pairs
+  }
+  return []
+}
+
+function downFillPairsFromText(value: unknown) {
+  const text = stringValue(value)
+  const explicitPairs = Array.from(text.matchAll(/(\d+(?:\.\d+)?)\s*(?:cm|CM|厘米|码)?\s*[:：]\s*(\d+(?:\.\d+)?)\s*(?:g|G|克)?/g))
+    .map((match) => [match[1], match[2]])
+    .filter(([size, weight]) => plausibleDownFillSize(size) && plausibleDownFillWeight(weight))
+  if (explicitPairs.length >= 2) return explicitPairs
+
+  const lines = text
+    .replace(/[|｜/、,，]+/g, " ")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const pairedLines = lines.map(numericTextValues).filter((lineTokens) => lineTokens.length === 2)
+  if (pairedLines.length >= 2) {
+    const pairs = pairedLines
+      .filter(([size, weight]) => plausibleDownFillSize(size) && plausibleDownFillWeight(weight))
+    if (pairs.length === pairedLines.length) return pairs
+  }
+
+  const labelledSizeLine = lines.find((line) => /尺码|码数|规格|身高|size/i.test(line))
+  const labelledWeightLine = lines.find((line) => /克数|充绒量|重量|克重/i.test(line) && numericTextValues(line).length >= 2)
+  const labelledPairs = downFillPairsFromSizeAndWeightRows(
+    numericTextValues(labelledSizeLine),
+    numericTextValues(labelledWeightLine),
+  )
+  if (labelledPairs.length > 0) return labelledPairs
+
+  const numberRows = lines.map(numericTextValues).filter((lineTokens) => lineTokens.length >= 2)
+  if (numberRows.length >= 2) {
+    const tablePairs = downFillPairsFromSizeAndWeightRows(numberRows[0], numberRows[1])
+    if (tablePairs.length > 0) return tablePairs
+  }
+
+  return downFillPairsFromFlatTokens(numericTextValues(text))
+}
+
+function normalizeDownFillWeightText(value: unknown) {
+  const pairs = downFillPairsFromText(value)
+  if (pairs.length === 0) return stringValue(value)
+  return pairs
+    .map(([size, weight]) => `${cleanNumberText(size)}码${cleanNumberText(weight)}克`)
+    .join("；")
+}
+
 function ocrFieldMatchesDraftField(field: OcrField, draftFieldName: unknown, draftField: JsonRecord = {}) {
   const key = stringValue(field.key)
   const name = compactFieldKey(draftFieldName)
@@ -134,6 +234,7 @@ function ocrFieldMatchesDraftField(field: OcrField, draftFieldName: unknown, dra
     const hasTemplateOptions = arrayValue(draftField.options_json).length > 0
     return hasTemplateOptions && (name.includes("材质") || name.includes("面料"))
   }
+  if (key === "downFillWeight") return name.includes("充绒量")
   if (key === "washCare") return name.includes("洗涤说明") || name.includes("洗护说明") || name.includes("洗涤方法")
   if (key === "rawText") {
     const sourceKind = stringValue(field.sourceKind)
@@ -223,6 +324,12 @@ function draftFields(db: SyncPostgresDatabase, draft: JsonRecord) {
 
 function normalizeOcrValueForDraftField(draftField: JsonRecord, ocrField: OcrField) {
   const rawValue = stringValue(ocrField.value)
+  if (stringValue(ocrField.key) === "downFillWeight") {
+    return {
+      valueText: normalizeDownFillWeightText(rawValue),
+      optionCompatible: true,
+    }
+  }
   const options = arrayValue(draftField.options_json)
   if (!options.length) return {
     valueText: rawValue,

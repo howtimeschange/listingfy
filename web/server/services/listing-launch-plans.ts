@@ -331,6 +331,16 @@ export function listListingLaunchPlanRows(db: SyncPostgresDatabase, input: ListR
     params.push(sheetName)
   }
   const clause = where.length ? `where ${where.join(" and ")}` : ""
+  const activeRowsFrom = `
+    from listing_launch_plan_row row
+    join (
+      select spu_code, max(import_id) as import_id
+      from listing_launch_plan_row
+      group by spu_code
+    ) latest on latest.spu_code = row.spu_code
+      and latest.import_id = row.import_id
+    join listing_launch_plan_import imp on imp.id = row.import_id
+  `
   const items = db.prepare(`
     select
       row.id,
@@ -358,22 +368,21 @@ export function listListingLaunchPlanRows(db: SyncPostgresDatabase, input: ListR
       imp.file_name,
       imp.import_no,
       imp.created_at as imported_at
-    from listing_launch_plan_row row
-    join listing_launch_plan_import imp on imp.id = row.import_id
+    ${activeRowsFrom}
     ${clause}
     order by imp.created_at desc, row.sheet_name, row.row_number, row.id
     limit ? offset ?
   `).all(...params, limit, offset)
   const total = db.prepare(`
     select count(*) as count
-    from listing_launch_plan_row row
+    ${activeRowsFrom}
     ${clause}
   `).get(...params) as { count: number }
   const sheets = db.prepare(`
-    select sheet_name, count(*) as count
-    from listing_launch_plan_row
-    group by sheet_name
-    order by sheet_name
+    select row.sheet_name, count(*) as count
+    ${activeRowsFrom}
+    group by row.sheet_name
+    order by row.sheet_name
   `).all()
   return {
     items,

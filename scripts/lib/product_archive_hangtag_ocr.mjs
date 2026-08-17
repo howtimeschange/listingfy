@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createAiScenarioRouter } from "./ai_scenario_router.mjs";
+import { withAiRoutingHashes } from "./ai_routing_context.mjs";
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(MODULE_DIR, "..", "..");
@@ -11,7 +14,7 @@ const requireFromWeb = createRequire(WEB_PACKAGE_JSON);
 const BUNDLED_TESSERACT_LANG_PATH = path.join(PROJECT_ROOT, "vendor", "tesseract", "lang");
 
 const STYLE_CODE_RE = /(?<!\d)20\d{10}(?!\d)/g;
-const STANDARD_RE = /\b(?:Q\s*\/\s*[A-Z0-9\u4e00-\u9fa5._-]+|GB\s*\/\s*T|FZ\s*\/\s*T|QB\s*\/\s*T)\s*[A-Z0-9./ -]{2,}/i;
+const STANDARD_RE = /\b(?:Q\s*\/\s*[A-Z0-9\u4e00-\u9fa5._-]+(?:\s+\d{2,4})?-\d{2,4}|(?:GB|FZ|QB)\s*\/\s*T\s*\d+(?:[./ -]\d+)*)/i;
 const SAFETY_RE = /(?:符合\s*)?GB\s*31701\s*[ABCＡＢＣ]\s*类/i;
 const FIELD_LABELS = {
   productName: ["产品名称", "品名", "名称"],
@@ -20,6 +23,7 @@ const FIELD_LABELS = {
   safetyCategory: ["安全技术类别", "安全类别", "安全技术要求"],
   productGrade: ["产品等级", "质量等级", "等级"],
   materialComposition: ["面料成分", "材质成分", "纤维含量", "成分"],
+  downFillWeight: ["充绒量", "充绒量（单位：克）", "充绒量(单位：克)", "充绒量(单位:克)"],
   washCare: ["洗涤说明", "洗护说明", "洗涤方法", "洗护方法"],
 };
 const FIELD_LABEL_TEXT = Object.values(FIELD_LABELS).flat();
@@ -46,6 +50,32 @@ function stringValue(value) {
   return "";
 }
 
+function recordValue(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function arrayValue(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 function uniqueTextValues(values) {
   const seen = new Set();
   const output = [];
@@ -65,6 +95,7 @@ function normalizeStandardText(value) {
   return stringValue(value)
     .replace(/[；;，,。].*$/g, "")
     .replace(/\s*\/\s*/g, "/")
+    .replace(/\bQ\/BALABALA\s*(?=\d{2,4}-\d{2,4}\b)/ig, "Q/BALABALA ")
     .replace(/\bGB\s*\/\s*T\b/ig, "GB/T")
     .replace(/\bFZ\s*\/\s*T\b/ig, "FZ/T")
     .replace(/\bQB\s*\/\s*T\b/ig, "QB/T")
@@ -73,6 +104,11 @@ function normalizeStandardText(value) {
     .replace(/\bGB\s*31701\s*([ABCＡＢＣ])\s*类/ig, (_match, category) => `GB 31701 ${String(category).toUpperCase()}类`)
     .replace(/[-–—]+$/g, "")
     .trim();
+}
+
+function cleanExecutionStandardValue(value) {
+  const match = normalizeStandardText(value).match(STANDARD_RE);
+  return match ? normalizeStandardText(match[0]) : "";
 }
 
 function normalizeOcrText(value) {
@@ -218,9 +254,7 @@ function cleanLabelValue(value, key) {
     if (styleCode) return styleCode;
   }
   if (key === "executionStandard") {
-    const standard = text.match(STANDARD_RE)?.[0];
-    if (standard) return normalizeStandardText(standard);
-    text = normalizeStandardText(text);
+    return cleanExecutionStandardValue(text);
   }
   if (key === "safetyCategory") {
     const normalizedSafety = normalizeStandardText(text.replace(/([ABCＡＢＣ])\s*[弥粪]\s*/g, "$1类"));
@@ -237,8 +271,29 @@ function cleanLabelValue(value, key) {
     const grade = text.match(/优等品|一等品|合格品|二等品/)?.[0];
     if (grade) return grade;
   }
+  if (key === "downFillWeight") {
+    const weightText = text
+      .replace(/^充绒量(?:（单位[:：]?克）|\(单位[:：]?克\))?\s*[:：]?/i, "")
+      .split(/\n{2,}/)[0]
+      .trim();
+    if (!downFillWeightLooksReliable(weightText)) return "";
+    return weightText.slice(0, 500);
+  }
   if (key === "articleNo") text = text.replace(/[-–—]+$/g, "");
   return text.replace(/[；;，,。]\s*$/g, "").trim();
+}
+
+function downFillWeightLooksReliable(value) {
+  const text = stringValue(value).trim();
+  if (!text) return false;
+  if (/[A-Za-z\u0400-\u04ff]/.test(text)) return false;
+  const numericTokens = text.match(/\d{1,3}/g) ?? [];
+  if (numericTokens.length < 4) return false;
+  const linesWithNumbers = text
+    .split(/\n+/)
+    .filter((line) => (line.match(/\d{1,3}/g) ?? []).length >= 2);
+  if (linesWithNumbers.length >= 2) return true;
+  return /(?:\d{1,3}\s*[:：]\s*\d{1,3})(?:[;；,，\s]+(?:\d{1,3}\s*[:：]\s*\d{1,3})){1,}/.test(text);
 }
 
 function extractLabelValue(lines, labels, key) {
@@ -270,8 +325,8 @@ function extractLabelValue(lines, labels, key) {
 
 function extractFallbackField(text, key) {
   if (key === "executionStandard") {
-    const match = normalizeOcrText(text).match(STANDARD_RE);
-    if (match) return { value: normalizeStandardText(match[0]), evidenceText: match[0], confidence: "medium" };
+    const value = cleanExecutionStandardValue(text);
+    if (value) return { value, evidenceText: value, confidence: "medium" };
   }
   if (key === "safetyCategory") {
     const match = normalizeOcrText(text).match(SAFETY_RE);
@@ -280,6 +335,11 @@ function extractFallbackField(text, key) {
   if (key === "productGrade") {
     const match = normalizeOcrText(text).match(/优等品|一等品|合格品|二等品/);
     if (match) return { value: match[0], evidenceText: match[0], confidence: "medium" };
+  }
+  if (key === "downFillWeight") {
+    const match = normalizeOcrText(text).match(/充绒量(?:（单位[:：]?克）|\(单位[:：]?克\))?\s*[:：]?\s*([^\n]{1,80}(?:\n[^\n]{1,80}){0,8})/i);
+    const value = cleanLabelValue(match?.[1] ?? "", key);
+    if (value) return { value, evidenceText: match?.[0] ?? value, confidence: "medium" };
   }
   return null;
 }
@@ -575,6 +635,772 @@ export function getProductArchiveOcrRuntimeInfo(documents = [], options = {}) {
   };
 }
 
+function enabledFlag(value, fallback = true) {
+  const text = stringValue(value).toLowerCase();
+  if (!text) return fallback;
+  if (["0", "false", "no", "off", "disabled"].includes(text)) return false;
+  if (["1", "true", "yes", "on", "enabled"].includes(text)) return true;
+  return fallback;
+}
+
+function hasConfiguredVisionAiProvider(env = process.env) {
+  return Boolean(
+    env.AI_API_KEY
+    || env.AI_PROVIDER_SEMIR_OVERSEAS_OPENAI_API_KEY
+    || env.AI_PROVIDER_1XM_API_KEY,
+  );
+}
+
+function visionFallbackEnabled(options = {}) {
+  if (options.visionFallback === false) return false;
+  if (options.visionProvider || options.aiRouter || options.aiRouterFactory) return true;
+  const env = options.env ?? process.env;
+  if (!enabledFlag(env.LISTINGIFY_HANGTAG_OCR_VISION_FALLBACK, true)) return false;
+  return hasConfiguredVisionAiProvider(env);
+}
+
+function ocrQualityGateEnabled(options = {}) {
+  if (options.ocrQualityGate === false) return false;
+  if (options.ocrQualityProvider || options.aiRouter || options.aiRouterFactory) return true;
+  const env = options.env ?? process.env;
+  if (!enabledFlag(env.LISTINGIFY_HANGTAG_OCR_AI_QUALITY_GATE, true)) return false;
+  return hasConfiguredVisionAiProvider(env);
+}
+
+function ocrTextLooksUnusable(text) {
+  const compact = stringValue(text).replace(/\s+/g, "");
+  if (!compact) return true;
+  if (compact.length < 12) return true;
+  const usefulMatches = compact.match(/[0-9A-Za-z\u4e00-\u9fa5]/g) ?? [];
+  const usefulRatio = usefulMatches.length / Math.max(compact.length, 1);
+  if (compact.length >= 80 && usefulRatio < 0.45) return true;
+  return false;
+}
+
+function visionFallbackReason(document = {}) {
+  if (stringValue(document.status) === "ocr_failed") return "OCR 识别失败";
+  if (!Array.isArray(document.fields) || document.fields.length === 0) return "OCR 未提取到结构化字段";
+  if (ocrTextLooksUnusable(document.rawText)) return "OCR 文本质量较差";
+  return "";
+}
+
+function positiveInteger(value, fallback, { min = 1, max = Number.POSITIVE_INFINITY } = {}) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(Math.floor(parsed), max));
+}
+
+function visionImageMaxBytes(options = {}) {
+  return positiveInteger(
+    options.visionImageMaxBytes ?? process.env.LISTINGIFY_HANGTAG_OCR_VISION_IMAGE_MAX_BYTES,
+    4 * 1024 * 1024,
+    { min: 128 * 1024, max: 10 * 1024 * 1024 },
+  );
+}
+
+function visionImageWidth(options = {}) {
+  return positiveInteger(
+    options.visionImageWidth ?? process.env.LISTINGIFY_HANGTAG_OCR_VISION_IMAGE_WIDTH,
+    2200,
+    { min: 900, max: 3200 },
+  );
+}
+
+function visionMaxImages(options = {}) {
+  return positiveInteger(
+    options.visionMaxImages ?? process.env.LISTINGIFY_HANGTAG_OCR_VISION_MAX_IMAGES,
+    4,
+    { min: 1, max: 8 },
+  );
+}
+
+function ocrQualityTextLimit(options = {}) {
+  return positiveInteger(
+    options.ocrQualityTextLimit ?? process.env.LISTINGIFY_HANGTAG_OCR_QUALITY_TEXT_LIMIT,
+    5000,
+    { min: 1000, max: 12000 },
+  );
+}
+
+function uniqueFilePaths(paths) {
+  const seen = new Set();
+  const output = [];
+  for (const item of paths.map(stringValue).filter(Boolean)) {
+    const key = path.resolve(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(item);
+  }
+  return output;
+}
+
+function visionImagePathCandidates({ filePath, fileType, pageImagePaths = [] }, options = {}) {
+  const paths = fileType === "image"
+    ? [filePath, ...pageImagePaths]
+    : pageImagePaths;
+  return uniqueFilePaths(paths).slice(0, visionMaxImages(options));
+}
+
+async function renderVisionImageBuffer(filePath, options = {}) {
+  const sharp = requireFromWeb("sharp");
+  const maxBytes = visionImageMaxBytes(options);
+  const metadata = await sharp(filePath).metadata();
+  const sourceWidth = Number(metadata.width) || visionImageWidth(options);
+  const widths = uniqueTextValues([
+    Math.min(sourceWidth, visionImageWidth(options)),
+    2200,
+    1800,
+    1500,
+    1200,
+    960,
+    720,
+    540,
+    420,
+  ].map((value) => String(Math.round(value)))).map((value) => Number(value));
+  const qualities = [86, 78, 70, 62, 54, 46];
+  let smallest = null;
+  for (const width of widths) {
+    for (const quality of qualities) {
+      const buffer = await sharp(filePath)
+        .rotate()
+        .resize({ width, withoutEnlargement: true })
+        .jpeg({ quality, mozjpeg: true })
+        .toBuffer();
+      if (!smallest || buffer.length < smallest.length) smallest = buffer;
+      if (buffer.length <= maxBytes) return buffer;
+    }
+  }
+  return smallest && smallest.length <= maxBytes ? smallest : null;
+}
+
+async function visionImagePayloads(imagePaths, options = {}) {
+  const output = [];
+  const warnings = [];
+  for (const imagePath of imagePaths) {
+    let buffer = null;
+    try {
+      buffer = await renderVisionImageBuffer(imagePath, options);
+    } catch (error) {
+      warnings.push(`多模态兜底图片准备失败：${path.basename(imagePath)}：${errorText(error)}`);
+      continue;
+    }
+    if (!buffer) {
+      warnings.push(`多模态兜底图片超过大小限制：${path.basename(imagePath)}`);
+      continue;
+    }
+    output.push({
+      filePath: imagePath,
+      mimeType: "image/jpeg",
+      byteLength: buffer.length,
+      sha256: createHash("sha256").update(buffer).digest("hex"),
+      dataUrl: `data:image/jpeg;base64,${buffer.toString("base64")}`,
+    });
+  }
+  return { payloads: output, warnings };
+}
+
+async function pdfVisionImagePayloads(filePath, options = {}) {
+  let prepared = null;
+  try {
+    prepared = await renderPdfToImages(filePath, options);
+    return await visionImagePayloads(prepared.files, options);
+  } finally {
+    if (prepared?.workDir) await rm(prepared.workDir, { recursive: true, force: true });
+  }
+}
+
+function buildOcrQualityPrompt({ fileName, sourceKind, rawText, fields }) {
+  return JSON.stringify({
+    task: "质检商品吊牌/洗唛普通 OCR 的结构化抽取结果，判断字段是否可信，是否需要改走多模态看原图兜底。",
+    file_name: fileName,
+    source_kind: sourceKind,
+    raw_text: rawText,
+    extracted_fields: fields.map((field) => ({
+      key: field.key,
+      label: field.label,
+      value: field.value,
+      confidence: field.confidence,
+      evidence_text: field.evidenceText,
+    })),
+    output_schema: {
+      verdict: "accept 或 reject",
+      fallback_required: "boolean；只要整体乱码、字段值像噪声、字段与证据不一致、或关键字段不完整就为 true",
+      reason: "简短中文原因",
+      field_reviews: [
+        {
+          key: "字段 key",
+          verdict: "accept 或 reject",
+          reason: "为什么可信或不可信",
+        },
+      ],
+    },
+    rules: [
+      "只返回 JSON，不要 Markdown。",
+      "你只能基于 raw_text、extracted_fields 和 evidence_text 判断，不要凭款号、类目、常识或商品图片内容补全字段。",
+      "如果 OCR 原文大段乱码、夹杂无意义拉丁/俄文/符号，且字段证据不可读，判 reject。",
+      "充绒量必须是可读的尺码与克数对应表，不能接受 NZ: 0 = :、零散数字、英文/俄文噪声或只有标题没有数值。",
+      "执行标准必须是清晰标准号，例如 Q/BALABALA 103-2021、Q/BALABALA 104-2022、GB/T、FZ/T、QB/T 开头的标准；重复标签或后缀乱码判 reject。",
+      "安全类别必须能看到 GB 31701 与 A/B/C 类；仅有安全字样但无类别判 reject。",
+      "成分必须能看到纤维名称和百分比；如果只是乱码或百分比无法归属纤维，相关字段判 reject。",
+      "如果任一已抽取字段判 reject，fallback_required 设为 true。",
+    ],
+    allowed_field_keys: Object.keys(FIELD_LABELS),
+  }, null, 2);
+}
+
+function buildOcrQualityMessages(document, options = {}) {
+  const rawText = stringValue(document.rawText).slice(0, ocrQualityTextLimit(options));
+  const fields = Array.isArray(document.fields) ? document.fields : [];
+  return [
+    {
+      role: "system",
+      content: "你是商品吊牌和洗唛 OCR 质量审核智能体，只判断普通 OCR 结果是否可信。",
+    },
+    {
+      role: "user",
+      content: buildOcrQualityPrompt({
+        fileName: document.fileName,
+        sourceKind: document.sourceKind,
+        rawText,
+        fields,
+      }),
+    },
+  ];
+}
+
+function qualityVerdictRejected(value) {
+  const text = stringValue(value).toLowerCase();
+  return ["reject", "rejected", "invalid", "noise", "wrong", "unreliable", "fail", "failed"].includes(text);
+}
+
+function normalizeOcrQualityReview(json) {
+  const record = recordValue(json);
+  const fieldReviews = arrayValue(record.field_reviews ?? record.fieldReviews).map((row) => {
+    const item = recordValue(row);
+    const key = fieldKeyFromVision(item.key ?? item.field_key ?? item.name, item.label ?? item.field_label);
+    return {
+      key,
+      verdict: stringValue(item.verdict ?? item.status),
+      reason: stringValue(item.reason ?? item.message).slice(0, 500),
+    };
+  }).filter((row) => row.key);
+  const rejectedKeys = uniqueTextValues(
+    fieldReviews.filter((row) => qualityVerdictRejected(row.verdict)).map((row) => row.key),
+  );
+  const fallbackRequired = Boolean(record.fallback_required ?? record.fallbackRequired)
+    || qualityVerdictRejected(record.verdict)
+    || rejectedKeys.length > 0;
+  return {
+    verdict: fallbackRequired ? "reject" : "accept",
+    fallbackRequired,
+    reason: stringValue(record.reason ?? record.message).slice(0, 500),
+    rejectedKeys,
+    fieldReviews,
+  };
+}
+
+function normalizeOcrQualityProviderResult(result) {
+  if (typeof result === "string") return { json: recordValue(result), providerKind: "ai_quality" };
+  if (result && typeof result === "object") {
+    return {
+      json: recordValue(result.json ?? result),
+      providerKind: stringValue(result.providerKind) || "ai_quality",
+    };
+  }
+  return { json: {}, providerKind: "ai_quality" };
+}
+
+async function callOcrQualityProvider(document, options = {}) {
+  const messages = buildOcrQualityMessages(document, options);
+  if (typeof options.ocrQualityProvider === "function") {
+    const result = await options.ocrQualityProvider({ document, messages });
+    return normalizeOcrQualityProviderResult(result);
+  }
+
+  const router = defaultVisionRouter(options);
+  const response = await router.callJson(withAiRoutingHashes({
+    scenario: "product_archive_ocr_quality",
+    promptVersion: "product-archive-ocr-quality-v1",
+    messages,
+    validate: (json) => {
+      const record = recordValue(json);
+      const verdict = stringValue(record.verdict);
+      return ["accept", "reject", "rejected", "invalid", "noise", "wrong", "unreliable", "fail", "failed"].includes(verdict.toLowerCase())
+        || typeof record.fallback_required === "boolean"
+        || typeof record.fallbackRequired === "boolean";
+    },
+    auditValue: (json) => {
+      const review = normalizeOcrQualityReview(json);
+      return {
+        verdict: review.verdict,
+        fallbackRequired: review.fallbackRequired,
+        rejectedKeys: review.rejectedKeys,
+      };
+    },
+  }, {
+    input: {
+      fileName: document.fileName,
+      sourceKind: document.sourceKind,
+      rawTextSha256: createHash("sha256").update(stringValue(document.rawText)).digest("hex"),
+      fieldCount: Array.isArray(document.fields) ? document.fields.length : 0,
+    },
+    candidates: Object.keys(FIELD_LABELS),
+  }));
+  return {
+    json: response.json,
+    providerKind: "ai_quality",
+    provider: response.provider,
+    routing: response.routing,
+  };
+}
+
+async function applyOcrQualityGate(document, options = {}) {
+  if (!ocrQualityGateEnabled(options)) return { document, fallbackReason: "" };
+  if (!Array.isArray(document.fields) || document.fields.length === 0) return { document, fallbackReason: "" };
+  try {
+    const quality = await callOcrQualityProvider(document, options);
+    const review = normalizeOcrQualityReview(quality.json);
+    const providerKinds = uniqueTextValues([
+      ...arrayValue(document.providerKinds),
+      quality.providerKind,
+    ]);
+    if (!review.fallbackRequired) {
+      return {
+        document: {
+          ...document,
+          providerKinds,
+          ocrQualityReview: review,
+          ocrQualityProvider: quality.provider ?? null,
+          ocrQualityRouting: quality.routing ?? null,
+        },
+        fallbackReason: "",
+      };
+    }
+    const rejectedKeys = new Set(review.rejectedKeys);
+    const fields = rejectedKeys.size > 0
+      ? document.fields.filter((field) => !rejectedKeys.has(field.key))
+      : [];
+    const reason = review.reason || "OCR 质检判定字段不可信";
+    return {
+      document: {
+        ...document,
+        fields,
+        providerKinds,
+        warnings: uniqueTextValues([
+          ...arrayValue(document.warnings),
+          `AI OCR质检判定不可信：${reason}`,
+        ]),
+        ocrQualityReview: review,
+        ocrQualityProvider: quality.provider ?? null,
+        ocrQualityRouting: quality.routing ?? null,
+      },
+      fallbackReason: `AI OCR质检判定识别不可靠：${reason}`,
+    };
+  } catch (error) {
+    return {
+      document: {
+        ...document,
+        warnings: uniqueTextValues([...arrayValue(document.warnings), `AI OCR质检失败：${errorText(error)}`]),
+      },
+      fallbackReason: "",
+    };
+  }
+}
+
+function fieldKeyFromVision(value, label = "") {
+  const compact = stringValue(value).replace(/[_\-\s()（）]/g, "").toLowerCase();
+  const direct = {
+    productname: "productName",
+    name: "productName",
+    articleno: "articleNo",
+    artno: "articleNo",
+    spucode: "articleNo",
+    stylecode: "articleNo",
+    executionstandard: "executionStandard",
+    standard: "executionStandard",
+    safetycategory: "safetyCategory",
+    safety: "safetyCategory",
+    productgrade: "productGrade",
+    grade: "productGrade",
+    materialcomposition: "materialComposition",
+    composition: "materialComposition",
+    downfillweight: "downFillWeight",
+    fillweight: "downFillWeight",
+    washcare: "washCare",
+    washing: "washCare",
+  };
+  if (direct[compact]) return direct[compact];
+  const compactLabel = compactLine(label || value);
+  for (const [key, labels] of Object.entries(FIELD_LABELS)) {
+    if (labels.some((item) => compactLabel.includes(compactLine(item)))) return key;
+  }
+  return "";
+}
+
+function confidenceFromVision(value) {
+  const text = stringValue(value).toLowerCase();
+  if (["high", "medium", "low"].includes(text)) return text;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "medium";
+  if (numeric >= 0.85) return "high";
+  if (numeric >= 0.55) return "medium";
+  return "low";
+}
+
+function visionFieldRows(json) {
+  const rows = [];
+  const fields = json.fields ?? json.extracted_fields ?? json.extractedFields;
+  if (Array.isArray(fields)) {
+    rows.push(...fields.filter((field) => field && typeof field === "object"));
+  } else {
+    const fieldMap = recordValue(fields);
+    for (const [key, value] of Object.entries(fieldMap)) rows.push({ key, value });
+  }
+  for (const key of Object.keys(FIELD_LABELS)) {
+    if (json[key] != null) rows.push({ key, value: json[key] });
+  }
+  for (const [key, alias] of Object.entries({
+    product_name: "productName",
+    article_no: "articleNo",
+    style_code: "articleNo",
+    execution_standard: "executionStandard",
+    safety_category: "safetyCategory",
+    product_grade: "productGrade",
+    material_composition: "materialComposition",
+    down_fill_weight: "downFillWeight",
+    wash_care: "washCare",
+  })) {
+    if (json[key] != null) rows.push({ key: alias, value: json[key] });
+  }
+  return rows;
+}
+
+function normalizeVisionField(row, pageNumber, sourceKind) {
+  const key = fieldKeyFromVision(row.key ?? row.field_key ?? row.name, row.label ?? row.field_label);
+  if (!key || !FIELD_LABELS[key]) return null;
+  const rawValue = stringValue(row.value ?? row.field_value ?? row.text);
+  const value = cleanLabelValue(rawValue, key);
+  if (!value) return null;
+  return {
+    key,
+    label: stringValue(row.label ?? row.field_label) || FIELD_LABELS[key][0],
+    value,
+    confidence: confidenceFromVision(row.confidence),
+    evidenceText: stringValue(row.evidence_text ?? row.evidenceText ?? rawValue).slice(0, 500),
+    pageNumber,
+    sourceKind,
+  };
+}
+
+function visionRawText(json, fields = []) {
+  const raw = stringValue(json.raw_text ?? json.rawText ?? json.text ?? json.full_text ?? json.fullText);
+  if (raw) return normalizeOcrText(raw);
+  const lines = [];
+  const styleCode = stringValue(json.style_code ?? json.styleCode ?? json.spu_code ?? json.spuCode);
+  if (styleCode) lines.push(styleCode);
+  for (const field of fields) lines.push(`${field.label}: ${field.value}`);
+  return normalizeOcrText(lines.join("\n"));
+}
+
+function analyzeVisionOcrDocument({
+  fileName,
+  fileType,
+  sourceKind,
+  json,
+}) {
+  const parsed = recordValue(json);
+  const fields = visionFieldRows(parsed)
+    .map((row) => normalizeVisionField(row, 1, sourceKind))
+    .filter(Boolean);
+  const rawText = visionRawText(parsed, fields);
+  const analyzed = analyzeProductArchiveOcrDocument({
+    fileName,
+    fileType,
+    sourceKind,
+    pages: rawText ? [{ pageNumber: 1, text: rawText }] : [],
+  });
+  const fieldsByKey = new Map();
+  for (const field of [...analyzed.fields, ...fields]) {
+    const existing = fieldsByKey.get(field.key);
+    fieldsByKey.set(field.key, existing ? betterField(existing, field) : field);
+  }
+  const explicitStyleCodes = extractStyleCodesFromText([
+    parsed.style_code,
+    parsed.styleCode,
+    parsed.spu_code,
+    parsed.spuCode,
+  ].map(stringValue).join("\n"));
+  const styleCodes = uniqueTextValues([
+    ...analyzed.styleCodes,
+    ...explicitStyleCodes,
+  ]);
+  const warnings = analyzed.warnings.filter((warning) => !/未识别到可写入/.test(warning));
+  const finalFields = Array.from(fieldsByKey.values());
+  if (finalFields.length === 0) warnings.push("多模态兜底未提取到可写入的吊牌/洗唛字段");
+  return {
+    ...analyzed,
+    detectedSpuCode: styleCodes[0] ?? analyzed.detectedSpuCode,
+    styleCodes,
+    fields: finalFields,
+    warnings,
+    rawText: rawText.slice(0, 10_000),
+    pages: rawText ? [{ pageNumber: 1, text: rawText }] : [],
+  };
+}
+
+function buildVisionOcrPrompt({ fileName, sourceKind, fallbackReason }) {
+  return JSON.stringify({
+    task: "从商品吊牌或洗唛图片中做多模态文字识别，并提取可写入深绘建档草稿的结构化字段。",
+    file_name: fileName,
+    source_kind: sourceKind,
+    fallback_reason: fallbackReason,
+    output_schema: {
+      style_code: "图片中可见的 12 位 20 开头款号；没有则为 null",
+      raw_text: "按原图从上到下转写出的主要中文文字；看不清则为空字符串",
+      fields: [
+        {
+          key: "只能是 productName/articleNo/executionStandard/safetyCategory/productGrade/materialComposition/downFillWeight/washCare",
+          label: "中文字段名",
+          value: "字段值；表格字段保留尺码行和克数行",
+          confidence: "high/medium/low",
+          evidence_text: "图片中支持该字段的短证据",
+        },
+      ],
+    },
+    rules: [
+      "只返回 JSON，不要 Markdown。",
+      "图片已经以 base64 data URL 随消息发送；不要返回图片路径。",
+      "只能提取图片中清晰可见的文字，不要根据款号、类目或常识补全。",
+      "看不清、被遮挡、没有出现的字段直接省略，不要猜测。",
+      "充绒量表格要保留尺码和克数的对应关系，例如第一行尺码、第二行克数；不要只写一个总克数。",
+      "成分和洗涤说明保留换行，便于后续字段映射。",
+    ],
+    allowed_field_keys: Object.keys(FIELD_LABELS),
+  }, null, 2);
+}
+
+function buildVisionOcrMessages({ fileName, sourceKind, fallbackReason, imagePayloads }) {
+  const content = [
+    { type: "text", text: buildVisionOcrPrompt({ fileName, sourceKind, fallbackReason }) },
+  ];
+  imagePayloads.forEach((image, index) => {
+    content.push({
+      type: "text",
+      text: `图片${index + 1}: ${path.basename(image.filePath)}，已压缩为 base64，字节数 ${image.byteLength}。`,
+    });
+    content.push({
+      type: "image_url",
+      image_url: { url: image.dataUrl },
+    });
+  });
+  return [
+    {
+      role: "system",
+      content: "你是商品吊牌和洗唛 OCR 兜底识别器，只做忠实转写和字段抽取。",
+    },
+    {
+      role: "user",
+      content,
+    },
+  ];
+}
+
+function normalizeVisionProviderResult(result) {
+  if (typeof result === "string") return { json: recordValue(result), providerKind: "ai_vision" };
+  if (result && typeof result === "object") {
+    return {
+      json: recordValue(result.json ?? result),
+      providerKind: stringValue(result.providerKind) || "ai_vision",
+    };
+  }
+  return { json: {}, providerKind: "ai_vision" };
+}
+
+function defaultVisionRouter(options = {}) {
+  if (typeof options.aiRouterFactory === "function") return options.aiRouterFactory();
+  if (options.aiRouter) return options.aiRouter;
+  return createAiScenarioRouter({
+    env: options.env ?? process.env,
+    fetchImpl: options.fetchImpl ?? globalThis.fetch,
+  });
+}
+
+async function callVisionOcrProvider({
+  fileName,
+  fileType,
+  sourceKind,
+  fallbackReason,
+  imagePayloads,
+}, options = {}) {
+  const messages = buildVisionOcrMessages({
+    fileName,
+    sourceKind,
+    fallbackReason,
+    imagePayloads,
+  });
+  if (typeof options.visionProvider === "function") {
+    const result = await options.visionProvider({
+      fileName,
+      fileType,
+      sourceKind,
+      fallbackReason,
+      imagePayloads,
+      messages,
+    });
+    return normalizeVisionProviderResult(result);
+  }
+
+  const router = defaultVisionRouter(options);
+  const response = await router.callJson(withAiRoutingHashes({
+    scenario: "product_archive_ocr_vision",
+    promptVersion: "product-archive-ocr-vision-v1",
+    messages,
+    validate: (json) => {
+      const record = recordValue(json);
+      return Boolean(
+        stringValue(record.raw_text ?? record.rawText ?? record.text)
+        || stringValue(record.style_code ?? record.styleCode ?? record.spu_code ?? record.spuCode)
+        || visionFieldRows(record).some((row) => stringValue(row.value ?? row.field_value ?? row.text)),
+      );
+    },
+    auditValue: (json) => {
+      const record = recordValue(json);
+      return {
+        fieldCount: visionFieldRows(record).length,
+        hasRawText: Boolean(stringValue(record.raw_text ?? record.rawText ?? record.text)),
+        styleCode: stringValue(record.style_code ?? record.styleCode ?? record.spu_code ?? record.spuCode),
+      };
+    },
+  }, {
+    input: {
+      fileName,
+      fileType,
+      sourceKind,
+      fallbackReason,
+      images: imagePayloads.map((image) => ({
+        sha256: image.sha256,
+        byteLength: image.byteLength,
+      })),
+    },
+    candidates: Object.keys(FIELD_LABELS),
+  }));
+  return {
+    json: response.json,
+    providerKind: "ai_vision",
+    provider: response.provider,
+    routing: response.routing,
+  };
+}
+
+function mergeDocumentFields(leftFields = [], rightFields = []) {
+  const fieldsByKey = new Map();
+  for (const field of [...leftFields, ...rightFields]) {
+    if (!field?.key || !stringValue(field.value)) continue;
+    const existing = fieldsByKey.get(field.key);
+    fieldsByKey.set(field.key, existing ? betterField(existing, field) : field);
+  }
+  return Array.from(fieldsByKey.values());
+}
+
+function errorText(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function applyVisionFallback(document, {
+  filePath,
+  fileName,
+  fileType,
+  sourceKind,
+  pageImagePaths,
+  options,
+  fallbackReason,
+}) {
+  const warnings = Array.isArray(document.warnings) ? [...document.warnings] : [];
+  if (!visionFallbackEnabled(options)) return document;
+  const imagePaths = visionImagePathCandidates({ filePath, fileType, pageImagePaths }, options);
+  if (imagePaths.length === 0) {
+    return {
+      ...document,
+      warnings: uniqueTextValues([...warnings, "多模态兜底未执行：没有可发送的图片"]),
+    };
+  }
+  try {
+    let { payloads, warnings: payloadWarnings } = await visionImagePayloads(imagePaths, options);
+    if (payloads.length === 0 && fileType === "pdf") {
+      try {
+        const rerendered = await pdfVisionImagePayloads(filePath, options);
+        if (rerendered.payloads.length > 0) {
+          payloads = rerendered.payloads;
+          payloadWarnings = ["多模态兜底已重新渲染PDF图片"];
+        } else {
+          payloadWarnings = uniqueTextValues([...payloadWarnings, ...rerendered.warnings]);
+        }
+      } catch (error) {
+        payloadWarnings = uniqueTextValues([...payloadWarnings, `多模态兜底PDF重新渲染失败：${errorText(error)}`]);
+      }
+    }
+    const shouldShowPayloadWarnings = payloads.length === 0
+      || payloadWarnings.some((warning) => /已重新渲染PDF/.test(warning));
+    const warningsWithPayloads = uniqueTextValues([
+      ...warnings,
+      ...(shouldShowPayloadWarnings ? payloadWarnings : []),
+    ]);
+    if (payloads.length === 0) {
+      return {
+        ...document,
+        warnings: uniqueTextValues([...warningsWithPayloads, "多模态兜底未执行：没有可用的图片payload"]),
+      };
+    }
+    const vision = await callVisionOcrProvider({
+      fileName,
+      fileType,
+      sourceKind,
+      fallbackReason,
+      imagePayloads: payloads,
+    }, options);
+    const visionDocument = analyzeVisionOcrDocument({
+      fileName,
+      fileType,
+      sourceKind,
+      json: vision.json,
+    });
+    const fields = mergeDocumentFields(document.fields, visionDocument.fields);
+    const styleCodes = uniqueTextValues([
+      ...arrayValue(document.styleCodes),
+      ...arrayValue(visionDocument.styleCodes),
+    ]);
+    const detectedSpuCode = stringValue(document.detectedSpuCode) || stringValue(visionDocument.detectedSpuCode) || styleCodes[0] || null;
+    const rawText = stringValue(visionDocument.rawText) || stringValue(document.rawText);
+    const status = fields.length > 0 || rawText || detectedSpuCode ? "recognized" : stringValue(document.status) || "recognized";
+    return {
+      ...document,
+      status,
+      error: status === "recognized" ? null : document.error,
+      detectedSpuCode,
+      styleCodes,
+      fields,
+      warnings: uniqueTextValues([
+        ...warningsWithPayloads,
+        ...visionDocument.warnings,
+        `${fallbackReason}，已使用多模态模型兜底识别`,
+      ]),
+      rawText: rawText.slice(0, 10_000),
+      pages: visionDocument.pages?.length ? visionDocument.pages : document.pages,
+      providerKinds: uniqueTextValues([
+        ...arrayValue(document.providerKinds),
+        vision.providerKind,
+      ]),
+      visionProvider: vision.provider ?? null,
+      visionRouting: vision.routing ?? null,
+    };
+  } catch (error) {
+    return {
+      ...document,
+      warnings: uniqueTextValues([...warnings, `多模态兜底失败：${errorText(error)}`]),
+    };
+  }
+}
+
 function cellText(cell) {
   const value = cell?.value;
   if (value == null) return "";
@@ -685,32 +1511,51 @@ export async function recognizeProductArchiveOcrFile(file, options = {}) {
   let imageWorkDir = null;
   const providerOptions = { ...options };
   try {
-    const prepared = await prepareImagePathsForOcr(filePath, fileType, sourceKind, options);
-    imageWorkDir = prepared.workDir;
-    const pageImagePaths = prepared.files;
-    const pages = [];
-    const providerKinds = [];
-    for (let index = 0; index < pageImagePaths.length; index += 1) {
-      const providerResult = normalizeProviderResult(await provider(pageImagePaths[index], providerOptions), requestedProviderKind);
-      const text = providerResult.text;
-      if (providerResult.providerKind) providerKinds.push(providerResult.providerKind);
-      pages.push({ pageNumber: index + 1, text });
+    let pageImagePaths = [];
+    let providerKinds = [];
+    let document;
+    try {
+      const prepared = await prepareImagePathsForOcr(filePath, fileType, sourceKind, options);
+      imageWorkDir = prepared.workDir;
+      pageImagePaths = prepared.files;
+      const pages = [];
+      for (let index = 0; index < pageImagePaths.length; index += 1) {
+        const providerResult = normalizeProviderResult(await provider(pageImagePaths[index], providerOptions), requestedProviderKind);
+        const text = providerResult.text;
+        if (providerResult.providerKind) providerKinds.push(providerResult.providerKind);
+        pages.push({ pageNumber: index + 1, text });
+      }
+      document = {
+        ...analyzeProductArchiveOcrDocument({ fileName, fileType, sourceKind, pages }),
+        requestedProviderKind,
+        providerKinds: uniqueTextValues(providerKinds),
+        status: "recognized",
+        error: null,
+      };
+    } catch (error) {
+      document = {
+        ...analyzeProductArchiveOcrDocument({ fileName, fileType, sourceKind, pages: [] }),
+        requestedProviderKind,
+        providerKinds: uniqueTextValues(providerKinds),
+        status: "ocr_failed",
+        error: errorText(error),
+      };
     }
-    return {
-      ...analyzeProductArchiveOcrDocument({ fileName, fileType, sourceKind, pages }),
-      requestedProviderKind,
-      providerKinds: uniqueTextValues(providerKinds),
-      status: "recognized",
-      error: null,
-    };
-  } catch (error) {
-    return {
-      ...analyzeProductArchiveOcrDocument({ fileName, fileType, sourceKind, pages: [] }),
-      requestedProviderKind,
-      providerKinds: [],
-      status: "ocr_failed",
-      error: error instanceof Error ? error.message : String(error),
-    };
+
+    const localFallbackReason = visionFallbackReason(document);
+    const quality = localFallbackReason
+      ? { document, fallbackReason: localFallbackReason }
+      : await applyOcrQualityGate(document, options);
+    if (!quality.fallbackReason) return quality.document;
+    return applyVisionFallback(quality.document, {
+      filePath,
+      fileName,
+      fileType,
+      sourceKind,
+      pageImagePaths,
+      options,
+      fallbackReason: quality.fallbackReason,
+    });
   } finally {
     if (dispose) await dispose(providerOptions);
     if (imageWorkDir) await rm(imageWorkDir, { recursive: true, force: true });
