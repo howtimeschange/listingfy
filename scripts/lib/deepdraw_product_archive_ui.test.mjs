@@ -82,6 +82,8 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
     /productArchiveDrafts\.get\("\/hangtag-washlabel-ocr\/jobs\/:jobId"/,
     /productArchiveDrafts\.post\("\/ai-fill-jobs"/,
     /productArchiveDrafts\.get\("\/ai-fill-jobs\/:jobId"/,
+    /productArchiveDrafts\.post\("\/precheck-jobs"/,
+    /productArchiveDrafts\.get\("\/precheck-jobs\/:jobId"/,
     /productArchiveDrafts\.post\("\/publish-jobs"/,
     /productArchiveDrafts\.get\("\/publish-jobs\/:jobId"/,
     /productArchiveDrafts\.post\("\/images\/import"/,
@@ -120,6 +122,13 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
   assert.match(draftRoute, /draft\.ai_fill\.background_queued/);
   assert.match(draftRoute, /draft\.ai_fill\.background_applied/);
   assert.match(draftRoute, /productArchiveAiFillTargetsByIds/);
+  assert.match(draftRoute, /createProductArchivePrecheckQueue/);
+  assert.match(draftRoute, /queueName: "product_archive_publish_precheck"/);
+  assert.match(draftRoute, /draft\.publish_precheck\.background_queued/);
+  assert.match(draftRoute, /draft\.publish_precheck\.background_completed/);
+  assert.match(draftRoute, /productArchivePrecheckTargetsByIds/);
+  assert.match(draftRoute, /precheckErrorIsRetryable/);
+  assert.match(draftRoute, /LISTINGIFY_PRODUCT_ARCHIVE_PRECHECK_RETRY_DELAY_MS/);
   assert.match(draftRoute, /createProductArchivePublishQueue/);
   assert.match(draftRoute, /queueName: "product_archive_publish"/);
   assert.match(draftRoute, /draft\.publish\.background_queued/);
@@ -417,6 +426,12 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(asyncTaskCenter, /hangtagWashlabelOcrTaskSummary/);
   assert.match(asyncTaskCenter, /aiFillTaskSummary/);
   assert.match(asyncTaskCenter, /product_archive_ai_fill/);
+  assert.match(asyncTaskCenter, /precheckTaskSummary/);
+  assert.match(asyncTaskCenter, /product_archive_publish_precheck/);
+  assert.match(asyncTaskCenter, /precheckTaskItems/);
+  assert.match(asyncTaskCenter, /precheckItemReason/);
+  assert.match(asyncTaskCenter, /预检明细/);
+  assert.match(asyncTaskCenter, /等待重试/);
   assert.match(asyncTaskCenter, /publishTaskSummary/);
   assert.match(asyncTaskCenter, /product_archive_publish/);
   assert.match(asyncTaskCenter, /自动重试/);
@@ -436,12 +451,15 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /window\.localStorage\.setItem\(PRODUCT_ARCHIVE_DRAFT_GUIDE_STORAGE_KEY, "seen"\)/);
   assert.match(draftListPage, /setGuideDialogOpen\(true\)/);
   assert.match(draftListPage, /使用指南/);
+  assert.match(draftListPage, /refreshDraftList/);
+  assert.match(draftListPage, /drafts\.refetch\(\)/);
+  assert.match(draftListPage, /刷新列表/);
   assert.match(draftListPage, /深绘建档草稿使用指南/);
   assert.match(draftListPage, /推荐路径：标准文案表建草稿/);
   assert.match(draftListPage, /尺码表、吊牌\/洗唛文件可以通过抓虾自动化抓取/);
   assert.match(draftListPage, /https:\/\/crawshrimp\.com\/download/);
   assert.match(draftListPage, /补充识别资料/);
-  assert.match(draftListPage, /批量校验、查重、发布/);
+  assert.match(draftListPage, /批量发布预检和发布/);
   assert.match(draftListPage, /api\.get<.*>\(`\/product-archive-drafts\?/s);
   assert.match(draftListPage, /ServerPagination/);
   assert.match(draftListPage, /limit=/);
@@ -464,6 +482,11 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /批量 AI 填充字段/);
   assert.match(draftListPage, /batchAiFillFields/);
   assert.match(draftListPage, /refreshedAiFillJobIds/);
+  assert.match(draftListPage, /product_archive_publish_precheck/);
+  assert.match(draftListPage, /\/product-archive-drafts\/precheck-jobs/);
+  assert.match(draftListPage, /batchPublishPrecheck/);
+  assert.match(draftListPage, /refreshedPrecheckJobIds/);
+  assert.match(draftListPage, /批量发布预检/);
   assert.match(draftListPage, /product_archive_publish/);
   assert.match(draftListPage, /\/product-archive-drafts\/publish-jobs/);
   assert.match(draftListPage, /batchPublishToDeepdraw/);
@@ -506,9 +529,10 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /aria-label=\{`选择草稿 \$\{item\.spu_code\}`\}/);
   assert.match(draftListPage, /进入/);
   assert.match(draftListPage, /selectedDrafts\.length/);
-  assert.match(draftListPage, /批量校验/);
-  assert.match(draftListPage, /批量查重/);
-  assert.match(draftListPage, /批量提交预览/);
+  assert.match(draftListPage, /批量发布预检/);
+  assert.doesNotMatch(draftListPage, /批量校验/);
+  assert.doesNotMatch(draftListPage, /批量查重/);
+  assert.doesNotMatch(draftListPage, /批量提交预览/);
   assert.match(draftListPage, /批量 AI 填充字段/);
   assert.match(draftListPage, /批量发布到深绘/);
   assert.match(draftListPage, /api\.post<AsyncTaskJob>\("\/product-archive-drafts\/publish-jobs"/);

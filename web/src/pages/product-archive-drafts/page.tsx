@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { CheckCircle2, ChevronDown, ChevronUp, CircleHelp, Download, FileSpreadsheet, FileText, Images, Loader2, PackagePlus, RefreshCw, Search, Send, ShieldCheck, Sparkles, Upload } from "lucide-react"
+import { ChevronDown, ChevronUp, CircleHelp, Download, FileSpreadsheet, FileText, Images, Loader2, PackagePlus, RefreshCw, Search, Send, ShieldCheck, Sparkles, Upload } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { useAuth } from "@/lib/auth-context"
@@ -224,8 +224,6 @@ interface ProductArchiveDraftImageImportResponse {
     reason?: string
   }>
 }
-
-type BatchDraftAction = "validate" | "check_duplicate" | "submit_preview"
 
 const PRODUCT_ARCHIVE_DRAFT_GUIDE_STORAGE_KEY = "listingify.product_archive_draft_guide_seen.v1"
 
@@ -462,7 +460,7 @@ function ProductArchiveDraftGuideDialog({ open, onOpenChange }: ProductArchiveDr
     },
     {
       title: "校验并发布",
-      body: "先批量校验和查重，再执行提交预览。确认没有阻断问题后，选择草稿批量发布到深绘并等待回读校验。",
+      body: "先执行批量发布预检，系统会依次校验、查重并生成提交预览。确认没有阻断问题后，选择草稿批量发布到深绘并等待回读校验。",
     },
   ]
 
@@ -477,7 +475,7 @@ function ProductArchiveDraftGuideDialog({ open, onOpenChange }: ProductArchiveDr
         </DialogHeader>
         <div className="grid gap-3">
           <div className="rounded-md border border-[#b9f4d8] bg-[#f2fff8] px-3 py-2 text-sm text-[#08794f]">
-            推荐路径：标准文案表建草稿 → 上市计划匹配类目 → 吊牌/洗唛和 SPU 图补证据 → 详情页确认字段 → 批量校验、查重、发布。
+            推荐路径：标准文案表建草稿 → 上市计划匹配类目 → 吊牌/洗唛和 SPU 图补证据 → 详情页确认字段 → 批量发布预检和发布。
           </div>
           <div className="rounded-md border border-[#cfe8ff] bg-[#f6fbff] px-3 py-2 text-sm leading-6 text-[#0f5c8c]">
             尺码表、吊牌/洗唛文件可以通过抓虾自动化抓取；需要采集工具时前往{" "}
@@ -1108,10 +1106,12 @@ function SpuImageImportDialog({
 export default function ProductArchiveDraftsPage() {
   const { hasPermission } = useAuth()
   const canWrite = hasPermission("PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const canSubmit = hasPermission("PRODUCT_ARCHIVE_DRAFT_SUBMIT")
   const queryClient = useQueryClient()
   const { tasks, addTask, getTaskByJobId, openTaskCenter } = useAsyncTasks()
   const refreshedOcrJobIds = useRef<Set<string>>(new Set())
   const refreshedAiFillJobIds = useRef<Set<string>>(new Set())
+  const refreshedPrecheckJobIds = useRef<Set<string>>(new Set())
   const refreshedPublishJobIds = useRef<Set<string>>(new Set())
   const [searchText, setSearchText] = useState("")
   const [multiLineSearchOpen, setMultiLineSearchOpen] = useState(false)
@@ -1205,6 +1205,17 @@ export default function ProductArchiveDraftsPage() {
     ))
     if (completedAiFillTasks.length === 0) return
     for (const task of completedAiFillTasks) refreshedAiFillJobIds.current.add(task.id)
+    queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+  }, [queryClient, tasks])
+
+  useEffect(() => {
+    const completedPrecheckTasks = tasks.filter((task) => (
+      task.type === "product_archive_publish_precheck"
+      && task.job?.status === "completed"
+      && !refreshedPrecheckJobIds.current.has(task.id)
+    ))
+    if (completedPrecheckTasks.length === 0) return
+    for (const task of completedPrecheckTasks) refreshedPrecheckJobIds.current.add(task.id)
     queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
   }, [queryClient, tasks])
 
@@ -1411,33 +1422,6 @@ export default function ProductArchiveDraftsPage() {
     },
   })
 
-  const batchDraftAction = useMutation({
-    mutationFn: async ({ action, draftIds }: { action: BatchDraftAction; draftIds: number[] }) => {
-      for (const draftId of draftIds) {
-        if (action === "validate") {
-          await api.post<unknown>(`/product-archive-drafts/${draftId}/validate`)
-        } else if (action === "check_duplicate") {
-          await api.post<unknown>(`/product-archive-drafts/${draftId}/check-duplicate`)
-        } else {
-          await api.post<unknown>(`/product-archive-drafts/${draftId}/submit`, { dryRun: true })
-        }
-      }
-      return { action, count: draftIds.length }
-    },
-    onSuccess: (result) => {
-      const label = result.action === "validate"
-        ? "校验"
-        : result.action === "check_duplicate"
-          ? "查重"
-          : "提交预览"
-      toast.success(`已完成 ${formatNumber(result.count)} 个草稿的${label}`)
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
-    },
-    onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "批量操作失败")
-    },
-  })
-
   const batchAiFillFields = useMutation({
     mutationFn: async (draftIds: number[]) => api.post<AsyncTaskJob>("/product-archive-drafts/ai-fill-jobs", {
       draftIds,
@@ -1455,6 +1439,26 @@ export default function ProductArchiveDraftsPage() {
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "提交批量 AI 填充失败")
+    },
+  })
+
+  const batchPublishPrecheck = useMutation({
+    mutationFn: async (draftIds: number[]) => api.post<AsyncTaskJob>("/product-archive-drafts/precheck-jobs", {
+      draftIds,
+    }),
+    onSuccess: (job) => {
+      addTask({
+        job,
+        type: "product_archive_publish_precheck",
+        title: "批量发布预检",
+        description: `待预检 ${formatNumber(job.total_count)} 个深绘建档草稿，按校验、查重、提交预览串行执行`,
+        endpoint: `/product-archive-drafts/precheck-jobs/${job.id}`,
+      })
+      toast.success("已加入异步任务：批量发布预检")
+      openTaskCenter()
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "提交批量发布预检失败")
     },
   })
 
@@ -1505,12 +1509,12 @@ export default function ProductArchiveDraftsPage() {
     })
   }
 
-  function runBatchAction(action: BatchDraftAction) {
+  function runBatchPublishPrecheck() {
     if (selectedDrafts.length === 0) {
       toast.info("请先选择草稿")
       return
     }
-    batchDraftAction.mutate({ action, draftIds: selectedDrafts.map((item) => item.id) })
+    batchPublishPrecheck.mutate(selectedDrafts.map((item) => item.id))
   }
 
   function runBatchAiFill() {
@@ -1527,6 +1531,20 @@ export default function ProductArchiveDraftsPage() {
       return
     }
     batchPublishToDeepdraw.mutate(selectedDrafts.map((item) => item.id))
+  }
+
+  function refreshDraftList() {
+    void (async () => {
+      const [result] = await Promise.all([
+        drafts.refetch(),
+        queryClient.invalidateQueries({ queryKey: ["product-archive-draft-batch-job"] }),
+      ])
+      if (result.error) {
+        toast.error(result.error instanceof Error ? result.error.message : "刷新列表失败")
+        return
+      }
+      toast.success("已刷新深绘建档草稿列表")
+    })()
   }
 
   return (
@@ -1552,6 +1570,16 @@ export default function ProductArchiveDraftsPage() {
               type="button"
               variant="outline"
               size="sm"
+              disabled={drafts.isFetching}
+              onClick={refreshDraftList}
+            >
+              {drafts.isFetching ? <RefreshCw className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+              刷新列表
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
               disabled={!canWrite || selectedDrafts.length === 0 || batchAiFillFields.isPending}
               onClick={runBatchAiFill}
             >
@@ -1562,38 +1590,18 @@ export default function ProductArchiveDraftsPage() {
               type="button"
               variant="outline"
               size="sm"
-              disabled={!canWrite || selectedDrafts.length === 0 || batchDraftAction.isPending}
-              onClick={() => runBatchAction("validate")}
+              disabled={!canSubmit || selectedDrafts.length === 0 || batchPublishPrecheck.isPending}
+              onClick={runBatchPublishPrecheck}
             >
-              <ShieldCheck className="size-4" />
-              批量校验{selectedDrafts.length ? ` ${selectedDrafts.length}` : ""}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={!canWrite || selectedDrafts.length === 0 || batchDraftAction.isPending}
-              onClick={() => runBatchAction("check_duplicate")}
-            >
-              <Search className="size-4" />
-              批量查重{selectedDrafts.length ? ` ${selectedDrafts.length}` : ""}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={!canWrite || selectedDrafts.length === 0 || batchDraftAction.isPending}
-              onClick={() => runBatchAction("submit_preview")}
-            >
-              <CheckCircle2 className="size-4" />
-              批量提交预览{selectedDrafts.length ? ` ${selectedDrafts.length}` : ""}
+              {batchPublishPrecheck.isPending ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
+              批量发布预检{selectedDrafts.length ? ` ${selectedDrafts.length}` : ""}
             </Button>
             <Dialog open={publishDialogOpen} onOpenChange={setPublishDialogOpen}>
               <DialogTrigger asChild>
                 <Button
                   type="button"
                   size="sm"
-                  disabled={!canWrite || selectedDrafts.length === 0 || batchPublishToDeepdraw.isPending}
+                  disabled={!canSubmit || selectedDrafts.length === 0 || batchPublishToDeepdraw.isPending}
                 >
                   {batchPublishToDeepdraw.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
                   批量发布到深绘{selectedDrafts.length ? ` ${selectedDrafts.length}` : ""}
@@ -1612,7 +1620,7 @@ export default function ProductArchiveDraftsPage() {
                   </Button>
                   <Button
                     type="button"
-                    disabled={!canWrite || selectedDrafts.length === 0 || batchPublishToDeepdraw.isPending}
+                    disabled={!canSubmit || selectedDrafts.length === 0 || batchPublishToDeepdraw.isPending}
                     onClick={runBatchPublishToDeepdraw}
                   >
                     {batchPublishToDeepdraw.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}

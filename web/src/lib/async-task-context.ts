@@ -51,7 +51,7 @@ export interface AsyncTaskJob {
 
 export interface AsyncTaskRecord {
   id: string
-  type: "product_archive_mdm_draft" | "product_archive_hangtag_washlabel_ocr" | "product_archive_ai_fill" | "product_archive_publish" | "listing_launch_plan_import" | "category_mapping_ai_suggestions" | "shein_platform_product_sync" | "shein_platform_product_export"
+  type: "product_archive_mdm_draft" | "product_archive_hangtag_washlabel_ocr" | "product_archive_ai_fill" | "product_archive_publish_precheck" | "product_archive_publish" | "listing_launch_plan_import" | "category_mapping_ai_suggestions" | "shein_platform_product_sync" | "shein_platform_product_export"
   title: string
   description?: string
   endpoint: string

@@ -1426,6 +1426,37 @@ test("product archive draft service blocks ready status when required template a
   assert.match(service, /sku_size_not_in_template/);
 });
 
+test("product archive validation keeps duplicate hits out of missing-fields status", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(
+    service.productArchiveDraftStatusFromValidationIssues([
+      { severity: "blocker", issueType: "duplicate_product_found" },
+    ]),
+    "duplicate_found",
+  );
+  assert.equal(
+    service.productArchiveDraftStatusFromValidationIssues([
+      { severity: "blocker", issueType: "required_field_missing" },
+    ], [
+      { source_type: "manual", validation_status: "missing" },
+    ]),
+    "manual_review",
+  );
+  assert.equal(
+    service.productArchiveDraftStatusFromValidationIssues([
+      { severity: "blocker", issueType: "required_field_missing" },
+    ]),
+    "missing_fields",
+  );
+  assert.equal(
+    service.productArchiveDraftStatusFromValidationIssues([
+      { severity: "warning", issueType: "sku_price_mismatch" },
+    ]),
+    "ready",
+  );
+});
+
 test("applying a DeepDraw trade updates the draft fields and validation in one transaction", async () => {
   const source = await readFile(files.draftService, "utf8");
   const start = source.indexOf("export function applyProductArchiveDraftTrade");

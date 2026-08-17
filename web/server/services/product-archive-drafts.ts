@@ -72,6 +72,26 @@ export function isProductArchiveTradeBackfillStatus(status: unknown) {
   return PRODUCT_ARCHIVE_TRADE_BACKFILL_EDITABLE_STATUSES.has(stringValue(status))
 }
 
+type ProductArchiveValidationIssueLike = {
+  severity?: unknown
+  issueType?: unknown
+  issue_type?: unknown
+}
+
+export function productArchiveDraftStatusFromValidationIssues(
+  issues: ProductArchiveValidationIssueLike[],
+  fields: JsonRecord[] = [],
+) {
+  const blockers = issues.filter((issue) => stringValue(issue.severity) === "blocker")
+  if (blockers.length === 0) return "ready"
+  if (blockers.some((issue) => stringValue(issue.issueType ?? issue.issue_type) === "duplicate_product_found")) {
+    return "duplicate_found"
+  }
+  return fields.some((field) => stringValue(field.source_type) === "manual" && stringValue(field.validation_status) === "missing")
+    ? "manual_review"
+    : "missing_fields"
+}
+
 export type TradeSelectionStatus =
   | "auto_applied"
   | "pending_confirmation"
@@ -5569,11 +5589,7 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
     info_count: issues.filter((issue) => issue.severity === "info").length,
     validated_at: now,
   }
-  const status = summary.blocker_count > 0
-    ? fields.some((field) => stringValue(field.source_type) === "manual" && stringValue(field.validation_status) === "missing")
-      ? "manual_review"
-      : "missing_fields"
-    : "ready"
+  const status = productArchiveDraftStatusFromValidationIssues(issues, fields)
 
   db.transaction(() => {
     db.prepare("delete from product_archive_validation_issue where draft_id = ?").run(draftId)

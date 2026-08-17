@@ -152,6 +152,57 @@ function aiFillTaskSummary(task: AsyncTaskRecord) {
   }
 }
 
+function precheckTaskSummary(task: AsyncTaskRecord) {
+  if (task.type !== "product_archive_publish_precheck") return null
+  const result = recordResultValue(task.job?.result)
+  return {
+    precheckPassedCount: numberResultValue(result?.precheckPassedCount),
+    validationFailedCount: numberResultValue(result?.validationFailedCount),
+    duplicateCount: numberResultValue(result?.duplicateCount),
+    previewGeneratedCount: numberResultValue(result?.previewGeneratedCount),
+    warningCount: numberResultValue(result?.warningCount),
+  }
+}
+
+function precheckTaskItems(task: AsyncTaskRecord) {
+  if (task.type !== "product_archive_publish_precheck") return []
+  return task.job?.items ?? []
+}
+
+function precheckItemResultKind(item: AsyncTaskJobItem) {
+  return textResultValue(recordResultValue(item.result)?.resultKind)
+}
+
+function precheckItemStatusLabel(item: AsyncTaskJobItem) {
+  if (item.status === "completed") return "通过"
+  if (item.status === "failed") {
+    const resultKind = precheckItemResultKind(item)
+    if (resultKind === "duplicate_found") return "重复"
+    if (resultKind === "validation_failed" || resultKind === "preview_validation_failed") return "未通过"
+    return "失败"
+  }
+  if (item.status === "retrying") return "等待重试"
+  if (item.status === "running") return "预检中"
+  return "排队中"
+}
+
+function precheckItemStatusClass(item: AsyncTaskJobItem) {
+  if (item.status === "completed") return "text-[#0f7f58]"
+  if (item.status === "failed") return "text-[#d45656]"
+  return "text-[#3772cf]"
+}
+
+function precheckItemReason(item: AsyncTaskJobItem) {
+  const result = recordResultValue(item.result)
+  const message = textResultValue(result?.message ?? result?.reason)
+  if (message) return message
+  if (item.status === "failed") return item.error || "未知失败原因"
+  if (item.status === "retrying") return item.error ? `接口繁忙，${item.error}` : "接口繁忙，等待自动重试"
+  if (item.status === "running") return "正在依次执行校验、查重和提交预览"
+  if (item.status === "queued") return "等待后台预检"
+  return "预检通过，可批量发布到深绘"
+}
+
 function publishTaskSummary(task: AsyncTaskRecord) {
   if (task.type !== "product_archive_publish") return null
   const result = recordResultValue(task.job?.result)
@@ -404,6 +455,8 @@ function AsyncTaskDrawer({
               const done = job?.status === "completed"
               const ocrSummary = hangtagWashlabelOcrTaskSummary(task)
               const aiFillSummary = aiFillTaskSummary(task)
+              const precheckSummary = precheckTaskSummary(task)
+              const precheckItems = precheckTaskItems(task)
               const publishSummary = publishTaskSummary(task)
               const publishItems = publishTaskItems(task)
               return (
@@ -455,6 +508,30 @@ function AsyncTaskDrawer({
                       AI 已补齐 {formatNumber(aiFillSummary.savedFieldCount)} 个字段，
                       处理草稿 {formatNumber(aiFillSummary.processedDraftCount)} 个，
                       提示 {formatNumber(aiFillSummary.warningCount)} 条。
+                    </div>
+                  ) : null}
+                  {precheckSummary ? (
+                    <div className="mt-3 rounded-md border border-[#b9d7ff] bg-[#f4f8ff] px-2 py-1.5 text-xs text-[#2f66b3]">
+                      预检通过 {formatNumber(precheckSummary.precheckPassedCount)} 个，
+                      阻断 {formatNumber(precheckSummary.validationFailedCount)} 个，
+                      重复 {formatNumber(precheckSummary.duplicateCount)} 个，
+                      已生成预览 {formatNumber(precheckSummary.previewGeneratedCount)} 个。
+                    </div>
+                  ) : null}
+                  {precheckItems.length > 0 ? (
+                    <div className="mt-3 rounded-md border border-[#d7e0ee] bg-[#fbfdff] p-2">
+                      <div className="mb-1 text-xs font-medium text-foreground">预检明细</div>
+                      <div className="max-h-40 overflow-auto text-xs text-muted-foreground">
+                        {precheckItems.map((item) => (
+                          <div key={item.spu_code} className="grid grid-cols-[minmax(7rem,auto)_4rem_1fr] gap-2 border-t border-[#d7e0ee]/70 py-1 first:border-t-0">
+                            <span className="font-mono text-foreground">{item.spu_code}</span>
+                            <span className={precheckItemStatusClass(item)}>
+                              {precheckItemStatusLabel(item)}
+                            </span>
+                            <span className="min-w-0">{precheckItemReason(item)}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   ) : null}
                   {publishSummary ? (

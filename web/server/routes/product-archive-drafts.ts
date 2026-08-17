@@ -199,6 +199,40 @@ type ProductArchiveAiFillJob = {
   result: Record<string, unknown> | null
 }
 
+type ProductArchivePrecheckJobItem = {
+  draft_id: number
+  spu_code: string
+  status: "queued" | "running" | "retrying" | "completed" | "failed"
+  phase: "queued" | "validate" | "duplicate" | "preview"
+  started_at: string | null
+  finished_at: string | null
+  result: Record<string, unknown> | null
+  error: string | null
+  attempt_count: number
+  max_attempts: number
+  next_retry_at: string | null
+}
+
+type ProductArchivePrecheckJob = {
+  id: string
+  source: "precheck"
+  status: "queued" | "running" | "completed"
+  outcome?: "succeeded" | "partial_failure" | "failed" | null
+  total_count: number
+  completed_count: number
+  failed_count: number
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  options: {
+    actor: AuditActor | null
+    ipAddress: string | null
+    retryDelayMs: number
+  }
+  items: ProductArchivePrecheckJobItem[]
+  result: Record<string, unknown> | null
+}
+
 type ProductArchivePublishJobItem = {
   draft_id: number
   spu_code: string
@@ -464,6 +498,430 @@ function createProductArchiveAiFillQueue({
           item.started_at = null
           item.finished_at = null
           item.error = null
+        }
+      }
+      job.completed_count = job.items.filter((item) => item.status === "completed").length
+      job.failed_count = job.items.filter((item) => item.status === "failed").length
+      jobs.set(job.id, job)
+      pending.push(job)
+      persist(job)
+    }
+    if (pending.length > 0) schedule()
+  }
+
+  return {
+    enqueue,
+    getJob,
+    resume,
+  }
+}
+
+function cloneProductArchivePrecheckJob(job: ProductArchivePrecheckJob) {
+  const currentItem = job.items.find((item) => item.status === "running" || item.status === "retrying") ?? null
+  return {
+    ...job,
+    options: {
+      ...job.options,
+      actor: job.options.actor ? { ...job.options.actor } : null,
+    },
+    items: job.items.map((item) => ({ ...item, result: item.result ? { ...item.result } : null })),
+    current_item: currentItem ? { ...currentItem } : null,
+    failed_items: job.items.filter((item) => item.status === "failed").map((item) => ({ ...item })),
+    queued_count: job.items.filter((item) => item.status === "queued").length,
+    running_count: job.items.filter((item) => item.status === "running" || item.status === "retrying").length,
+  }
+}
+
+function clampPrecheckAttempts(value: unknown) {
+  const number = Number(value ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_PRECHECK_MAX_ATTEMPTS ?? 3)
+  if (!Number.isFinite(number)) return 3
+  return Math.max(1, Math.min(6, Math.floor(number)))
+}
+
+function clampPrecheckRetryDelayMs(value: unknown) {
+  const number = Number(value ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_PRECHECK_RETRY_DELAY_MS ?? 5000)
+  if (!Number.isFinite(number)) return 5000
+  return Math.max(1000, Math.min(60000, Math.floor(number)))
+}
+
+function precheckErrorIsRetryable(error: unknown) {
+  const message = errorMessage(error)
+  if (/校验未通过|提交预览后仍有阻断|深绘已存在|草稿存在阻断|本地未找到|不存在|缺少|无效|不能提交|重复|duplicate/i.test(message)) return false
+  return isRetryableProductArchiveSyncError(error)
+}
+
+function validationIssueSummary(issues: unknown) {
+  const rows = Array.isArray(issues) ? issues : []
+  const messages = rows.map((issue) => {
+    const row = objectValue(issue)
+    const fieldName = stringValue(row.fieldName ?? row.field_name)
+    const skuCode = stringValue(row.skuCode ?? row.sku_code)
+    const prefix = fieldName || skuCode
+    const message = stringValue(row.message) || stringValue(row.issueType ?? row.issue_type) || "未知问题"
+    return prefix ? `${prefix}：${message}` : message
+  }).filter(Boolean)
+  if (messages.length === 0) return "存在阻断问题"
+  const head = messages.slice(0, 3).join("；")
+  return messages.length > 3 ? `${head}；另有 ${messages.length - 3} 项` : head
+}
+
+function validationSummaryCounts(validation: unknown) {
+  const record = objectValue(validation)
+  const summary = objectValue(record.summary)
+  return {
+    blockerCount: Number(summary.blocker_count ?? 0) || 0,
+    warningCount: Number(summary.warning_count ?? 0) || 0,
+    infoCount: Number(summary.info_count ?? 0) || 0,
+  }
+}
+
+function setPrecheckItemFailed(
+  job: ProductArchivePrecheckJob,
+  item: ProductArchivePrecheckJobItem,
+  result: Record<string, unknown>,
+  error: string,
+  persist: (job: ProductArchivePrecheckJob) => void,
+  now: () => number,
+) {
+  item.status = "failed"
+  item.result = result
+  item.error = error
+  item.next_retry_at = null
+  item.finished_at = new Date(now()).toISOString()
+  job.failed_count += 1
+  persist(job)
+}
+
+function setPrecheckItemCompleted(
+  job: ProductArchivePrecheckJob,
+  item: ProductArchivePrecheckJobItem,
+  result: Record<string, unknown>,
+  persist: (job: ProductArchivePrecheckJob) => void,
+  now: () => number,
+) {
+  item.status = "completed"
+  item.result = result
+  item.error = null
+  item.next_retry_at = null
+  item.finished_at = new Date(now()).toISOString()
+  job.completed_count += 1
+  persist(job)
+}
+
+function createProductArchivePrecheckQueue({
+  store,
+  onInternalError = (error: unknown) => console.error("Product archive precheck queue internal error", error),
+  wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+  now = () => Date.now(),
+}: {
+  store: ReturnType<typeof createPostgresProductArchiveSyncJobStore>
+  onInternalError?: (error: unknown, context?: Record<string, unknown>) => void
+  wait?: (ms: number) => Promise<unknown>
+  now?: () => number
+}) {
+  const jobs = new Map<string, ProductArchivePrecheckJob>()
+  const pending: ProductArchivePrecheckJob[] = []
+  let running = false
+  let processScheduled = false
+
+  function reportInternalError(error: unknown, context: Record<string, unknown>) {
+    try {
+      onInternalError(error, context)
+    } catch {
+      // Error reporting must never stop the precheck worker.
+    }
+  }
+
+  function persist(job: ProductArchivePrecheckJob) {
+    try {
+      store.save(cloneProductArchivePrecheckJob(job))
+    } catch (error) {
+      reportInternalError(error, { phase: "persist", jobId: job.id })
+    }
+  }
+
+  function getJob(id: string) {
+    const job = jobs.get(id)
+    if (job) return cloneProductArchivePrecheckJob(job)
+    const stored = store.get(id) as ProductArchivePrecheckJob | null
+    return stored ? cloneProductArchivePrecheckJob(stored) : null
+  }
+
+  async function runPrecheckItemOnce(job: ProductArchivePrecheckJob, item: ProductArchivePrecheckJobItem) {
+    item.status = "running"
+    item.phase = "validate"
+    item.started_at ??= new Date(now()).toISOString()
+    item.next_retry_at = null
+    item.error = null
+    persist(job)
+
+    const db = getDb()
+    const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, item.draft_id)
+    const validation = validateProductArchiveDraft(db, item.draft_id)
+    const validationCounts = validationSummaryCounts(validation)
+    if (validationCounts.blockerCount > 0) {
+      const message = `校验未通过：${validationIssueSummary(objectValue(validation).issues)}`
+      setPrecheckItemFailed(job, item, {
+        draftId: item.draft_id,
+        spuCode: item.spu_code,
+        resultKind: "validation_failed",
+        phase: "validate",
+        message,
+        blockerCount: validationCounts.blockerCount,
+        warningCount: validationCounts.warningCount,
+        tradeSelectionAutoApplied: tradeRefresh.autoApplied,
+      }, message, persist, now)
+      return
+    }
+
+    item.phase = "duplicate"
+    persist(job)
+    const duplicate = await checkDuplicateProductArchiveDraft(db, item.draft_id)
+    if (duplicate.duplicateFound) {
+      const message = "深绘已存在同货号商品"
+      setPrecheckItemFailed(job, item, {
+        draftId: item.draft_id,
+        spuCode: item.spu_code,
+        resultKind: "duplicate_found",
+        phase: "duplicate",
+        message,
+        blockerCount: 1,
+        warningCount: validationCounts.warningCount,
+        duplicate,
+      }, message, persist, now)
+      return
+    }
+
+    item.phase = "preview"
+    persist(job)
+    const preview = await submitProductArchiveDraft(db, item.draft_id, { dryRun: true })
+    const finalValidation = validateProductArchiveDraft(db, item.draft_id)
+    const finalCounts = validationSummaryCounts(finalValidation)
+    if (finalCounts.blockerCount > 0) {
+      const message = `提交预览后仍有阻断：${validationIssueSummary(objectValue(finalValidation).issues)}`
+      setPrecheckItemFailed(job, item, {
+        draftId: item.draft_id,
+        spuCode: item.spu_code,
+        resultKind: "preview_validation_failed",
+        phase: "preview",
+        message,
+        blockerCount: finalCounts.blockerCount,
+        warningCount: finalCounts.warningCount,
+      }, message, persist, now)
+      return
+    }
+
+    const previewRecord = objectValue(preview)
+    const previewSummary = objectValue(previewRecord.summary)
+    const result = {
+      draftId: item.draft_id,
+      spuCode: item.spu_code,
+      resultKind: "precheck_passed",
+      phase: "preview",
+      message: "预检通过，可批量发布到深绘",
+      blockerCount: finalCounts.blockerCount,
+      warningCount: finalCounts.warningCount,
+      fieldCount: Number(previewSummary.fieldCount ?? 0) || 0,
+      skuCount: Number(previewSummary.skuCount ?? 0) || 0,
+      duplicateFound: false,
+      previewGenerated: true,
+      tradeSelectionAutoApplied: tradeRefresh.autoApplied,
+    }
+    try {
+      writeOperationLog(db, {
+        action: "draft.publish_precheck.background_completed",
+        module: "PRODUCT_ARCHIVE_DRAFT",
+        entityType: "product_archive_draft",
+        entityId: item.draft_id,
+        summary: `后台批量发布预检深绘建档草稿 ${item.spu_code}`,
+        metadata: {
+          jobId: job.id,
+          draftId: item.draft_id,
+          spuCode: item.spu_code,
+          result,
+        },
+      }, job.options.actor, job.options.ipAddress ?? undefined)
+    } catch (error) {
+      reportInternalError(error, { phase: "item_audit", jobId: job.id, draftId: item.draft_id })
+    }
+    setPrecheckItemCompleted(job, item, result, persist, now)
+  }
+
+  async function processItem(job: ProductArchivePrecheckJob, item: ProductArchivePrecheckJobItem) {
+    item.started_at ??= new Date(now()).toISOString()
+    while (item.attempt_count < item.max_attempts) {
+      item.attempt_count += 1
+      try {
+        await runPrecheckItemOnce(job, item)
+        return
+      } catch (error) {
+        const retryable = precheckErrorIsRetryable(error) && item.attempt_count < item.max_attempts
+        item.error = errorMessage(error)
+        if (!retryable) {
+          setPrecheckItemFailed(job, item, {
+            draftId: item.draft_id,
+            spuCode: item.spu_code,
+            resultKind: "failed",
+            phase: item.phase,
+            retryable: false,
+            attemptCount: item.attempt_count,
+          }, item.error, persist, now)
+          return
+        }
+        const retryDelay = job.options.retryDelayMs * item.attempt_count
+        item.status = "retrying"
+        item.result = {
+          draftId: item.draft_id,
+          spuCode: item.spu_code,
+          resultKind: "retrying",
+          phase: item.phase,
+          retryable: true,
+          attemptCount: item.attempt_count,
+          message: "接口繁忙，等待自动重试",
+        }
+        item.next_retry_at = new Date(now() + retryDelay).toISOString()
+        persist(job)
+        try {
+          await wait(retryDelay)
+        } catch (waitError) {
+          reportInternalError(waitError, { phase: "retry_delay", jobId: job.id, draftId: item.draft_id })
+        }
+      }
+    }
+  }
+
+  function finishJob(job: ProductArchivePrecheckJob) {
+    const results = job.items.map((item) => objectValue(item.result))
+    job.result = {
+      precheckPassedCount: results.filter((result) => stringValue(result.resultKind) === "precheck_passed").length,
+      validationFailedCount: results.filter((result) => ["validation_failed", "preview_validation_failed"].includes(stringValue(result.resultKind))).length,
+      duplicateCount: results.filter((result) => stringValue(result.resultKind) === "duplicate_found").length,
+      previewGeneratedCount: results.filter((result) => result.previewGenerated === true).length,
+      warningCount: results.reduce((sum, result) => sum + (Number(result.warningCount) || 0), 0),
+    }
+    job.status = "completed"
+    job.outcome = job.failed_count === 0
+      ? "succeeded"
+      : job.completed_count === 0
+        ? "failed"
+        : "partial_failure"
+    job.finished_at = new Date(now()).toISOString()
+    persist(job)
+  }
+
+  async function processLoop() {
+    processScheduled = false
+    if (running) return
+    running = true
+    try {
+      while (pending.length > 0) {
+        const job = pending.shift()
+        if (!job) continue
+        job.status = "running"
+        job.started_at ??= new Date(now()).toISOString()
+        persist(job)
+        try {
+          for (const item of job.items) {
+            if (item.status === "completed" || item.status === "failed") continue
+            try {
+              await processItem(job, item)
+            } catch (error) {
+              setPrecheckItemFailed(job, item, {
+                draftId: item.draft_id,
+                spuCode: item.spu_code,
+                resultKind: "failed",
+                phase: item.phase,
+              }, errorMessage(error), persist, now)
+            }
+          }
+        } finally {
+          finishJob(job)
+        }
+      }
+    } finally {
+      running = false
+    }
+  }
+
+  function schedule() {
+    if (processScheduled) return
+    processScheduled = true
+    queueMicrotask(() => {
+      void processLoop().catch((error) => {
+        reportInternalError(error, { phase: "process_loop" })
+      })
+    })
+  }
+
+  function enqueue({
+    targets,
+    maxAttempts,
+    retryDelayMs,
+    actor,
+    ipAddress,
+  }: {
+    targets: ProductArchiveDraftBatchTarget[]
+    maxAttempts?: unknown
+    retryDelayMs?: unknown
+    actor: AuditActor | null
+    ipAddress: string | null
+  }) {
+    if (targets.length === 0) throw new Error("请先选择需要预检的草稿")
+    const nowText = new Date(now()).toISOString()
+    const normalizedMaxAttempts = clampPrecheckAttempts(maxAttempts)
+    const job: ProductArchivePrecheckJob = {
+      id: randomUUID(),
+      source: "precheck",
+      status: "queued",
+      outcome: null,
+      total_count: targets.length,
+      completed_count: 0,
+      failed_count: 0,
+      created_at: nowText,
+      started_at: null,
+      finished_at: null,
+      options: { actor, ipAddress, retryDelayMs: clampPrecheckRetryDelayMs(retryDelayMs) },
+      items: targets.map((target) => ({
+        draft_id: target.draftId,
+        spu_code: target.spuCode,
+        status: "queued",
+        phase: "queued",
+        started_at: null,
+        finished_at: null,
+        result: null,
+        error: null,
+        attempt_count: 0,
+        max_attempts: normalizedMaxAttempts,
+        next_retry_at: null,
+      })),
+      result: null,
+    }
+    jobs.set(job.id, job)
+    pending.push(job)
+    persist(job)
+    schedule()
+    return cloneProductArchivePrecheckJob(job)
+  }
+
+  function resume() {
+    const recovered = (store.recover() as ProductArchivePrecheckJob[])
+      .filter((job) => job?.source === "precheck")
+    for (const storedJob of recovered) {
+      const job = storedJob
+      job.status = "queued"
+      job.started_at = null
+      job.finished_at = null
+      job.options.retryDelayMs = clampPrecheckRetryDelayMs(job.options.retryDelayMs)
+      for (const item of job.items) {
+        item.attempt_count = Math.max(0, Number(item.attempt_count ?? 0) || 0)
+        item.max_attempts = clampPrecheckAttempts(item.max_attempts)
+        if (item.status === "running" || item.status === "retrying") {
+          item.status = "queued"
+          item.phase = "queued"
+          item.started_at = null
+          item.finished_at = null
+          item.error = null
+          item.next_retry_at = null
         }
       }
       job.completed_count = job.items.filter((item) => item.status === "completed").length
@@ -1193,6 +1651,13 @@ const productArchiveAiFillQueue = createProductArchiveAiFillQueue({
   }),
 })
 
+const productArchivePrecheckQueue = createProductArchivePrecheckQueue({
+  store: createPostgresProductArchiveSyncJobStore({
+    getDb,
+    queueName: "product_archive_publish_precheck",
+  }),
+})
+
 const productArchivePublishQueue = createProductArchivePublishQueue({
   store: createPostgresProductArchiveSyncJobStore({
     getDb,
@@ -1204,6 +1669,7 @@ export function resumeProductArchiveDraftQueue() {
   draftQueue.resume()
   hangtagWashlabelOcrQueue.resume()
   productArchiveAiFillQueue.resume()
+  productArchivePrecheckQueue.resume()
   productArchivePublishQueue.resume()
 }
 
@@ -1611,6 +2077,16 @@ function productArchiveAiFillTargetsByIds(db: ReturnType<typeof getDb>, draftIds
     defaultLimit: 200,
     maxLimit: 500,
     limitMessage: (limit) => `单次最多选择 ${limit} 个草稿进行 AI 填充`,
+  })
+}
+
+function productArchivePrecheckTargetsByIds(db: ReturnType<typeof getDb>, draftIds: number[]) {
+  return productArchiveDraftTargetsByIds(db, draftIds, {
+    emptyMessage: "请先选择需要发布预检的草稿",
+    limitEnv: "LISTINGIFY_PRODUCT_ARCHIVE_PRECHECK_BATCH_LIMIT",
+    defaultLimit: 200,
+    maxLimit: 500,
+    limitMessage: (limit) => `单次最多选择 ${limit} 个草稿进行发布预检`,
   })
 }
 
@@ -2325,6 +2801,50 @@ productArchiveDrafts.get("/ai-fill-jobs/:jobId", (c) => {
   const job = productArchiveAiFillQueue.getJob(c.req.param("jobId"))
   if (!job) {
     throw new HTTPException(404, { message: "AI 填充任务不存在" })
+  }
+  return c.json(job)
+})
+
+productArchiveDrafts.post("/precheck-jobs", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_SUBMIT")
+  const db = getDb()
+  const body = await readJson(c)
+  const targets = productArchivePrecheckTargetsByIds(db, draftIdsFromBody(body))
+  const job = productArchivePrecheckQueue.enqueue({
+    targets,
+    maxAttempts: body.maxAttempts ?? body.max_attempts,
+    retryDelayMs: body.retryDelayMs ?? body.retry_delay_ms,
+    actor: {
+      id: user.id,
+      username: user.username,
+    },
+    ipAddress: trustedClientAddress({
+      forwardedFor: c.req.header("x-forwarded-for"),
+      realIp: c.req.header("x-real-ip"),
+    }),
+  })
+  auditFromContext(c, {
+    action: "draft.publish_precheck.background_queued",
+    module: "PRODUCT_ARCHIVE_DRAFT",
+    entityType: "product_archive_draft_batch",
+    entityId: job.id,
+    summary: `提交后台批量发布预检深绘建档草稿 ${job.total_count} 个`,
+    metadata: {
+      jobId: job.id,
+      count: job.total_count,
+      draftIds: targets.map((target) => target.draftId),
+      spuCodes: targets.map((target) => target.spuCode),
+      userId: user.id,
+    },
+  })
+  return c.json(job, 202)
+})
+
+productArchiveDrafts.get("/precheck-jobs/:jobId", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const job = productArchivePrecheckQueue.getJob(c.req.param("jobId"))
+  if (!job) {
+    throw new HTTPException(404, { message: "批量发布预检任务不存在" })
   }
   return c.json(job)
 })
