@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ChevronDown, ChevronUp, CircleHelp, Download, FileSpreadsheet, FileText, Loader2, PackagePlus, RefreshCw, Search, Send, ShieldCheck, Sparkles, Upload } from "lucide-react"
+import { ChevronDown, ChevronUp, CircleHelp, Download, FileSpreadsheet, FileText, Loader2, PackagePlus, RefreshCw, Search, Send, ShieldCheck, Sparkles, Trash2, Upload } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { useAuth } from "@/lib/auth-context"
@@ -52,6 +52,7 @@ import {
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { QueryErrorState } from "@/components/query-error-state"
+import { ConfirmDialog } from "@/components/confirm-dialog"
 
 interface ProductArchiveDraftRow {
   id: number
@@ -1382,6 +1383,25 @@ export default function ProductArchiveDraftsPage() {
     },
   })
 
+  const deleteDraft = useMutation({
+    mutationFn: (draftId: number) => api.delete<{ ok: boolean }>(`/product-archive-drafts/${draftId}`),
+    onSuccess: async (_, draftId) => {
+      toast.success("建档草稿已删除")
+      setSelectedDraftIds((current) => {
+        const next = new Set(current)
+        next.delete(draftId)
+        return next
+      })
+      if ((drafts.data?.items.length ?? 0) <= 1 && pagination.offset > 0) {
+        setPagination((current) => ({ ...current, offset: Math.max(0, current.offset - current.limit) }))
+      }
+      await queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "删除建档草稿失败")
+    },
+  })
+
   useEffect(() => {
     if (trackedJob?.status !== "completed") return
     void queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
@@ -1773,73 +1793,98 @@ export default function ProductArchiveDraftsPage() {
                   <TableHead>图包资料</TableHead>
                   <TableHead>productId</TableHead>
                   <TableHead>更新时间</TableHead>
-                  <TableHead>操作</TableHead>
+                  <TableHead className="w-[132px]">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {(drafts.data?.items ?? []).map((item) => (
-                  <TableRow key={item.id}>
-                    <TableCell>
-                      <Checkbox
-                        aria-label={`选择草稿 ${item.spu_code}`}
-                        checked={selectedDraftIds.has(item.id)}
-                        onCheckedChange={(checked) => toggleDraft(item.id, checked)}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <DraftThumbnail
-                        src={item.thumbnail_image_url}
-                        label={item.thumbnail_file_name ?? item.spu_code}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Link to={`/product-archive-drafts/${item.id}`} className="font-medium text-primary hover:underline">
-                        {item.spu_code}
-                      </Link>
-                      <div className="mt-1 font-mono text-[11px] text-muted-foreground">{item.draft_no}</div>
-                    </TableCell>
-                    <TableCell className="max-w-[260px] truncate">{item.title || "未命名"}</TableCell>
-                    <TableCell>
-                      <div>{item.tenant_name}</div>
-                      <div className="text-xs text-muted-foreground">{item.merchant_id}</div>
-                    </TableCell>
-                    <TableCell className="max-w-[220px] truncate">{item.trade_path || "待确认"}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className={statusClass(item.status)}>
-                        {statusLabels[item.status] ?? item.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <span className="text-[#d45656]">{item.blocker_count}</span>
-                      <span className="mx-1 text-muted-foreground">/</span>
-                      <span className="text-[#c37d0d]">{item.warning_count}</span>
-                    </TableCell>
-                    <TableCell>{formatNumber(item.sku_count)}</TableCell>
-                    <TableCell>
-                      <div>{formatNumber(item.image_count ?? 0)} 张</div>
-                      <div className="mt-1 flex flex-wrap gap-1">
-                        <Badge variant={item.hangtag_upload_count > 0 ? "secondary" : "outline"} className="text-[11px] font-normal">
-                          吊牌{item.hangtag_upload_count > 0 ? "已传" : "未传"}
-                        </Badge>
-                        <Badge variant={item.washlabel_upload_count > 0 ? "secondary" : "outline"} className="text-[11px] font-normal">
-                          洗唛{item.washlabel_upload_count > 0 ? "已传" : "未传"}
-                        </Badge>
-                        <Badge variant={item.asset_package_image_count > 0 ? "secondary" : "outline"} className="text-[11px] font-normal">
-                          平铺图{item.asset_package_image_count > 0 ? "已传" : "未传"}
-                        </Badge>
-                      </div>
-                    </TableCell>
-                    <TableCell>{item.created_product_id || "-"}</TableCell>
-                    <TableCell>{formatDateTime(item.updated_at)}</TableCell>
-                    <TableCell>
-                      <Button asChild variant="outline" size="sm">
-                        <Link to={`/product-archive-drafts/${item.id}`}>
-                          进入
+                {(drafts.data?.items ?? []).map((item) => {
+                  const isDeletingDraft = deleteDraft.isPending && deleteDraft.variables === item.id
+                  return (
+                    <TableRow key={item.id}>
+                      <TableCell>
+                        <Checkbox
+                          aria-label={`选择草稿 ${item.spu_code}`}
+                          checked={selectedDraftIds.has(item.id)}
+                          onCheckedChange={(checked) => toggleDraft(item.id, checked)}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <DraftThumbnail
+                          src={item.thumbnail_image_url}
+                          label={item.thumbnail_file_name ?? item.spu_code}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Link to={`/product-archive-drafts/${item.id}`} className="font-medium text-primary hover:underline">
+                          {item.spu_code}
                         </Link>
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                        <div className="mt-1 font-mono text-[11px] text-muted-foreground">{item.draft_no}</div>
+                      </TableCell>
+                      <TableCell className="max-w-[260px] truncate">{item.title || "未命名"}</TableCell>
+                      <TableCell>
+                        <div>{item.tenant_name}</div>
+                        <div className="text-xs text-muted-foreground">{item.merchant_id}</div>
+                      </TableCell>
+                      <TableCell className="max-w-[220px] truncate">{item.trade_path || "待确认"}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={statusClass(item.status)}>
+                          {statusLabels[item.status] ?? item.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <span className="text-[#d45656]">{item.blocker_count}</span>
+                        <span className="mx-1 text-muted-foreground">/</span>
+                        <span className="text-[#c37d0d]">{item.warning_count}</span>
+                      </TableCell>
+                      <TableCell>{formatNumber(item.sku_count)}</TableCell>
+                      <TableCell>
+                        <div>{formatNumber(item.image_count ?? 0)} 张</div>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          <Badge variant={item.hangtag_upload_count > 0 ? "secondary" : "outline"} className="text-[11px] font-normal">
+                            吊牌{item.hangtag_upload_count > 0 ? "已传" : "未传"}
+                          </Badge>
+                          <Badge variant={item.washlabel_upload_count > 0 ? "secondary" : "outline"} className="text-[11px] font-normal">
+                            洗唛{item.washlabel_upload_count > 0 ? "已传" : "未传"}
+                          </Badge>
+                          <Badge variant={item.asset_package_image_count > 0 ? "secondary" : "outline"} className="text-[11px] font-normal">
+                            平铺图{item.asset_package_image_count > 0 ? "已传" : "未传"}
+                          </Badge>
+                        </div>
+                      </TableCell>
+                      <TableCell>{item.created_product_id || "-"}</TableCell>
+                      <TableCell>{formatDateTime(item.updated_at)}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Button asChild variant="outline" size="sm">
+                            <Link to={`/product-archive-drafts/${item.id}`}>
+                              进入
+                            </Link>
+                          </Button>
+                          <ConfirmDialog
+                            title="删除深绘建档草稿"
+                            description={`将删除款号 ${item.spu_code} 的本地建档草稿、字段、SKU、校验问题、提交日志和已导入参考图；不会删除深绘后台已经存在或已生成的商品。`}
+                            confirmLabel="删除"
+                            variant="destructive"
+                            onConfirm={() => deleteDraft.mutate(item.id)}
+                            trigger={(
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                disabled={!canWrite || item.status === "submitting" || deleteDraft.isPending}
+                                aria-label={`删除草稿 ${item.spu_code}`}
+                              >
+                                {isDeletingDraft ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+                                删除
+                              </Button>
+                            )}
+                          />
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
               </TableBody>
             </Table>
           </CompactListTableFrame>

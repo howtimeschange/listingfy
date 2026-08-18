@@ -82,6 +82,9 @@ test("product archive draft service is PG-first and covers build validate patch 
 
   assert.match(service, /SyncPostgresDatabase/);
   assert.match(service, /export function listProductArchiveDrafts/);
+  assert.match(service, /export function deleteProductArchiveDraft/);
+  assert.match(service, /正在提交的草稿不能删除/);
+  assert.match(service, /delete from product_archive_draft where id = \?/);
   assert.match(service, /thumbnail_image_url/);
   assert.match(service, /asset_package_image_count/);
   assert.match(service, /hangtag_upload_count/);
@@ -3530,6 +3533,9 @@ test("routes delegate to PG services and enforce the deepdraw archive permission
     assert.match(`${draftRoute}\n${metadataRoute}`, new RegExp(permission));
   }
   assert.match(draftRoute, /assertSafeProductArchiveCode/);
+  assert.match(draftRoute, /deleteProductArchiveDraft/);
+  assert.match(draftRoute, /deleteDraftImageFiles/);
+  assert.match(draftRoute, /action: "draft\.deleted"/);
   assert.match(draftRoute, /productArchiveDrafts\.post\("\/source-imports"/);
   assert.match(draftRoute, /submitProductArchiveDraft/);
   assert.match(metadataRoute, /syncDeepdrawTrades/);

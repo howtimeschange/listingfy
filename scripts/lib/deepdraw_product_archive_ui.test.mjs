@@ -457,6 +457,11 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /refreshDraftList/);
   assert.match(draftListPage, /drafts\.refetch\(\)/);
   assert.match(draftListPage, /刷新列表/);
+  assert.match(draftListPage, /ConfirmDialog/);
+  assert.match(draftListPage, /删除深绘建档草稿/);
+  assert.match(draftListPage, /不会删除深绘后台已经存在或已生成的商品/);
+  assert.match(draftListPage, /api\.delete<\{ ok: boolean \}>\(`\/product-archive-drafts\/\$\{draftId\}`\)/);
+  assert.match(draftListPage, /disabled=\{!canWrite \|\| item\.status === "submitting" \|\| deleteDraft\.isPending\}/);
   assert.match(draftListPage, /深绘建档草稿使用指南/);
   assert.match(draftListPage, /推荐路径：标准文案表建草稿/);
   assert.match(draftListPage, /尺码表、吊牌\/洗唛\/平铺图可以通过抓虾自动化抓取/);

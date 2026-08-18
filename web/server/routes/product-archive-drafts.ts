@@ -41,6 +41,7 @@ import {
   confirmProductArchiveDraftRecommendedTrade,
   createProductArchiveDraftFromSpu,
   createProductArchiveDraftImage,
+  deleteProductArchiveDraft,
   deleteProductArchiveDraftImage,
   extractProductArchiveImageSpuCode,
   fillProductArchiveDraftFieldsWithAi,
@@ -1988,6 +1989,17 @@ async function repairLegacyDraftImageLocalPath(db: ReturnType<typeof getDb>, ima
   return assertLocalImageFile({ rootDir: DRAFT_IMAGE_DIR, filePath: localPath })
 }
 
+async function deleteDraftImageFiles(draftId: number, images: Array<Record<string, unknown>>) {
+  const rootDir = path.resolve(DRAFT_IMAGE_DIR)
+  const localPaths = Array.from(new Set(images.map((image) => stringValue(image.local_path)).filter(Boolean)))
+  await Promise.all(localPaths.map(async (localPath) => {
+    const resolvedPath = path.resolve(localPath)
+    if (!resolvedPath.startsWith(`${rootDir}${path.sep}`)) return
+    await rm(resolvedPath, { force: true }).catch(() => undefined)
+  }))
+  await rm(path.join(DRAFT_IMAGE_DIR, String(draftId)), { force: true, recursive: true }).catch(() => undefined)
+}
+
 async function saveUploadedSpreadsheet(c: Context) {
   const form = await c.req.formData()
   const file = form.get("file")
@@ -3282,6 +3294,41 @@ productArchiveDrafts.delete("/:draftId/images/:imageId", async (c) => {
     metadata: { imageId, userId: user.id },
   })
   return c.json({ ok: true, detail: getProductArchiveDraftDetail(db, draftId) })
+})
+
+productArchiveDrafts.delete("/:draftId", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const db = getDb()
+  const draftId = readId(c.req.param("draftId"))
+  let result: ReturnType<typeof deleteProductArchiveDraft>
+  try {
+    result = deleteProductArchiveDraft(db, draftId)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message === "正在提交的草稿不能删除") {
+      throw new HTTPException(400, { message })
+    }
+    throw error
+  }
+  if (!result) {
+    throw new HTTPException(404, { message: "草稿不存在" })
+  }
+  await deleteDraftImageFiles(draftId, result.images)
+  auditFromContext(c, {
+    action: "draft.deleted",
+    module: "PRODUCT_ARCHIVE_DRAFT",
+    entityType: "product_archive_draft",
+    entityId: draftId,
+    summary: `删除深绘建档草稿 ${stringValue(result.draft.spu_code) || draftId}`,
+    metadata: {
+      draftId,
+      spuCode: stringValue(result.draft.spu_code),
+      status: stringValue(result.draft.status),
+      imageCount: result.images.length,
+      userId: user.id,
+    },
+  })
+  return c.json({ ok: true })
 })
 
 productArchiveDrafts.get("/:draftId", (c) => {

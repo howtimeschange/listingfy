@@ -4971,6 +4971,23 @@ export function deleteProductArchiveDraftImage(db: SyncPostgresDatabase, draftId
   return image
 }
 
+export function deleteProductArchiveDraft(db: SyncPostgresDatabase, draftId: number) {
+  const draft = db.prepare("select * from product_archive_draft where id = ?").get(draftId) as JsonRecord | undefined
+  if (!draft) return null
+  if (stringValue(draft.status) === "submitting") {
+    throw new Error("正在提交的草稿不能删除")
+  }
+  const images = db.prepare(`
+    select id, local_path, file_name, original_file_name
+    from product_archive_draft_image
+    where draft_id = ?
+  `).all(draftId) as JsonRecord[]
+  db.transaction(() => {
+    db.prepare("delete from product_archive_draft where id = ?").run(draftId)
+  })()
+  return { draft, images }
+}
+
 function serializeDraftDetail(db: SyncPostgresDatabase, draftId: number) {
   const draft = draftById(db, draftId)
   const sourceRows = referenceSourceRowsForDraft(db, draft)
