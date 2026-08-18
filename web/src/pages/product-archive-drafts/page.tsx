@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ChevronDown, ChevronUp, CircleHelp, Download, FileSpreadsheet, FileText, Images, Loader2, PackagePlus, RefreshCw, Search, Send, ShieldCheck, Sparkles, Upload } from "lucide-react"
+import { ChevronDown, ChevronUp, CircleHelp, Download, FileSpreadsheet, FileText, Loader2, PackagePlus, RefreshCw, Search, Send, ShieldCheck, Sparkles, Upload } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { useAuth } from "@/lib/auth-context"
@@ -413,10 +413,6 @@ function isHiddenUploadFile(file: File) {
   return name === ".DS_Store" || name.startsWith("~$")
 }
 
-function isOcrAssetUploadFile(file: File) {
-  return ["pdf", "jpg", "jpeg", "png"].includes(uploadExtension(file))
-}
-
 function isScmSupplementUploadFile(file: File) {
   return ["xlsx", "xlsm"].includes(uploadExtension(file))
 }
@@ -804,46 +800,21 @@ function HangtagWashlabelImportDialog({
         </DialogHeader>
         <div className="grid max-h-[68vh] gap-4 overflow-auto pr-1">
           <section className="rounded-lg border p-4">
-            <div className="grid gap-3 md:grid-cols-2">
-              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-dashed px-3 py-3 text-sm hover:bg-muted/40">
-                <span className="flex min-w-0 items-center gap-2">
-                  <Upload className="size-4 text-muted-foreground" />
-                  <span className="truncate">
-                    {files.length > 0 ? `已选择 ${formatNumber(files.length)} 个 OCR 文件` : "选择 PDF 吊牌 + JPG/PNG 洗唛文件"}
-                  </span>
-                </span>
-                <Input
-                  type="file"
-                  accept=".pdf,.jpg,.jpeg,.png"
-                  multiple
-                  className="hidden"
-                  onChange={(event) => onFilesChange(Array.from(event.target.files ?? []).filter(isOcrAssetUploadFile))}
-                />
-              </label>
-              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-dashed px-3 py-3 text-sm hover:bg-muted/40">
-                <span className="flex min-w-0 items-center gap-2">
-                  <FileSpreadsheet className="size-4 text-muted-foreground" />
-                  <span className="truncate">选择抓虾图包目录</span>
-                </span>
-                <input
-                  type="file"
-                  multiple
-                  className="hidden"
-                  onChange={(event) => onFolderSelection(Array.from(event.target.files ?? []))}
-                  {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
-                />
-              </label>
-            </div>
-            <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-md border border-dashed px-3 py-3 text-sm hover:bg-muted/40">
+            <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-dashed px-3 py-3 text-sm hover:bg-muted/40">
               <span className="flex min-w-0 items-center gap-2">
                 <FileSpreadsheet className="size-4 text-muted-foreground" />
-                <span className="truncate">{scmSupplementFile ? uploadDisplayName(scmSupplementFile) : "选择 SCM洗唛吊牌下载结果 .xlsx"}</span>
+                <span className="truncate">
+                  {hasUploadInput
+                    ? `已选择图包：OCR ${formatNumber(files.length)} 个，参考图 ${formatNumber(referenceImageFiles.length)} 张${scmSupplementFile ? "，含 SCM 表" : ""}`
+                    : "选择图包目录"}
+                </span>
               </span>
-              <Input
+              <input
                 type="file"
-                accept=".xlsx,.xlsm"
+                multiple
                 className="hidden"
-                onChange={(event) => onScmSupplementFileChange(event.target.files?.[0] ?? null)}
+                onChange={(event) => onFolderSelection(Array.from(event.target.files ?? []))}
+                {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
               />
             </label>
             {files.length > 0 ? (
@@ -1037,148 +1008,6 @@ function HangtagWashlabelImportDialog({
   )
 }
 
-interface SpuImageImportDialogProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  files: File[]
-  onFilesChange: (files: File[]) => void
-  result: ProductArchiveDraftImageImportResponse | null
-  isPending: boolean
-  canWrite: boolean
-  onSubmit: () => void
-}
-
-function SpuImageImportDialog({
-  open,
-  onOpenChange,
-  files,
-  onFilesChange,
-  result,
-  isPending,
-  canWrite,
-  onSubmit,
-}: SpuImageImportDialogProps) {
-  const onFolderSelection = (selectedFiles: File[]) => {
-    const accepted = selectedFiles.filter((file) => !isHiddenUploadFile(file) && isSpuReferenceImageUploadFile(file))
-    const skipped = selectedFiles.length - accepted.length
-    onFilesChange(accepted)
-    if (skipped > 0) toast.warning(`已忽略 ${formatNumber(skipped)} 个非图片文件`)
-  }
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogTrigger asChild>
-        <Button type="button" variant="outline" size="sm" disabled={!canWrite}>
-          <Images className="size-4" />
-          导入 SPU 图片
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>导入 SPU 参考图</DialogTitle>
-          <DialogDescription>
-            批量上传 JPG/PNG/WEBP 商品图，系统从文件名或目录名识别款号并关联深绘建档草稿，作为 AI 多模态判断参考。
-          </DialogDescription>
-        </DialogHeader>
-        <div className="grid max-h-[64vh] gap-4 overflow-auto pr-1">
-          <section className="rounded-lg border p-4">
-            <div className="grid gap-3 md:grid-cols-2">
-              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-dashed px-3 py-3 text-sm hover:bg-muted/40">
-                <span className="flex min-w-0 items-center gap-2">
-                  <Upload className="size-4 text-muted-foreground" />
-                  <span className="truncate">
-                    {files.length > 0 ? `已选择 ${formatNumber(files.length)} 张图片` : "选择 SPU 图片文件"}
-                  </span>
-                </span>
-                <Input
-                  type="file"
-                  accept=".jpg,.jpeg,.png,.webp"
-                  multiple
-                  className="hidden"
-                  onChange={(event) => onFilesChange(Array.from(event.target.files ?? []).filter(isSpuReferenceImageUploadFile))}
-                />
-              </label>
-              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-dashed px-3 py-3 text-sm hover:bg-muted/40">
-                <span className="flex min-w-0 items-center gap-2">
-                  <Images className="size-4 text-muted-foreground" />
-                  <span className="truncate">选择按款号整理的图片目录</span>
-                </span>
-                <input
-                  type="file"
-                  multiple
-                  className="hidden"
-                  onChange={(event) => onFolderSelection(Array.from(event.target.files ?? []))}
-                  {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
-                />
-              </label>
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              文件名或上级目录需要包含款号，例如 208426103215/主图1.jpg 或 208426103215-front.png。
-            </p>
-            {files.length > 0 ? (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {files.slice(0, 16).map((file) => (
-                  <Badge key={`${uploadDisplayName(file)}-${file.size}`} variant="secondary" className="max-w-[260px] truncate">
-                    {uploadDisplayName(file)}
-                  </Badge>
-                ))}
-                {files.length > 16 ? <Badge variant="outline">+{formatNumber(files.length - 16)}</Badge> : null}
-              </div>
-            ) : null}
-          </section>
-
-          {result ? (
-            <section className="rounded-lg border p-4">
-              <div className="mb-3 grid gap-2 text-sm sm:grid-cols-4">
-                <div className="rounded-md bg-muted/40 px-3 py-2">文件 {formatNumber(result.summary.fileCount)}</div>
-                <div className="rounded-md bg-muted/40 px-3 py-2">导入 {formatNumber(result.summary.importedCount)}</div>
-                <div className="rounded-md bg-muted/40 px-3 py-2">匹配草稿 {formatNumber(result.summary.matchedDraftCount)}</div>
-                <div className="rounded-md bg-muted/40 px-3 py-2">跳过 {formatNumber(result.summary.skippedCount)}</div>
-              </div>
-              <div className="max-h-56 overflow-auto rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>文件</TableHead>
-                      <TableHead>款号</TableHead>
-                      <TableHead>结果</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {result.items.map((item, index) => (
-                      <TableRow key={`${item.fileName}-${index}`}>
-                        <TableCell className="max-w-[320px] truncate">{item.fileName}</TableCell>
-                        <TableCell className="font-mono text-xs">{item.spuCode ?? "-"}</TableCell>
-                        <TableCell>
-                          {item.ok ? (
-                            <Badge variant="outline" className="border-[#b9f4d8] bg-[#d4fae8] text-[#0fa76e]">
-                              已关联草稿 {item.draftId}
-                            </Badge>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">{item.reason ?? "已跳过"}</span>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </section>
-          ) : null}
-        </div>
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
-          <Button type="button" disabled={!canWrite || isPending || files.length === 0} onClick={onSubmit}>
-            {isPending ? <Loader2 className="size-4 animate-spin" /> : <Images className="size-4" />}
-            上传并关联草稿
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
 export default function ProductArchiveDraftsPage() {
   const { hasPermission } = useAuth()
   const canWrite = hasPermission("PRODUCT_ARCHIVE_DRAFT_WRITE")
@@ -1206,9 +1035,6 @@ export default function ProductArchiveDraftsPage() {
   const [ocrOverwriteExisting, setOcrOverwriteExisting] = useState(false)
   const [ocrPreview, setOcrPreview] = useState<HangtagWashlabelOcrPreviewResponse | null>(null)
   const [ocrJobId, setOcrJobId] = useState<string | null>(null)
-  const [spuImageDialogOpen, setSpuImageDialogOpen] = useState(false)
-  const [spuImageFiles, setSpuImageFiles] = useState<File[]>([])
-  const [spuImageImportResult, setSpuImageImportResult] = useState<ProductArchiveDraftImageImportResponse | null>(null)
   const [copywritingFile, setCopywritingFile] = useState<File | null>(null)
   const [launchPlanFile, setLaunchPlanFile] = useState<File | null>(null)
   const [sizeChartFile, setSizeChartFile] = useState<File | null>(null)
@@ -1454,26 +1280,6 @@ export default function ProductArchiveDraftsPage() {
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "写入吊牌/洗唛/平铺图字段失败")
-    },
-  })
-
-  const importSpuReferenceImages = useMutation({
-    mutationFn: async () => api.postForm<ProductArchiveDraftImageImportResponse>(
-      "/product-archive-drafts/images/import",
-      buildSpuImageImportForm(spuImageFiles),
-    ),
-    onSuccess: (result) => {
-      setSpuImageImportResult(result)
-      if (result.summary.importedCount > 0) {
-        toast.success(`已关联 ${formatNumber(result.summary.importedCount)} 张 SPU 参考图`)
-        setSpuImageFiles([])
-        queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
-      } else {
-        toast.warning("没有图片匹配到建档草稿，请检查文件名或目录名是否包含款号")
-      }
-    },
-    onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "导入 SPU 参考图失败")
     },
   })
 
@@ -1918,22 +1724,6 @@ export default function ProductArchiveDraftsPage() {
                 onPreview={() => previewHangtagWashlabelOcr.mutate()}
                 onApply={() => applyHangtagWashlabelOcr.mutate()}
                 onSubmitJob={() => submitHangtagWashlabelOcrJob.mutate()}
-              />
-              <SpuImageImportDialog
-                open={spuImageDialogOpen}
-                onOpenChange={(open) => {
-                  setSpuImageDialogOpen(open)
-                  if (open) setSpuImageImportResult(null)
-                }}
-                files={spuImageFiles}
-                onFilesChange={(files) => {
-                  setSpuImageFiles(files)
-                  setSpuImageImportResult(null)
-                }}
-                result={spuImageImportResult}
-                isPending={importSpuReferenceImages.isPending}
-                canWrite={canWrite}
-                onSubmit={() => importSpuReferenceImages.mutate()}
               />
               <StartProductArchiveDialog
                 open={workflowDialogOpen}

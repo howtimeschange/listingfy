@@ -341,8 +341,18 @@ else
 fi
 
 echo "===== Health check ====="
-sleep 3
-curl -fsS "http://127.0.0.1:${PORT:-3001}/api/health"
+HEALTH_URL="http://127.0.0.1:${PORT:-3001}/api/health"
+for attempt in $(seq 1 30); do
+  if curl -fsS "$HEALTH_URL"; then
+    echo
+    break
+  fi
+  if [ "$attempt" -eq 30 ]; then
+    echo "ERROR: API health check failed after ${attempt} attempts: $HEALTH_URL"
+    exit 31
+  fi
+  sleep 2
+done
 echo
 
 echo "===== Restart web container ====="

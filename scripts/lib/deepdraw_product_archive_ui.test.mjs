@@ -472,8 +472,10 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /hangtag-washlabel-ocr\/preview/);
   assert.match(draftListPage, /hangtag-washlabel-ocr\/apply/);
   assert.match(draftListPage, /hangtag-washlabel-ocr\/jobs/);
-  assert.match(draftListPage, /选择抓虾图包目录/);
-  assert.match(draftListPage, /SCM洗唛吊牌下载结果/);
+  assert.match(draftListPage, /选择图包目录/);
+  assert.doesNotMatch(draftListPage, /选择抓虾图包目录/);
+  assert.doesNotMatch(draftListPage, /选择 PDF 吊牌 \+ JPG\/PNG 洗唛文件/);
+  assert.doesNotMatch(draftListPage, /SCM洗唛吊牌下载结果/);
   assert.match(draftListPage, /webkitdirectory/);
   assert.match(draftListPage, /form\.append\("filePaths", uploadDisplayName\(file\)\)/);
   assert.match(draftListPage, /form\.append\("referenceImages", file\)/);
@@ -508,8 +510,8 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /hangtagWashlabelOcrJobSummary/);
   assert.match(draftListPage, /已自动/);
   assert.match(draftListPage, /填充空字段/);
-  assert.match(draftListPage, /SpuImageImportDialog/);
-  assert.match(draftListPage, /导入 SPU 图片/);
+  assert.doesNotMatch(draftListPage, /SpuImageImportDialog/);
+  assert.doesNotMatch(draftListPage, /导入 SPU 图片/);
   assert.match(draftListPage, /\/product-archive-drafts\/images\/import/);
   assert.match(draftListPage, /isSpuReferenceImageUploadFile/);
   assert.match(draftListPage, /参考图/);
