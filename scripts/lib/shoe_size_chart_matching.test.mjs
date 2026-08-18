@@ -189,6 +189,40 @@ test("shoe video-channel size range uses the maximum actual shoe size", async ()
   assert.deepEqual(result["尺码."], { valueText: "14-16cm", valueJson: {} });
 });
 
+test("shoe multi-platform charts fall back to the Vipshop mapping when compatible channel columns are absent", async () => {
+  const service = await import("../../web/server/services/shoe-size-chart-matching.ts");
+  const result = service.buildShoeSizeChartFieldValues({
+    rows: [{
+      size_value: 26,
+      foot_length_mm: 160,
+      foot_length_tolerance_mm: 2,
+      inner_length_mm: 170,
+      vip_mapping_text: "26码(脚长16/内长17)",
+      video_pdd_vip_mapping_text: "",
+      pinduoduo_mapping_text: "",
+    }],
+    skuSizes: ["26"],
+    fieldTemplates: [{
+      fieldName: "多平台尺码",
+      fieldType: "MULTI_TEXT",
+      options: ["拼多多", "微信视频小店"],
+    }],
+    match: {
+      status: "matched",
+      chartCode: "open_sandal",
+      templateType: "休闲",
+      shoeSizeTableType: "凉鞋",
+      legacyShoeType: "凉鞋",
+      reason: "test",
+    },
+  });
+
+  assert.deepEqual(result["多平台尺码"].valueJson, {
+    title: "拼多多,微信视频小店",
+    "26": "26码(脚长16/内长17),26码(脚长16/内长17)",
+  });
+});
+
 test("shoe structured chart is emitted in the create payload", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const value = service.productArchivePayloadFieldValue({

@@ -307,7 +307,9 @@ export function buildShoeSizeChartFieldValues(input: {
   if (multi) {
     const columns = supportedColumns(multi, ["拼多多", "微信视频小店"])
     const value = tableValue(rows, columns, (row, column) => column === "拼多多"
-      ? stringValue(row.pinduoduo_mapping_text) || stringValue(row.video_pdd_vip_mapping_text)
+      ? stringValue(row.pinduoduo_mapping_text)
+        || stringValue(row.video_pdd_vip_mapping_text)
+        || stringValue(row.vip_mapping_text)
       : stringValue(row.video_pdd_vip_mapping_text) || stringValue(row.vip_mapping_text))
     if (value && columns.length === 2) output["多平台尺码"] = value
   }
