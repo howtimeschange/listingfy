@@ -2301,7 +2301,16 @@ function appendSourceBatchIdToDraft(
 
 function sourceRowsForDraft(db: SyncPostgresDatabase, draft: JsonRecord) {
   const snapshot = recordValue(draft.source_snapshot_json)
-  const batchIds = sourceBatchIdsFromSnapshot(snapshot)
+  const requestedSourceBatchIds = Array.isArray(snapshot.sourceBatchIds)
+    ? snapshot.sourceBatchIds
+    : recordValue(snapshot.sourceBatchIds)
+  const resolvedSourceBatchIds = resolveDraftSourceBatchIdsForSpu(
+    db,
+    stringValue(draft.spu_code),
+    requestedSourceBatchIds,
+    snapshot.sourceBatchId,
+  )
+  const batchIds = sourceBatchIdList(resolvedSourceBatchIds)
   if (batchIds.length > 0) {
     return sourceRowsForSpuBatchIds(db, stringValue(draft.spu_code), batchIds)
   }

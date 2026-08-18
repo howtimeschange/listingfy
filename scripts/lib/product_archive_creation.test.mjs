@@ -135,6 +135,7 @@ test("product archive draft source rows stay scoped to the import batch when pre
   assert.match(service, /source\.source_batch_id = \?/);
   assert.match(service, /activeProductArchiveSourceRows/);
   assert.match(service, /export function resolveDraftSourceBatchIdsForSpu/);
+  assert.match(service, /const resolvedSourceBatchIds = resolveDraftSourceBatchIdsForSpu\(/);
   assert.match(service, /sourceRowsForSpuBatchIds\(db, input\.spuCode, sourceBatchIdValues\)/);
   assert.match(service, /sourceRowsForSpu\(db, input\.spuCode, null\)/);
   assert.match(service, /sourceRowsForDraft\(db, draft\)/);
