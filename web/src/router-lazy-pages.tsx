@@ -29,6 +29,7 @@ export const ProductArchiveDraftsPage = lazy(() => import("@/pages/product-archi
 export const ProductArchiveDraftDetailPage = lazy(() => import("@/pages/product-archive-drafts/[draftId]/page"))
 export const ListingLaunchPlansPage = lazy(() => import("@/pages/listing-launch-plans/page"))
 export const DeepdrawFieldMappingsPage = lazy(() => import("@/pages/deepdraw-field-mappings/page"))
+export const ShoeSizeChartsPage = lazy(() => import("@/pages/shoe-size-charts/page"))
 export const MdmProductsPage = lazy(() => import("@/pages/mdm-products/page"))
 export const MdmProductDetailPage = lazy(() => import("@/pages/mdm-products/[spuCode]/page"))
 export const DeepDrawContentPage = lazy(() => import("@/pages/deepdraw-content/page"))

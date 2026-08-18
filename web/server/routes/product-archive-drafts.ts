@@ -30,6 +30,7 @@ import {
 } from "../../../scripts/lib/product_archive_sync_queue.mjs"
 import { resolveDeepdrawConfig } from "../../../scripts/lib/deepdraw_client.mjs"
 import { syncMdmProduct } from "../services/product-archive-sync"
+import { syncMdmMainImageToProductArchiveDraft } from "../services/product-archive-draft-mdm-images"
 import {
   applyProductArchiveHangtagWashlabelOcr,
   previewProductArchiveHangtagWashlabelOcr,
@@ -87,6 +88,22 @@ const PRODUCT_ARCHIVE_TEMPLATES = {
   },
 } as const
 
+async function syncDraftMdmMainImageSafely(db: ReturnType<typeof getDb>, draftId: number, spuCode: string) {
+  try {
+    return await syncMdmMainImageToProductArchiveDraft(db, draftId, {
+      imageRootDir: DRAFT_IMAGE_DIR,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.warn("MDM main image sync failed", { draftId, spuCode, message })
+    return {
+      status: "mdm_main_image_sync_failed",
+      image: null,
+      message,
+    }
+  }
+}
+
 const draftQueue = createProductArchiveSyncQueue({
   autoRecover: false,
   store: createPostgresProductArchiveSyncJobStore({
@@ -109,8 +126,10 @@ const draftQueue = createProductArchiveSyncQueue({
       createdBy: options.createdBy,
       projectRoot: PROJECT_ROOT,
     })
+    const mdmMainImage = await syncDraftMdmMainImageSafely(db, Number(detail.draft.id), spuCode)
     return {
       mdm,
+      mdmMainImage,
       draftId: detail.draft.id,
       draftNo: detail.draft.draft_no,
       status: detail.draft.status,
@@ -2392,15 +2411,19 @@ productArchiveDrafts.post("/from-spu/:spuCode", async (c) => {
     createdBy: user.id,
     projectRoot: PROJECT_ROOT,
   })
+  const mdmMainImage = await syncDraftMdmMainImageSafely(db, Number(detail.draft.id), spuCode)
   auditFromContext(c, {
     action: "draft.created",
     module: "PRODUCT_ARCHIVE_DRAFT",
     entityType: "product_archive_draft",
     entityId: detail.draft.id,
     summary: `生成深绘建档草稿 ${spuCode}`,
-    metadata: { spuCode, tenantName: detail.draft.tenant_name },
+    metadata: { spuCode, tenantName: detail.draft.tenant_name, mdmMainImageStatus: mdmMainImage.status },
   })
-  return c.json(detail)
+  return c.json({
+    ...getProductArchiveDraftDetail(db, Number(detail.draft.id)),
+    mdmMainImage,
+  })
 })
 
 productArchiveDrafts.post("/batch", async (c) => {

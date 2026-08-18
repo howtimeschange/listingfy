@@ -8,6 +8,7 @@ import categoryMapping from "./routes/category-mapping"
 import productArchives, { resumeProductArchiveSyncQueue } from "./routes/product-archives"
 import productArchiveDrafts, { resumeProductArchiveDraftQueue } from "./routes/product-archive-drafts"
 import deepdrawFieldMappings from "./routes/deepdraw-field-mappings"
+import shoeSizeCharts from "./routes/shoe-size-charts"
 import mdmProducts from "./routes/mdm-products"
 import deepdrawContent from "./routes/deepdraw-content"
 import deepdrawMetadata, { resumeDeepdrawMetadataSyncJobs } from "./routes/deepdraw-metadata"
@@ -96,6 +97,7 @@ app.route("/api/category-mapping", categoryMapping)
 app.route("/api/product-archives", productArchives)
 app.route("/api/product-archive-drafts", productArchiveDrafts)
 app.route("/api/deepdraw-field-mappings", deepdrawFieldMappings)
+app.route("/api/shoe-size-charts", shoeSizeCharts)
 app.route("/api/mdm-products", mdmProducts)
 app.route("/api/deepdraw-content", deepdrawContent)
 app.route("/api/deepdraw-metadata", deepdrawMetadata)

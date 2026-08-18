@@ -70,6 +70,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: "深绘建档草稿", to: "/product-archive-drafts", icon: PenLine, permission: "PRODUCT_ARCHIVE_DRAFT_READ" },
       { label: "上市计划表", to: "/listing-launch-plans", icon: FileSpreadsheet, permission: "PRODUCT_ARCHIVE_DRAFT_READ" },
+      { label: "鞋品尺码表", to: "/shoe-size-charts", icon: Ruler, permission: "PRODUCT_ARCHIVE_DRAFT_READ" },
       { label: "深绘字段对应关系", to: "/deepdraw-field-mappings", icon: ClipboardList, permission: "PRODUCT_ARCHIVE_RULE_MANAGE" },
       { label: "深绘类目字段", to: "/deepdraw-metadata", icon: Database, permission: "PRODUCT_ARCHIVE_DRAFT_READ" },
     ],
