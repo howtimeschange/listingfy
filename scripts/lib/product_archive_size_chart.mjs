@@ -327,6 +327,19 @@ function sizeLabelNumber(value) {
   return match ? String(Number(match[0])) : "";
 }
 
+function sizeMatchKeys(value) {
+  const text = stringValue(value);
+  if (!text) return [];
+  const normalized = normalizeDeepdrawSize(text);
+  const numberText = normalized.match(/^(\d+)cm$/i)?.[1] ?? "";
+  return Array.from(new Set([
+    text,
+    normalized,
+    numberText,
+    numberText ? numberText.padStart(3, "0") : "",
+  ].map((item) => item.replace(/\s+/g, "").toLowerCase()).filter(Boolean)));
+}
+
 function derivedValueForMapping(mapping, size) {
   if (compactKey(mapping?.targetField) === compactKey("身高") && compactKey(mapping?.sourcePoint) === compactKey("尺码")) {
     return sizeLabelNumber(size) || "0";
@@ -334,9 +347,14 @@ function derivedValueForMapping(mapping, size) {
   return null;
 }
 
-export function buildSizeChartForTemplate({ rows = [], spuCode, template = {}, mappings: explicitMappings = [] } = {}) {
+export function buildSizeChartForTemplate({ rows = [], spuCode, template = {}, mappings: explicitMappings = [], allowedSizes = [] } = {}) {
+  const allowedSizeKeys = new Set(
+    (Array.isArray(allowedSizes) ? allowedSizes : [])
+      .flatMap(sizeMatchKeys),
+  );
   const normalizedRows = normalizePlmSizeChartRows(rows)
-    .filter((row) => !spuCode || row.spuCode === stringValue(spuCode));
+    .filter((row) => !spuCode || row.spuCode === stringValue(spuCode))
+    .filter((row) => allowedSizeKeys.size === 0 || sizeMatchKeys(row.size).some((key) => allowedSizeKeys.has(key)));
   const targetFields = templateTargetFields(template);
   const mappingOverrides = explicitMappingLookup(explicitMappings, normalizedRows);
   const mappings = targetFields.map((targetField) => (

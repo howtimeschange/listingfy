@@ -174,6 +174,69 @@ test("copywriting-triggered drafts recover the matching launch plan and size-cha
   assert.ok(calls.some((sql) => sql.includes("from product_archive_source_row source")));
 });
 
+test("MDM-created drafts recover latest launch plan and size-chart batches by SPU", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const calls = [];
+  const fakeDb = {
+    prepare(sql) {
+      calls.push(sql);
+      return {
+        all() {
+          if (sql.includes("from product_archive_source_row source")) {
+            return [
+              { source_type: "launch_plan", source_batch_id: 15 },
+              { source_type: "size_chart", source_batch_id: 23 },
+            ];
+          }
+          return [];
+        },
+      };
+    },
+  };
+
+  assert.deepEqual(
+    service.resolveDraftSourceBatchIdsForSpu(fakeDb, "204426140012"),
+    {
+      launch_plan: [15],
+      size_chart: [23],
+    },
+  );
+  assert.ok(calls.some((sql) => sql.includes("from product_archive_source_row source")));
+});
+
+test("launch-plan-created drafts recover the matching size-chart batch by SPU", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const calls = [];
+  const fakeDb = {
+    prepare(sql) {
+      calls.push(sql);
+      return {
+        all() {
+          if (sql.includes("from product_archive_source_batch")) {
+            return [{ id: 15, source_type: "launch_plan" }];
+          }
+          if (sql.includes("from product_archive_source_row source")) {
+            return [{ source_type: "size_chart", source_batch_id: 23 }];
+          }
+          return [];
+        },
+      };
+    },
+  };
+
+  assert.deepEqual(
+    service.resolveDraftSourceBatchIdsForSpu(fakeDb, "204426140012", {
+      launch_plan: [15],
+    }),
+    {
+      launch_plan: [15],
+      size_chart: [23],
+    },
+  );
+  assert.ok(calls.some((sql) => sql.includes("from product_archive_source_batch")));
+  assert.ok(calls.some((sql) => sql.includes("from product_archive_source_row source")));
+});
+
 test("copywriting source backfill previews only drafts whose copywriting batch was recorded as a launch plan", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const draft = {
@@ -1612,6 +1675,7 @@ test("product archive AI fill skips fields that already have JSON values", async
   assert.match(service, /fillProductArchiveDraftFieldsWithAi/);
   assert.match(service, /isStaleUnsupportedAiFillField/);
   assert.match(service, /Boolean\(existing\.manual_override\)[\s\S]*!isStaleUnsupportedAiFillField\(fieldName, existing\)[\s\S]*!isStaleMaterialAiRuleFallbackField\(fieldName, existing\)[\s\S]*!isStaleSizeChartScalarOverride\(fieldName, existing\)/);
+  assert.match(service, /hasSizeChartValue\s*\?\s*""[\s\S]*skuSizeField/);
 });
 
 test("product archive AI fill prompt uses trusted draft MDM and source context only", async () => {

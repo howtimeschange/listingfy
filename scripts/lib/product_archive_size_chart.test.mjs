@@ -74,6 +74,27 @@ test("derives height from the size label while filling PLM mapped size-chart val
   assert.equal(result.unmatchedTargets.includes("身高"), false);
 });
 
+test("clips PLM size-chart rows to authoritative draft sizes", () => {
+  const rows = [
+    { "款号": "208426108204", "测量点": "身高", "尺码": "73/", "尺码值": "73" },
+    { "款号": "208426108204", "测量点": "裤长", "尺码": "73/", "尺码值": "40" },
+    { "款号": "208426108204", "测量点": "身高", "尺码": "80/", "尺码值": "80" },
+    { "款号": "208426108204", "测量点": "裤长", "尺码": "80/", "尺码值": "44" },
+  ];
+
+  const result = buildSizeChartForTemplate({
+    rows,
+    spuCode: "208426108204",
+    template: { fieldName: "尺码表", options: ["身高", "裤长"] },
+    allowedSizes: ["080"],
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "身高,裤长",
+    "80cm": "80,44",
+  });
+});
+
 test("normalizes PLM wide-table rows into one measurement record per size value", () => {
   const rows = normalizePlmSizeChartRows([
     {

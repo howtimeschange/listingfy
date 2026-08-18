@@ -1618,6 +1618,7 @@ export function buildProductArchiveSizeChartFieldValue(input: {
   sourceRows: JsonRecord[]
   templateOptions: unknown[]
   mappings?: JsonRecord[]
+  allowedSizes?: unknown[]
 }) {
   const result = buildSizeChartForTemplate({
     rows: sizeChartSourceRowJson(input.sourceRows),
@@ -1627,6 +1628,7 @@ export function buildProductArchiveSizeChartFieldValue(input: {
       options: input.templateOptions,
     },
     mappings: input.mappings ?? [],
+    allowedSizes: input.allowedSizes ?? [],
   })
   return {
     valueText: "",
@@ -1824,6 +1826,50 @@ export function syncProductArchiveDownFillWeightSizeCharts(db: SyncPostgresDatab
 function issueValueList(values: string[]) {
   const visible = values.slice(0, 8).join("、")
   return values.length > 8 ? `${visible} 等 ${values.length} 个` : visible
+}
+
+function productArchiveKnownSizeNumbersBetween(start: number, end: number) {
+  const knownSizeNumbers = [44, 52, 59, 66, 73, 80, 90, 100, 110, 120, 130, 140, 150, 160, 165, 170, 175]
+  return knownSizeNumbers.filter((size) => size >= start && size <= end)
+}
+
+function productArchiveSizeRangeValues(value: unknown) {
+  const text = stringValue(value)
+  if (!text) return []
+  const sizes: string[] = []
+  for (const match of text.matchAll(/0*(\d{2,3})\s*(?:cm|厘米|码)?\s*(?:[-~～至—－])\s*0*(\d{2,3})/gi)) {
+    const start = Number(match[1])
+    const end = Number(match[2])
+    if (!Number.isFinite(start) || !Number.isFinite(end)) continue
+    const min = Math.min(start, end)
+    const max = Math.max(start, end)
+    const knownSizes = productArchiveKnownSizeNumbersBetween(min, max)
+    for (const size of knownSizes.length > 0 ? knownSizes : [min, max]) {
+      sizes.push(deepdrawSizeValue(size))
+    }
+  }
+  for (const match of text.matchAll(/0*(\d{2,3})(?:cm|厘米|码)?/gi)) {
+    sizes.push(deepdrawSizeValue(match[1]))
+  }
+  return uniqueTextValues(sizes)
+}
+
+function launchPlanSizeValues(sourceRows: JsonRecord[]) {
+  return uniqueTextValues(
+    aggregateSourceValues(sourceRows, "launch_plan", sourceAliases("尺码段"))
+      .flatMap((value) => productArchiveSizeRangeValues(value)),
+  )
+}
+
+function productArchiveSizeChartAllowedSizes(sourceRows: JsonRecord[], skus: JsonRecord[]) {
+  const skuSizes = draftSkuSizeValues(skus)
+  const launchSizes = launchPlanSizeValues(sourceRows)
+  if (skuSizes.length > 0 && launchSizes.length > 0) {
+    const launchKeys = sizeValueKeySet(launchSizes)
+    const intersection = skuSizes.filter((size) => sizeMatchKeys(size).some((key) => launchKeys.has(key)))
+    return intersection.length > 0 ? intersection : skuSizes
+  }
+  return skuSizes.length > 0 ? skuSizes : launchSizes
 }
 
 function sizeValueKeySet(values: unknown[]) {
@@ -2040,6 +2086,14 @@ export function resolveDraftSourceBatchIdsForSpu(
   }
 
   if ((resolved.copywriting?.length ?? 0) > 0) {
+    for (const batch of latestSourceBatchesForSpu(db, spuCode, ['launch_plan', 'size_chart'])) {
+      appendResolvedSourceBatchId(resolved, batch.source_type, batch.source_batch_id)
+    }
+  } else if ((resolved.launch_plan?.length ?? 0) > 0 && (resolved.size_chart?.length ?? 0) === 0) {
+    for (const batch of latestSourceBatchesForSpu(db, spuCode, ['size_chart'])) {
+      appendResolvedSourceBatchId(resolved, batch.source_type, batch.source_batch_id)
+    }
+  } else if (sourceBatchIdList(resolved).length === 0) {
     for (const batch of latestSourceBatchesForSpu(db, spuCode, ['launch_plan', 'size_chart'])) {
       appendResolvedSourceBatchId(resolved, batch.source_type, batch.source_batch_id)
     }
@@ -4662,6 +4716,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
   const sourceRows = sourceRowsForDraft(db, draft)
   const sizeChartMappings = sizeChartMappingsForDraft(db, draft)
   const mdmSkus = mdmSkuRowsForSpu(db, stringValue(draft.spu_code))
+  const sizeChartAllowedSizes = productArchiveSizeChartAllowedSizes(sourceRows, mdmSkus)
   const dateText = sourceFieldValue(sourceRows, "launch_plan", "内容上市时间")
     || sourceFieldValue(sourceRows, "launch_plan", "搜索上市时间")
   const fieldNames = new Set<string>()
@@ -4692,6 +4747,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
           sourceRows,
           templateOptions: sizeChartTemplateOptionsForField(template.options_json, existing.value_json, fieldName),
           mappings: sizeChartMappings.filter((mapping) => stringValue(mapping.field_name ?? mapping.fieldName) === fieldName),
+          allowedSizes: sizeChartAllowedSizes,
         })
       : { valueText: "", valueJson: {}, sourceType: "" }
     const hasSizeChartValue = hasValue(recordValue(sizeChartDerived.valueJson))
@@ -4710,6 +4766,8 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
             ...colorMdmValue.split(/[;；]/),
           ]).join(";")
         : stringValue(existing.value_text)
+      : hasSizeChartValue
+        ? ""
       : skuSizeField
         ? mdmDerived.valueText || sourceValueText
         : sourceValueText || mdmDerived.valueText
@@ -6121,12 +6179,14 @@ function buildSizeChartPreviewsForMappings(
   sourceRows: JsonRecord[],
   mappings: JsonRecord[],
 ) {
+  const allowedSizes = productArchiveSizeChartAllowedSizes(sourceRows, mdmSkuRowsForSpu(db, stringValue(draft.spu_code)))
   return sizeChartTemplateFieldsForDraft(db, draft).map((template) => buildProductArchiveSizeChartFieldValue({
     fieldName: template.fieldName,
     spuCode: stringValue(draft.spu_code),
     sourceRows,
     templateOptions: template.options,
     mappings: mappings.filter((mapping) => stringValue(mapping.fieldName ?? mapping.field_name) === template.fieldName),
+    allowedSizes,
   }))
 }
 
