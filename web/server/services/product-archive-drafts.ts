@@ -371,7 +371,7 @@ function sourceFieldValueAny(rows: JsonRecord[], sourceType: string, sourceField
 }
 
 function compactFieldKey(value: unknown) {
-  return stringValue(value).replace(/\s+/g, "").replace(/[()（）]/g, "").toLowerCase()
+  return stringValue(value).replace(/\s+/g, "").replace(/[().。]/g, "").toLowerCase()
 }
 
 function uploadPathText(value: unknown) {
@@ -589,6 +589,32 @@ function baseColorName(value: unknown) {
   return text
 }
 
+function colorFamily(value: unknown) {
+  const text = stringValue(value)
+  if (!text) return ""
+  if (/黑/.test(text)) return "black"
+  if (/白|米白|乳白|象牙/.test(text)) return "white"
+  if (/灰|银/.test(text)) return "gray"
+  if (/粉|玫|桃|藕|樱/.test(text)) return "pink"
+  if (/红/.test(text)) return "red"
+  if (/橙|桔/.test(text)) return "orange"
+  if (/黄|金/.test(text)) return "yellow"
+  if (/绿|青|橄榄/.test(text)) return "green"
+  if (/蓝/.test(text)) return "blue"
+  if (/紫/.test(text)) return "purple"
+  if (/棕|褐|咖|卡其|驼|杏|米|裸/.test(text)) return "neutral"
+  return ""
+}
+
+function nearestProductArchiveColorOption(value: unknown, options: unknown[]) {
+  const family = colorFamily(value)
+  if (family) {
+    const sameFamily = pickOption(options, [(option) => colorFamily(option) === family])
+    if (sameFamily) return sameFamily
+  }
+  return pickOption(options, [(option) => /^(?:扩展选项\d*|其他(?:颜色|色)?|其他)$/.test(option)])
+}
+
 function deepdrawColorValue(value: unknown) {
   const text = stringValue(value)
   if (!text) return ""
@@ -697,6 +723,7 @@ const PRODUCT_ARCHIVE_AI_FIELD_STRATEGIES: ProductArchiveAiFieldStrategyDefiniti
       "是否有毛领",
       "是否多件套",
       "件数(单选)",
+      "内胆类型",
     ],
     fieldKeyPatterns: [
       /^(?:模板)?版型$/,
@@ -706,6 +733,7 @@ const PRODUCT_ARCHIVE_AI_FIELD_STRATEGIES: ProductArchiveAiFieldStrategyDefiniti
       /^图案(?:多选)?$/,
       /^袖长(?:多选)?$/,
       /^款式(?:多选|单选)?$/,
+      /^内胆类型$/,
     ],
     evidence: ["reference_images", "product_title", "trade_path", "source_rows", "filled_fields"],
     decision: "优先根据商品图判断款式、结构、图案、门襟、领型、帽子、腰带、毛领和套件数量；标题和类目只作为辅助。",
@@ -768,6 +796,10 @@ const PRODUCT_ARCHIVE_AI_FIELD_STRATEGIES: ProductArchiveAiFieldStrategyDefiniti
       "质地/材质",
       "主面料成分",
       "主面料成分含量",
+      "里料成分",
+      "里料成分(多选)",
+      "里料成分含量",
+      "里料成分含量(多选)",
       "成分含量",
       "里料材质",
       "里料材质(多选)",
@@ -794,6 +826,7 @@ const PRODUCT_ARCHIVE_AI_FIELD_STRATEGIES: ProductArchiveAiFieldStrategyDefiniti
       /^(?:抖音)?面料(?:多选|俗称|工艺|材质)?$/,
       /^材质(?:成分)?(?:多选|文本)?$/,
       /^主面料成分(?:含量)?$/,
+      /^里料(?:材质)?成分(?:含量)?(?:多选)?$/,
       /^里料材质(?:成分含量)?(?:多选)?$/,
       /^填充物(?:含量|多选)?$/,
       /^含绒量(?:多选)?$/,
@@ -1151,20 +1184,49 @@ function downMaterialText(spu: JsonRecord, sourceRows: JsonRecord[]) {
   return stringValue(spu.filler) || sectionTextFromMaterialSource(sourceRows, ["填充物", "填充料"])
 }
 
-function downFillWeightText(spu: JsonRecord, sourceRows: JsonRecord[]) {
-  const text = downMaterialText(spu, sourceRows)
-  const match = text.match(/(\d+(?:\.\d+)?)\s*(?:g|克)\b/i)
-  return match ? `${formatMaterialPercent(match[1])}g` : ""
-}
-
-function downContentPercentText(spu: JsonRecord, sourceRows: JsonRecord[]) {
-  const sourceText = `${downMaterialText(spu, sourceRows)}\n${materialCompositionSourceText(sourceRows)}`
-    .replace(/％/g, "%")
+function downContentPercentFromText(value: unknown) {
+  const sourceText = stringValue(value).replace(/％/g, "%")
   const labeled = sourceText.match(/(?:绒子含量|含绒量)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%?/)
   if (labeled) return `${formatMaterialPercent(labeled[1])}%`
   const filler = sourceText.match(/(\d+(?:\.\d+)?)\s*#\s*绒子/)
   if (filler) return `${formatMaterialPercent(filler[1])}%`
+  const standalone = sourceText.trim().match(/^(\d+(?:\.\d+)?)\s*%$/)
+  if (standalone) return `${formatMaterialPercent(standalone[1])}%`
   return ""
+}
+
+function hasExplicitNoFiller(value: unknown) {
+  const text = stringValue(value).replace(/\s+/g, "")
+  if (/^无(?:填充)?$/.test(text)) return true
+  return /(?:填充物|填充料)[:：]?(?:无|不填充|无填充)/.test(text)
+}
+
+function downContentEvidenceValue(spu: JsonRecord, sourceRows: JsonRecord[]) {
+  const sourceText = `${downMaterialText(spu, sourceRows)}\n${materialCompositionSourceText(sourceRows)}`
+  return downContentPercentFromText(sourceText) || (hasExplicitNoFiller(sourceText) ? "无" : "")
+}
+
+function copywritingDownContentEvidenceValue(sourceRows: JsonRecord[]) {
+  const sourceText = materialCompositionSourceText(sourceRows)
+  return downContentPercentFromText(sourceText) || (hasExplicitNoFiller(sourceText) ? "无" : "")
+}
+
+function isProductArchiveDownContentFieldKey(key: string) {
+  return [
+    "充绒量",
+    "充绒量文本",
+    "填充物含量",
+    "含绒量",
+    "含绒量多选",
+    "含绒量文本",
+    "绒子含量",
+    "绒子含量多选",
+    "绒子含量文本",
+  ].includes(key)
+}
+
+function isProductArchiveFillerFieldKey(key: string) {
+  return ["填充物", "填充物多选", "填充物种类", "填充物文本"].includes(key)
 }
 
 function copywritingTitleValue(spu: JsonRecord, sourceRows: JsonRecord[]) {
@@ -1404,8 +1466,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (key === "品牌单选") return stringValue(input.spu.brand_name) || "巴拉巴拉"
   if (key === "品牌" || key === "品牌文本") return stringValue(input.spu.brand_name) || copywritingValue(sourceRows, "品牌") || "巴拉巴拉"
   if (key === "生产企业名称" || key === "生产经销厂家" || key === "生产经销企业") return productionEnterpriseName(input.spu)
-  if (key === "充绒量文本") return downFillWeightText(input.spu, sourceRows)
-  if (key === "含绒量文本" || key === "绒子含量文本") return downContentPercentText(input.spu, sourceRows)
+  if (isProductArchiveDownContentFieldKey(key)) return downContentEvidenceValue(input.spu, sourceRows)
   if (key === "里料成分含量") return liningCompositionText(sourceRows)
   if (key === "里料材质成分含量多选") return normalizeMaterialName(liningCompositionText(sourceRows).replace(/^\d+(?:\.\d+)?\s*%/, ""))
   if (key === "功能多选") return copywritingValue(sourceRows, "面料三个关键词") || copywritingValue(sourceRows, "推荐理由")
@@ -1429,7 +1490,11 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (key === "是否可定制") return "不可定制"
   if (key === "售后服务承诺") return "不设置"
   if (key === "balaone仅专供新品") return launchValue(sourceRows, "属性").includes("专供新品") ? "是" : ""
-  if (key === "填充物种类") return copywritingFillerMaterialValue(sourceRows) || stringValue(input.spu.filler) || launchValue(sourceRows, "填充物") || "无"
+  if (isProductArchiveFillerFieldKey(key)) {
+    const sourceText = `${stringValue(input.spu.filler)}\n${materialCompositionSourceText(sourceRows)}`
+    const sourceValue = hasExplicitNoFiller(sourceText) ? "无" : copywritingFillerMaterialValue(sourceRows)
+    return sourceValue || stringValue(input.spu.filler) || launchValue(sourceRows, "填充物") || "无"
+  }
   if (key === "款式" || key === "款式多选" || key === "款式单选") return launchValue(sourceRows, "主款式 （唯品四级品类）") || stringValue(input.spu.spu_name)
   if (key === "袖长多选") return "长袖"
   if (key === "袖长") return "长袖"
@@ -1654,6 +1719,106 @@ export function validateProductArchiveSizeChartValue(input: {
     }
   }
   return issues
+}
+
+function productArchiveDownFillWeightPairs(value: unknown) {
+  return Array.from(stringValue(value).matchAll(/(\d+(?:\.\d+)?)\s*(?:cm|厘米|码)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(?:g|克)/gi))
+    .map((match) => ({
+      size: formatMaterialPercent(match[1]),
+      weight: formatMaterialPercent(match[2]),
+    }))
+}
+
+function productArchiveSizeNumber(value: unknown) {
+  const match = stringValue(value).match(/\d{2,3}/)
+  return match ? String(Number(match[0])) : ""
+}
+
+function productArchiveDownFillWeightColumnIndex(valueJson: JsonRecord) {
+  return sizeChartTitleOptions(valueJson).findIndex((title) => /充绒|填充.*(?:g|克|量)/i.test(compactFieldKey(title)))
+}
+
+export function buildProductArchiveDownFillWeightSizeChartUpdates(fields: JsonRecord[]) {
+  const fillSource = fields.find((field) => (
+    compactFieldKey(field.field_name) === "充绒量文本"
+    && productArchiveDownFillWeightPairs(field.value_text).length > 0
+  )) ?? fields.find((field) => (
+    compactFieldKey(field.field_name) === "充绒量"
+    && productArchiveDownFillWeightPairs(field.value_text).length > 0
+  ))
+  if (!fillSource) return []
+
+  const weightsBySize = new Map(productArchiveDownFillWeightPairs(fillSource.value_text)
+    .map((pair) => [productArchiveSizeNumber(pair.size), pair.weight])
+    .filter(([size]) => Boolean(size)))
+  if (!weightsBySize.size) return []
+
+  const updates: Array<{
+    fieldId: number
+    fieldName: string
+    valueJson: JsonRecord
+    sourceType: string
+    sourceRef: string | null
+  }> = []
+  for (const field of fields) {
+    if (!compactFieldKey(field.field_name).includes("尺码表")) continue
+    const fieldId = Number(field.id)
+    if (!Number.isInteger(fieldId) || fieldId <= 0) continue
+    const currentValue = recordValue(field.value_json)
+    const columnIndex = productArchiveDownFillWeightColumnIndex(currentValue)
+    if (columnIndex < 0) continue
+    const titles = sizeChartTitleOptions(currentValue)
+    const nextValue = { ...currentValue }
+    let changed = false
+    for (const [rawSize, rawValues] of sizeChartDataEntries(currentValue)) {
+      const weight = weightsBySize.get(productArchiveSizeNumber(rawSize))
+      if (!weight) continue
+      const values = stringValue(rawValues).split(",")
+      while (values.length < titles.length) values.push("0")
+      if (values[columnIndex] === weight) continue
+      values[columnIndex] = weight
+      nextValue[rawSize] = values.join(",")
+      changed = true
+    }
+    if (!changed) continue
+    updates.push({
+      fieldId,
+      fieldName: stringValue(field.field_name),
+      valueJson: nextValue,
+      sourceType: stringValue(fillSource.source_type) || stringValue(field.source_type) || "washlabel_ocr",
+      sourceRef: stringValue(fillSource.source_ref) || stringValue(field.source_ref) || null,
+    })
+  }
+  return updates
+}
+
+export function syncProductArchiveDownFillWeightSizeCharts(db: SyncPostgresDatabase, draftId: number) {
+  const fields = db.prepare("select * from product_archive_draft_field where draft_id = ?").all(draftId) as JsonRecord[]
+  const updates = buildProductArchiveDownFillWeightSizeChartUpdates(fields)
+  if (!updates.length) return updates
+  const now = nowIso()
+  const updateField = db.prepare(`
+    update product_archive_draft_field
+    set value_json = ?::jsonb,
+      source_type = ?,
+      source_ref = ?,
+      manual_override = true,
+      validation_status = 'valid',
+      validation_message = null,
+      updated_at = ?::timestamptz
+    where draft_id = ? and id = ?
+  `)
+  for (const update of updates) {
+    updateField.run(
+      jsonText(update.valueJson),
+      update.sourceType,
+      update.sourceRef,
+      now,
+      draftId,
+      update.fieldId,
+    )
+  }
+  return updates
 }
 
 function issueValueList(values: string[]) {
@@ -3393,6 +3558,56 @@ function productArchiveChinaOriginOption(options: unknown[]) {
   ])
 }
 
+function downContentTemplateOption(value: unknown, options: unknown[]) {
+  const text = stringValue(value)
+  if (hasExplicitNoFiller(text)) {
+    return pickOption(options, [
+      (option) => /^(?:无|无填充|不填充)$/.test(option),
+      (option) => option === "其他" || /其他|无填充|不填充/.test(option),
+    ])
+  }
+  const percentText = downContentPercentFromText(text)
+  if (!percentText) return ""
+  const percent = Number(percentText.replace(/%$/, ""))
+  if (!Number.isFinite(percent)) return ""
+  const exact = pickOption(options, [
+    (option) => {
+      const normalized = option.replace(/％/g, "%").replace(/\s+/g, "")
+      if (/(?:以上|及以上|起|以下|及以下)/.test(normalized)) return false
+      const values = Array.from(normalized.matchAll(/(\d+(?:\.\d+)?)%/g)).map((match) => Number(match[1]))
+      return values.length === 1 && values[0] === percent
+    },
+  ])
+  if (exact) return exact
+  return pickOption(options, [
+    (option) => {
+      const normalized = option.replace(/％/g, "%").replace(/\s+/g, "")
+      const threshold = normalized.match(/(\d+(?:\.\d+)?)%(?:以上|及以上|起)/)
+      return Boolean(threshold) && percent >= Number(threshold[1])
+    },
+    (option) => {
+      const normalized = option.replace(/％/g, "%").replace(/\s+/g, "")
+      const threshold = normalized.match(/(\d+(?:\.\d+)?)%(?:以下|及以下)/)
+      return Boolean(threshold) && percent <= Number(threshold[1])
+    },
+    (option) => {
+      const values = Array.from(option.replace(/％/g, "%").matchAll(/(\d+(?:\.\d+)?)%/g)).map((match) => Number(match[1]))
+      if (values.length === 1) return percent === values[0]
+      if (values.length >= 2) return percent >= Math.min(...values) && percent <= Math.max(...values)
+      return false
+    },
+  ])
+}
+
+function copywritingPopularElementValue(sourceRows: JsonRecord[]) {
+  const sourceText = sourceRowJsonByType(sourceRows, "copywriting")
+    .flatMap((row) => Object.values(row).map(stringValue))
+    .join("\n")
+  if (/费尔岛|提花图案|印花图案/.test(sourceText)) return "图案"
+  if (/简约(?:设计|风格)?|无(?:工艺|装饰)|光版/.test(sourceText)) return "光版"
+  return ""
+}
+
 export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, value: unknown, options: unknown[]) {
   const text = stringValue(value)
   const key = compactFieldKey(fieldName)
@@ -3400,6 +3615,9 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
   if (!text || !options.length) return text
   const exact = pickOption(options, [(option) => option === text])
   if (exact) return exact
+  if (isProductArchiveDownContentFieldKey(key)) {
+    return downContentTemplateOption(text, options) || text
+  }
   if (key === "单位" || key === "计量单位") {
     return pickOption(options, [(option) => option === "件"]) || text
   }
@@ -3456,7 +3674,13 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
   if (key === "裤门襟" && /不适用|无|其他/.test(text)) {
     return pickOption(options, [(option) => option === "松紧", (option) => option === "松紧带", (option) => option === "其他"]) || text
   }
-  if (key === "填充物种类" || key === "填充物") {
+  if (isProductArchiveFillerFieldKey(key)) {
+    if (hasExplicitNoFiller(text)) {
+      return pickOption(options, [
+        (option) => /^(?:无|无填充|不填充)$/.test(option),
+        (option) => option === "其他" || /其他|无填充|不填充/.test(option),
+      ]) || text
+    }
     const filler = downFillerNameFromText(text)
     if (filler) {
       return pickOption(options, [
@@ -3493,7 +3717,7 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
         (option) => option === rawBase,
         (option) => option === item,
         (option) => item.includes(option) || option.includes(item),
-      ])
+      ]) || nearestProductArchiveColorOption(rawBase, options)
       if (!option) return ""
       const alias = rawAlias || (item !== option ? item : "")
       return alias && alias !== option ? `${option},${alias}` : option
@@ -3517,6 +3741,9 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
   if (key === "款式单选" || key === "款式") {
     return pickOption(options, [
       (option) => option === text,
+      (option) => /三合一|一衣三穿/.test(text) && /三合一|一衣三穿/.test(option),
+      (option) => /棉服|棉衣/.test(text) && option === "短款棉服",
+      (option) => /棉服|棉衣/.test(text) && /棉服/.test(option),
       (option) => option === "连帽外套",
       (option) => option.includes("外套"),
     ]) || text
@@ -3710,6 +3937,7 @@ export type ProductArchiveAiFillCandidate = {
   currentValue: string
   validationStatus: string
   validationMessage: string
+  required: boolean
   strategy: ProductArchiveAiFieldStrategy | null
   options: Array<{ value: string; label: string }>
 }
@@ -3869,6 +4097,9 @@ export function buildProductArchiveAiFillCandidateFields(
       const invalidValue = validationStatus === "invalid"
       const colorNeedsAiFill = compactFieldKey(field.field_name).includes("颜色") && colorIssueValues.length > 0
       const strategy = productArchiveAiFieldStrategyForField(field.field_name)
+      const required = Boolean(field.required)
+        || Boolean(field.blocking)
+        || /必填字段缺失/.test(stringValue(field.validation_message))
       const currentValue = colorNeedsAiFill
         ? colorIssueValues.join(";")
         : aiRuleFallback
@@ -3880,6 +4111,7 @@ export function buildProductArchiveAiFillCandidateFields(
         currentValue,
         validationStatus,
         validationMessage: stringValue(field.validation_message),
+        required,
         sourceType: stringValue(field.source_type),
         strategy,
         needsAiFill: emptyValue || invalidValue || colorNeedsAiFill,
@@ -3905,6 +4137,7 @@ export function buildProductArchiveAiFillCandidateFields(
       currentValue: field.currentValue,
       validationStatus: field.validationStatus,
       validationMessage: field.validationMessage,
+      required: field.required,
       strategy: field.strategy,
       options: field.options,
     }))
@@ -4000,12 +4233,77 @@ function modelShotValueFromReferenceImages(referenceImages: JsonRecord[]) {
 function evidenceRuleValueForField(input: {
   draft: JsonRecord
   field: JsonRecord
+  fields: JsonRecord[]
   sourceRows: JsonRecord[]
   referenceImages: JsonRecord[]
 }) {
   const fieldName = stringValue(input.field.field_name)
   const key = compactFieldKey(fieldName)
   const currentValue = stringValue(input.field.value_text)
+  if (isProductArchiveDownContentFieldKey(key)) {
+    const sourceValue = copywritingDownContentEvidenceValue(input.sourceRows)
+    if (sourceValue) {
+      return {
+        value: sourceValue,
+        sourceType: "source_rule",
+        sourceRef: "标准文案表:面料成分",
+        reason: "充绒量、填充物含量和含绒量均按标准文案的填充物含量填写",
+      }
+    }
+    const peer = input.fields.find((field) => (
+      compactFieldKey(field.field_name) !== key
+      && isProductArchiveDownContentFieldKey(compactFieldKey(field.field_name))
+      && Boolean(downContentPercentFromText(field.value_text) || hasExplicitNoFiller(field.value_text))
+    ))
+    const value = stringValue(peer?.value_text)
+    if (value) {
+      return {
+        value,
+        sourceType: "field_backup_rule",
+        sourceRef: `字段互备:${stringValue(peer?.field_name)}`,
+        reason: "充绒量、填充物含量和含绒量使用同一填充物含量值",
+      }
+    }
+  }
+  if (isProductArchiveFillerFieldKey(key)) {
+    const peer = input.fields.find((field) => (
+      compactFieldKey(field.field_name) !== key
+      && isProductArchiveFillerFieldKey(compactFieldKey(field.field_name))
+      && stringValue(field.value_text)
+    ))
+    const sourceText = materialCompositionSourceText(input.sourceRows)
+    const sourceValue = hasExplicitNoFiller(sourceText) ? "无" : copywritingFillerMaterialValue(input.sourceRows)
+    const value = sourceValue || stringValue(peer?.value_text)
+    if (value) {
+      return {
+        value,
+        sourceType: peer && !sourceValue ? "field_backup_rule" : "source_rule",
+        sourceRef: peer && !sourceValue
+          ? `字段互备:${stringValue(peer.field_name)}`
+          : "标准文案表:面料成分",
+        reason: "填充物字段复用标准文案中已识别的填充物材质或无填充结论",
+      }
+    }
+  }
+  if (key === "流行元素" || key === "流行元素多选") {
+    const value = copywritingPopularElementValue(input.sourceRows)
+    if (value) {
+      return {
+        value,
+        sourceType: "source_rule",
+        sourceRef: "标准文案表:设计文案",
+        reason: "根据标准文案中的费尔岛图案或简约无装饰描述归一流行元素",
+      }
+    }
+  }
+  if (key.includes("颜色") && currentValue) {
+    return {
+      value: currentValue,
+      sourceType: "color_template_rule",
+      sourceRef: "字段当前值+SKU颜色",
+      reason: "将 SKU 颜色归一到深绘模板近似颜色并保留原颜色别名",
+    }
+  }
   if (key === "单位" || key === "计量单位") {
     return { value: "件", sourceType: "fixed_rule", sourceRef: "单位固定=件", reason: "单位统一固定为件" }
   }
@@ -4029,10 +4327,6 @@ function evidenceRuleValueForField(input: {
   if (key === "弹力" || key === "弹性" || key.endsWith("弹力指数") || key.endsWith("弹性指数")) {
     const value = copywritingValue(input.sourceRows, "弹性")
     return value ? { value, sourceType: "source_rule", sourceRef: "标准文案表:弹性", reason: "根据标准文案表弹性归一化" } : null
-  }
-  if (key === "填充物种类" || key === "填充物") {
-    const value = copywritingFillerMaterialValue(input.sourceRows)
-    return value ? { value, sourceType: "source_rule", sourceRef: "标准文案表:面料成分", reason: "根据标准文案表面料成分中的填充物归一化" } : null
   }
   if ((key === "是否可开档" || key === "是否开裆" || key === "是否可开裆") && currentValue) {
     return { value: currentValue, sourceType: "source_rule", sourceRef: "字段当前值", reason: "将是否可开档当前值归一到深绘枚举" }
@@ -4064,6 +4358,7 @@ export function buildProductArchiveEvidenceRuleFills(input: {
     const rule = evidenceRuleValueForField({
       draft: input.draft,
       field,
+      fields: input.fields,
       sourceRows: input.sourceRows ?? [],
       referenceImages: input.referenceImages ?? [],
     })
@@ -4115,6 +4410,7 @@ function buildDeepdrawAiFillPrompt(input: {
       "不要因为 options 的顺序选择第一个选项；不要选择看起来冷门但无证据的材质、版型、元素或工艺。",
       "忽略 source_type 为 ai_rule_fallback 的历史值，它们不是可信证据。",
       "是否类字段没有明确证据时也不要填写。",
+      "required 为 true 的字段是当前阻断项。若 P0 必填字段有清晰参考图和上下文证据，优先返回；证据不清时仍然省略，不能为了补必填而猜测。",
       "field_strategy.priority 为 P0 的字段优先处理；P1 字段必须优先使用主数据、尺码段、成分或文案证据；P2 字段只在图片/上下文足够明确时补充。",
       "每个字段的 field_strategy.guardrail 是硬约束；违反该边界时省略字段。",
       `confidence 低于 ${AI_FILL_MIN_CONFIDENCE} 的字段不要返回。`,
@@ -4144,6 +4440,7 @@ function buildDeepdrawAiFillPrompt(input: {
       current_value: field.currentValue,
       validation_status: field.validationStatus,
       validation_message: field.validationMessage,
+      required: field.required,
       field_strategy: field.strategy,
       options: compactFieldKey(field.fieldName).includes("颜色") ? field.options : field.options.slice(0, 120),
     })),
@@ -4381,6 +4678,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     const existing = existingByName.get(fieldName) ?? {}
     const originCountryField = isProductArchiveOriginCountryField(fieldName)
     const skuSizeField = isProductArchiveSkuSizeFieldName(fieldName)
+    const colorField = compactFieldKey(fieldName).includes("颜色")
     const ruleSourceType = stringValue(rule.source_type) || (originCountryField ? "fixed" : "manual")
     const existingManual = Boolean(existing.manual_override)
       && !isStaleUnsupportedAiFillField(fieldName, existing)
@@ -4397,13 +4695,21 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
         })
       : { valueText: "", valueJson: {}, sourceType: "" }
     const hasSizeChartValue = hasValue(recordValue(sizeChartDerived.valueJson))
+    const colorMdmValue = colorField
+      ? buildProductArchiveMdmDerivedFieldValue(fieldName, { spu, skus: mdmSkus, dateText }).valueText
+      : ""
     const mdmDerived = existingManual
       ? { valueText: "", valueJson: {} }
       : hasSizeChartValue
         ? { valueText: "", valueJson: sizeChartDerived.valueJson }
         : buildProductArchiveMdmDerivedFieldValue(fieldName, { spu, skus: mdmSkus, dateText })
     const rawValueText = existingManual
-      ? stringValue(existing.value_text)
+      ? colorMdmValue
+        ? uniqueTextValues([
+            ...stringValue(existing.value_text).split(/[;；]/),
+            ...colorMdmValue.split(/[;；]/),
+          ]).join(";")
+        : stringValue(existing.value_text)
       : skuSizeField
         ? mdmDerived.valueText || sourceValueText
         : sourceValueText || mdmDerived.valueText
@@ -5618,6 +5924,9 @@ export function confirmProductArchiveDraftRecommendedTrade(
 
 export function patchProductArchiveDraftFields(db: SyncPostgresDatabase, draftId: number, input: PatchFieldInput) {
   const now = nowIso()
+  const shouldSyncDownFillWeightSizeCharts = (input.fields ?? []).some((field) => (
+    ["充绒量", "充绒量文本"].includes(compactFieldKey(field.fieldName ?? field.field_name))
+  ))
   db.transaction(() => {
     for (const field of input.fields ?? []) {
       const fieldName = stringValue(field.fieldName ?? field.field_name)
@@ -5643,6 +5952,7 @@ export function patchProductArchiveDraftFields(db: SyncPostgresDatabase, draftId
         `).run(valueText, jsonText(valueJson), now, draftId, fieldName)
       }
     }
+    if (shouldSyncDownFillWeightSizeCharts) syncProductArchiveDownFillWeightSizeCharts(db, draftId)
     db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(now, draftId)
   })()
   return validateProductArchiveDraft(db, draftId)
@@ -5650,6 +5960,7 @@ export function patchProductArchiveDraftFields(db: SyncPostgresDatabase, draftId
 
 export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDatabase, draftId: number, options: AiFillOptions = {}) {
   rebuildProductArchiveDraftFields(db, draftId)
+  syncProductArchiveDownFillWeightSizeCharts(db, draftId)
   const detail = validateProductArchiveDraft(db, draftId).detail
   const draft = detail.draft as JsonRecord
   const fields = detail.fields as JsonRecord[]

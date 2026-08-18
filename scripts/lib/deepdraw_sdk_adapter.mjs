@@ -227,6 +227,10 @@ function semicolonValues(value) {
   return stringValue(value).split(/[;；]/).map((part) => part.trim()).filter(Boolean);
 }
 
+function colorAliases(value) {
+  return semicolonValues(value).flatMap((item) => item.split(/[,，]/).map((part) => part.trim()).filter(Boolean));
+}
+
 function hostValue(baseUrl) {
   return stringValue(baseUrl) || "http://open.deepdraw.cn";
 }
@@ -257,9 +261,10 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
     const skuColorValues = uniqueValues(skus.map((sku) => sdkColorValue(sku.color ?? sku.colorName ?? sku.color_name)).filter(Boolean));
     const colorFieldKey = fieldKey(fields, ["颜色"]);
     if (colorFieldKey) {
+      const existingAliases = new Set(colorAliases(fields[colorFieldKey]));
       fields[colorFieldKey] = uniqueValues([
         ...semicolonValues(fields[colorFieldKey]),
-        ...skuColorValues,
+        ...skuColorValues.filter((value) => !colorAliases(value).some((alias) => existingAliases.has(alias))),
       ]).join(";");
     } else if (skuColorValues.length > 0) {
       fields["颜色"] = skuColorValues.join(";");

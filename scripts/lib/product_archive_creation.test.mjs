@@ -2359,13 +2359,311 @@ test("product archive service derives down and platform text fields before AI fi
 
   assert.equal(derive("品牌"), "巴拉巴拉");
   assert.equal(derive("生产企业名称"), "浙江森马服饰股份有限公司");
-  assert.equal(derive("充绒量(文本)"), "160g");
+  assert.equal(derive("充绒量(文本)"), "85%");
   assert.equal(derive("含绒量(文本)"), "85%");
   assert.equal(derive("绒子含量(文本)"), "85%");
   assert.equal(derive("里料成分含量"), "100%锦纶");
   assert.equal(derive("里料材质成分含量(多选)"), "聚酰胺纤维");
   assert.equal(derive("快手标题"), "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖");
   assert.equal(derive("拼多多标题"), "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖");
+});
+
+test("product archive evidence rules backfill filler text and equivalent down-content fields", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const fields = [
+    {
+      id: 1,
+      field_name: "填充物(文本)",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      options_json: [],
+    },
+    {
+      id: 4,
+      field_name: "填充物(多选)",
+      value_text: "聚酯纤维",
+      value_json: {},
+      validation_status: "valid",
+      options_json: [{ value: "聚酯纤维" }],
+    },
+    {
+      id: 5,
+      field_name: "充绒量(文本)",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      options_json: [],
+    },
+    {
+      id: 2,
+      field_name: "充绒量",
+      value_text: "80码14克；90码15克",
+      value_json: {},
+      validation_status: "invalid",
+      options_json: [{ value: "绒子含量90%" }],
+    },
+    {
+      id: 3,
+      field_name: "填充物含量",
+      value_text: "绒子含量90%",
+      value_json: {},
+      validation_status: "valid",
+      options_json: [{ value: "绒子含量90%" }],
+    },
+  ];
+
+  const fills = service.buildProductArchiveEvidenceRuleFills({
+    draft: { spu_code: "201426107202" },
+    fields,
+    sourceRows: [],
+  });
+
+  assert.deepEqual(fills.map((fill) => [fill.field_name, fill.field_value, fill.source_type]), [
+    ["填充物(文本)", "聚酯纤维", "field_backup_rule"],
+    ["充绒量(文本)", "绒子含量90%", "field_backup_rule"],
+    ["充绒量", "绒子含量90%", "field_backup_rule"],
+  ]);
+});
+
+test("product archive evidence rules backfill filler content and down-fill text from equivalent fields", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const fills = service.buildProductArchiveEvidenceRuleFills({
+    draft: { spu_code: "201426107202" },
+    fields: [
+      {
+        id: 1,
+        field_name: "充绒量(文本)",
+        value_text: "绒子含量90%",
+        value_json: {},
+        validation_status: "valid",
+        options_json: [{ value: "绒子含量90%" }],
+      },
+      {
+        id: 2,
+        field_name: "填充物含量",
+        value_text: "",
+        value_json: {},
+        validation_status: "missing",
+        options_json: [{ value: "绒子含量90%" }],
+      },
+    ],
+  });
+
+  assert.deepEqual(fills.map((fill) => [fill.field_name, fill.field_value, fill.source_type]), [
+    ["填充物含量", "绒子含量90%", "field_backup_rule"],
+  ]);
+});
+
+test("product archive evidence rules use explicit no-filler source evidence for every related required field", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const fills = service.buildProductArchiveEvidenceRuleFills({
+    draft: { spu_code: "201426105201" },
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: { "面料成分": "面料：100%聚酯纤维\n填充物：无" },
+    }],
+    fields: [
+      { id: 1, field_name: "填充物(文本)", value_text: "", value_json: {}, validation_status: "missing", options_json: [] },
+      { id: 2, field_name: "填充物(多选)", value_text: "", value_json: {}, validation_status: "missing", options_json: [{ value: "羽绒" }, { value: "其他" }] },
+      { id: 3, field_name: "绒子含量", value_text: "", value_json: {}, validation_status: "missing", options_json: [{ value: "90%以上" }, { value: "其他" }] },
+      { id: 4, field_name: "绒子含量(文本)", value_text: "", value_json: {}, validation_status: "missing", options_json: [] },
+      { id: 5, field_name: "含绒量(多选)", value_text: "", value_json: {}, validation_status: "missing", options_json: [{ value: "80%以上" }, { value: "其他" }] },
+      { id: 6, field_name: "填充物含量", value_text: "", value_json: {}, validation_status: "missing", options_json: [{ value: "90%以上" }, { value: "其他" }] },
+      { id: 7, field_name: "充绒量(文本)", value_text: "", value_json: {}, validation_status: "missing", options_json: [] },
+    ],
+  });
+
+  assert.deepEqual(fills.map((fill) => [fill.field_name, fill.field_value]), [
+    ["填充物(文本)", "无"],
+    ["填充物(多选)", "其他"],
+    ["绒子含量", "其他"],
+    ["绒子含量(文本)", "无"],
+    ["含绒量(多选)", "其他"],
+    ["填充物含量", "其他"],
+    ["充绒量(文本)", "无"],
+  ]);
+});
+
+test("product archive down-content normalizer maps a percentage to the template range without using size weights", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("充绒量", "90%", [
+    { value: "80%-89%" },
+    { value: "90%以上" },
+  ]), "90%以上");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("填充物含量", "绒子含量90%", [
+    { value: "绒子含量90%" },
+  ]), "绒子含量90%");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("含绒量(多选)", "无", [
+    { value: "80%以上" },
+    { value: "其他" },
+  ]), "其他");
+});
+
+test("product archive source rules map product-style and popular-element evidence to template options", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("款式", "儿童三合一外套", [
+    { value: "儿童一衣三穿羽绒服" },
+    { value: "连帽外套" },
+  ]), "儿童一衣三穿羽绒服");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("款式", "儿童短款棉服上衣", [
+    { value: "羽绒服" },
+    { value: "短款棉服" },
+  ]), "短款棉服");
+
+  const fills = service.buildProductArchiveEvidenceRuleFills({
+    draft: { spu_code: "201426101203" },
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: { "设计师说": "费尔岛图案针织设计" },
+    }],
+    fields: [{
+      id: 1,
+      field_name: "流行元素(多选)",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      options_json: [{ value: "光版" }, { value: "图案" }],
+    }],
+  });
+  assert.deepEqual(fills.map((fill) => [fill.field_name, fill.field_value]), [["流行元素(多选)", "图案"]]);
+
+  const plainFills = service.buildProductArchiveEvidenceRuleFills({
+    draft: { spu_code: "201426101201" },
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: { FAB: "工艺：无；设计：简约休闲" },
+    }],
+    fields: [{
+      id: 2,
+      field_name: "流行元素(多选)",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      options_json: [{ value: "图案" }, { value: "光版" }],
+    }],
+  });
+  assert.deepEqual(plainFills.map((fill) => [fill.field_name, fill.field_value]), [["流行元素(多选)", "光版"]]);
+});
+
+test("product archive filler text uses source material evidence when no peer field has been filled", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const fills = service.buildProductArchiveEvidenceRuleFills({
+    draft: { spu_code: "201426106201" },
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: { "面料成分": "面料：100%锦纶\n填充物：100%聚酯纤维" },
+    }],
+    fields: [{
+      id: 1,
+      field_name: "填充物(文本)",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      options_json: [],
+    }],
+  });
+  assert.deepEqual(fills.map((fill) => [fill.field_name, fill.field_value, fill.source_type]), [
+    ["填充物(文本)", "聚酯纤维", "source_rule"],
+  ]);
+});
+
+test("product archive down-fill text populates matching size-chart rows without changing scalar fields", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const updates = service.buildProductArchiveDownFillWeightSizeChartUpdates([
+    {
+      id: 1,
+      field_name: "充绒量(文本)",
+      value_text: "80码14克；90码15克；100码19克",
+      source_type: "washlabel_ocr",
+      source_ref: "201426101201洗唛.jpg",
+    },
+    {
+      id: 2,
+      field_name: "尺码表",
+      value_json: {
+        title: "衣长,充绒(g),胸围",
+        "80cm": "34.5,0,69",
+        "90cm": "36.5,0,72",
+        "100cm": "39.5,0,76",
+      },
+      source_type: "size_chart",
+      source_ref: "PLM尺码表",
+    },
+    {
+      id: 3,
+      field_name: "唯品会尺码表",
+      value_json: {
+        title: "号型,衣长,充绒量",
+        "80cm": "80,34.5,0",
+        "90cm": "90,36.5,0",
+        "100cm": "100,39.5,0",
+      },
+      source_type: "size_chart",
+      source_ref: "PLM尺码表",
+    },
+  ]);
+
+  assert.deepEqual(updates, [
+    {
+      fieldId: 2,
+      fieldName: "尺码表",
+      valueJson: {
+        title: "衣长,充绒(g),胸围",
+        "80cm": "34.5,14,69",
+        "90cm": "36.5,15,72",
+        "100cm": "39.5,19,76",
+      },
+      sourceType: "washlabel_ocr",
+      sourceRef: "201426101201洗唛.jpg",
+    },
+    {
+      fieldId: 3,
+      fieldName: "唯品会尺码表",
+      valueJson: {
+        title: "号型,衣长,充绒量",
+        "80cm": "80,34.5,14",
+        "90cm": "90,36.5,15",
+        "100cm": "100,39.5,19",
+      },
+      sourceType: "washlabel_ocr",
+      sourceRef: "201426101201洗唛.jpg",
+    },
+  ]);
+});
+
+test("product archive down-fill size-chart sync falls back to a plain down-fill field", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const updates = service.buildProductArchiveDownFillWeightSizeChartUpdates([
+    {
+      id: 1,
+      field_name: "充绒量",
+      value_text: "80码14克；90码15克",
+      source_type: "washlabel_ocr",
+    },
+    {
+      id: 2,
+      field_name: "尺码表",
+      value_json: {
+        title: "衣长,充绒(g)",
+        "80cm": "34.5,0",
+        "90cm": "36.5,0",
+      },
+    },
+  ]);
+
+  assert.deepEqual(updates, [{
+    fieldId: 2,
+    fieldName: "尺码表",
+    valueJson: {
+      title: "衣长,充绒(g)",
+      "80cm": "34.5,14",
+      "90cm": "36.5,15",
+    },
+    sourceType: "washlabel_ocr",
+    sourceRef: null,
+  }]);
 });
 
 test("product archive asset package helpers classify reference images and model shots", async () => {
@@ -2700,6 +2998,7 @@ test("product archive AI field strategies productize P0 P1 P2 field coverage", a
   assert.equal(service.productArchiveAiFieldStrategyForField("是否有腰带")?.priority, "P0");
   assert.equal(service.productArchiveAiFieldStrategyForField("淘宝天猫适用年龄")?.priority, "P1");
   assert.equal(service.productArchiveAiFieldStrategyForField("面料(多选)")?.priority, "P1");
+  assert.equal(service.productArchiveAiFieldStrategyForField("里料成分")?.priority, "P1");
   assert.equal(service.productArchiveAiFieldStrategyForField("详情页AI标注")?.priority, "P2");
   assert.equal(service.productArchiveAiFieldStrategyForField("原产国(AKC)"), null);
   assert.equal(service.productArchiveAiFieldStrategyForField("尺码表"), null);
@@ -2768,6 +3067,51 @@ test("product archive AI strategies allow selected skipped fields into conservat
     { fieldName: "面料(多选)", strategy: "P1" },
     { fieldName: "详情页AI标注", strategy: "P2" },
   ]);
+});
+
+test("product archive AI candidates expose required visual blockers and exclude punctuated SKU-size fields", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const candidates = service.buildProductArchiveAiFillCandidateFields([
+    {
+      id: 501,
+      field_name: "内胆类型",
+      source_type: "skip",
+      value_text: "",
+      value_json: {},
+      required: true,
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [{ value: "可拆卸内胆" }, { value: "固定内胆" }],
+    },
+    {
+      id: 502,
+      field_name: "是否有腰带",
+      source_type: "skip",
+      value_text: "",
+      value_json: {},
+      blocking: true,
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [{ value: "是" }, { value: "否" }],
+    },
+    {
+      id: 503,
+      field_name: "尺码.",
+      source_type: "manual",
+      value_text: "",
+      value_json: {},
+      required: true,
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [{ value: "80cm" }],
+    },
+  ]);
+
+  assert.equal(candidates.length, 2);
+  assert.equal(candidates.find((candidate) => candidate.fieldName === "内胆类型")?.strategy?.priority, "P0");
+  assert.equal(candidates.find((candidate) => candidate.fieldName === "内胆类型")?.required, true);
+  assert.equal(candidates.find((candidate) => candidate.fieldName === "是否有腰带")?.required, true);
+  assert.equal(candidates.some((candidate) => candidate.fieldName === "尺码."), false);
 });
 
 test("product archive AI fill includes color fields when SKU colors need template matching", async () => {
@@ -2882,6 +3226,37 @@ test("product archive AI fill normalizes color choices back to DeepDraw alias va
     { value: "卡其", label: "卡其" },
     { value: "粉红", label: "粉红" },
   ]), "");
+});
+
+test("product archive color normalization selects a safe template fallback for unmapped SKU colors", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  const value = service.normalizeProductArchiveDeepdrawFieldValue("颜色", "浅驼50002;胡桃棕51006", [
+    { value: "黑色" },
+    { value: "扩展选项" },
+  ]);
+
+  assert.equal(value, "扩展选项,浅驼50002;扩展选项,胡桃棕51006");
+  assert.equal(service.productArchiveSkuColorMatchesOptions(
+    { color_name: "浅驼50002", color_code: "50002" },
+    ["黑色", "扩展选项"],
+    [{ field_name: "颜色", value_text: value }],
+  ), true);
+
+  const fills = service.buildProductArchiveEvidenceRuleFills({
+    draft: { spu_code: "201426108002" },
+    fields: [{
+      id: 1,
+      field_name: "颜色",
+      value_text: "浅驼50002;胡桃棕51006",
+      value_json: {},
+      validation_status: "invalid",
+      options_json: [{ value: "黑色" }, { value: "扩展选项" }],
+    }],
+  });
+  assert.deepEqual(fills.map((fill) => [fill.field_value, fill.source_type]), [
+    ["扩展选项,浅驼50002;扩展选项,胡桃棕51006", "color_template_rule"],
+  ]);
 });
 
 test("product archive draft reference image upload extracts style codes from folder paths", async () => {

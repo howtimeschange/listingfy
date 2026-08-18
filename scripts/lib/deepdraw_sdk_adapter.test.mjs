@@ -181,6 +181,32 @@ test("buildDeepdrawSdkProductInput merges SKU color aliases into existing draft 
   assert.equal(input.product.fields["颜色"], "粉红,梦幻粉60335;卡其,贝壳卡50230");
 });
 
+test("buildDeepdrawSdkProductInput keeps template color aliases instead of appending an unmapped SKU color", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      code: "201426108002",
+      title: "儿童裤子",
+      tradeId: "72",
+      fields: [
+        { name: "颜色", value: "扩展选项,浅驼50002;扩展选项,胡桃棕51006" },
+      ],
+      skus: [
+        { skuCode: "20142610800250002080", color: "浅驼50002", size: "080" },
+        { skuCode: "20142610800251006080", color: "胡桃棕51006", size: "080" },
+      ],
+    },
+  });
+
+  assert.equal(input.product.fields["颜色"], "扩展选项,浅驼50002;扩展选项,胡桃棕51006");
+});
+
 test("buildDeepdrawSdkProductInput normalizes size table keys to SDK size values", () => {
   const input = buildDeepdrawSdkProductInput({
     config: {

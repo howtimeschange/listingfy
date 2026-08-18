@@ -164,6 +164,7 @@ test("washlabel OCR down fill weight maps onto down fill text field", async () =
           }
           if (/from product_archive_draft_field/i.test(sql)) {
             return [
+              { id: 2200, field_name: "充绒量", value_text: "", value_json: {}, source_type: "manual", required: true, blocking: true, options_json: [{ value: "绒子含量90%" }], field_type: "SINGLE_SELECT" },
               { id: 2201, field_name: "充绒量(文本)", value_text: "", value_json: {}, source_type: "manual", required: true, blocking: true },
               { id: 2202, field_name: "洗唛截取", value_text: "", value_json: {}, source_type: "manual", required: false, blocking: false },
             ];

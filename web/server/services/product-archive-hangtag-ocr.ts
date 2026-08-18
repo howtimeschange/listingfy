@@ -2,6 +2,7 @@ import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import {
   normalizeProductArchiveDeepdrawFieldValue,
   productArchiveFieldValueMatchesOptions,
+  syncProductArchiveDownFillWeightSizeCharts,
   validateProductArchiveDraft,
 } from "./product-archive-drafts"
 
@@ -81,7 +82,7 @@ function jsonText(value: unknown) {
 }
 
 function compactFieldKey(value: unknown) {
-  return stringValue(value).replace(/\s+/g, "").replace(/[()（）]/g, "").toLowerCase()
+  return stringValue(value).replace(/\s+/g, "").replace(/[().。]/g, "").toLowerCase()
 }
 
 function isStaleMaterialAiRuleFallbackField(field: JsonRecord) {
@@ -234,7 +235,7 @@ function ocrFieldMatchesDraftField(field: OcrField, draftFieldName: unknown, dra
     const hasTemplateOptions = arrayValue(draftField.options_json).length > 0
     return hasTemplateOptions && (name.includes("材质") || name.includes("面料"))
   }
-  if (key === "downFillWeight") return name.includes("充绒量")
+  if (key === "downFillWeight") return name.includes("充绒量") && arrayValue(draftField.options_json).length === 0
   if (key === "washCare") return name.includes("洗涤说明") || name.includes("洗护说明") || name.includes("洗涤方法")
   if (key === "rawText") {
     const sourceKind = stringValue(field.sourceKind)
@@ -547,6 +548,20 @@ export function applyProductArchiveHangtagWashlabelOcr(db: SyncPostgresDatabase,
       db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(now, draftId)
     }
   })()
+
+  for (const draftId of touchedDraftIds) {
+    const sizeChartUpdates = syncProductArchiveDownFillWeightSizeCharts(db, draftId)
+    for (const update of sizeChartUpdates) {
+      applied.push({
+        draftId,
+        fieldId: update.fieldId,
+        fieldName: update.fieldName,
+        valueJson: update.valueJson,
+        sourceType: update.sourceType,
+        sourceRef: update.sourceRef,
+      })
+    }
+  }
 
   const validations = Array.from(touchedDraftIds).map((draftId) => validateProductArchiveDraft(db, draftId))
   return {
