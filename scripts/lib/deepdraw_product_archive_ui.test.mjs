@@ -147,7 +147,8 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
   assert.match(draftRoute, /copywriting/);
   assert.match(draftRoute, /launch-plan/);
   assert.doesNotMatch(draftRoute, /const mdmCodes = parseSpuCodes\(form\.get\("mdmCodes"\)/);
-  assert.match(draftRoute, /sourceBatchId:\s*Number\(result\.batch\.id\)/);
+  assert.match(draftRoute, /sourceBatchId:\s*result\.sourceType === "launch_plan" \? sourceBatchId : null/);
+  assert.match(draftRoute, /sourceBatchIds:\s*\{ \[result\.sourceType\]: \[sourceBatchId\] \}/);
   assert.match(draftRoute, /applyProductArchiveDraftTrade/);
   assert.match(draftRoute, /confirmProductArchiveDraftRecommendedTrade/);
   assert.match(draftRoute, /new HTTPException\(409, \{ message \}\)/);

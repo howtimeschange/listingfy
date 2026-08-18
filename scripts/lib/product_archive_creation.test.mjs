@@ -16,6 +16,7 @@ const files = {
   metadataRoute: path.join(PROJECT_ROOT, "web/server/routes/deepdraw-metadata.ts"),
   deepdrawClient: path.join(PROJECT_ROOT, "scripts/lib/deepdraw_client.mjs"),
   tradeBackfillScript: path.join(PROJECT_ROOT, "scripts/product_archive_trade_backfill.mjs"),
+  sourceBatchBackfillScript: path.join(PROJECT_ROOT, "scripts/product_archive_source_batch_backfill.mjs"),
 };
 
 async function readText(file) {
@@ -130,8 +131,103 @@ test("product archive draft source rows stay scoped to the import batch when pre
   assert.match(service, /function sourceRowsForSpu\(db: SyncPostgresDatabase, spuCode: string, sourceBatchId\?: number \| null\)/);
   assert.match(service, /source\.source_batch_id = \?/);
   assert.match(service, /activeProductArchiveSourceRows/);
-  assert.match(service, /sourceRowsForSpu\(db, input\.spuCode, input\.sourceBatchId/);
+  assert.match(service, /export function resolveDraftSourceBatchIdsForSpu/);
+  assert.match(service, /sourceRowsForSpuBatchIds\(db, input\.spuCode, sourceBatchIdValues\)/);
+  assert.match(service, /sourceRowsForSpu\(db, input\.spuCode, null\)/);
   assert.match(service, /sourceRowsForDraft\(db, draft\)/);
+});
+
+test("copywriting-triggered drafts recover the matching launch plan and size-chart batches by SPU", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const calls = [];
+  const fakeDb = {
+    prepare(sql) {
+      calls.push(sql);
+      return {
+        all() {
+          if (sql.includes("from product_archive_source_batch")) {
+            return [{ id: 25, source_type: "copywriting" }];
+          }
+          if (sql.includes("from product_archive_source_row source")) {
+            return [
+              { source_type: "launch_plan", source_batch_id: 15 },
+              { source_type: "size_chart", source_batch_id: 23 },
+            ];
+          }
+          return [];
+        },
+      };
+    },
+  };
+
+  assert.deepEqual(
+    service.resolveDraftSourceBatchIdsForSpu(fakeDb, "204426140012", {
+      launch_plan: [25],
+    }),
+    {
+      copywriting: [25],
+      launch_plan: [15],
+      size_chart: [23],
+    },
+  );
+  assert.ok(calls.some((sql) => sql.includes("from product_archive_source_batch")));
+  assert.ok(calls.some((sql) => sql.includes("from product_archive_source_row source")));
+});
+
+test("copywriting source backfill previews only drafts whose copywriting batch was recorded as a launch plan", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const draft = {
+    id: 427,
+    draft_no: "PAD-204426140012",
+    spu_code: "204426140012",
+    status: "manual_review",
+    source_snapshot_json: {
+      sourceBatchId: 25,
+      sourceBatchIds: { launch_plan: [25] },
+    },
+  };
+  const fakeDb = {
+    prepare(sql) {
+      return {
+        all() {
+          if (sql.includes("from product_archive_draft")) return [draft];
+          if (sql.includes("from product_archive_source_batch")) {
+            return [{ id: 25, source_type: "copywriting" }];
+          }
+          if (sql.includes("from product_archive_source_row source")) {
+            return [
+              { source_type: "launch_plan", source_batch_id: 15 },
+              { source_type: "size_chart", source_batch_id: 23 },
+            ];
+          }
+          return [];
+        },
+      };
+    },
+  };
+
+  const result = service.backfillCopywritingTriggeredDraftSourceBatches(fakeDb);
+
+  assert.equal(result.mode, "preview");
+  assert.equal(result.matchedDraftCount, 1);
+  assert.equal(result.previewCount, 1);
+  assert.deepEqual(result.items[0]?.sourceBatchIds, {
+    copywriting: [25],
+    launch_plan: [15],
+    size_chart: [23],
+  });
+
+  const script = await readText(files.sourceBatchBackfillScript);
+  assert.match(script, /--apply/);
+  assert.match(script, /backfillCopywritingTriggeredDraftSourceBatches/);
+  assert.match(script, /Human-adjusted categories are retained/);
+});
+
+test("source-import draft jobs retain the imported source type instead of sending a bare legacy batch id", async () => {
+  const route = await readFile(files.draftRoute, "utf8");
+
+  assert.match(route, /sourceBatchId: result\.sourceType === "launch_plan" \? sourceBatchId : null/);
+  assert.match(route, /sourceBatchIds: \{ \[result\.sourceType\]: \[sourceBatchId\] \}/);
 });
 
 test("product archive field rebuild falls back to the draft MDM snapshot for cloned test SPUs", async () => {

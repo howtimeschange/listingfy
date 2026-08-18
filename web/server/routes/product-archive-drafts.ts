@@ -2498,7 +2498,8 @@ productArchiveDrafts.post("/source-imports", async (c) => {
           deepdrawTenantName: deepdrawConfig?.tenantName ?? body.deepdrawTenantName ?? body.tenantName,
           tradeId: body.tradeId,
           tradePath: body.tradePath,
-          sourceBatchId: Number(result.batch.id),
+          sourceBatchId: result.sourceType === "launch_plan" ? sourceBatchId : null,
+          sourceBatchIds: { [result.sourceType]: [sourceBatchId] },
           createdBy: user.id,
         },
       })
@@ -2584,7 +2585,8 @@ productArchiveDrafts.post("/source-imports/upload", async (c) => {
             deepdrawTenantName: deepdrawConfig?.tenantName ?? stringValue(form.get("deepdrawTenantName") ?? form.get("tenantName")),
             tradeId: stringValue(form.get("tradeId")) || null,
             tradePath: stringValue(form.get("tradePath")) || null,
-            sourceBatchId,
+            sourceBatchId: result.sourceType === "launch_plan" ? sourceBatchId : null,
+            sourceBatchIds: { [result.sourceType]: [sourceBatchId] },
             createdBy: user.id,
           },
         }))

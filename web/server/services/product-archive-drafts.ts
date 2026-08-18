@@ -1830,6 +1830,211 @@ function sourceBatchIdList(sourceBatchIds: Record<string, number[]>) {
   return Array.from(ids)
 }
 
+function appendResolvedSourceBatchId(target: Record<string, number[]>, sourceType: unknown, sourceBatchId: unknown) {
+  const type = stringValue(sourceType)
+  const id = numberValue(sourceBatchId)
+  if (!['launch_plan', 'copywriting', 'size_chart'].includes(type) || id === null || id <= 0) return
+  target[type] = target[type] ?? []
+  if (!target[type].includes(id)) target[type].push(id)
+}
+
+function sourceBatchesById(db: SyncPostgresDatabase, sourceBatchIds: number[]) {
+  const ids = Array.from(new Set(sourceBatchIds.filter((id) => Number.isInteger(id) && id > 0)))
+  if (ids.length === 0) return [] as JsonRecord[]
+  return db.prepare(`
+    select id, source_type
+    from product_archive_source_batch
+    where id in (${ids.map(() => '?').join(', ')})
+  `).all(...ids) as JsonRecord[]
+}
+
+function latestSourceBatchesForSpu(db: SyncPostgresDatabase, spuCode: string, sourceTypes: string[]) {
+  const types = Array.from(new Set(sourceTypes.filter((type) => ['launch_plan', 'size_chart'].includes(type))))
+  if (!spuCode || types.length === 0) return [] as JsonRecord[]
+  return db.prepare(`
+    select distinct on (source.source_type)
+      source.source_type,
+      source.source_batch_id
+    from product_archive_source_row source
+    where source.spu_code = ?
+      and source.source_type in (${types.map(() => '?').join(', ')})
+    order by source.source_type, source.source_batch_id desc
+  `).all(spuCode, ...types) as JsonRecord[]
+}
+
+export function resolveDraftSourceBatchIdsForSpu(
+  db: SyncPostgresDatabase,
+  spuCode: string,
+  sourceBatchIds?: Record<string, number[]> | number[] | null,
+  legacySourceBatchId?: unknown,
+) {
+  const requested = normalizeSourceBatchIds(sourceBatchIds, legacySourceBatchId)
+  const resolved: Record<string, number[]> = {}
+  for (const batch of sourceBatchesById(db, sourceBatchIdList(requested))) {
+    appendResolvedSourceBatchId(resolved, batch.source_type, batch.id)
+  }
+
+  if ((resolved.copywriting?.length ?? 0) > 0) {
+    for (const batch of latestSourceBatchesForSpu(db, spuCode, ['launch_plan', 'size_chart'])) {
+      appendResolvedSourceBatchId(resolved, batch.source_type, batch.source_batch_id)
+    }
+  }
+  return resolved
+}
+
+function copywritingBatchWasDeclaredAsLaunchPlan(snapshot: JsonRecord, batches: JsonRecord[]) {
+  const declared = normalizeSourceBatchIds(snapshot.sourceBatchIds, snapshot.sourceBatchId)
+  const declaredLaunchPlanIds = new Set(declared.launch_plan ?? [])
+  const legacySourceBatchId = numberValue(snapshot.sourceBatchId)
+  return batches.some((batch) => (
+    stringValue(batch.source_type) === "copywriting"
+    && (declaredLaunchPlanIds.has(numberValue(batch.id) ?? 0) || legacySourceBatchId === numberValue(batch.id))
+  ))
+}
+
+function sourceSnapshotWithResolvedBatchIds(snapshot: JsonRecord, sourceBatchIds: Record<string, number[]>) {
+  return {
+    ...snapshot,
+    sourceBatchId: sourceBatchIds.launch_plan?.[0] ?? null,
+    sourceBatchIds,
+  }
+}
+
+export function backfillCopywritingTriggeredDraftSourceBatches(
+  db: SyncPostgresDatabase,
+  options: { apply?: boolean } = {},
+) {
+  const apply = options.apply === true
+  const drafts = db.prepare(`
+    select *
+    from product_archive_draft
+    where status in ('draft', 'missing_fields', 'manual_review', 'ready')
+    order by updated_at desc, id desc
+  `).all() as JsonRecord[]
+  const items: Array<{
+    draftId: number
+    draftNo: string
+    spuCode: string
+    action: "preview" | "applied" | "human_preserved" | "manual_selection_required" | "skipped_changed" | "failed"
+    sourceBatchIds: Record<string, number[]>
+    message: string
+  }> = []
+
+  for (const draft of drafts) {
+    const draftId = numberValue(draft.id)
+    if (draftId === null) continue
+    const snapshot = recordValue(draft.source_snapshot_json)
+    const batches = sourceBatchesById(db, sourceBatchIdsFromSnapshot(snapshot))
+    if (!copywritingBatchWasDeclaredAsLaunchPlan(snapshot, batches)) continue
+
+    const sourceBatchIds = resolveDraftSourceBatchIdsForSpu(
+      db,
+      stringValue(draft.spu_code),
+      recordValue(snapshot.sourceBatchIds),
+      snapshot.sourceBatchId,
+    )
+    const base = {
+      draftId,
+      draftNo: stringValue(draft.draft_no),
+      spuCode: stringValue(draft.spu_code),
+      sourceBatchIds,
+    }
+    if (!apply) {
+      items.push({
+        ...base,
+        action: "preview",
+        message: "预览：将纠正文案表来源，并回溯该款的上市计划和尺码表来源。",
+      })
+      continue
+    }
+
+    try {
+      const item = db.transaction((): (typeof items)[number] => {
+        const currentDraft = db.prepare(`
+          select *
+          from product_archive_draft
+          where id = ?
+          for update
+        `).get(draftId) as JsonRecord | undefined
+        if (!currentDraft) {
+          return {
+            ...base,
+            action: "skipped_changed",
+            message: "草稿已不存在，未执行来源回填。",
+          }
+        }
+        const currentSnapshot = recordValue(currentDraft.source_snapshot_json)
+        const currentBatches = sourceBatchesById(db, sourceBatchIdsFromSnapshot(currentSnapshot))
+        if (!copywritingBatchWasDeclaredAsLaunchPlan(currentSnapshot, currentBatches)) {
+          return {
+            ...base,
+            action: "skipped_changed",
+            message: "草稿来源已被其他操作更新，未覆盖。",
+          }
+        }
+        const currentSourceBatchIds = resolveDraftSourceBatchIdsForSpu(
+          db,
+          stringValue(currentDraft.spu_code),
+          recordValue(currentSnapshot.sourceBatchIds),
+          currentSnapshot.sourceBatchId,
+        )
+        const nextSnapshot = sourceSnapshotWithResolvedBatchIds(currentSnapshot, currentSourceBatchIds)
+        db.prepare(`
+          update product_archive_draft
+          set source_snapshot_json = ?::jsonb,
+            updated_at = ?::timestamptz
+          where id = ?
+        `).run(jsonText(nextSnapshot), nowIso(), draftId)
+
+        const refreshedTrade = refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
+        if (hasHumanTradeSelection(currentSnapshot)) {
+          return {
+            ...base,
+            sourceBatchIds: currentSourceBatchIds,
+            action: "human_preserved",
+            message: "已修正来源；人工选择的类目保持不变。",
+          }
+        }
+        if (refreshedTrade.noMatch) {
+          return {
+            ...base,
+            sourceBatchIds: currentSourceBatchIds,
+            action: "manual_selection_required",
+            message: "已修正来源，但当前上市计划无法自动匹配深绘类目。",
+          }
+        }
+        return {
+          ...base,
+          sourceBatchIds: currentSourceBatchIds,
+          action: "applied",
+          message: "已修正来源并重新计算深绘类目。",
+        }
+      })()
+      items.push(item)
+    } catch (error) {
+      items.push({
+        ...base,
+        action: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  return {
+    mode: apply ? "apply" : "preview",
+    scannedDraftCount: drafts.length,
+    matchedDraftCount: items.length,
+    appliedDraftCount: items.filter((item) => item.action === "applied" || item.action === "human_preserved" || item.action === "manual_selection_required").length,
+    previewCount: items.filter((item) => item.action === "preview").length,
+    autoMatchedTradeCount: items.filter((item) => item.action === "applied").length,
+    humanPreservedCount: items.filter((item) => item.action === "human_preserved").length,
+    manualSelectionCount: items.filter((item) => item.action === "manual_selection_required").length,
+    skippedChangedCount: items.filter((item) => item.action === "skipped_changed").length,
+    failedCount: items.filter((item) => item.action === "failed").length,
+    items,
+  }
+}
+
 function appendSourceBatchId(snapshot: JsonRecord, sourceType: string, sourceBatchId: number) {
   const next = { ...snapshot }
   const byType = { ...recordValue(next.sourceBatchIds) }
@@ -5078,11 +5283,16 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
     order by skc.skc_code, sku.size_code, sku.sku_code
   `).all(input.spuCode) as JsonRecord[]
 
-  const sourceBatchIds = normalizeSourceBatchIds(input.sourceBatchIds, input.sourceBatchId)
+  const sourceBatchIds = resolveDraftSourceBatchIdsForSpu(
+    db,
+    input.spuCode,
+    input.sourceBatchIds,
+    input.sourceBatchId,
+  )
   const sourceBatchIdValues = sourceBatchIdList(sourceBatchIds)
   const sourceRows = sourceBatchIdValues.length > 0
     ? sourceRowsForSpuBatchIds(db, input.spuCode, sourceBatchIdValues)
-    : sourceRowsForSpu(db, input.spuCode, input.sourceBatchId)
+    : sourceRowsForSpu(db, input.spuCode, null)
   const now = nowIso()
   const evaluatedTradeSelection = inferDeepdrawTradeSelectionFromLaunchPlan(db, {
     tenantName,
@@ -5108,7 +5318,7 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
     ? tradeFieldsForDraft(db, { tenant_name: tenantName, merchant_id: merchantId, trade_id: draftTradeId }, draftTradeId)
     : []
 
-  const sourceBatchId = numberValue(input.sourceBatchId) ?? sourceBatchIds.launch_plan?.[0] ?? null
+  const sourceBatchId = sourceBatchIds.launch_plan?.[0] ?? null
   const sourceSnapshot = {
     spu,
     sourceRows,
