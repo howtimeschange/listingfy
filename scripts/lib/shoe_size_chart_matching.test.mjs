@@ -296,6 +296,47 @@ test("shoe launch-plan evidence deterministically fills required material, age, 
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("鞋垫材质", "短毛绒", ["纺织品类", "人造毛", "其它"]), "人造毛");
 });
 
+test("shoe static facts fall back to older launch-plan rows without reviving dynamic fields", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const rows = service.mergeProductArchiveShoeStaticEvidenceRows([
+    {
+      id: 200,
+      source_type: "launch_plan",
+      source_batch_id: 20,
+      row_json: { 上市时间: "2026-08-30", FAB: "最新面料" },
+    },
+  ], [
+    {
+      id: 100,
+      source_type: "launch_plan",
+      source_batch_id: 10,
+      row_json: {
+        鞋品生产企业名称: "中山市盛邦鞋业有限责任公司",
+        里料材质: "15mm长毛绒",
+        上市时间: "2026-07-30",
+        吊牌价格: "199",
+      },
+    },
+  ]);
+
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("产地", {
+    spu: { product_line_name: "鞋品", subclass_name: "雪地靴" },
+    sourceRows: rows,
+  }), "广东广州");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("鞋垫材质", {
+    spu: { product_line_name: "鞋品", subclass_name: "雪地靴" },
+    sourceRows: rows,
+  }), "15mm长毛绒");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("鞋垫材质", "15mm长毛绒", [
+    "纺织品类", "人造长毛绒", "其他",
+  ]), "人造长毛绒");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("鞋垫材质", "织物", [
+    "纺织布料", "人造长毛绒", "其他",
+  ]), "纺织布料");
+  assert.equal(rows[1].row_json.上市时间, undefined);
+  assert.equal(rows[1].row_json.吊牌价格, undefined);
+});
+
 test("shoe visual blockers are admitted to the multimodal AI strategy", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 

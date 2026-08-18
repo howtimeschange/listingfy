@@ -658,6 +658,9 @@ function sourceAliases(sourceField: string) {
     填充物: ["填充物", "填充物种类"],
     填充物种类: ["填充物种类", "填充物"],
     文案表: ["搜索标题", "唯品标题", "内容平台标题", "内容标题", "导购标题"],
+    鞋品生产企业名称: ["鞋品生产企业名称", "生产企业名称", "生产企业", "生产厂家", "厂家", "工厂", "制造商"],
+    生产企业名称: ["生产企业名称", "鞋品生产企业名称", "生产企业", "生产厂家", "厂家", "工厂", "制造商"],
+    里料材质: ["里料材质", "里料", "衬里", "鞋垫材质"],
   }
   return uniqueTextValues([field, ...(aliases[field] ?? [])])
 }
@@ -2081,6 +2084,85 @@ function sourceRowsForSpuBatchIds(db: SyncPostgresDatabase, spuCode: string, sou
   return activeProductArchiveSourceRows(rows)
 }
 
+const SHOE_STATIC_EVIDENCE_FIELDS = [
+  "鞋品生产企业名称",
+  "生产企业名称",
+  "生产企业",
+  "生产厂家",
+  "厂家",
+  "工厂",
+  "制造商",
+  "里料材质",
+  "里料",
+  "衬里",
+  "FAB",
+  "大身面料",
+]
+
+function sourceRowIdentity(row: JsonRecord) {
+  const id = numberValue(row.id)
+  if (id !== null && id > 0) return `id:${id}`
+  return [
+    stringValue(row.source_type),
+    numberValue(row.source_batch_id) ?? "",
+    stringValue(row.skc_code),
+    jsonText(recordValue(row.row_json)),
+  ].join("|")
+}
+
+function shoeStaticEvidenceRow(row: JsonRecord) {
+  if (stringValue(row.source_type) !== "launch_plan") return null
+  const source = recordValue(row.row_json)
+  const rowJson = Object.fromEntries(
+    SHOE_STATIC_EVIDENCE_FIELDS
+      .map((field) => [field, source[field]])
+      .filter(([, value]) => hasValue(value)),
+  )
+  if (Object.keys(rowJson).length === 0) return null
+  return { ...row, row_json: rowJson, __shoe_static_evidence: true }
+}
+
+/**
+ * Keep the latest launch-plan batch authoritative for dynamic values, while
+ * retaining only static shoe facts from older same-SPU batches as a fallback.
+ * This prevents a newer batch that omitted the factory/lining fields from
+ * turning a valid shoe draft into an unsafe generic value such as "中国".
+ */
+export function mergeProductArchiveShoeStaticEvidenceRows(
+  rows: JsonRecord[],
+  fallbackRows: JsonRecord[] = [],
+) {
+  const output = activeProductArchiveSourceRows(rows)
+  const seen = new Set(output.map(sourceRowIdentity))
+  for (const row of fallbackRows) {
+    const identity = sourceRowIdentity(row)
+    if (seen.has(identity)) continue
+    const narrowed = shoeStaticEvidenceRow(row)
+    if (!narrowed) continue
+    output.push(narrowed)
+    seen.add(identity)
+  }
+  return output
+}
+
+function sourceRowsWithShoeStaticEvidenceFallback(
+  db: SyncPostgresDatabase,
+  spuCode: string,
+  spu: JsonRecord,
+  rows: JsonRecord[],
+) {
+  const activeRows = activeProductArchiveSourceRows(rows)
+  if (!isShoeProduct(spu, activeRows)) return activeRows
+  const fallbackRows = db.prepare(`
+    select source.*
+    from product_archive_source_row source
+    where source.spu_code = ?
+      and source.source_type = 'launch_plan'
+    order by source.skc_code nulls first, source.id desc
+  `).all(spuCode) as JsonRecord[]
+  return mergeProductArchiveShoeStaticEvidenceRows(activeRows, fallbackRows)
+}
+
 function activeProductArchiveSourceRows(rows: JsonRecord[]) {
   const latestLaunchPlanBatchId = Math.max(
     0,
@@ -2092,6 +2174,7 @@ function activeProductArchiveSourceRows(rows: JsonRecord[]) {
   if (latestLaunchPlanBatchId <= 0) return rows
   return rows.filter((row) => (
     stringValue(row.source_type) !== "launch_plan"
+    || row.__shoe_static_evidence === true
     || numberValue(row.source_batch_id) === latestLaunchPlanBatchId
   ))
 }
@@ -2427,14 +2510,21 @@ function sourceRowsForDraft(db: SyncPostgresDatabase, draft: JsonRecord) {
     snapshot.sourceBatchId,
   )
   const batchIds = sourceBatchIdList(resolvedSourceBatchIds)
-  if (batchIds.length > 0) {
-    return sourceRowsForSpuBatchIds(db, stringValue(draft.spu_code), batchIds)
+  const rows = batchIds.length > 0
+    ? sourceRowsForSpuBatchIds(db, stringValue(draft.spu_code), batchIds)
+    : sourceRowsForSpu(
+        db,
+        stringValue(draft.spu_code),
+        numberValue(snapshot.sourceBatchId),
+      )
+  let spu: JsonRecord = recordValue(recordValue(draft.source_snapshot_json).spu)
+  try {
+    spu = resolveProductArchiveDraftSpu(db, draft)
+  } catch {
+    // Legacy backfill previews may only carry the snapshot source rows. They
+    // should retain the pre-existing source scope when no live MDM row exists.
   }
-  return sourceRowsForSpu(
-    db,
-    stringValue(draft.spu_code),
-    numberValue(snapshot.sourceBatchId),
-  )
+  return sourceRowsWithShoeStaticEvidenceFallback(db, stringValue(draft.spu_code), spu, rows)
 }
 
 function referenceSourceRowsForDraft(db: SyncPostgresDatabase, draft: JsonRecord) {
@@ -3903,12 +3993,33 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
     if (/防泼水/.test(text)) return pickOption(options, [(option) => option === "防泼水", (option) => option === "防水"]) || text
     if (/保温|保暖|抗寒/.test(text)) return pickOption(options, [(option) => option === "抗寒", (option) => option === "常规"]) || text
   }
-  if (key === "鞋垫材质" && /短毛绒|长毛绒|羊羔绒|人造毛|天鹅绒/.test(text)) {
-    return pickOption(options, [
-      (option) => option === "人造毛",
-      (option) => option === "纺织品类",
-      (option) => /^(?:其他|其它)$/.test(option),
-    ]) || text
+  if (key === "鞋垫材质") {
+    if (/长毛绒/.test(text)) {
+      return pickOption(options, [
+        (option) => option === "人造长毛绒",
+        (option) => option.includes("人造") && option.includes("长毛绒"),
+        (option) => option === "人造毛",
+        (option) => option === "纺织品类" || option === "纺织布料",
+        (option) => /^(?:其他|其它)$/.test(option),
+      ]) || text
+    }
+    if (/短毛绒|羊羔绒|人造毛|天鹅绒/.test(text)) {
+      return pickOption(options, [
+        (option) => option === "人造短毛绒",
+        (option) => option.includes("人造") && option.includes("短毛绒"),
+        (option) => option === "人造毛",
+        (option) => option === "纺织品类" || option === "纺织布料",
+        (option) => /^(?:其他|其它)$/.test(option),
+      ]) || text
+    }
+    if (/织物|布料|纺织/.test(text)) {
+      return pickOption(options, [
+        (option) => option === "纺织布料",
+        (option) => option === "纺织品类",
+        (option) => option.includes("纺织"),
+        (option) => /^(?:其他|其它)$/.test(option),
+      ]) || text
+    }
   }
   if (key === "材质成分" || key === "京东材质成分") return normalizeMaterialCompositionValue(text, options)
   if (key === "面料多选" || key === "材质多选" || key === "材质成分多选" || key === "里料材质成分含量多选") {
