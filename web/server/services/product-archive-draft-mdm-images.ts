@@ -12,6 +12,7 @@ import {
 } from "../lib/upload-guard"
 
 const DEFAULT_MDM_BASE_URL = "https://mdm.semirapp.com"
+const DEFAULT_MDM_IMAGE_HOSTS = ["product.resources.deepdraw.biz"]
 const MAX_MDM_IMAGE_REDIRECTS = 3
 const MDM_IMAGE_TIMEOUT_MS = 15_000
 
@@ -45,6 +46,7 @@ function configuredMdmImageAllowedHosts() {
   })()
   return new Set([
     baseHost,
+    ...DEFAULT_MDM_IMAGE_HOSTS,
     ...textValue(process.env.LISTINGIFY_MDM_IMAGE_ALLOWED_HOSTS).split(","),
   ].map((item) => normalizedHostname(item.trim())).filter(Boolean))
 }

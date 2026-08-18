@@ -54,6 +54,7 @@ test("MDM main-image downloads use an allowlist, reject private redirects, and e
   const service = await readText(files.service);
 
   assert.match(service, /MDM_BASE_URL/);
+  assert.match(service, /product\.resources\.deepdraw\.biz/);
   assert.match(service, /LISTINGIFY_MDM_IMAGE_ALLOWED_HOSTS/);
   assert.match(service, /redirect:\s*"manual"/);
   assert.match(service, /isPrivateOrReservedIp/);
