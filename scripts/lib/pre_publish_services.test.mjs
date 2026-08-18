@@ -1136,13 +1136,17 @@ test("batch publish dialog saves quick fixes through one batched endpoint and in
   assert.doesNotMatch(dialog, /for \(const item of items\) \{\s*const fields = item\.fields/);
 });
 
-test("deployment preserves runtime listing image uploads outside release sync", async () => {
+test("deployment preserves runtime image uploads and operator backups outside release sync", async () => {
   const buildScript = await readFile(path.join(PROJECT_ROOT, "ci/yunxiao-build.sh"), "utf8");
   const deployScript = await readFile(path.join(PROJECT_ROOT, "ci/yunxiao-deploy.sh"), "utf8");
 
   assert.match(buildScript, /--exclude='\.\/data\/listing-assets'/);
   assert.match(deployScript, /--exclude='data\/listing-assets'/);
+  assert.match(deployScript, /--exclude='data\/product-archive-draft-images'/);
+  assert.match(deployScript, /--exclude='\/tmp'/);
   assert.match(deployScript, /mkdir -p "\$APP_DIR\/data\/listing-assets"/);
+  assert.match(deployScript, /"\$APP_DIR\/data\/product-archive-draft-images"/);
+  assert.match(deployScript, /"\$APP_DIR\/tmp"/);
 });
 
 test("deployment writes AI routing and Semir gateway environment variables", async () => {

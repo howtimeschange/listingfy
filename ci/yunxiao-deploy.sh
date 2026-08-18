@@ -59,11 +59,13 @@ rsync -a --delete "$SRC_DIR"/ "$PREPARED_DIR"/ \
   --exclude='data/*.db' \
   --exclude='data/*.db-*' \
   --exclude='data/listing-assets' \
+  --exclude='data/product-archive-draft-images' \
+  --exclude='/tmp' \
   --exclude='node_modules' \
   --exclude='web/node_modules'
 
 cd "$PREPARED_DIR"
-mkdir -p "$APP_DIR/data/listing-assets" "$PREPARED_DIR/data"
+mkdir -p "$APP_DIR/data/listing-assets" "$APP_DIR/data/product-archive-draft-images" "$APP_DIR/tmp" "$PREPARED_DIR/data"
 
 echo "===== Write production env ====="
 write_optional_env() {
@@ -309,10 +311,12 @@ rsync -a --delete "$PREPARED_DIR"/ "$APP_DIR"/ \
   --exclude='data/*.db' \
   --exclude='data/*.db-*' \
   --exclude='data/listing-assets' \
+  --exclude='data/product-archive-draft-images' \
+  --exclude='/tmp' \
   --exclude='.m2' \
   --exclude='.npm-cache' \
   --exclude='/node_modules'
-mkdir -p "$APP_DIR/data/listing-assets"
+mkdir -p "$APP_DIR/data/listing-assets" "$APP_DIR/data/product-archive-draft-images" "$APP_DIR/tmp"
 
 cd "$APP_DIR"
 
