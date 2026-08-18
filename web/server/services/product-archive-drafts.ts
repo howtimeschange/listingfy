@@ -2121,13 +2121,17 @@ function sourceSnapshotWithResolvedBatchIds(snapshot: JsonRecord, sourceBatchIds
 
 export function backfillCopywritingTriggeredDraftSourceBatches(
   db: SyncPostgresDatabase,
-  options: { apply?: boolean } = {},
+  options: { apply?: boolean; onlyMissingTrade?: boolean } = {},
 ) {
   const apply = options.apply === true
+  const missingTradeFilter = options.onlyMissingTrade === true
+    ? "and (trade_id is null or nullif(trim(coalesce(trade_path, '')), '') is null)"
+    : ""
   const drafts = db.prepare(`
     select *
     from product_archive_draft
     where status in ('draft', 'missing_fields', 'manual_review', 'ready')
+      ${missingTradeFilter}
     order by updated_at desc, id desc
   `).all() as JsonRecord[]
   const items: Array<{

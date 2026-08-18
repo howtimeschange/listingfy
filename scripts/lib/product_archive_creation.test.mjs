@@ -290,6 +290,29 @@ test("copywriting source backfill previews only drafts whose copywriting batch w
   assert.match(script, /Human-adjusted categories are retained/);
 });
 
+test("copywriting source backfill can scope repairs to drafts whose category is still empty", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  let draftQuery = "";
+  const fakeDb = {
+    prepare(sql) {
+      if (sql.includes("from product_archive_draft")) draftQuery = sql;
+      return { all: () => [] };
+    },
+  };
+
+  const result = service.backfillCopywritingTriggeredDraftSourceBatches(fakeDb, {
+    onlyMissingTrade: true,
+  });
+
+  assert.equal(result.matchedDraftCount, 0);
+  assert.match(draftQuery, /trade_id is null/);
+  assert.match(draftQuery, /nullif\(trim\(coalesce\(trade_path, ''\)\), ''\) is null/);
+
+  const script = await readText(files.sourceBatchBackfillScript);
+  assert.match(script, /--only-missing-trade/);
+  assert.match(script, /onlyMissingTrade: args\.has\("--only-missing-trade"\)/);
+});
+
 test("source-import draft jobs retain the imported source type instead of sending a bare legacy batch id", async () => {
   const route = await readFile(files.draftRoute, "utf8");
 
