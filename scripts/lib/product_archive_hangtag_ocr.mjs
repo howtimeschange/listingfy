@@ -345,7 +345,7 @@ function extractFallbackField(text, key) {
 }
 
 function fileExtension(fileName) {
-  return path.extname(stringValue(fileName)).toLowerCase();
+  return path.extname(ocrFileBaseName(fileName)).toLowerCase();
 }
 
 function decodedFileNameText(fileName) {
@@ -357,8 +357,12 @@ function decodedFileNameText(fileName) {
   }
 }
 
+function ocrFileBaseName(fileName) {
+  return path.basename(decodedFileNameText(fileName).replace(/\\/g, "/"));
+}
+
 export function classifyProductArchiveOcrFile(fileName) {
-  const name = decodedFileNameText(fileName);
+  const name = ocrFileBaseName(fileName);
   const ext = fileExtension(name);
   if (/(洗唛|洗标|水洗|wash)/i.test(name)) return "washlabel";
   if (/(吊牌|合格证|hangtag|tag)/i.test(name)) return "hangtag";

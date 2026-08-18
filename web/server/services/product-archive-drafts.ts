@@ -390,7 +390,7 @@ function uploadExtension(value: unknown) {
 }
 
 export function productArchiveImageHasModelShot(value: unknown) {
-  return /有模拍/.test(uploadPathText(value))
+  return /有模拍/.test(uploadBaseName(value))
 }
 
 export function classifyProductArchiveAssetPackageFileName(value: unknown): ProductArchiveAssetPackageFileKind {
@@ -400,12 +400,12 @@ export function classifyProductArchiveAssetPackageFileName(value: unknown): Prod
   const ext = uploadExtension(base)
   if ([".xlsx", ".xlsm"].includes(ext)) return "spreadsheet"
   if ([".pdf"].includes(ext)) {
-    if (/(洗唛|洗标|水洗|wash)/i.test(text)) return "washlabel"
+    if (/(洗唛|洗标|水洗|wash)/i.test(base)) return "washlabel"
     return "hangtag"
   }
   if ([".jpg", ".jpeg", ".png"].includes(ext)) {
-    if (/(洗唛|洗标|水洗|wash)/i.test(text)) return "washlabel"
-    if (/(吊牌|合格证|hangtag|tag)/i.test(text)) return "hangtag"
+    if (/(洗唛|洗标|水洗|wash)/i.test(base)) return "washlabel"
+    if (/(吊牌|合格证|hangtag|tag)/i.test(base)) return "hangtag"
     return "reference_image"
   }
   if (ext === ".webp") return "reference_image"

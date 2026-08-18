@@ -2037,7 +2037,7 @@ async function saveOcrFormFiles(c: Context) {
       const fileName = cleanUploadDisplayName(displayNames[index], file.name)
       if (isIgnorableOcrFolderEntry(fileName)) continue
       const packageKind = classifyProductArchiveAssetPackageFileName(fileName)
-      const shouldImportReferenceImage = field === "referenceImages" || (assetPackageMode && packageKind === "reference_image")
+      const shouldImportReferenceImage = field === "referenceImages" || packageKind === "reference_image"
       if (shouldImportReferenceImage) {
         if (!isProductArchiveReferenceImageName(fileName)) {
           throw new HTTPException(400, { message: "平铺图/参考图仅支持 JPG、PNG、WEBP 图片" })

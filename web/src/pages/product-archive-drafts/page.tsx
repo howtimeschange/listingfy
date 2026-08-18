@@ -400,12 +400,16 @@ function uploadDisplayName(file: File) {
   return relativePath || file.name
 }
 
+function uploadBaseName(file: File) {
+  return uploadDisplayName(file).split("/").pop() ?? file.name
+}
+
 function uploadExtension(file: File) {
-  return uploadDisplayName(file).split(".").pop()?.toLowerCase() ?? ""
+  return uploadBaseName(file).split(".").pop()?.toLowerCase() ?? ""
 }
 
 function isHiddenUploadFile(file: File) {
-  const name = uploadDisplayName(file).split("/").pop() ?? file.name
+  const name = uploadBaseName(file)
   return name === ".DS_Store" || name.startsWith("~$")
 }
 
@@ -422,7 +426,7 @@ function isSpuReferenceImageUploadFile(file: File) {
 }
 
 function isHangtagWashlabelEvidenceUploadFile(file: File) {
-  const name = uploadDisplayName(file)
+  const name = uploadBaseName(file)
   const extension = uploadExtension(file)
   if (extension === "pdf") return true
   if (!["jpg", "jpeg", "png"].includes(extension)) return false

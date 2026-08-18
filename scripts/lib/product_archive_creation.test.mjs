@@ -2282,6 +2282,9 @@ test("product archive asset package helpers classify reference images and model 
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_洗唛_1.jpg"), "washlabel");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_吊牌_yq1.jpg"), "hangtag");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013-00455_有模拍.jpg"), "reference_image");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("幼童测试洗唛吊牌/208426108013/208426108013_吊牌_yq1.jpg"), "hangtag");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("幼童测试洗唛吊牌/208426108013/208426108013-00455_有模拍.jpg"), "reference_image");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("幼童测试洗唛吊牌/208426108013/208426108013-00455.jpg"), "reference_image");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("深绘吊牌洗唛平铺图下载结果_20260817.xlsx"), "spreadsheet");
   assert.equal(service.productArchiveImageHasModelShot("208426108013/208426108013-00455_有模拍.jpg"), true);
   assert.equal(service.productArchiveImageHasModelShot("208426108013/208426108013-00455.jpg"), false);

@@ -389,12 +389,13 @@ test("draft detail field fill tab highlights validation issues and can jump betw
 });
 
 test("frontend routes and navigation expose deepdraw archive draft workbench", async () => {
-  const [router, sidebar, appLayout, appHeader, asyncTaskCenter, draftListPage, draftDetailPage, metadataPage, productArchiveDetailPage] = await Promise.all([
+  const [router, sidebar, appLayout, appHeader, asyncTaskCenter, draftRoute, draftListPage, draftDetailPage, metadataPage, productArchiveDetailPage] = await Promise.all([
     readFile(files.router, "utf8"),
     readFile(files.sidebar, "utf8"),
     readFile(files.appLayout, "utf8"),
     readFile(files.appHeader, "utf8"),
     readFile(files.asyncTaskCenter, "utf8"),
+    readFile(files.draftRoute, "utf8"),
     readFile(files.draftListPage, "utf8"),
     readFile(files.draftDetailPage, "utf8"),
     readFile(files.metadataPage, "utf8"),
@@ -477,7 +478,10 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /form\.append\("filePaths", uploadDisplayName\(file\)\)/);
   assert.match(draftListPage, /form\.append\("referenceImages", file\)/);
   assert.match(draftListPage, /form\.append\("assetPackage", "true"\)/);
+  assert.match(draftListPage, /function uploadBaseName\(file: File\)/);
+  assert.match(draftListPage, /const name = uploadBaseName\(file\)/);
   assert.match(draftListPage, /crawshrimp_asset_package/);
+  assert.match(draftRoute, /const shouldImportReferenceImage = field === "referenceImages" \|\| packageKind === "reference_image"/);
   assert.match(draftListPage, /form\.append\("scmSupplementFile"/);
   assert.match(draftListPage, /overwriteExisting/);
   assert.match(draftListPage, /product_archive_hangtag_washlabel_ocr/);
