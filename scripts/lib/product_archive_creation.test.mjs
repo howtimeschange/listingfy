@@ -610,6 +610,22 @@ test("trade selection explains when every matching category has an incompatible 
   assert.match(decision.reason, /尺码模板不能覆盖/);
 });
 
+test("trade selection ignores non-SKU size recommendation options when checking coverage", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const decision = evaluateBalaTrade(service, "童装 > 普通外套", [
+    deepdrawRoot("7", "童装婴幼儿服装"),
+    {
+      ...deepdrawChild("7001", "7", "普通外套", "童装婴幼儿服装 / 普通外套"),
+      size_options: ["婴童", "文胸"],
+    },
+  ], {
+    skus: [{ size_name: "066", size_code: "066" }],
+  });
+
+  assert.equal(decision.recommendedTrade?.tradeId, "7001");
+  assert.equal(decision.status, "auto_applied");
+});
+
 test("trade selection loads size template options only for relevant candidate trades", async () => {
   const service = await readText(files.draftService);
   const sizeLookupStart = service.indexOf("function deepdrawTradeSizeOptionsById");
@@ -3944,6 +3960,26 @@ test("product archive color normalization selects a safe template fallback for u
   assert.deepEqual(fills.map((fill) => [fill.field_value, fill.source_type]), [
     ["扩展选项,浅驼50002;扩展选项,胡桃棕51006", "color_template_rule"],
   ]);
+});
+
+test("product archive color field rebuild can merge launch colors with every MDM SKU color", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  const merged = service.mergeProductArchiveColorFieldValues([
+    "红咖色调00365",
+    "红色,红咖色调00365;卡其,沙卡50403",
+  ]);
+  const value = service.normalizeProductArchiveDeepdrawFieldValue("颜色", merged, [
+    { value: "红色" },
+    { value: "卡其" },
+  ]);
+
+  assert.equal(value, "红色,红咖色调00365;卡其,沙卡50403");
+  assert.equal(service.productArchiveSkuColorMatchesOptions(
+    { color_name: "沙卡50403", color_code: "50403" },
+    ["红色", "卡其"],
+    [{ field_name: "颜色", value_text: value }],
+  ), true);
 });
 
 test("product archive draft reference image upload extracts style codes from folder paths", async () => {

@@ -612,6 +612,19 @@ function baseColorName(value: unknown) {
   return text
 }
 
+function isProductArchiveSkuSizeTemplateOptionValue(value: unknown) {
+  const text = stringValue(value)
+  if (!text) return false
+  if (/^(?:均码|one\s*size)$/i.test(text)) return true
+  if (/^(?:\d+xl|\d+xs|x{1,4}l|x{1,4}s|[sml])$/i.test(text)) return true
+  if (/^0*\d{1,3}\s*(?:cm|厘米|码)?$/i.test(text)) return true
+  return false
+}
+
+function productArchiveSkuSizeTemplateOptionTexts(options: unknown[]) {
+  return uniqueTextValues(options.flatMap(optionTextCandidates).filter(isProductArchiveSkuSizeTemplateOptionValue))
+}
+
 function colorFamily(value: unknown) {
   const text = stringValue(value)
   if (!text) return ""
@@ -3072,11 +3085,11 @@ function skuSizeRequirements(skus: JsonRecord[] = []) {
 }
 
 function tradeSizeTemplateOptions(trade: JsonRecord) {
-  return uniqueTextValues([
+  return productArchiveSkuSizeTemplateOptionTexts([
     ...arrayValue(trade.size_options_json),
     ...arrayValue(trade.size_options),
     ...arrayValue(trade.sizeOptions),
-  ].flatMap(optionTextCandidates))
+  ])
 }
 
 function tradeSizeTemplateCompatibility(trade: JsonRecord, requiredSizes: string[]) {
@@ -3553,7 +3566,7 @@ function deepdrawTradeSizeOptionsById(
       const tradeId = stringValue(row.trade_id)
       if (!tradeId) continue
       const current = byTradeId.get(tradeId) ?? []
-      current.push(...arrayValue(row.options_json).flatMap(optionTextCandidates))
+      current.push(...productArchiveSkuSizeTemplateOptionTexts(arrayValue(row.options_json)))
       byTradeId.set(tradeId, uniqueTextValues(current))
     }
   }
@@ -4474,6 +4487,10 @@ function semicolonTextValues(value: unknown) {
   return stringValue(value).split(/[;；]/).map((part) => part.trim()).filter(Boolean)
 }
 
+export function mergeProductArchiveColorFieldValues(values: unknown[]) {
+  return uniqueTextValues(values.flatMap((value) => semicolonTextValues(value))).join(";")
+}
+
 function optionValueForAiChoice(options: Array<{ value: string; label: string }>, value: unknown) {
   const text = stringValue(value)
   if (!text) return ""
@@ -5392,10 +5409,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
         : buildProductArchiveMdmDerivedFieldValue(fieldName, { spu, skus: mdmSkus, dateText })
     const rawValueText = existingManual
       ? colorMdmValue
-        ? uniqueTextValues([
-            ...stringValue(existing.value_text).split(/[;；]/),
-            ...colorMdmValue.split(/[;；]/),
-          ]).join(";")
+        ? mergeProductArchiveColorFieldValues([existing.value_text, colorMdmValue])
         : stringValue(existing.value_text)
       : hasShoeDerivedValue
         ? stringValue(shoeDerived?.valueText)
@@ -5403,6 +5417,8 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
         ? ""
       : skuSizeField
         ? mdmDerived.valueText || sourceValueText
+      : colorField
+        ? mergeProductArchiveColorFieldValues([sourceValueText, mdmDerived.valueText])
         : sourceValueText || mdmDerived.valueText
     const valueText = normalizeProductArchiveDeepdrawFieldValue(fieldName, rawValueText, arrayValue(template.options_json))
     const valueJson = existingManual ? recordValue(existing.value_json) : mdmDerived.valueJson
@@ -7273,9 +7289,9 @@ export function validateProductArchiveDraft(
     .flatMap(([, template]) => template.options.map(optionText).filter(Boolean))
   const sizeOptions = Array.from(templateLookup.entries())
     .filter(([name]) => isProductArchiveSkuSizeTemplateFieldName(name))
-    .flatMap(([, template]) => template.options.map(optionText).filter(Boolean))
+    .flatMap(([, template]) => productArchiveSkuSizeTemplateOptionTexts(template.options))
   const allowedColors = new Set(colorOptions)
-  const allowedSizes = new Set(sizeOptions)
+  const allowedSizeKeys = sizeValueKeySet(sizeOptions)
   const allowedSizeChartSizes = sizeChartAllowedSizes(fields, skus)
 
   for (const field of fields) {
@@ -7324,14 +7340,14 @@ export function validateProductArchiveDraft(
     }
     if (!stringValue(sku.size_name)) {
       issues.push({ severity: "blocker", issueType: "sku_size_missing", skuCode: stringValue(sku.sku_code), message: "SKU 缺少尺码" })
-    } else if (allowedSizes.size) {
+    } else if (allowedSizeKeys.size) {
       const sizeCandidates = [
         stringValue(sku.size_name),
         stringValue(sku.size_code),
         deepdrawSizeValue(sku.size_name),
         deepdrawSizeValue(sku.size_code),
       ].filter(Boolean)
-      if (!sizeCandidates.some((size) => allowedSizes.has(size))) {
+      if (!sizeCandidates.some((size) => sizeMatchKeys(size).some((key) => allowedSizeKeys.has(key)))) {
         issues.push({ severity: "blocker", issueType: "sku_size_not_in_template", skuCode: stringValue(sku.sku_code), message: "SKU 尺码不在深绘字段模板选项中" })
       }
     }
