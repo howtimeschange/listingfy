@@ -550,7 +550,9 @@ async function importAttributeTemplates(statements, {
     const attributes = row.attribute_infos || [];
     const now = currentIso();
 
-    statements.deleteAttributeValues.run(platform, productTypeId);
+    if (!skipAttributeValues) {
+      statements.deleteAttributeValues.run(platform, productTypeId);
+    }
     statements.deleteAttributes.run(platform, productTypeId);
 
     statements.attributeTemplate.run(
@@ -715,40 +717,44 @@ async function main() {
 
   process.stderr.write(`Importing SHEIN metadata from ${sourceDir}\n`);
   try {
-    db.transaction(() => {
+    db.exec("begin");
+    try {
       const batchId = upsertSyncBatch(db, { sourceDir, manifest });
       summary.sync_batch_id = batchId;
 
       summary.imported.store_metadata = importStoreMetadata(statements, args.platform, batchId, files);
-    })();
-    const batchId = summary.sync_batch_id;
-    summary.imported.categories = await importCategories(statements, {
-      platform: args.platform,
-      batchId,
-      files,
-    });
-    Object.assign(summary.imported, await importPublishStandards(statements, {
-      platform: args.platform,
-      batchId,
-      files,
-    }));
-    Object.assign(summary.imported, await importAttributeTemplates(statements, {
-      platform: args.platform,
-      batchId,
-      files,
-      skipAttributeValues: args.skipAttributeValues,
-    }));
-    summary.imported.requiredAttributes = await importRequiredAttributes(statements, {
-      platform: args.platform,
-      batchId,
-      files,
-    });
-    if (args.pruneToSource && sourceScope) {
-      pruneMetadataToSource(db, args.platform, sourceScope);
-      summary.pruned_to_source = {
-        categories: sourceScope.categoryIds.size,
-        product_types: sourceScope.productTypeIds.size,
-      };
+      summary.imported.categories = await importCategories(statements, {
+        platform: args.platform,
+        batchId,
+        files,
+      });
+      Object.assign(summary.imported, await importPublishStandards(statements, {
+        platform: args.platform,
+        batchId,
+        files,
+      }));
+      Object.assign(summary.imported, await importAttributeTemplates(statements, {
+        platform: args.platform,
+        batchId,
+        files,
+        skipAttributeValues: args.skipAttributeValues,
+      }));
+      summary.imported.requiredAttributes = await importRequiredAttributes(statements, {
+        platform: args.platform,
+        batchId,
+        files,
+      });
+      if (args.pruneToSource && sourceScope) {
+        pruneMetadataToSource(db, args.platform, sourceScope);
+        summary.pruned_to_source = {
+          categories: sourceScope.categoryIds.size,
+          product_types: sourceScope.productTypeIds.size,
+        };
+      }
+      db.exec("commit");
+    } catch (error) {
+      db.exec("rollback");
+      throw error;
     }
 
     summary.analyze = await analyzeMetadataTables(config.url);

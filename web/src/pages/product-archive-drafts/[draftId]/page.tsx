@@ -1177,10 +1177,22 @@ export default function ProductArchiveDraftDetailPage() {
   })
 
   const publishSubmit = useMutation({
-    mutationFn: () => api.post<unknown>(`/product-archive-drafts/${draftId}/submit`, { dryRun: false }),
-    onSuccess: () => {
-      toast.success("已发布到深绘并完成回读校验")
-      setPublishDialogOpen(false)
+    mutationFn: () => api.post<{
+      status?: string
+      duplicateFound?: boolean
+      alreadySubmitting?: boolean
+    }>(`/product-archive-drafts/${draftId}/submit`, { dryRun: false }),
+    onSuccess: (result) => {
+      if (result.status === "readback_verified") {
+        toast.success("已发布到深绘并完成回读校验")
+        setPublishDialogOpen(false)
+      } else if (result.duplicateFound) {
+        toast.warning("深绘已存在同货号商品，本次未重复创建")
+      } else if (result.alreadySubmitting) {
+        toast.warning("该草稿已有提交请求正在处理，请等待回读或先执行状态核对")
+      } else {
+        toast.error(`深绘已受理但回读未确认，当前状态：${result.status || "unknown"}`)
+      }
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
     },
     onError: (error) => {

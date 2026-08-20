@@ -1,10 +1,13 @@
 import { createHash, randomUUID } from "node:crypto"
 import { lookup as dnsLookup } from "node:dns/promises"
 import fs from "node:fs"
+import http from "node:http"
+import https from "node:https"
 import { mkdir, rename, rm, writeFile } from "node:fs/promises"
 import { isIP } from "node:net"
 import path from "node:path"
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
+import { assertProductArchiveDraftMutable } from "./product-archive-drafts"
 import {
   detectImageUploadType,
   maxUploadBytes,
@@ -17,8 +20,22 @@ const MAX_MDM_IMAGE_REDIRECTS = 3
 const MDM_IMAGE_TIMEOUT_MS = 15_000
 
 type JsonRecord = Record<string, unknown>
-type RemoteImageFetch = (input: string, init?: RequestInit) => Promise<Response>
-type RemoteImageLookup = (hostname: string) => Promise<Array<{ address: string }>>
+type RemoteImageLookup = (
+  hostname: string,
+  options?: { all?: boolean; verbatim?: boolean },
+) => Promise<Array<{ address: string; family?: number }>>
+type PinnedLookup = (
+  hostname: string,
+  options: unknown,
+  callback: (error: Error | null, address?: string, family?: number) => void,
+) => void
+type PinnedFetchInit = RequestInit & {
+  lookup?: PinnedLookup
+  servername?: string
+  pinnedAddress?: string
+  pinnedFamily?: number
+}
+type RemoteImageFetch = (input: string, init?: PinnedFetchInit) => Promise<Response>
 
 export type SyncMdmMainImageOptions = {
   imageRootDir: string
@@ -32,7 +49,7 @@ function textValue(value: unknown) {
 }
 
 function normalizedHostname(value: string) {
-  return value.replace(/^\[/, "").replace(/\]$/, "").toLowerCase()
+  return String(value ?? "").replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "").toLowerCase()
 }
 
 function configuredMdmImageAllowedHosts() {
@@ -84,6 +101,7 @@ function isPrivateOrReservedIp(address: string) {
     || normalized.startsWith("fc")
     || normalized.startsWith("fd")
     || /^fe[89ab]/.test(normalized)
+    || /^fe[c-f]/.test(normalized)
     || normalized.startsWith("ff")
     || normalized.startsWith("2001:db8")
 }
@@ -115,26 +133,37 @@ async function assertSafeMdmImageUrl(
     || hostname.endsWith(".local")
     || hostname.endsWith(".internal")
     || hostname.endsWith(".lan")
-    || !hostname.includes(".")
+    || (!hostname.includes(".") && !hostname.includes(":"))
   ) {
     throw new Error("MDM 主图不允许访问本机或内网地址")
   }
   if (!allowedHosts.has(hostname)) throw new Error("MDM 主图域名不在允许列表")
   if (isIP(hostname)) {
     if (isPrivateOrReservedIp(hostname)) throw new Error("MDM 主图不允许访问本机或内网地址")
-    return
+    return {
+      hostname,
+      address: hostname,
+      family: isIP(hostname),
+    }
   }
-  let addresses: Array<{ address: string }>
+  let addresses: Array<{ address: string; family?: number }>
   try {
-    addresses = await lookupImpl(hostname)
+    addresses = await lookupImpl(hostname, { all: true, verbatim: true })
   } catch {
     throw new Error("MDM 主图域名无法解析")
   }
   if (
-    addresses.length === 0
+    !Array.isArray(addresses)
+    || addresses.length === 0
     || addresses.some((item) => isPrivateOrReservedIp(item.address) && !proxyDnsFakeIpAllowed(item.address))
   ) {
     throw new Error("MDM 主图不允许访问本机或内网地址")
+  }
+  const selected = addresses[0]
+  return {
+    hostname,
+    address: selected.address,
+    family: Number(selected.family) || isIP(selected.address),
   }
 }
 
@@ -163,6 +192,120 @@ async function readLimitedImage(response: Response) {
   return Buffer.concat(chunks, total)
 }
 
+function headerText(headers: Record<string, string | string[] | undefined>, name: string) {
+  const value = headers[name.toLowerCase()]
+  return Array.isArray(value) ? value[0] ?? "" : String(value ?? "")
+}
+
+function pinnedLookupFor(address: string, family: number): PinnedLookup {
+  return (_hostname, _options, callback) => callback(null, address, family)
+}
+
+type NodeImageResponse = {
+  status: number
+  location: string
+  contentType: string
+  contentLength: number
+  buffer: Buffer | null
+}
+
+async function readLimitedNodeImage(response: NodeJS.ReadableStream, maxBytes: number) {
+  return await new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let total = 0
+    let settled = false
+    const fail = (error: Error) => {
+      if (settled) return
+      settled = true
+      if (typeof response.destroy === "function") response.destroy()
+      reject(error)
+    }
+    response.on("data", (value: Buffer | Uint8Array | string) => {
+      const chunk = Buffer.from(value)
+      total += chunk.length
+      if (total > maxBytes) {
+        fail(new Error("MDM 主图文件超过大小限制"))
+        return
+      }
+      chunks.push(chunk)
+    })
+    response.on("end", () => {
+      if (settled) return
+      settled = true
+      resolve(Buffer.concat(chunks, total))
+    })
+    response.on("error", (error) => fail(error instanceof Error ? error : new Error(String(error))))
+  })
+}
+
+async function requestPinnedNodeImage(
+  url: URL,
+  resolved: { hostname: string; address: string; family: number },
+  signal: AbortSignal,
+) {
+  const maxBytes = maxUploadBytes("image")
+  return await new Promise<NodeImageResponse>((resolve, reject) => {
+    const transport = url.protocol === "https:" ? https : http
+    const request = transport.request(url, {
+      method: "GET",
+      signal,
+      lookup: pinnedLookupFor(resolved.address, resolved.family),
+      ...(url.protocol === "https:" ? { servername: resolved.hostname } : {}),
+      headers: {
+        Accept: "image/*,application/octet-stream",
+        Host: url.host,
+      },
+    }, (response) => {
+      const status = Number(response.statusCode ?? 0)
+      const headers = response.headers
+      const location = headerText(headers, "location")
+      const contentType = headerText(headers, "content-type")
+      const contentLength = Number(headerText(headers, "content-length") || 0)
+      if (status >= 300 && status < 400) {
+        response.resume()
+        resolve({ status, location, contentType, contentLength, buffer: null })
+        return
+      }
+      if (status < 200 || status >= 300) {
+        response.resume()
+        resolve({ status, location, contentType, contentLength, buffer: null })
+        return
+      }
+      if (contentLength > maxBytes) {
+        response.destroy()
+        reject(new Error("MDM 主图文件超过大小限制"))
+        return
+      }
+      readLimitedNodeImage(response, maxBytes)
+        .then((buffer) => resolve({ status, location, contentType, contentLength, buffer }))
+        .catch(reject)
+    })
+    request.once("error", reject)
+    request.end()
+  })
+}
+
+function existingMdmImageIsValid(localPath: string) {
+  try {
+    const stat = fs.statSync(localPath)
+    if (!stat.isFile() || stat.size <= 0 || stat.size > maxUploadBytes("image")) return false
+    const buffer = fs.readFileSync(localPath)
+    detectImageUploadType(buffer)
+    readImageDimensions(buffer)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function ownedMdmImagePath(localPath: string, imageDir: string) {
+  if (!localPath) return null
+  const resolvedPath = path.resolve(localPath)
+  const resolvedDir = path.resolve(imageDir)
+  if (!resolvedPath.startsWith(`${resolvedDir}${path.sep}`)) return null
+  return resolvedPath
+}
+
 async function downloadMdmMainImage(
   sourceUrl: string,
   options: Pick<SyncMdmMainImageOptions, "fetchImpl" | "lookupImpl" | "allowedHosts"> = {},
@@ -173,33 +316,49 @@ async function downloadMdmMainImage(
   } catch {
     throw new Error("MDM 主图地址无效")
   }
-  const fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init))
+  const fetchImpl = options.fetchImpl
   const lookupImpl = options.lookupImpl ?? (async (hostname) => dnsLookup(hostname, { all: true, verbatim: true }))
   const allowedHosts = options.allowedHosts ?? configuredMdmImageAllowedHosts()
 
   for (let redirectCount = 0; redirectCount <= MAX_MDM_IMAGE_REDIRECTS; redirectCount += 1) {
-    await assertSafeMdmImageUrl(currentUrl, lookupImpl, allowedHosts)
+    const resolved = await assertSafeMdmImageUrl(currentUrl, lookupImpl, allowedHosts)
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), MDM_IMAGE_TIMEOUT_MS)
     timeout.unref()
     try {
-      const response = await fetchImpl(currentUrl.toString(), {
-        redirect: "manual",
-        signal: controller.signal,
-      })
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get("location")
+      const response = fetchImpl
+        ? await fetchImpl(currentUrl.toString(), {
+          redirect: "manual",
+          signal: controller.signal,
+          lookup: pinnedLookupFor(resolved.address, resolved.family),
+          servername: resolved.hostname,
+          pinnedAddress: resolved.address,
+          pinnedFamily: resolved.family,
+          headers: {
+            Accept: "image/*,application/octet-stream",
+            Host: currentUrl.host,
+          },
+        })
+        : await requestPinnedNodeImage(currentUrl, resolved, controller.signal)
+      const status = response.status
+      const location = fetchImpl
+        ? response.headers.get("location") ?? ""
+        : response.location
+      if (status >= 300 && status < 400) {
         if (!location) throw new Error("MDM 主图重定向缺少目标地址")
         if (redirectCount >= MAX_MDM_IMAGE_REDIRECTS) throw new Error("MDM 主图重定向次数过多")
+        if (fetchImpl) await response.body?.cancel().catch(() => undefined)
         currentUrl = new URL(location, currentUrl)
         continue
       }
-      if (!response.ok) throw new Error(`MDM 主图下载失败：HTTP ${response.status}`)
-      const contentType = textValue(response.headers.get("content-type")).toLowerCase()
+      if (status < 200 || status >= 300) throw new Error(`MDM 主图下载失败：HTTP ${status}`)
+      const contentType = textValue(fetchImpl ? response.headers.get("content-type") : response.contentType).toLowerCase()
       if (contentType && !contentType.startsWith("image/") && !contentType.startsWith("application/octet-stream")) {
         throw new Error("MDM 主图来源返回的不是图片")
       }
-      const buffer = await readLimitedImage(response)
+      const buffer = fetchImpl
+        ? await readLimitedImage(response)
+        : response.buffer ?? Buffer.alloc(0)
       if (!buffer.length) throw new Error("MDM 主图文件为空")
       const detected = detectImageUploadType(buffer)
       const dimensions = readImageDimensions(buffer)
@@ -234,23 +393,52 @@ export async function syncMdmMainImageToProductArchiveDraft(
   `).get(draftId) as JsonRecord | undefined
   const existingPath = textValue(existing?.local_path)
   if (textValue(existing?.source_ref) === sourceUrl && existingPath && fs.existsSync(existingPath)) {
-    const stat = fs.statSync(existingPath)
-    if (stat.isFile() && stat.size > 0) return { status: "reused", image: existing }
+    if (existingMdmImageIsValid(existingPath)) return { status: "reused", image: existing }
   }
 
   const downloaded = await downloadMdmMainImage(sourceUrl, options)
   const imageDir = path.join(options.imageRootDir, String(draftId))
   await mkdir(imageDir, { recursive: true })
   const digest = createHash("sha256").update(sourceUrl).digest("hex").slice(0, 16)
-  const fileName = `mdm-main-${digest}${downloaded.detected.extension}`
+  const fileName = `mdm-main-${digest}-${randomUUID()}${downloaded.detected.extension}`
   const localPath = path.join(imageDir, fileName)
   const temporaryPath = path.join(imageDir, `.mdm-main-${randomUUID()}.tmp`)
-  await writeFile(temporaryPath, downloaded.buffer)
-  await rename(temporaryPath, localPath)
+  try {
+    await writeFile(temporaryPath, downloaded.buffer)
+    await rename(temporaryPath, localPath)
+  } catch (error) {
+    await rm(temporaryPath, { force: true }).catch(() => undefined)
+    throw error
+  }
 
   const now = new Date().toISOString()
+  let previousPath: string | null = null
+  let wasExisting = false
   try {
     db.transaction(() => {
+      assertProductArchiveDraftMutable(db, draftId)
+      const currentSource = db.prepare(`
+        select draft.id as draft_id, draft.spu_code, spu.pic_url
+        from product_archive_draft draft
+        join product_spu spu on spu.spu_code = draft.spu_code
+        where draft.id = ?
+        for update
+      `).get(draftId) as JsonRecord | undefined
+      if (
+        !currentSource
+        || textValue(currentSource.spu_code) !== textValue(source.spu_code)
+        || textValue(currentSource.pic_url) !== sourceUrl
+      ) {
+        throw new Error("MDM 主图来源已变化，放弃写入")
+      }
+      const currentExisting = db.prepare(`
+        select *
+        from product_archive_draft_image
+        where draft_id = ? and source_type = 'mdm_main_image'
+        limit 1
+      `).get(draftId) as JsonRecord | undefined
+      previousPath = ownedMdmImagePath(textValue(currentExisting?.local_path), imageDir)
+      wasExisting = Boolean(currentExisting)
       db.prepare(`
         insert into product_archive_draft_image (
           draft_id, spu_code, source_type, source_ref, local_path, file_name,
@@ -272,7 +460,7 @@ export async function syncMdmMainImageToProductArchiveDraft(
           updated_at = excluded.updated_at
       `).run(
         draftId,
-        textValue(source.spu_code),
+        textValue(currentSource.spu_code),
         sourceUrl,
         localPath,
         fileName,
@@ -291,12 +479,12 @@ export async function syncMdmMainImageToProductArchiveDraft(
     await rm(localPath, { force: true }).catch(() => undefined)
     throw error
   }
-  if (existingPath && existingPath !== localPath) await rm(existingPath, { force: true }).catch(() => undefined)
+  if (previousPath && previousPath !== localPath) await rm(previousPath, { force: true }).catch(() => undefined)
   const image = db.prepare(`
     select *
     from product_archive_draft_image
     where draft_id = ? and source_type = 'mdm_main_image'
     limit 1
   `).get(draftId) as JsonRecord | undefined
-  return { status: existing ? "updated" : "created", image: image ?? null }
+  return { status: wasExisting ? "updated" : "created", image: image ?? null }
 }

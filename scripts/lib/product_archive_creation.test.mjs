@@ -84,7 +84,7 @@ test("product archive draft service is PG-first and covers build validate patch 
   assert.match(service, /export function listProductArchiveDrafts/);
   assert.match(service, /export function deleteProductArchiveDraft/);
   assert.match(service, /正在提交的草稿不能删除/);
-  assert.match(service, /delete from product_archive_draft where id = \?/);
+  assert.match(service, /delete from product_archive_draft[\s\S]*where id = \?[\s\S]*and submit_claim_token is null[\s\S]*returning/i);
   assert.match(service, /thumbnail_image_url/);
   assert.match(service, /asset_package_image_count/);
   assert.match(service, /hangtag_upload_count/);
@@ -1682,7 +1682,189 @@ test("applying a DeepDraw trade updates the draft fields and validation in one t
   const implementation = source.slice(start, end);
 
   assert.match(implementation, /return db\.transaction\(\(\) => \{/);
-  assert.match(implementation, /update product_archive_draft[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)/);
+  assert.match(implementation, /update product_archive_draft[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId(?:, [^)]*)?\)/);
+});
+
+test("mutable draft writes keep the row lock and mutation in one transaction", async () => {
+  const source = await readFile(files.draftService, "utf8");
+  const section = (startMarker, endMarker) => {
+    const start = source.indexOf(startMarker);
+    const end = source.indexOf(endMarker, start);
+    assert.ok(start >= 0, `missing ${startMarker}`);
+    assert.ok(end > start, `missing ${endMarker}`);
+    return source.slice(start, end);
+  };
+
+  const createImage = section(
+    "export function createProductArchiveDraftImage",
+    "export function deleteProductArchiveDraftImage",
+  );
+  assert.match(createImage, /return db\.transaction\(\(\) => \{/);
+  assert.match(createImage, /assertProductArchiveDraftMutable\(db, input\.draftId\)[\s\S]*insert into product_archive_draft_image[\s\S]*update product_archive_draft set updated_at/);
+  assert.doesNotMatch(createImage, /db\.transaction\(\(\) => assertProductArchiveDraftMutable\(db, input\.draftId\)\)\(\)[\s\S]*const draft/);
+
+  const deleteImage = section(
+    "export function deleteProductArchiveDraftImage",
+    "export function deleteProductArchiveDraft(db",
+  );
+  assert.match(deleteImage, /return db\.transaction\(\(\) => \{/);
+  assert.match(deleteImage, /assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*delete from product_archive_draft_image[\s\S]*update product_archive_draft set updated_at/);
+  assert.doesNotMatch(deleteImage, /db\.transaction\(\(\) => assertProductArchiveDraftMutable\(db, draftId\)\)\(\)[\s\S]*const image/);
+
+  const applyTrade = section(
+    "export function applyProductArchiveDraftTrade",
+    "export function confirmProductArchiveDraftRecommendedTrade",
+  );
+  assert.match(applyTrade, /return db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId/);
+  assert.match(applyTrade, /assertProductArchiveDraftMutable\(db, draftId[\s\S]*update product_archive_draft[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId(?:, [^)]*)?\)/);
+  assert.doesNotMatch(applyTrade, /db\.transaction\(\(\) => assertProductArchiveDraftMutable\(db, draftId\)\)\(\)[\s\S]*const draft/);
+
+  const aiFill = section(
+    "export async function fillProductArchiveDraftFieldsWithAi",
+    "function sizeChartTemplateFieldsForDraft",
+  );
+  const aiPreparation = aiFill.slice(0, aiFill.indexOf("let aiFills"));
+  assert.match(aiPreparation, /const prepared = db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*syncProductArchiveDownFillWeightSizeCharts\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)/);
+  assert.doesNotMatch(aiPreparation, /db\.transaction\(\(\) => assertProductArchiveDraftMutable\(db, draftId\)\)\(\)[\s\S]*rebuildProductArchiveDraftFields/);
+  assert.match(aiFill, /await callDeepdrawAiFill/);
+  assert.match(aiFill, /const validated = db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)/);
+
+  const dryRun = section(
+    "function prepareProductArchiveDraftDryRun",
+    "export async function submitProductArchiveDraft",
+  );
+  assert.match(dryRun, /return db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)[\s\S]*productPayload\(db, draftId\)/);
+
+  const patchFields = section(
+    "export function patchProductArchiveDraftFields",
+    "export async function fillProductArchiveDraftFieldsWithAi",
+  );
+  assert.match(patchFields, /return db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*return validateProductArchiveDraft\(db, draftId\)/);
+  assert.doesNotMatch(patchFields, /\}\)\(\)\s*return validateProductArchiveDraft\(db, draftId\)/);
+
+  const sizeMappings = section(
+    "export function saveProductArchiveSizeChartMappings",
+    "function sizeChartAllowedSizes",
+  );
+  assert.match(sizeMappings, /const validated = db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*return validateProductArchiveDraft\(db, draftId\)/);
+
+  const sourceRefresh = section(
+    "export function refreshProductArchiveDraftsFromSourceBatch",
+    "export function backfillLegacyProductArchiveDraftTrades",
+  );
+  assert.match(sourceRefresh, /db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*appendSourceBatchIdToDraft\(db, draftId[\s\S]*(?:refreshDraftTradeSelectionFromLaunchPlan|rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\))/);
+
+  const submit = section(
+    "export async function submitProductArchiveDraft",
+    "export async function readbackProductArchiveDraft",
+  );
+  assert.match(submit, /refreshDraftTradeSelectionFromLaunchPlan\(db, draftId, \{ claimToken \}\)/);
+});
+
+test("claimed drafts reject image mutation before any image insert", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  let insertCount = 0;
+  const fakeDb = {
+    transaction(fn) {
+      return fn;
+    },
+    prepare(sql) {
+      return {
+        get() {
+          if (/select id, status, submit_claim_token/i.test(sql)) {
+            return { id: 101, status: "submitting", submit_claim_token: "claim-101" };
+          }
+          throw new Error(`unexpected read: ${sql}`);
+        },
+        run() {
+          if (/insert into product_archive_draft_image/i.test(sql)) insertCount += 1;
+          return { changes: 1, lastInsertRowid: 1 };
+        },
+      };
+    },
+  };
+
+  assert.throws(
+    () => service.createProductArchiveDraftImage(fakeDb, {
+      draftId: 101,
+      spuCode: "SPU001",
+      sourceType: "manual_upload",
+      localPath: "/tmp/image.jpg",
+      fileName: "image.jpg",
+    }),
+    /PRODUCT_ARCHIVE_SUBMIT_IN_PROGRESS/,
+  );
+  assert.equal(insertCount, 0);
+});
+
+test("trade refresh and submit preparation keep validation behind the submit fence", async () => {
+  const source = await readFile(files.draftService, "utf8");
+  const section = (startMarker, endMarker) => {
+    const start = source.indexOf(startMarker);
+    const end = source.indexOf(endMarker, start);
+    assert.ok(start >= 0, `missing ${startMarker}`);
+    assert.ok(end > start, `missing ${endMarker}`);
+    return source.slice(start, end);
+  };
+
+  const refresh = section(
+    "export function refreshDraftTradeSelectionFromLaunchPlan",
+    "export function refreshProductArchiveDraftsFromSourceBatch",
+  );
+  assert.match(refresh, /return db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId, \{ claimToken: options\.claimToken \}\)[\s\S]*const draft = draftById\(db, draftId\)/);
+  const humanBranch = refresh.slice(
+    refresh.indexOf('if (merged.status === "human_adjusted"'),
+    refresh.indexOf("if (evaluated.recommendedTrade)"),
+  );
+  const noMatchBranch = refresh.slice(
+    refresh.indexOf("if (evaluated.recommendedTrade)"),
+  );
+  assert.match(humanBranch, /persistTradeSelectionDecision[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId, \{ claimToken: options\.claimToken \}\)/);
+  assert.match(noMatchBranch, /persistTradeSelectionDecision[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId, \{ claimToken: options\.claimToken \}\)/);
+
+  const validation = section(
+    "export function validateProductArchiveDraft",
+    "export function isStructuredProductPayloadField",
+  );
+  assert.match(validation, /return db\.transaction\(\(\) => \{\s*assertProductArchiveDraftMutable\(db, draftId, \{ claimToken: options\.claimToken \}\)/);
+  assert.match(validation, /updateField\.run[\s\S]*delete from product_archive_validation_issue[\s\S]*insertIssue\.run[\s\S]*const draftUpdate/);
+  assert.match(validation, /submit_claim_token = \?[\s\S]*submit_claim_token is null/);
+  assert.doesNotMatch(validation, /db\.transaction\(\(\) => \{\s*db\.prepare\("delete from product_archive_validation_issue/);
+
+  const submit = section(
+    "export async function submitProductArchiveDraft",
+    "export async function readbackProductArchiveDraft",
+  );
+  assert.match(submit, /const prepared = db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId, \{ claimToken \}\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId, \{ claimToken \}\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId, \{ claimToken \}\)[\s\S]*productPayload\(db, draftId\)/);
+});
+
+test("ordinary validation and trade refresh reject an active submit claim before writes", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const fakeDb = {
+    transaction(fn) {
+      return () => fn();
+    },
+    prepare(sql) {
+      return {
+        get() {
+          if (/select id, status, submit_claim_token/i.test(sql)) {
+            return { id: 109, status: "submitting", submit_claim_token: "claim-109" };
+          }
+          throw new Error(`unexpected read after claim assertion: ${sql}`);
+        },
+      };
+    },
+  };
+
+  assert.throws(
+    () => service.validateProductArchiveDraft(fakeDb, 109),
+    /PRODUCT_ARCHIVE_SUBMIT_IN_PROGRESS/,
+  );
+  assert.throws(
+    () => service.refreshDraftTradeSelectionFromLaunchPlan(fakeDb, 109),
+    /PRODUCT_ARCHIVE_SUBMIT_IN_PROGRESS/,
+  );
+  assert.doesNotThrow(() => service.assertProductArchiveDraftMutable(fakeDb, 109, { claimToken: "claim-109" }));
 });
 
 test("product archive draft detail picks one matching template per field", async () => {
@@ -1703,6 +1885,90 @@ test("product archive AI fill skips fields that already have JSON values", async
   assert.match(service, /isStaleUnsupportedAiFillField/);
   assert.match(service, /Boolean\(existing\.manual_override\)[\s\S]*!isStaleUnsupportedAiFillField\(fieldName, existing\)[\s\S]*!isStaleMaterialAiRuleFallbackField\(fieldName, existing\)[\s\S]*!isStaleSizeChartScalarOverride\(fieldName, existing\)/);
   assert.match(service, /hasSizeChartValue\s*\?\s*""[\s\S]*skuSizeField/);
+});
+
+test("AI fill skips a field changed during provider wait but saves an unchanged field", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const draft = {
+    id: 901,
+    spu_code: "SPU-AI-901",
+    tenant_name: "tenant",
+    merchant_id: "merchant",
+    trade_id: "trade-901",
+    trade_path: "类目 / 901",
+    title: "测试商品",
+    retail_price: 100,
+    status: "ready",
+    submit_claim_token: null,
+    source_snapshot_json: {
+      spu: {
+        spu_code: "SPU-AI-901",
+        spu_name: "测试商品",
+      },
+    },
+  };
+  const fields = [1, 2].map((id) => ({
+    id,
+    draft_id: draft.id,
+    field_name: `风格${id}`,
+    field_id: `style-${id}`,
+    source_type: "manual",
+    source_ref: null,
+    value_text: null,
+    value_json: {},
+    required: true,
+    blocking: true,
+    manual_override: false,
+    validation_status: "missing",
+    validation_message: "必填字段缺失",
+    updated_at: `2026-08-19T00:00:0${id}.000Z`,
+    options_json: [{ value: "休闲" }],
+    field_type: "SINGLE_CHOICE",
+  }));
+  const fieldUpdates = [];
+  const db = {
+    transaction(fn) {
+      return () => fn();
+    },
+    prepare(sql) {
+      const normalized = sql.replace(/\s+/g, " ").trim();
+      return {
+        get() {
+          if (/from product_archive_draft/i.test(normalized)) return draft;
+          return undefined;
+        },
+        all() {
+          if (/from product_archive_draft_field/i.test(normalized)) return fields;
+          return [];
+        },
+        run(...args) {
+          if (/update product_archive_draft_field field/i.test(normalized)) {
+            const fieldId = Number(args[6]);
+            fieldUpdates.push({ fieldId, args });
+            return { changes: fieldId === 1 ? 0 : 1 };
+          }
+          return { changes: 1 };
+        },
+      };
+    },
+  };
+
+  const result = await service.fillProductArchiveDraftFieldsWithAi(db, draft.id, {
+    router: {
+      callJson: async () => ({
+        json: {
+          fills: [
+            { field_id: 1, field_value: "休闲", confidence: 0.95 },
+            { field_id: 2, field_value: "休闲", confidence: 0.95 },
+          ],
+        },
+      }),
+    },
+  });
+
+  assert.deepEqual(fieldUpdates.map((update) => update.fieldId), [1, 2]);
+  assert.deepEqual(result.saved.map((field) => field.field_id), [2]);
+  assert.equal(result.warnings.filter((warning) => warning.code === "draft_changed").length, 1);
 });
 
 test("product archive AI fill prompt uses trusted draft MDM and source context only", async () => {
@@ -1933,11 +2199,15 @@ test("product archive duplicate check rejects top-level DeepDraw business failur
 
 test("product archive duplicate check treats DeepDraw product-not-found as no duplicate", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
-  const runs = [];
+  const writes = [];
   const fakeDb = {
-    prepare() {
+    prepare(sql) {
       return {
-        get() {
+        get(...args) {
+          if (/update product_archive_draft/i.test(sql)) {
+            writes.push({ kind: "update", args });
+            return { id: 103 };
+          }
           return {
             id: 103,
             spu_code: "SPU003",
@@ -1947,7 +2217,7 @@ test("product archive duplicate check treats DeepDraw product-not-found as no du
           };
         },
         run(...args) {
-          runs.push(args);
+          writes.push({ kind: "log", args });
           return {};
         },
       };
@@ -1976,7 +2246,8 @@ test("product archive duplicate check treats DeepDraw product-not-found as no du
 
   assert.equal(result.duplicateFound, false);
   assert.deepEqual(result.records, []);
-  assert.ok(runs.length >= 2);
+  assert.equal(writes.filter((write) => write.kind === "update").length, 1);
+  assert.equal(writes.filter((write) => write.kind === "log").length, 1);
 });
 
 test("product archive service derives core sales fields from MDM master data", async () => {
@@ -2277,6 +2548,110 @@ test("product archive submit routes surface DeepDraw service failures instead of
   assert.match(route, /发布到深绘失败/);
   assert.match(route, /深绘查重失败/);
   assert.match(route, /深绘回读失败/);
+});
+
+test("product archive routes fence prechecks, owned image files, and mutation conflicts", async () => {
+  const route = await readFile(files.draftRoute, "utf8");
+  const section = (startMarker, endMarker) => {
+    const start = route.indexOf(startMarker);
+    const end = route.indexOf(endMarker, start);
+    assert.ok(start >= 0, `missing ${startMarker}`);
+    assert.ok(end > start, `missing ${endMarker}`);
+    return route.slice(start, end);
+  };
+
+  const precheck = section("async function runPrecheckItemOnce", "function finishJob(job");
+  assert.match(precheck, /const prepared = db\.transaction\(\(\) => \{[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, item\.draft_id\)[\s\S]*validateProductArchiveDraft\(db, item\.draft_id\)[\s\S]*return \{ tradeRefresh, validation \}/);
+
+  const validateRoute = section(
+    'productArchiveDrafts.post("/:draftId/validate"',
+    'productArchiveDrafts.post("/:draftId/check-duplicate"',
+  );
+  assert.match(validateRoute, /const prepared = db\.transaction\(\(\) => \{[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)/);
+  assert.doesNotMatch(validateRoute, /db\.transaction\(\(\) => assertProductArchiveDraftMutable/);
+
+  const imageSave = section("async function saveDraftImageUpload", "async function repairLegacyDraftImageLocalPath");
+  assert.match(imageSave, /const localPath = path\.join\(imageDir, `\$\{randomUUID\(\)\}-\$\{fileName\}`\)/);
+  assert.match(imageSave, /writeFile\(localPath, input\.file\.buffer, \{ flag: "wx" \}\)/);
+  assert.match(imageSave, /catch \(error\)[\s\S]*rm\(localPath, \{ force: true \}\)[\s\S]*throw error/);
+
+  const legacyRepair = section("async function repairLegacyDraftImageLocalPath", "async function deleteDraftImageFiles");
+  assert.match(legacyRepair, /writeFile\(localPath, buffer, \{ flag: "wx" \}\)/);
+  assert.match(legacyRepair, /db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*select id, draft_id, source_type, local_path[\s\S]*source_type = 'crawshrimp_asset_package'[\s\S]*for update[\s\S]*update product_archive_draft_image/);
+  assert.match(legacyRepair, /catch \(error\)[\s\S]*rm\(localPath, \{ force: true \}\)[\s\S]*throw error/);
+
+  const imageFileRead = section(
+    'productArchiveDrafts.get("/images/:imageId/file"',
+    'productArchiveDrafts.post("/:draftId/images"',
+  );
+  assert.match(imageFileRead, /requirePermission\(c, "PRODUCT_ARCHIVE_DRAFT_READ"\)/);
+  assert.match(
+    imageFileRead,
+    /if \(stringValue\(image\.source_type\) === "crawshrimp_asset_package"\) \{\s*requirePermission\(c, "PRODUCT_ARCHIVE_DRAFT_WRITE"\)[\s\S]*repairLegacyDraftImageLocalPath/,
+  );
+  assert.doesNotMatch(
+    imageFileRead,
+    /requirePermission\(c, "PRODUCT_ARCHIVE_DRAFT_WRITE"\)\s*const repaired/,
+  );
+
+  const sourceSpreadsheetUpload = section(
+    'productArchiveDrafts.post("/source-imports/upload"',
+    'productArchiveDrafts.post("/size-chart/import"',
+  );
+  assert.match(sourceSpreadsheetUpload, /productArchiveSpreadsheetBodyLimit/);
+
+  const sizeChartSpreadsheetImport = section(
+    'productArchiveDrafts.post("/size-chart/import"',
+    'productArchiveDrafts.post("/workflow/start"',
+  );
+  assert.match(sizeChartSpreadsheetImport, /productArchiveSpreadsheetBodyLimit/);
+
+  const workflowStart = section(
+    'productArchiveDrafts.post("/workflow/start"',
+    'productArchiveDrafts.post("/hangtag-washlabel-ocr/preview"',
+  );
+  assert.match(workflowStart, /productArchiveWorkflowSpreadsheetBodyLimit/);
+  assert.doesNotMatch(workflowStart, /productArchiveOcrBodyLimit/);
+  assert.match(route, /const SPREADSHEET_MULTIPART_OVERHEAD_BYTES = MB/);
+  assert.match(route, /const MAX_PRODUCT_ARCHIVE_WORKFLOW_SPREADSHEET_BYTES = maxUploadBytes\("spreadsheet"\) \* 3/);
+  assert.match(route, /const productArchiveSpreadsheetBodyLimit = bodyLimit\(\{[\s\S]*maxSize: maxUploadBytes\("spreadsheet"\) \+ SPREADSHEET_MULTIPART_OVERHEAD_BYTES[\s\S]*表格上传请求体总大小超过限制/);
+  assert.match(route, /const productArchiveWorkflowSpreadsheetBodyLimit = bodyLimit\(\{[\s\S]*maxSize: maxUploadBytes\("spreadsheet"\) \* 3 \+ SPREADSHEET_MULTIPART_OVERHEAD_BYTES[\s\S]*工作流表格批次请求体总大小超过限制/);
+  assert.match(
+    sourceSpreadsheetUpload,
+    /productArchiveSpreadsheetBodyLimit, async \(c\) => \{[\s\S]*saveUploadedSpreadsheet\(c\)/,
+  );
+  assert.match(
+    sizeChartSpreadsheetImport,
+    /productArchiveSpreadsheetBodyLimit, async \(c\) => \{[\s\S]*saveUploadedSpreadsheet\(c\)/,
+  );
+  assert.match(
+    workflowStart,
+    /productArchiveWorkflowSpreadsheetBodyLimit, async \(c\) => \{[\s\S]*const form = await c\.req\.formData\(\)[\s\S]*const spreadsheetFiles = \[copywritingFile, launchPlanFile, sizeChartFile\][\s\S]*file\.size > 0[\s\S]*assertAggregateUploadBytes\([\s\S]*MAX_PRODUCT_ARCHIVE_WORKFLOW_SPREADSHEET_BYTES[\s\S]*工作流表格批次总大小超过限制[\s\S]*importWorkflowSourceFile/,
+  );
+
+  assert.match(route, /function isProductArchiveDraftMutationConflictMessage/);
+  assert.match(route, /function productArchiveDraftMutationException/);
+  assert.match(route, /if \(isProductArchiveDraftMutationConflictMessage\(message\)\)[\s\S]*return new HTTPException\(409/);
+  assert.match(route, /function productArchiveDraftMutationException[\s\S]*return error/);
+  for (const marker of [
+    'productArchiveDrafts.post("/images/import"',
+    'productArchiveDrafts.post("/:draftId/images"',
+    'productArchiveDrafts.delete("/:draftId/images/:imageId"',
+    'productArchiveDrafts.delete("/:draftId"',
+    'productArchiveDrafts.patch("/:draftId/trade"',
+    'productArchiveDrafts.patch("/:draftId/trade/confirm"',
+    'productArchiveDrafts.patch("/:draftId/fields"',
+    'productArchiveDrafts.post("/:draftId/validate"',
+    'productArchiveDrafts.post("/:draftId/ai-fill"',
+    'productArchiveDrafts.post("/hangtag-washlabel-ocr/apply"',
+    'productArchiveDrafts.post("/:draftId/size-chart/mappings"',
+  ]) {
+    const start = route.indexOf(marker);
+    const end = route.indexOf("\nproductArchiveDrafts.", start + marker.length);
+    assert.ok(start >= 0, `missing ${marker}`);
+    assert.ok(end > start, `missing route end for ${marker}`);
+    assert.match(route.slice(start, end), /productArchiveDraftMutationException/);
+  }
 });
 
 test("product archive field option validation supports multi-value strings and object SKU payloads", async () => {
@@ -3580,13 +3955,111 @@ test("product archive submit route allows real DeepDraw creates through the SDK 
   assert.doesNotMatch(deepdrawClient, /product create adapter is not configured/);
 });
 
-test("DeepDraw create transport failures persist a failed draft and submission log", async () => {
-  const source = await readFile(files.draftService, "utf8");
-  const start = source.indexOf("export async function submitProductArchiveDraft");
-  const end = source.indexOf("export async function readbackProductArchiveDraft", start);
-  const implementation = source.slice(start, end);
+test("DeepDraw create transport uncertainty keeps the submit claim and does not mark an ordinary failure", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const state = {
+    id: 77,
+    status: "submitting",
+    submit_claim_token: "claim-77",
+    transport_unknown: null,
+  };
+  const logs = [];
+  const db = {
+    transaction(fn) {
+      return () => fn();
+    },
+    prepare(sql) {
+      return {
+        run(...args) {
+          if (/insert into product_archive_submit_log/i.test(sql)) {
+            logs.push(args);
+            return { changes: 1 };
+          }
+          if (/update product_archive_draft/i.test(sql)) {
+            const [message, _updatedAt, draftId, claimToken] = args;
+            if (draftId === state.id && claimToken === state.submit_claim_token) {
+              state.transport_unknown = message;
+              return { changes: 1 };
+            }
+            return { changes: 0 };
+          }
+          throw new Error(`Unexpected SQL: ${sql}`);
+        },
+      };
+    },
+  };
 
-  assert.match(implementation, /try\s*\{[\s\S]*await runCreate\(payload\)[\s\S]*catch/);
-  assert.match(implementation, /writeSubmitLog\(db, draftId, "create"/);
-  assert.match(implementation, /set status = 'failed'/);
+  service.recordProductArchiveSubmitTransportUnknown(db, {
+    draftId: 77,
+    claimToken: "claim-77",
+    requestSummary: { spuCode: "208226102001" },
+    message: "socket closed before response",
+  });
+
+  assert.equal(state.status, "submitting");
+  assert.equal(state.submit_claim_token, "claim-77");
+  assert.equal(state.transport_unknown, "socket closed before response");
+  assert.equal(logs.length, 1);
+});
+
+test("DeepDraw submit restores the fenced pre-claim status when local preparation throws", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const state = {
+    id: 78,
+    status: "manual_review",
+    submit_claim_token: null,
+  };
+  const cleanupWrites = [];
+  let createCalls = 0;
+  const db = {
+    transaction(fn) {
+      return () => fn();
+    },
+    prepare(sql) {
+      const normalized = sql.replace(/\s+/g, " ").trim();
+      return {
+        get(...args) {
+          if (/set status = 'submitting'/i.test(normalized)) {
+            const [claimToken, _updatedAt, draftId] = args;
+            assert.equal(draftId, state.id);
+            state.status = "submitting";
+            state.submit_claim_token = claimToken;
+            return {
+              ...state,
+              submit_claim_previous_status: "manual_review",
+            };
+          }
+          throw new Error("local preparation failed before any remote call");
+        },
+        run(...args) {
+          if (/set status = \?, submit_claim_token = null/i.test(normalized)) {
+            cleanupWrites.push({ sql: normalized, args });
+            const [status, _updatedAt, draftId, claimToken] = args;
+            if (draftId === state.id && claimToken === state.submit_claim_token) {
+              state.status = status;
+              state.submit_claim_token = null;
+              return { changes: 1 };
+            }
+            return { changes: 0 };
+          }
+          throw new Error(`Unexpected SQL: ${normalized}`);
+        },
+      };
+    },
+  };
+
+  await assert.rejects(
+    () => service.submitProductArchiveDraft(db, state.id, {
+      create: async () => {
+        createCalls += 1;
+        throw new Error("remote create must not run");
+      },
+    }),
+    /local preparation failed before any remote call/,
+  );
+
+  assert.equal(state.status, "manual_review");
+  assert.equal(state.submit_claim_token, null);
+  assert.equal(createCalls, 0);
+  assert.equal(cleanupWrites.length, 1);
 });

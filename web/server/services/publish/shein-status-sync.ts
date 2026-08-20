@@ -1,5 +1,6 @@
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
-import { requestSheinWithRetry } from "../../../../scripts/lib/shein_client.mjs"
+import { requestSheinWithCredentialsAndRetry } from "../../../../scripts/lib/shein_client.mjs"
+import { resolveSheinCredentials } from "../../lib/platform-config"
 import {
   markPublishTaskFailed,
   markPublishTaskStatusSynced,
@@ -151,7 +152,10 @@ export async function syncPublishTaskStatus(db: SyncPostgresDatabase, taskId: nu
       },
     ],
   }
-  const result = await requestSheinWithRetry("/open-api/goods/query-document-state", { body })
+  const result = await requestSheinWithCredentialsAndRetry("/open-api/goods/query-document-state", {
+    body,
+    credentials: resolveSheinCredentials(db),
+  })
   const code = responseCode(result.payload)
   if (code !== "0") {
     const message = responseMessage(result.payload) || "SHEIN 审核状态查询失败"

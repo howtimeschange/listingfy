@@ -5,6 +5,7 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import sharp from "sharp"
 import { Hono, type Context } from "hono"
 import { HTTPException } from "hono/http-exception"
+import { bodyLimit } from "hono/body-limit"
 import { getDb } from "../db"
 import { requirePermission, trustedClientAddress } from "../lib/auth"
 import { assertLocalImageFile } from "../lib/local-path-guard"
@@ -26,7 +27,9 @@ import {
 import {
   createPostgresProductArchiveSyncJobStore,
   createProductArchiveSyncQueue,
+  isProductArchiveSyncLeaseError,
   isRetryableProductArchiveSyncError,
+  ProductArchiveSyncLeaseError,
 } from "../../../scripts/lib/product_archive_sync_queue.mjs"
 import { resolveDeepdrawConfig } from "../../../scripts/lib/deepdraw_client.mjs"
 import { syncMdmProduct } from "../services/product-archive-sync"
@@ -37,6 +40,7 @@ import {
 } from "../services/product-archive-hangtag-ocr"
 import {
   applyProductArchiveDraftTrade,
+  assertProductArchiveDraftMutable,
   checkDuplicateProductArchiveDraft,
   classifyProductArchiveAssetPackageFileName,
   confirmProductArchiveDraftRecommendedTrade,
@@ -77,6 +81,57 @@ const PROJECT_ROOT =
 const UPLOAD_DIR = path.join(os.tmpdir(), "listingify-upload")
 const TEMPLATE_DIR = path.join(PROJECT_ROOT, "data", "product-archive-templates")
 const DRAFT_IMAGE_DIR = path.join(PROJECT_ROOT, "data", "product-archive-draft-images")
+const MB = 1024 * 1024
+const SPREADSHEET_MULTIPART_OVERHEAD_BYTES = MB
+
+function positiveBatchMegabytes(name: string, fallback: number) {
+  const value = Number(process.env[name] ?? fallback)
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback
+}
+
+const MAX_PRODUCT_ARCHIVE_IMAGE_BATCH_BYTES = positiveBatchMegabytes(
+  "LISTINGIFY_MAX_PRODUCT_ARCHIVE_IMAGE_BATCH_MB",
+  256,
+) * MB
+const MAX_PRODUCT_ARCHIVE_OCR_BATCH_BYTES = positiveBatchMegabytes(
+  "LISTINGIFY_MAX_PRODUCT_ARCHIVE_OCR_BATCH_MB",
+  512,
+) * MB
+const MAX_PRODUCT_ARCHIVE_WORKFLOW_SPREADSHEET_BYTES = maxUploadBytes("spreadsheet") * 3
+
+function uploadBodyLimit(maxSize: number, message: string) {
+  return bodyLimit({
+    maxSize: maxSize + MB,
+    onError: (c) => c.json({ error: message }, 413),
+  })
+}
+
+const productArchiveImageBodyLimit = uploadBodyLimit(
+  MAX_PRODUCT_ARCHIVE_IMAGE_BATCH_BYTES,
+  "SPU 参考图片批次总大小超过限制",
+)
+const productArchiveOcrBodyLimit = uploadBodyLimit(
+  MAX_PRODUCT_ARCHIVE_OCR_BATCH_BYTES,
+  "吊牌/洗唛 OCR 批次总大小超过限制",
+)
+const productArchiveSpreadsheetBodyLimit = bodyLimit({
+  maxSize: maxUploadBytes("spreadsheet") + SPREADSHEET_MULTIPART_OVERHEAD_BYTES,
+  onError: (c) => c.json({ error: "表格上传请求体总大小超过限制" }, 413),
+})
+const productArchiveWorkflowSpreadsheetBodyLimit = bodyLimit({
+  maxSize: maxUploadBytes("spreadsheet") * 3 + SPREADSHEET_MULTIPART_OVERHEAD_BYTES,
+  onError: (c) => c.json({ error: "工作流表格批次请求体总大小超过限制" }, 413),
+})
+
+function assertAggregateUploadBytes(files: File[], maxBytes: number, message: string) {
+  const totalBytes = files.reduce((sum, file) => sum + Number(file.size || 0), 0)
+  if (totalBytes > maxBytes) {
+    throw new HTTPException(413, {
+      message: `${message}（上限 ${Math.floor(maxBytes / MB)}MB）`,
+    })
+  }
+  return totalBytes
+}
 const PRODUCT_ARCHIVE_TEMPLATES = {
   copywriting: {
     fileName: "标准文案表-模板.xlsx",
@@ -346,9 +401,12 @@ function createProductArchiveAiFillQueue({
 
   function persist(job: ProductArchiveAiFillJob) {
     try {
-      store.save(cloneProductArchiveAiFillJob(job))
+      if (store.save(cloneProductArchiveAiFillJob(job)) === false) {
+        throw new ProductArchiveSyncLeaseError()
+      }
     } catch (error) {
       reportInternalError(error, { phase: "persist", jobId: job.id })
+      if (store.requiresLease) throw error
     }
   }
 
@@ -436,6 +494,7 @@ function createProductArchiveAiFillQueue({
             try {
               await processItem(job, item)
             } catch (error) {
+              if (isProductArchiveSyncLeaseError(error)) throw error
               setItemFinished(job, item, "failed", {
                 draftId: item.draft_id,
                 spuCode: item.spu_code,
@@ -666,9 +725,12 @@ function createProductArchivePrecheckQueue({
 
   function persist(job: ProductArchivePrecheckJob) {
     try {
-      store.save(cloneProductArchivePrecheckJob(job))
+      if (store.save(cloneProductArchivePrecheckJob(job)) === false) {
+        throw new ProductArchiveSyncLeaseError()
+      }
     } catch (error) {
       reportInternalError(error, { phase: "persist", jobId: job.id })
+      if (store.requiresLease) throw error
     }
   }
 
@@ -688,8 +750,12 @@ function createProductArchivePrecheckQueue({
     persist(job)
 
     const db = getDb()
-    const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, item.draft_id)
-    const validation = validateProductArchiveDraft(db, item.draft_id)
+    const prepared = db.transaction(() => {
+      const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, item.draft_id)
+      const validation = validateProductArchiveDraft(db, item.draft_id)
+      return { tradeRefresh, validation }
+    })()
+    const { tradeRefresh, validation } = prepared
     const validationCounts = validationSummaryCounts(validation)
     if (validationCounts.blockerCount > 0) {
       const message = `校验未通过：${validationIssueSummary(objectValue(validation).issues)}`
@@ -787,6 +853,7 @@ function createProductArchivePrecheckQueue({
         await runPrecheckItemOnce(job, item)
         return
       } catch (error) {
+        if (isProductArchiveSyncLeaseError(error)) throw error
         const retryable = precheckErrorIsRetryable(error) && item.attempt_count < item.max_attempts
         item.error = errorMessage(error)
         if (!retryable) {
@@ -858,6 +925,7 @@ function createProductArchivePrecheckQueue({
             try {
               await processItem(job, item)
             } catch (error) {
+              if (isProductArchiveSyncLeaseError(error)) throw error
               setPrecheckItemFailed(job, item, {
                 draftId: item.draft_id,
                 spuCode: item.spu_code,
@@ -1098,9 +1166,12 @@ function createProductArchivePublishQueue({
 
   function persist(job: ProductArchivePublishJob) {
     try {
-      store.save(cloneProductArchivePublishJob(job))
+      if (store.save(cloneProductArchivePublishJob(job)) === false) {
+        throw new ProductArchiveSyncLeaseError()
+      }
     } catch (error) {
       reportInternalError(error, { phase: "persist", jobId: job.id })
+      if (store.requiresLease) throw error
     }
   }
 
@@ -1163,6 +1234,7 @@ function createProductArchivePublishQueue({
         setItemFinished(job, item, "completed", finished.result, null)
         return
       } catch (error) {
+        if (isProductArchiveSyncLeaseError(error)) throw error
         const safety = publishRetrySafety(getDb(), item.draft_id)
         const retryable = safety.retryable && publishErrorIsRetryable(error) && item.attempt_count < item.max_attempts
         item.error = safety.retryable ? errorMessage(error) : safety.reason || errorMessage(error)
@@ -1434,9 +1506,12 @@ function createHangtagWashlabelOcrQueue({
 
   function persist(job: HangtagWashlabelOcrJob) {
     try {
-      store.save(cloneHangtagWashlabelOcrJob(job))
+      if (store.save(cloneHangtagWashlabelOcrJob(job)) === false) {
+        throw new ProductArchiveSyncLeaseError()
+      }
     } catch (error) {
       reportInternalError(error, { phase: "persist", jobId: job.id })
+      if (store.requiresLease) throw error
     }
   }
 
@@ -1580,48 +1655,48 @@ function createHangtagWashlabelOcrQueue({
         job.status = "running"
         job.started_at ??= new Date(now()).toISOString()
         persist(job)
-        try {
-          for (let index = 0; index < job.files.length; index += 1) {
+        for (let index = 0; index < job.files.length; index += 1) {
             const item = job.items[index]
             if (!item || item.status === "completed" || item.status === "failed") continue
             try {
               await processFileItem(job, job.files[index], item)
             } catch (error) {
+              if (isProductArchiveSyncLeaseError(error)) throw error
               setItemFinished(job, item, "failed", {
                 fileName: job.files[index].fileName,
               }, errorMessage(error))
             }
-          }
+        }
 
-          const applyItem = job.items[job.items.length - 1]
-          if (applyItem && applyItem.status !== "completed" && applyItem.status !== "failed") {
-            try {
-              await applyRecognizedDocuments(job, applyItem)
-            } catch (error) {
-              setItemFinished(job, applyItem, "failed", null, errorMessage(error))
-              job.result = {
-                error: errorMessage(error),
-                previewSummary: previewProductArchiveHangtagWashlabelOcr(getDb(), {
-                  documents: documentsFromOcrJobItems(job.items),
-                  overwriteExisting: job.options.overwriteExisting,
-                }).summary,
-              }
+        const applyItem = job.items[job.items.length - 1]
+        if (applyItem && applyItem.status !== "completed" && applyItem.status !== "failed") {
+          try {
+            await applyRecognizedDocuments(job, applyItem)
+          } catch (error) {
+            if (isProductArchiveSyncLeaseError(error)) throw error
+            setItemFinished(job, applyItem, "failed", null, errorMessage(error))
+            job.result = {
+              error: errorMessage(error),
+              previewSummary: previewProductArchiveHangtagWashlabelOcr(getDb(), {
+                documents: documentsFromOcrJobItems(job.items),
+                overwriteExisting: job.options.overwriteExisting,
+              }).summary,
             }
           }
-        } finally {
-          job.status = "completed"
-          job.outcome = job.failed_count === 0
-            ? "succeeded"
-            : job.completed_count === 0
-              ? "failed"
-              : "partial_failure"
-          job.finished_at = new Date(now()).toISOString()
-          try {
-            await rm(job.options.uploadDir, { recursive: true, force: true })
-          } catch (error) {
-            reportInternalError(error, { phase: "cleanup", jobId: job.id })
-          }
-          persist(job)
+        }
+
+        job.status = "completed"
+        job.outcome = job.failed_count === 0
+          ? "succeeded"
+          : job.completed_count === 0
+            ? "failed"
+            : "partial_failure"
+        job.finished_at = new Date(now()).toISOString()
+        persist(job)
+        try {
+          await rm(job.options.uploadDir, { recursive: true, force: true })
+        } catch (error) {
+          reportInternalError(error, { phase: "cleanup", jobId: job.id })
         }
       }
     } finally {
@@ -1794,9 +1869,28 @@ async function readJson(c: Context) {
   }
 }
 
+function isProductArchiveDraftMutationConflictMessage(message: string) {
+  return /PRODUCT_ARCHIVE_SUBMIT_IN_PROGRESS|草稿提交权已失效|正在提交的草稿不能删除|草稿数据已更新，请刷新后重试|推荐结果已更新，请刷新后重新确认|图片已更新，请刷新后重试/.test(message)
+}
+
+function productArchiveDraftMutationException(error: unknown) {
+  if (error instanceof HTTPException) return error
+  const message = error instanceof Error ? error.message : String(error)
+  if (message === "草稿数据已更新，请刷新后重试") {
+    return new HTTPException(409, { message })
+  }
+  if (isProductArchiveDraftMutationConflictMessage(message)) {
+    return new HTTPException(409, { message })
+  }
+  return error
+}
+
 function submitOperationException(error: unknown, prefix: string) {
   if (error instanceof HTTPException) return error
   const message = error instanceof Error ? error.message : String(error)
+  if (isProductArchiveDraftMutationConflictMessage(message)) {
+    return new HTTPException(409, { message })
+  }
   const status = /草稿存在阻断|请选择|本地未找到|不存在|缺少|无效/.test(message) ? 400 : 502
   return new HTTPException(status, { message: `${prefix}：${message || "未知错误"}` })
 }
@@ -1898,6 +1992,11 @@ async function readDraftImageUploadFiles(c: Context) {
   if (rawFiles.length > maxFileCount) {
     throw new HTTPException(400, { message: `单次最多导入 ${maxFileCount} 张 SPU 参考图片` })
   }
+  assertAggregateUploadBytes(
+    rawFiles,
+    MAX_PRODUCT_ARCHIVE_IMAGE_BATCH_BYTES,
+    "SPU 参考图片批次总大小超过限制",
+  )
   const files: DraftImageUploadFile[] = []
   let skippedCount = 0
   for (let index = 0; index < rawFiles.length; index += 1) {
@@ -1946,33 +2045,38 @@ async function saveDraftImageUpload(input: {
   const imageDir = path.join(DRAFT_IMAGE_DIR, String(draftId))
   await mkdir(imageDir, { recursive: true })
   const fileName = safeDraftImageUploadName(input.file.fileName, input.file.extension)
-  const localPath = path.join(imageDir, fileName)
-  await writeFile(localPath, input.file.buffer)
-  return createProductArchiveDraftImage(input.db, {
-    draftId,
-    spuCode,
-    sourceType: input.sourceType,
-    sourceRef: input.sourceRef,
-    localPath,
-    fileName,
-    originalFileName: input.file.originalFileName,
-    mimeType: input.file.mimeType,
-    fileSize: input.file.size,
-    width: input.file.width,
-    height: input.file.height,
-    uploadedBy: input.uploadedBy,
-    rawPayload: {
-      original_file_name: input.file.originalFileName,
-      source_ref: input.sourceRef,
+  const localPath = path.join(imageDir, `${randomUUID()}-${fileName}`)
+  try {
+    await writeFile(localPath, input.file.buffer, { flag: "wx" })
+    return createProductArchiveDraftImage(input.db, {
+      draftId,
+      spuCode,
+      sourceType: input.sourceType,
+      sourceRef: input.sourceRef,
+      localPath,
+      fileName,
+      originalFileName: input.file.originalFileName,
+      mimeType: input.file.mimeType,
+      fileSize: input.file.size,
       width: input.file.width,
       height: input.file.height,
-      file_size: input.file.size,
-      mime_type: input.file.mimeType,
-      has_model_shot: input.file.hasModelShot === true,
-      asset_kind: input.file.assetKind || null,
-      asset_package: input.sourceType === "crawshrimp_asset_package",
-    },
-  })
+      uploadedBy: input.uploadedBy,
+      rawPayload: {
+        original_file_name: input.file.originalFileName,
+        source_ref: input.sourceRef,
+        width: input.file.width,
+        height: input.file.height,
+        file_size: input.file.size,
+        mime_type: input.file.mimeType,
+        has_model_shot: input.file.hasModelShot === true,
+        asset_kind: input.file.assetKind || null,
+        asset_package: input.sourceType === "crawshrimp_asset_package",
+      },
+    })
+  } catch (error) {
+    await rm(localPath, { force: true })
+    throw error
+  }
 }
 
 async function repairLegacyDraftImageLocalPath(db: ReturnType<typeof getDb>, image: Record<string, unknown>) {
@@ -1992,20 +2096,141 @@ async function repairLegacyDraftImageLocalPath(db: ReturnType<typeof getDb>, ima
   const imageDir = path.join(DRAFT_IMAGE_DIR, String(draftId))
   await mkdir(imageDir, { recursive: true })
   const fileName = safeDraftImageUploadName(stringValue(image.file_name) || path.basename(sourcePath), detected.extension)
-  const localPath = path.join(imageDir, fileName)
-  await writeFile(localPath, buffer)
-  db.prepare(`
-    update product_archive_draft_image
-    set local_path = ?,
-      file_name = ?,
-      mime_type = ?,
-      file_size = ?,
-      width = ?,
-      height = ?,
-      updated_at = ?::timestamptz
-    where id = ?
-  `).run(localPath, fileName, detected.contentType, buffer.length, dimensions.width, dimensions.height, nowIso(), imageId)
-  return assertLocalImageFile({ rootDir: DRAFT_IMAGE_DIR, filePath: localPath })
+  const localPath = path.join(imageDir, `${randomUUID()}-${fileName}`)
+  try {
+    await writeFile(localPath, buffer, { flag: "wx" })
+    const validated = await assertLocalImageFile({ rootDir: DRAFT_IMAGE_DIR, filePath: localPath })
+    db.transaction(() => {
+      assertProductArchiveDraftMutable(db, draftId)
+      const current = db.prepare(`
+        select id, draft_id, source_type, local_path
+        from product_archive_draft_image
+        where id = ?
+          and draft_id = ?
+          and source_type = 'crawshrimp_asset_package'
+        for update
+      `).get(imageId, draftId) as Record<string, unknown> | undefined
+      if (
+        !current
+        || stringValue(current.source_type) !== "crawshrimp_asset_package"
+        || stringValue(current.local_path) !== sourcePath
+      ) {
+        throw new Error("图片已更新，请刷新后重试")
+      }
+      const update = db.prepare(`
+        update product_archive_draft_image
+        set local_path = ?,
+          file_name = ?,
+          mime_type = ?,
+          file_size = ?,
+          width = ?,
+          height = ?,
+          updated_at = ?::timestamptz
+        where id = ?
+          and draft_id = ?
+          and source_type = 'crawshrimp_asset_package'
+          and local_path = ?
+      `).run(
+        localPath,
+        fileName,
+        detected.contentType,
+        buffer.length,
+        dimensions.width,
+        dimensions.height,
+        nowIso(),
+        imageId,
+        draftId,
+        sourcePath,
+      )
+      if (Number(update?.changes ?? 0) === 0) {
+        throw new Error("图片已更新，请刷新后重试")
+      }
+    })()
+    return validated
+  } catch (error) {
+    await rm(localPath, { force: true })
+    throw error
+  }
+}
+
+type LocalDraftImageReferenceDb = {
+  prepare: (sql: string) => {
+    all: (...params: unknown[]) => unknown[]
+  }
+}
+
+type DraftImageFileRemover = (paths: Iterable<unknown>, rootDir?: string) => void | Promise<void>
+
+function controlledDraftImagePaths(paths: Iterable<unknown>, rootDir: string) {
+  const resolvedRoot = path.resolve(rootDir)
+  return Array.from(new Set(Array.from(paths)
+    .map(stringValue)
+    .filter(Boolean)
+    .map((localPath) => path.resolve(localPath))
+    .filter((localPath) => {
+      const relative = path.relative(resolvedRoot, localPath)
+      return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative)
+    })))
+}
+
+export function unreferencedDraftImagePaths(
+  db: LocalDraftImageReferenceDb,
+  paths: Iterable<unknown>,
+  rootDir = DRAFT_IMAGE_DIR,
+) {
+  const candidates = controlledDraftImagePaths(paths, rootDir)
+  if (candidates.length === 0) return []
+  const rows = db.prepare(`
+    select distinct local_path
+    from product_archive_draft_image
+    where local_path in (${candidates.map(() => "?").join(",")})
+  `).all(...candidates) as Array<Record<string, unknown>>
+  const referenced = new Set(rows
+    .map((row) => stringValue(row.local_path))
+    .filter(Boolean)
+    .map((localPath) => path.resolve(localPath)))
+  return candidates.filter((localPath) => !referenced.has(localPath))
+}
+
+async function removeDraftImageFiles(paths: Iterable<unknown>) {
+  for (const value of paths) {
+    const localPath = stringValue(value)
+    if (localPath) await rm(localPath, { force: true })
+  }
+}
+
+export async function cleanupUnreferencedDraftImageFiles(
+  db: LocalDraftImageReferenceDb,
+  paths: Iterable<unknown>,
+  rootDir = DRAFT_IMAGE_DIR,
+  removeFile: DraftImageFileRemover = removeDraftImageFiles,
+) {
+  let candidates: string[]
+  try {
+    candidates = unreferencedDraftImagePaths(db, paths, rootDir)
+  } catch (error) {
+    return {
+      cleaned_paths: [],
+      warnings: [{
+        local_path: "*",
+        reason: `本地图片引用检查失败：${error instanceof Error ? error.message : "请稍后重试"}`,
+      }],
+    }
+  }
+  const cleaned_paths: string[] = []
+  const warnings: Array<{ local_path: string; reason: string }> = []
+  for (const localPath of candidates) {
+    try {
+      await removeFile([localPath], rootDir)
+      cleaned_paths.push(localPath)
+    } catch (error) {
+      warnings.push({
+        local_path: localPath,
+        reason: `本地图片清理失败：${error instanceof Error ? error.message : "请稍后手动清理"}`,
+      })
+    }
+  }
+  return { cleaned_paths, warnings }
 }
 
 async function deleteDraftImageFiles(draftId: number, images: Array<Record<string, unknown>>) {
@@ -2057,6 +2282,11 @@ async function saveOcrFormFiles(c: Context) {
   if (rawEntries.length > maxFileCount) {
     throw new HTTPException(400, { message: `单次最多导入 ${maxFileCount} 个吊牌/洗唛/平铺图文件` })
   }
+  assertAggregateUploadBytes(
+    rawEntries.map((entry) => entry.file),
+    MAX_PRODUCT_ARCHIVE_OCR_BATCH_BYTES,
+    "吊牌/洗唛 OCR 批次总大小超过限制",
+  )
   const uploadDir = path.join(UPLOAD_DIR, `product-archive-ocr-${randomUUID()}`)
   await mkdir(uploadDir, { recursive: true })
   const files = []
@@ -2076,7 +2306,7 @@ async function saveOcrFormFiles(c: Context) {
         const buffer = await readValidatedUploadBuffer(file, "image")
         const detected = detectImageUploadType(buffer)
         const dimensions = readImageDimensions(buffer)
-        const filePath = path.join(uploadDir, safeDraftImageUploadName(file.name, detected.extension))
+        const filePath = path.join(uploadDir, `${randomUUID()}-${safeDraftImageUploadName(file.name, detected.extension)}`)
         await writeFile(filePath, buffer)
         referenceImageFiles.push({
           file,
@@ -2094,7 +2324,7 @@ async function saveOcrFormFiles(c: Context) {
         continue
       }
       if (isScmSupplementWorkbookName(fileName)) {
-        const filePath = path.join(uploadDir, safeScmSupplementUploadName(file.name))
+        const filePath = path.join(uploadDir, `${randomUUID()}-${safeScmSupplementUploadName(file.name)}`)
         await writeValidatedUploadFile(file, "spreadsheet", filePath)
         supplementFiles.push({
           file,
@@ -2111,7 +2341,7 @@ async function saveOcrFormFiles(c: Context) {
       if (!isProductArchiveOcrAssetName(fileName)) {
         throw new HTTPException(400, { message: "仅支持 PDF、JPG、PNG 吊牌/洗唛文件、平铺图和 SCM 下载结果 .xlsx" })
       }
-      const filePath = path.join(uploadDir, safeOcrUploadName(file.name))
+      const filePath = path.join(uploadDir, `${randomUUID()}-${safeOcrUploadName(file.name)}`)
       await writeValidatedUploadFile(file, "product_archive_ocr", filePath)
       files.push({
         file,
@@ -2151,6 +2381,18 @@ export function applyDocumentsFromBody(body: Record<string, unknown>) {
       error: record.error,
     }
   })
+}
+
+function draftIdsForOcrDocuments(db: ReturnType<typeof getDb>, documents: Record<string, unknown>[]) {
+  const draftIds = new Set<number>()
+  for (const document of documents) {
+    const spuCode = stringValue(document.detectedSpuCode ?? document.detected_spu_code)
+    if (!spuCode) continue
+    const draft = latestProductArchiveDraftForSpuCode(db, spuCode)
+    const draftId = Number(draft?.id)
+    if (Number.isInteger(draftId) && draftId > 0) draftIds.add(draftId)
+  }
+  return Array.from(draftIds)
 }
 
 function uniqueStrings(values: unknown[]) {
@@ -2560,7 +2802,7 @@ productArchiveDrafts.post("/source-imports", async (c) => {
   return c.json({ ...result, missingMdmSpuCodes: missingCodes, syncJob, refreshSummary })
 })
 
-productArchiveDrafts.post("/source-imports/upload", async (c) => {
+productArchiveDrafts.post("/source-imports/upload", productArchiveSpreadsheetBodyLimit, async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_RULE_MANAGE")
   const db = getDb()
   const { form, file, filePath } = await saveUploadedSpreadsheet(c)
@@ -2677,7 +2919,7 @@ productArchiveDrafts.post("/source-imports/upload", async (c) => {
   }
 })
 
-productArchiveDrafts.post("/size-chart/import", async (c) => {
+productArchiveDrafts.post("/size-chart/import", productArchiveSpreadsheetBodyLimit, async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   requirePermission(c, "PRODUCT_ARCHIVE_RULE_MANAGE")
   const db = getDb()
@@ -2717,7 +2959,7 @@ productArchiveDrafts.post("/size-chart/import", async (c) => {
   }
 })
 
-productArchiveDrafts.post("/workflow/start", async (c) => {
+productArchiveDrafts.post("/workflow/start", productArchiveWorkflowSpreadsheetBodyLimit, async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   requirePermission(c, "PRODUCT_ARCHIVE_RULE_MANAGE")
   const db = getDb()
@@ -2725,6 +2967,13 @@ productArchiveDrafts.post("/workflow/start", async (c) => {
   const copywritingFile = form.get("copywritingFile")
   const launchPlanFile = form.get("launchPlanFile")
   const sizeChartFile = form.get("sizeChartFile")
+  const spreadsheetFiles = [copywritingFile, launchPlanFile, sizeChartFile]
+    .filter((file): file is File => file instanceof File && file.size > 0)
+  assertAggregateUploadBytes(
+    spreadsheetFiles,
+    MAX_PRODUCT_ARCHIVE_WORKFLOW_SPREADSHEET_BYTES,
+    "工作流表格批次总大小超过限制",
+  )
   const skipLaunchPlan = booleanFormValue(form.get("skipLaunchPlan"))
   const sourceBatchIdsByType: Record<string, number[]> = {}
   const refreshSummaries = []
@@ -2841,7 +3090,7 @@ productArchiveDrafts.post("/workflow/start", async (c) => {
   }, syncJob ? 202 : 200)
 })
 
-productArchiveDrafts.post("/hangtag-washlabel-ocr/preview", async (c) => {
+productArchiveDrafts.post("/hangtag-washlabel-ocr/preview", productArchiveOcrBodyLimit, async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const db = getDb()
   const { form, files, supplementFiles, referenceImageFiles, uploadDir } = await saveOcrFormFiles(c)
@@ -2905,7 +3154,7 @@ productArchiveDrafts.post("/hangtag-washlabel-ocr/preview", async (c) => {
   }
 })
 
-productArchiveDrafts.post("/hangtag-washlabel-ocr/apply", async (c) => {
+productArchiveDrafts.post("/hangtag-washlabel-ocr/apply", productArchiveOcrBodyLimit, async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const db = getDb()
   const body = await readJson(c)
@@ -2913,10 +3162,20 @@ productArchiveDrafts.post("/hangtag-washlabel-ocr/apply", async (c) => {
   if (documents.length === 0) {
     throw new HTTPException(400, { message: "请先完成吊牌/洗唛 OCR 预览后再写入；仅导入平铺图请使用后台识别或 SPU 图片入口" })
   }
-  const result = applyProductArchiveHangtagWashlabelOcr(db, {
-    documents,
-    overwriteExisting: booleanInputValue(body.overwriteExisting ?? body.overwrite_existing),
-  })
+  let result
+  try {
+    result = db.transaction(() => {
+      for (const draftId of draftIdsForOcrDocuments(db, documents)) {
+        assertProductArchiveDraftMutable(db, draftId)
+      }
+      return applyProductArchiveHangtagWashlabelOcr(db, {
+        documents,
+        overwriteExisting: booleanInputValue(body.overwriteExisting ?? body.overwrite_existing),
+      })
+    })()
+  } catch (error) {
+    throw productArchiveDraftMutationException(error)
+  }
   auditFromContext(c, {
     action: "draft.hangtag_washlabel_ocr.applied",
     module: "PRODUCT_ARCHIVE_DRAFT",
@@ -2934,7 +3193,7 @@ productArchiveDrafts.post("/hangtag-washlabel-ocr/apply", async (c) => {
   return c.json(result)
 })
 
-productArchiveDrafts.post("/hangtag-washlabel-ocr/jobs", async (c) => {
+productArchiveDrafts.post("/hangtag-washlabel-ocr/jobs", productArchiveOcrBodyLimit, async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const { form, files, supplementFiles, referenceImageFiles, uploadDir } = await saveOcrFormFiles(c)
   const overwriteExisting = booleanFormValue(form.get("overwriteExisting") ?? form.get("overwrite_existing"))
@@ -3130,7 +3389,7 @@ productArchiveDrafts.get("/batch-jobs/:jobId", (c) => {
   return c.json(job)
 })
 
-productArchiveDrafts.post("/images/import", async (c) => {
+productArchiveDrafts.post("/images/import", productArchiveImageBodyLimit, async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const db = getDb()
   const { files, skippedCount: unsupportedSkippedCount, sourceType } = await readDraftImageUploadFiles(c)
@@ -3139,50 +3398,54 @@ productArchiveDrafts.post("/images/import", async (c) => {
   const matchedDraftIds = new Set<number>()
   let skippedCount = unsupportedSkippedCount
 
-  for (const file of files) {
-    const spuCode = extractProductArchiveImageSpuCode(file.originalFileName || file.fileName)
-    if (!spuCode) {
-      skippedCount += 1
-      items.push({
-        fileName: file.originalFileName,
-        ok: false,
-        status: "skipped",
-        reason: "文件名或目录名未识别到款号",
+  try {
+    for (const file of files) {
+      const spuCode = extractProductArchiveImageSpuCode(file.originalFileName || file.fileName)
+      if (!spuCode) {
+        skippedCount += 1
+        items.push({
+          fileName: file.originalFileName,
+          ok: false,
+          status: "skipped",
+          reason: "文件名或目录名未识别到款号",
+        })
+        continue
+      }
+      const draft = latestProductArchiveDraftForSpuCode(db, spuCode)
+      if (!draft) {
+        skippedCount += 1
+        items.push({
+          fileName: file.originalFileName,
+          spuCode,
+          ok: false,
+          status: "skipped",
+          reason: "未找到对应建档草稿",
+        })
+        continue
+      }
+      const image = await saveDraftImageUpload({
+        db,
+        draft,
+        file,
+        sourceType,
+        sourceRef: file.originalFileName,
+        uploadedBy: user.id,
       })
-      continue
+      if (image) {
+        importedImages.push(image)
+        matchedDraftIds.add(Number(draft.id))
+        items.push({
+          fileName: file.originalFileName,
+          spuCode,
+          draftId: Number(draft.id),
+          ok: true,
+          status: "imported",
+          image,
+        })
+      }
     }
-    const draft = latestProductArchiveDraftForSpuCode(db, spuCode)
-    if (!draft) {
-      skippedCount += 1
-      items.push({
-        fileName: file.originalFileName,
-        spuCode,
-        ok: false,
-        status: "skipped",
-        reason: "未找到对应建档草稿",
-      })
-      continue
-    }
-    const image = await saveDraftImageUpload({
-      db,
-      draft,
-      file,
-      sourceType,
-      sourceRef: file.originalFileName,
-      uploadedBy: user.id,
-    })
-    if (image) {
-      importedImages.push(image)
-      matchedDraftIds.add(Number(draft.id))
-      items.push({
-        fileName: file.originalFileName,
-        spuCode,
-        draftId: Number(draft.id),
-        ok: true,
-        status: "imported",
-        image,
-      })
-    }
+  } catch (error) {
+    throw productArchiveDraftMutationException(error)
   }
 
   auditFromContext(c, {
@@ -3229,9 +3492,16 @@ productArchiveDrafts.get("/images/:imageId/file", async (c) => {
   try {
     file = await assertLocalImageFile({ rootDir: DRAFT_IMAGE_DIR, filePath: localPath })
   } catch (error) {
-    const repaired = await repairLegacyDraftImageLocalPath(db, image as Record<string, unknown>)
-    if (!repaired) throw error
-    file = repaired
+    try {
+      if (stringValue(image.source_type) === "crawshrimp_asset_package") {
+        requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+      }
+      const repaired = await repairLegacyDraftImageLocalPath(db, image as Record<string, unknown>)
+      if (!repaired) throw error
+      file = repaired
+    } catch (repairError) {
+      throw productArchiveDraftMutationException(repairError)
+    }
   }
   if (imageFileVariant(c.req.query("variant") ?? c.req.query("size")) === "thumbnail") {
     const buffer = await sharp(file.realPath)
@@ -3254,7 +3524,7 @@ productArchiveDrafts.get("/images/:imageId/file", async (c) => {
   })
 })
 
-productArchiveDrafts.post("/:draftId/images", async (c) => {
+productArchiveDrafts.post("/:draftId/images", productArchiveImageBodyLimit, async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const db = getDb()
   const draftId = readId(c.req.param("draftId"))
@@ -3262,16 +3532,20 @@ productArchiveDrafts.post("/:draftId/images", async (c) => {
   const draft = detail.draft as Record<string, unknown>
   const { files, skippedCount } = await readDraftImageUploadFiles(c)
   const images = []
-  for (const file of files) {
-    const image = await saveDraftImageUpload({
-      db,
-      draft,
-      file,
-      sourceType: "manual_upload",
-      sourceRef: file.originalFileName,
-      uploadedBy: user.id,
-    })
-    if (image) images.push(image)
+  try {
+    for (const file of files) {
+      const image = await saveDraftImageUpload({
+        db,
+        draft,
+        file,
+        sourceType: "manual_upload",
+        sourceRef: file.originalFileName,
+        uploadedBy: user.id,
+      })
+      if (image) images.push(image)
+    }
+  } catch (error) {
+    throw productArchiveDraftMutationException(error)
   }
   auditFromContext(c, {
     action: "draft.image.uploaded",
@@ -3302,12 +3576,16 @@ productArchiveDrafts.delete("/:draftId/images/:imageId", async (c) => {
   if (!Number.isInteger(imageId) || imageId <= 0) {
     throw new HTTPException(400, { message: "无效的图片 ID" })
   }
-  const image = deleteProductArchiveDraftImage(db, draftId, imageId)
+  let image
+  try {
+    image = deleteProductArchiveDraftImage(db, draftId, imageId)
+  } catch (error) {
+    throw productArchiveDraftMutationException(error)
+  }
   if (!image) {
     throw new HTTPException(404, { message: "图片不存在" })
   }
-  const localPath = stringValue(image.local_path)
-  if (localPath) await rm(localPath, { force: true })
+  const cleanup = await cleanupUnreferencedDraftImageFiles(db, [image.local_path])
   auditFromContext(c, {
     action: "draft.image.deleted",
     module: "PRODUCT_ARCHIVE_DRAFT",
@@ -3316,7 +3594,11 @@ productArchiveDrafts.delete("/:draftId/images/:imageId", async (c) => {
     summary: `删除深绘建档 SPU 参考图 ${imageId}`,
     metadata: { imageId, userId: user.id },
   })
-  return c.json({ ok: true, detail: getProductArchiveDraftDetail(db, draftId) })
+  return c.json({
+    ok: true,
+    cleanup_warnings: cleanup.warnings,
+    detail: getProductArchiveDraftDetail(db, draftId),
+  })
 })
 
 productArchiveDrafts.delete("/:draftId", async (c) => {
@@ -3327,11 +3609,7 @@ productArchiveDrafts.delete("/:draftId", async (c) => {
   try {
     result = deleteProductArchiveDraft(db, draftId)
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (message === "正在提交的草稿不能删除") {
-      throw new HTTPException(400, { message })
-    }
-    throw error
+    throw productArchiveDraftMutationException(error)
   }
   if (!result) {
     throw new HTTPException(404, { message: "草稿不存在" })
@@ -3368,11 +3646,7 @@ productArchiveDrafts.patch("/:draftId/trade", async (c) => {
   try {
     result = applyProductArchiveDraftTrade(db, draftId, await readJson(c))
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (message === "草稿数据已更新，请刷新后重试") {
-      throw new HTTPException(409, { message })
-    }
-    throw error
+    throw productArchiveDraftMutationException(error)
   }
   auditFromContext(c, {
     action: "draft.trade.applied",
@@ -3393,11 +3667,7 @@ productArchiveDrafts.patch("/:draftId/trade/confirm", async (c) => {
   try {
     detail = confirmProductArchiveDraftRecommendedTrade(db, draftId, await readJson(c))
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (message === "推荐结果已更新，请刷新后重新确认") {
-      throw new HTTPException(409, { message })
-    }
-    throw error
+    throw productArchiveDraftMutationException(error)
   }
   auditFromContext(c, {
     action: "draft.trade.confirmed",
@@ -3414,7 +3684,12 @@ productArchiveDrafts.patch("/:draftId/fields", async (c) => {
   requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const db = getDb()
   const draftId = readId(c.req.param("draftId"))
-  const result = patchProductArchiveDraftFields(db, draftId, await readJson(c))
+  let result
+  try {
+    result = patchProductArchiveDraftFields(db, draftId, await readJson(c))
+  } catch (error) {
+    throw productArchiveDraftMutationException(error)
+  }
   auditFromContext(c, {
     action: "draft.field.updated",
     module: "PRODUCT_ARCHIVE_DRAFT",
@@ -3429,17 +3704,25 @@ productArchiveDrafts.post("/:draftId/validate", (c) => {
   requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const db = getDb()
   const draftId = readId(c.req.param("draftId"))
-  const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
-  const result = validateProductArchiveDraft(db, draftId)
-  auditFromContext(c, {
-    action: "draft.validated",
-    module: "PRODUCT_ARCHIVE_DRAFT",
-    entityType: "product_archive_draft",
-    entityId: draftId,
-    summary: `校验深绘建档草稿 ${draftId}`,
-    metadata: { ...result.summary, tradeSelectionAutoApplied: tradeRefresh.autoApplied },
-  })
-  return c.json(result)
+  try {
+    const prepared = db.transaction(() => {
+      const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
+      const result = validateProductArchiveDraft(db, draftId)
+      return { tradeRefresh, result }
+    })()
+    const { tradeRefresh, result } = prepared
+    auditFromContext(c, {
+      action: "draft.validated",
+      module: "PRODUCT_ARCHIVE_DRAFT",
+      entityType: "product_archive_draft",
+      entityId: draftId,
+      summary: `校验深绘建档草稿 ${draftId}`,
+      metadata: { ...result.summary, tradeSelectionAutoApplied: tradeRefresh.autoApplied },
+    })
+    return c.json(result)
+  } catch (error) {
+    throw productArchiveDraftMutationException(error)
+  }
 })
 
 productArchiveDrafts.post("/:draftId/check-duplicate", async (c) => {
@@ -3456,7 +3739,12 @@ productArchiveDrafts.post("/:draftId/ai-fill", async (c) => {
   requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const db = getDb()
   const draftId = readId(c.req.param("draftId"))
-  const result = await fillProductArchiveDraftFieldsWithAi(db, draftId)
+  let result
+  try {
+    result = await fillProductArchiveDraftFieldsWithAi(db, draftId)
+  } catch (error) {
+    throw productArchiveDraftMutationException(error)
+  }
   auditFromContext(c, {
     action: "draft.ai_fill",
     module: "PRODUCT_ARCHIVE_DRAFT",
@@ -3488,7 +3776,12 @@ productArchiveDrafts.post("/:draftId/size-chart/mappings", async (c) => {
   requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const db = getDb()
   const draftId = readId(c.req.param("draftId"))
-  const result = saveProductArchiveSizeChartMappings(db, draftId, await readJson(c))
+  let result
+  try {
+    result = saveProductArchiveSizeChartMappings(db, draftId, await readJson(c))
+  } catch (error) {
+    throw productArchiveDraftMutationException(error)
+  }
   auditFromContext(c, {
     action: "draft.size_chart.mapping_saved",
     module: "PRODUCT_ARCHIVE_DRAFT",

@@ -20,6 +20,7 @@ const payload = await import("../../web/server/services/pre-publish/payload.ts")
 const sheinApi = await import("../../web/server/services/pre-publish/shein-api.ts");
 const versions = await import("../../web/server/services/pre-publish/versions.ts");
 const uploadGuard = await import("../../web/server/lib/upload-guard.ts");
+const prePublishRoute = await import("../../web/server/routes/pre-publish.ts");
 
 function crc32(bytes) {
   let crc = 0xffffffff;
@@ -151,6 +152,159 @@ test("draft status transitions block active publish states and permit ordinary d
   assert.equal(drafts.canTransitionDraftStatus("READY_TO_PUBLISH", "PAUSED"), true);
   assert.equal(drafts.canTransitionDraftStatus("PAUSED", "READY_TO_PUBLISH"), false);
   assert.equal(drafts.canTransitionDraftStatus("ARCHIVED", "DRAFT"), true);
+});
+
+test("SHEIN publish claim fences unknown results and closes local preparation failures", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  assert.match(source, /PUBLISH_MUTATION_FENCED_STATUSES[\s\S]*PUBLISH_RESULT_UNKNOWN/);
+  assert.match(source, /function markClaimedPublishPreparationFailed[\s\S]*status = 'PUBLISH_FAILED'[\s\S]*status = 'PUBLISHING'/);
+  assert.match(source, /update listing_publish_version[\s\S]*status = 'FAILED'[\s\S]*status not in \('SUBMITTED', 'RESULT_UNKNOWN'\)/);
+  const publishRoute = source.slice(source.indexOf('prePublish.post("/drafts/:id/publish"'));
+  assert.match(publishRoute, /claimListingForPublish[\s\S]*try \{[\s\S]*createPublishVersion[\s\S]*ensurePublishTask/);
+  assert.match(publishRoute, /catch \(error\)[\s\S]*markClaimedPublishPreparationFailed/);
+});
+
+test("duplicate re-locks the SPU and source listing before deriving a new draft", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const duplicateRoute = source.slice(
+    source.indexOf('prePublish.post("/drafts/:id/duplicate"'),
+    source.indexOf('prePublish.patch("/drafts/:id/status"'),
+  );
+
+  assert.match(duplicateRoute, /const result = db\.transaction\(\(\) => \{[\s\S]*lockProductSpuForPublishScope/);
+  assert.match(duplicateRoute, /lockListingForMutation\(db, listingId\)[\s\S]*getSourceProductRow\(db, lockedListing\.spu_code\)/);
+  assert.match(duplicateRoute, /getReadinessForListing\(db, lockedListing\)/);
+  assert.doesNotMatch(duplicateRoute, /const listing = db\.prepare\("select \* from listing where id = \?"\)[\s\S]*const sourceRow = getSourceProductRow/);
+});
+
+test("SHEIN publish claim serializes the platform/account/SPU scope and releases it before network work", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const publishRouteStart = source.indexOf('prePublish.post("/drafts/:id/publish"');
+  const publishRoute = source.slice(publishRouteStart);
+  const claimSection = publishRoute.slice(0, publishRoute.indexOf("let version"));
+
+  assert.match(source, /PUBLISH_SCOPE_FENCED_STATUSES[\s\S]*UNDER_REVIEW[\s\S]*PARTIALLY_APPROVED[\s\S]*APPROVED/);
+  assert.match(source, /from listing[\s\S]*platform = \?[\s\S]*channel_account_id = \?[\s\S]*product_spu_id = \?[\s\S]*for update/);
+  assert.match(claimSection, /db\.transaction\(\(\) => \{[\s\S]*lockPublishScope/);
+  assert.match(source, /function assertPublishScopeAvailable[\s\S]*findUnresolvedPublishTask\(db, listingId\)/);
+  assert.doesNotMatch(claimSection, /prepareListingImagesForPublish|publishListing\(/);
+  assert.match(publishRoute, /const claimResult = db\.transaction\(\(\) =>/);
+});
+
+test("SHEIN publish scope fences task-only review and approved status drift", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const activeTaskStatuses = source.slice(
+    source.indexOf("const PUBLISH_SCOPE_ACTIVE_TASK_STATUSES"),
+    source.indexOf("function lockListingForMutation"),
+  );
+  const scopeAssertion = source.slice(
+    source.indexOf("function assertPublishScopeAvailable"),
+    source.indexOf("function claimListingForPublish"),
+  );
+
+  for (const status of [
+    "PUBLISHING",
+    "PUBLISH_SUBMITTED",
+    "PUBLISH_RESULT_UNKNOWN",
+    "UNDER_REVIEW",
+    "PARTIALLY_APPROVED",
+    "APPROVED",
+  ]) {
+    assert.match(activeTaskStatuses, new RegExp(`\\"${status}\\"`));
+  }
+  for (const terminalStatus of ["REJECTED", "REVOKED", "PUBLISH_FAILED", "FAILED"]) {
+    assert.doesNotMatch(activeTaskStatuses, new RegExp(`\\"${terminalStatus}\\"`));
+  }
+
+  assert.match(scopeAssertion, /const busyTask = scope\.activeTasks\.find\(\(task\) => Number\(task\.listing_id\) !== listingId\)/);
+  assert.match(scopeAssertion, /throw new HTTPException\(409, \{[\s\S]*SHEIN 发布范围已有未解决的发布任务/);
+  assert.match(scopeAssertion, /findUnresolvedPublishTask\(db, listingId\)/);
+});
+
+test("SHEIN publish success and business failure finalization each use one local transaction", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const networkCall = source.indexOf("result = await platformAdapter.publishListing");
+  const successStart = source.indexOf('if (code === "0" && info.success !== false && businessValidationErrors.length === 0)');
+  const failureStart = source.indexOf("const failureCode =", successStart);
+  const routeEnd = source.indexOf('prePublish.post("/field-fills"', failureStart);
+  const successBlock = source.slice(successStart, failureStart);
+  const failureBlock = source.slice(failureStart, routeEnd);
+  assert.ok(networkCall >= 0 && networkCall < successStart);
+  assert.match(successBlock, /db\.transaction\(\(\) => \{/);
+  assert.match(failureBlock, /db\.transaction\(\(\) => \{/);
+  for (const block of [successBlock, failureBlock]) {
+    assert.doesNotMatch(block, /publishListing/);
+    assert.match(block, /listing_publish_version/);
+    assert.match(block, /update listing[\s\S]*shein_product_bucket/);
+  }
+  assert.match(successBlock, /listing_publish_task/);
+  assert.match(failureBlock, /markPublishTaskFailed/);
+  assert.match(successBlock, /listing_validation_result/);
+  assert.match(successBlock, /persistPlatformIdentity/);
+  assert.match(failureBlock, /listing_validation_result/);
+  assert.ok(successBlock.lastIndexOf("})()") > successBlock.indexOf("persistPlatformIdentity"));
+  assert.ok(failureBlock.lastIndexOf("})()") > failureBlock.indexOf("listing_validation_result"));
+  const assertInsideFinalize = (block, token) => {
+    const open = block.indexOf("db.transaction(() => {");
+    const close = block.indexOf("})()", open);
+    const position = block.indexOf(token);
+    assert.ok(open >= 0 && close > open && position > open && position < close, `${token} escaped finalize transaction`);
+  };
+  for (const token of [
+    "listing_publish_task",
+    "listing_publish_version",
+    "update listing",
+    "shein_product_bucket",
+    "listing_validation_result",
+    "persistPlatformIdentity",
+  ]) {
+    assertInsideFinalize(successBlock, token);
+  }
+  for (const token of [
+    "markPublishTaskFailed",
+    "listing_publish_version",
+    "update listing",
+    "shein_product_bucket",
+    "listing_validation_result",
+  ]) {
+    assertInsideFinalize(failureBlock, token);
+  }
+});
+
+test("AI draft mutations keep the publish-state lock in the same write transaction", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const enrichRoute = source.slice(
+    source.indexOf('prePublish.post("/drafts/:id/ai-enrich"'),
+    source.indexOf('prePublish.post("/drafts/:id/ai-field"'),
+  );
+  const fieldRoute = source.slice(source.indexOf('prePublish.post("/drafts/:id/ai-field"'));
+
+  assert.doesNotMatch(source, /db\.transaction\(\(\) => lockListingForMutation\(db, listingId\)\)\(\)/);
+  assert.match(enrichRoute, /db\.transaction\(\(\) => \{[\s\S]*lockListingForMutation\(db, listingId\)[\s\S]*applyDraftCategoryDecision/);
+  assert.match(enrichRoute, /db\.transaction\(\(\) => \{[\s\S]*lockListingForMutation\(db, listingId\)[\s\S]*persistFill/);
+  assert.match(enrichRoute, /const refreshed = db\.transaction\(\(\) => \{[\s\S]*lockListingForMutation\(db, listingId\)[\s\S]*refreshListingAfterFill/);
+  assert.match(fieldRoute, /const refreshed = db\.transaction\(\(\) => \{[\s\S]*lockListingForMutation\(db, listingId\)[\s\S]*persistFill[\s\S]*refreshListingAfterFill/);
+  assert.match(source, /persistDraftFields\(\{ db, listing, listingId, fields, savedFrom: "draft_detail" \}\)[\s\S]*return refreshListingAfterFill/);
+  assert.match(source, /if \(hasManualSizeChartRows\) persistManualSizeChart[\s\S]*return refreshListingAfterFill/);
+  assert.match(source, /for \(const listingId of changedListingIds\) \{[\s\S]*refreshListingAfterFill\(db, listingId, "批量快速调整发布阻断项"\)/);
+});
+
+test("generic SPU workbench queries use the latest tenant package projection", async () => {
+  const [migration, prePublish, sheinProducts, categoryMapping] = await Promise.all([
+    readFile(path.join(PROJECT_ROOT, "db/migrations/052_latest_product_content_package.sql"), "utf8"),
+    readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8"),
+    readFile(path.join(PROJECT_ROOT, "web/server/routes/shein-products.ts"), "utf8"),
+    readFile(path.join(PROJECT_ROOT, "web/server/routes/category-mapping.ts"), "utf8"),
+  ]);
+
+  assert.match(migration, /create view if not exists v_latest_product_content_package/i);
+  assert.match(migration, /row_number\(\) over\s*\([\s\S]*partition by spu_code[\s\S]*order by coalesce\(updated_at, synced_at\) desc nulls last, id desc/i);
+  for (const route of [prePublish, sheinProducts, categoryMapping]) {
+    assert.match(route, /v_latest_product_content_package/);
+    assert.doesNotMatch(route, /left join product_content_package pkg on pkg\.spu_code/i);
+  }
+  assert.match(sheinProducts, /join product_content_package pkg on pkg\.id = cskc\.content_package_id/i);
+  assert.match(prePublish, /left join product_content_package pkg on pkg\.id = asset\.content_package_id/i);
 });
 
 test("field-fill helpers coerce enum values without losing manual text values", () => {
@@ -717,7 +871,7 @@ test("pre-publish image upload validates dimensions locally and synchronizes gro
   assert.match(source, /setListingSkcImageConfirmation/);
   assert.match(source, /expectedAssetIds/);
   assert.match(source, /resetListingSkcImageConfirmation/);
-  assert.match(source, /select id from listing where id = \? for update/);
+  assert.match(source, /function lockListingForMutation[\s\S]*select \* from listing where id = \? for update/);
   assert.match(source, /SPU 图片不能指定 SKC 款色/);
   assert.match(source, /图片类型不属于当前类目规则/);
 
@@ -727,6 +881,218 @@ test("pre-publish image upload validates dimensions locally and synchronizes gro
   );
   assert.ok(uploadRoute.indexOf("readValidatedUploadBuffer") < uploadRoute.indexOf("assertListingImageCapacity"));
   assert.ok(uploadRoute.indexOf("lockListingImageMutation") < uploadRoute.indexOf("assertListingImageCapacity"));
+});
+
+test("pre-publish image staging owns unique files and respects the DB commit boundary", async () => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "listingify-pre-publish-image-stage-"));
+  const oldPath = path.join(root, "old.jpg");
+  const bytes = Buffer.from("new-image");
+  await fs.promises.writeFile(oldPath, Buffer.from("old-image"));
+  try {
+    assert.equal(typeof prePublishRoute.uniqueAssetFilePath, "function");
+    assert.equal(typeof prePublishRoute.writeExclusiveAssetFile, "function");
+    assert.equal(typeof prePublishRoute.cleanupNewAssetFiles, "function");
+    assert.equal(typeof prePublishRoute.cleanupReplacedAssetFiles, "function");
+
+    const newPath = prePublishRoute.uniqueAssetFilePath({
+      rootDir: root,
+      listingId: 7,
+      skcCode: "SKC-1",
+      fileName: "same-name.jpg",
+      extension: ".jpg",
+    });
+    assert.notEqual(newPath, oldPath);
+    prePublishRoute.writeExclusiveAssetFile(newPath, bytes);
+    assert.throws(() => prePublishRoute.writeExclusiveAssetFile(newPath, Buffer.from("overwrite")), /EEXIST/);
+
+    prePublishRoute.cleanupReplacedAssetFiles([{ local_path: newPath }], [newPath], root);
+    assert.equal((await fs.promises.readFile(newPath)).toString(), bytes.toString());
+    await fs.promises.stat(oldPath);
+
+    prePublishRoute.cleanupNewAssetFiles([newPath], root);
+    await assert.rejects(fs.promises.stat(newPath), { code: "ENOENT" });
+    await fs.promises.stat(oldPath);
+  } finally {
+    await fs.promises.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pre-publish image candidate savepoints restore deleted automatic rows on capacity or DB failure", () => {
+  assert.equal(typeof prePublishRoute.runImageCandidateSavepoint, "function");
+  const automaticRows = [{ id: 7, source_type: "SKC_SOURCE_IMAGE", asset_type: "MAIN" }];
+  const db = {
+    transaction(fn) {
+      return () => {
+        const snapshot = automaticRows.map((row) => ({ ...row }));
+        try {
+          return fn();
+        } catch (error) {
+          automaticRows.splice(0, automaticRows.length, ...snapshot);
+          throw error;
+        }
+      };
+    },
+  };
+
+  const capacityError = Object.assign(new Error("主图最多 1 张，请先删除或调整已有图片"), { status: 409 });
+  assert.throws(() => prePublishRoute.runImageCandidateSavepoint(db, () => {
+    automaticRows.splice(0);
+    throw capacityError;
+  }), /最多 1 张/);
+  assert.deepEqual(automaticRows, [{ id: 7, source_type: "SKC_SOURCE_IMAGE", asset_type: "MAIN" }]);
+
+  assert.throws(() => prePublishRoute.runImageCandidateSavepoint(db, () => {
+    automaticRows.splice(0);
+    throw new Error("insert failed");
+  }), /insert failed/);
+  assert.deepEqual(automaticRows, [{ id: 7, source_type: "SKC_SOURCE_IMAGE", asset_type: "MAIN" }]);
+});
+
+test("all-failed package replacement is an explicit 4xx and never commits an empty replacement", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  assert.match(source, /runImageCandidateSavepoint\(input\.db[\s\S]*deleteAutoSourceImagesForUserAsset/);
+  assert.match(source, /if \(saved\.length === 0\)[\s\S]*throw new HTTPException\(409/);
+  assert.match(source, /cleanupReplacedAssetFiles\([\s\S]*catch \(error\)/);
+  assert.match(source, /imagePackageReplacementFailure[\s\S]*importedCount > 0/);
+});
+
+test("deleted local assets clean only unreferenced controlled files and surface cleanup warnings", async () => {
+  assert.equal(typeof prePublishRoute.cleanupUnreferencedAssetFiles, "function");
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const singleDelete = source.slice(
+    source.indexOf('prePublish.delete("/drafts/:id/images/:assetId"'),
+    source.indexOf('prePublish.get("/assets/:id/file"'),
+  );
+  const draftDelete = source.slice(
+    source.indexOf('prePublish.delete("/drafts/:id"'),
+    source.indexOf('prePublish.patch("/drafts/:id/category"'),
+  );
+  assert.match(singleDelete, /lockListingImageMutation[\s\S]*delete from listing_asset[\s\S]*local_path/);
+  assert.match(singleDelete, /cleanupUnreferencedAssetFiles[\s\S]*cleanup_warnings/);
+  assert.match(draftDelete, /lockListingImageMutation[\s\S]*local_path[\s\S]*delete from listing/);
+  assert.match(draftDelete, /cleanupUnreferencedAssetFiles[\s\S]*cleanup_warnings/);
+  assert.ok(singleDelete.indexOf("const result = transaction()") < singleDelete.indexOf("cleanupUnreferencedAssetFiles"));
+  assert.ok(draftDelete.indexOf("select local_path") < draftDelete.indexOf("delete from listing"));
+
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "listingify-delete-assets-"));
+  const cleanPath = path.join(root, "clean.jpg");
+  const sharedPath = path.join(root, "shared.jpg");
+  await fs.promises.writeFile(cleanPath, Buffer.from("clean"));
+  await fs.promises.writeFile(sharedPath, Buffer.from("shared"));
+  try {
+    const db = {
+      prepare() {
+        return { all: () => [] };
+      },
+    };
+    const cleaned = prePublishRoute.cleanupUnreferencedAssetFiles(db, [cleanPath], root);
+    assert.deepEqual(cleaned.warnings, []);
+    await assert.rejects(fs.promises.stat(cleanPath), { code: "ENOENT" });
+
+    const sharedDb = {
+      prepare() {
+        return { all: () => [{ local_path: sharedPath }] };
+      },
+    };
+    const retained = prePublishRoute.cleanupUnreferencedAssetFiles(sharedDb, [sharedPath], root);
+    assert.deepEqual(retained.cleaned_paths, []);
+    await fs.promises.stat(sharedPath);
+
+    const warning = prePublishRoute.cleanupUnreferencedAssetFiles(
+      db,
+      [sharedPath],
+      root,
+      () => { throw new Error("permission denied"); },
+    );
+    assert.equal(warning.cleaned_paths.length, 0);
+    assert.match(warning.warnings[0]?.reason ?? "", /permission denied/);
+    await fs.promises.stat(sharedPath);
+
+    const queryWarning = prePublishRoute.cleanupUnreferencedAssetFiles(
+      { prepare() { throw new Error("reference query failed"); } },
+      [sharedPath],
+      root,
+    );
+    assert.match(queryWarning.warnings[0]?.reason ?? "", /reference query failed/);
+    await fs.promises.stat(sharedPath);
+  } finally {
+    await fs.promises.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pre-publish image writes fail closed on stale category or SKC snapshots", () => {
+  assert.equal(typeof prePublishRoute.assertListingImageSnapshotUnchanged, "function");
+  assert.equal(typeof prePublishRoute.assertListingSkcSnapshotUnchanged, "function");
+  const listing = { id: 7, spu_code: "SPU-1", platform_category_id: 100, product_type_id: 200 };
+  assert.doesNotThrow(() => prePublishRoute.assertListingImageSnapshotUnchanged(listing, { ...listing }));
+  assert.throws(
+    () => prePublishRoute.assertListingImageSnapshotUnchanged(listing, { ...listing, platform_category_id: 101 }),
+    /类目或商品已变化/,
+  );
+  const skc = { id: 11, skc_code: "SKC-1" };
+  assert.doesNotThrow(() => prePublishRoute.assertListingSkcSnapshotUnchanged(skc, { ...skc }));
+  assert.throws(
+    () => prePublishRoute.assertListingSkcSnapshotUnchanged(skc, { id: 12, skc_code: "SKC-1" }),
+    /款色已变化/,
+  );
+});
+
+test("from-library image writes re-check ownership after the listing lock", () => {
+  assert.equal(typeof prePublishRoute.assertProductAssetBelongsToListing, "function");
+  const db = {
+    prepare() {
+      return {
+        get() {
+          return { id: 42, spu_code: "SPU-A", owner_code: "SPU-A" };
+        },
+      };
+    },
+  };
+  assert.equal(prePublishRoute.assertProductAssetBelongsToListing(db, 42, "SPU-A").id, 42);
+  assert.throws(
+    () => prePublishRoute.assertProductAssetBelongsToListing(db, 42, "SPU-B"),
+    /不属于当前商品/,
+  );
+});
+
+test("pre-publish image routes cap raw multipart bodies before formData and re-read locked write state", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  assert.match(source, /import\s*\{[^}]*bodyLimit[^}]*\}\s*from\s+["']hono\/body-limit["']/s);
+  assert.match(source, /maxSize:\s*maxImagePackageBytes\(\)\s*\+\s*IMAGE_MULTIPART_OVERHEAD_BYTES/);
+  assert.match(source, /maxSize:\s*maxUploadBytes\("image"\)\s*\+\s*IMAGE_MULTIPART_OVERHEAD_BYTES/);
+  assert.match(source, /imagePackageBodyLimit[\s\S]*onError:\s*\(c\)\s*=>\s*c\.json\(\{\s*error:/);
+  assert.match(source, /imageUploadBodyLimit[\s\S]*onError:\s*\(c\)\s*=>\s*c\.json\(\{\s*error:/);
+  assert.match(source, /function uniqueAssetFilePath[\s\S]*randomUUID\(\)/);
+  assert.match(source, /fs\.writeFileSync\(localPath, bytes, \{ flag: "wx" \}\)/);
+  assert.match(source, /cleanupReplacedAssetFiles\([\s\S]*cleanupNewAssetFiles/);
+
+  const packageRoute = source.slice(
+    source.indexOf('prePublish.post("/drafts/batch-upload-image-package"'),
+    source.indexOf('prePublish.post("/drafts/:id/images/import-folder"'),
+  );
+  const uploadRoute = source.slice(
+    source.indexOf('prePublish.post("/drafts/:id/images/upload"'),
+    source.indexOf('prePublish.patch("/drafts/:id/images/:assetId"'),
+  );
+  assert.match(packageRoute, /batch-upload-image-package",\s*imagePackageBodyLimit,\s*async \(c\) => \{[\s\S]*(?:const form =|form =) await c\.req\.formData\(\)/);
+  assert.match(uploadRoute, /images\/upload",\s*imageUploadBodyLimit,\s*async \(c\) => \{[\s\S]*const form = await c\.req\.formData\(\)/);
+  assert.ok(uploadRoute.indexOf("writeExclusiveAssetFile") < uploadRoute.indexOf("db.transaction"));
+  assert.ok(packageRoute.indexOf("preparePackageAssetsForListing") < packageRoute.indexOf("savePreparedPackageAssets"));
+
+  const folderFunction = source.slice(
+    source.indexOf("function importListingImagesFromFolder"),
+    source.indexOf('prePublish.post("/drafts/batch-import-folders"'),
+  );
+  assert.ok(folderFunction.indexOf("copyImportedImageToAssetRoot") < folderFunction.indexOf("db.transaction"));
+  assert.match(folderFunction, /lockListingImageMutation[\s\S]*currentRequirements/);
+  assert.doesNotMatch(folderFunction.slice(folderFunction.indexOf("db.transaction")), /fs\.readFileSync|fs\.writeFileSync|fs\.readdirSync/);
+
+  const libraryRoute = source.slice(
+    source.indexOf('prePublish.post("/drafts/:id/images/from-library"'),
+    source.indexOf('prePublish.post("/drafts/:id/images/upload"'),
+  );
+  assert.match(libraryRoute, /lockListingImageMutation\(db, listingId\)[\s\S]*assertProductAssetBelongsToListing\(db, productAssetId, lockedListing\.spu_code\)/);
+  assert.match(libraryRoute, /lockListingImageMutation\(db, listingId\)[\s\S]*getImageRequirements\(db, lockedListing\)/);
 });
 
 test("weight refresh only fills missing weights without re-running the full draft upsert", async () => {

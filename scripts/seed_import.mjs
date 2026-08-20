@@ -87,6 +87,71 @@ async function* gunzipRows(filePath) {
   }
 }
 
+async function validateSeedSnapshotGroup({ name, tables, sourceDir, required }) {
+  if (!fs.existsSync(sourceDir)) {
+    if (required) throw new Error(`Missing ${name} seed directory: ${sourceDir}`);
+    return { kind: name, source_dir: sourceDir, skipped: true, manifest: null };
+  }
+
+  const manifestPath = path.join(sourceDir, "manifest.json");
+  if (!fs.existsSync(manifestPath)) {
+    throw new Error(`Missing ${name} seed manifest: ${manifestPath}`);
+  }
+
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  } catch (error) {
+    throw new Error(`Invalid ${name} seed manifest JSON: ${manifestPath}: ${error.message}`, { cause: error });
+  }
+  if (manifest?.format !== "jsonl.gz" || !Array.isArray(manifest?.tables)) {
+    throw new Error(`Invalid ${name} seed manifest format: ${manifestPath}`);
+  }
+
+  const configuredTables = new Map(tables.map((table) => [table.name, table]));
+  const manifestTables = new Map();
+  for (const manifestEntry of manifest.tables) {
+    const tableName = String(manifestEntry?.table ?? "").trim();
+    if (!configuredTables.has(tableName)) {
+      throw new Error(`Unexpected table in ${name} seed manifest: ${tableName || "<empty>"}`);
+    }
+    if (manifestTables.has(tableName)) {
+      throw new Error(`Duplicate table in ${name} seed manifest: ${tableName}`);
+    }
+    if (!Number.isInteger(manifestEntry.rows) || manifestEntry.rows < 0) {
+      throw new Error(`Invalid row count for ${name} seed table ${tableName}`);
+    }
+    manifestTables.set(tableName, manifestEntry);
+  }
+
+  for (const table of tables) {
+    const manifestEntry = manifestTables.get(table.name);
+    if (!manifestEntry) {
+      throw new Error(`Missing table ${table.name} in ${name} seed manifest`);
+    }
+    const filePath = fileForTable(sourceDir, table);
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`Missing ${name} seed snapshot file: ${filePath}`);
+    }
+    let actualRows = 0;
+    try {
+      for await (const row of gunzipRows(filePath)) {
+        if (!row || typeof row !== "object" || Array.isArray(row)) {
+          throw new Error(`row ${actualRows + 1} is not a JSON object`);
+        }
+        actualRows += 1;
+      }
+    } catch (error) {
+      throw new Error(`Invalid ${name} seed snapshot ${filePath}: ${error.message}`, { cause: error });
+    }
+    if (actualRows !== manifestEntry.rows) {
+      throw new Error(`Row count mismatch for ${name} seed table ${table.name}: manifest=${manifestEntry.rows}, actual=${actualRows}`);
+    }
+  }
+
+  return { kind: name, source_dir: sourceDir, skipped: false, manifest };
+}
+
 function insertSql(table, batchLength) {
   const columns = table.columns.map(quoteIdentifier);
   const placeholders = [];
@@ -161,35 +226,25 @@ async function setIdentitySequence(client, table) {
   `, [table.name, table.identityColumn]);
 }
 
-async function importGroup(pool, { name, tables, sourceDir, replace, required }) {
+async function importGroup(client, { name, tables, sourceDir, replace, required }) {
   if (!fs.existsSync(sourceDir)) {
     if (required) throw new Error(`Missing ${name} seed directory: ${sourceDir}`);
     return { kind: name, source_dir: sourceDir, skipped: true, tables: [] };
   }
 
-  const client = await pool.connect();
-  try {
-    await client.query("begin");
-    if (replace) {
-      for (const table of [...tables].reverse()) {
-        await replaceTableRows(client, table);
-      }
+  if (replace) {
+    for (const table of [...tables].reverse()) {
+      await replaceTableRows(client, table);
     }
-    const imported = [];
-    for (const table of tables) {
-      imported.push(await loadTableSnapshot(client, table, sourceDir));
-    }
-    for (const table of tables) {
-      await setIdentitySequence(client, table);
-    }
-    await client.query("commit");
-    return { kind: name, source_dir: sourceDir, skipped: false, tables: imported };
-  } catch (error) {
-    await client.query("rollback");
-    throw error;
-  } finally {
-    client.release();
   }
+  const imported = [];
+  for (const table of tables) {
+    imported.push(await loadTableSnapshot(client, table, sourceDir));
+  }
+  for (const table of tables) {
+    await setIdentitySequence(client, table);
+  }
+  return { kind: name, source_dir: sourceDir, skipped: false, tables: imported };
 }
 
 const args = parseArgs(process.argv.slice(2));
@@ -204,28 +259,43 @@ const config = getDatabaseConfig({
   DATABASE_URL: args.databaseUrl,
 });
 
+const metadataPlan = {
+  name: "metadata",
+  tables: METADATA_TABLES,
+  sourceDir: args.metadataSource,
+  replace: args.replace,
+  required: true,
+};
+const businessPlan = {
+  name: "business",
+  tables: BUSINESS_TABLES,
+  sourceDir: args.businessSource,
+  replace: args.replace,
+  required: args.requireBusiness,
+};
+
+if (!args.businessOnly) await validateSeedSnapshotGroup(metadataPlan);
+if (!args.metadataOnly) await validateSeedSnapshotGroup(businessPlan);
+
 const pool = createPostgresPool(config.url);
+const client = await pool.connect();
 try {
   const result = {};
-  if (!args.businessOnly) {
-    result.metadata = await importGroup(pool, {
-      name: "metadata",
-      tables: METADATA_TABLES,
-      sourceDir: args.metadataSource,
-      replace: args.replace,
-      required: true,
-    });
-  }
-  if (!args.metadataOnly) {
-    result.business = await importGroup(pool, {
-      name: "business",
-      tables: BUSINESS_TABLES,
-      sourceDir: args.businessSource,
-      replace: args.replace,
-      required: args.requireBusiness,
-    });
+  await client.query("begin");
+  try {
+    if (!args.businessOnly) {
+      result.metadata = await importGroup(client, metadataPlan);
+    }
+    if (!args.metadataOnly) {
+      result.business = await importGroup(client, businessPlan);
+    }
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
   }
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 } finally {
+  client.release();
   await pool.end();
 }

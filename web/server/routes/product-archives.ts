@@ -152,6 +152,7 @@ async function syncDeepdrawProduct(
     payloads: [{ productCode: spuCode, payload }],
     sourceDir: `web-sync/deepdraw/${spuCode}`,
     manifest,
+    tenantName: config.tenantName,
     syncedAt: finishedAt,
   })
 
@@ -266,7 +267,7 @@ const listSelect = `
     ) as hero_image_url
   from product_codes c
   left join product_spu spu on spu.spu_code = c.spu_code
-  left join product_content_package pkg on pkg.spu_code = c.spu_code
+  left join v_latest_product_content_package pkg on pkg.spu_code = c.spu_code
 `
 
 function listWhere({
@@ -340,7 +341,7 @@ productArchives.get("/", (c) => {
     select count(*) as count
     from product_codes c
     left join product_spu spu on spu.spu_code = c.spu_code
-    left join product_content_package pkg on pkg.spu_code = c.spu_code
+    left join v_latest_product_content_package pkg on pkg.spu_code = c.spu_code
     ${clause}
   `).get(...params) as { count: number }
 
@@ -366,7 +367,7 @@ productArchives.get("/summary", (c) => {
       sum(case when spu.id is not null and pkg.id is not null then 1 else 0 end) as complete_count
     from product_codes c
     left join product_spu spu on spu.spu_code = c.spu_code
-    left join product_content_package pkg on pkg.spu_code = c.spu_code
+    left join v_latest_product_content_package pkg on pkg.spu_code = c.spu_code
   `).get()
   return c.json(row)
 })

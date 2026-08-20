@@ -69,12 +69,12 @@ export function decryptSecretKey(encryptedSecretKey, appSecretKey) {
   ]).toString("utf8");
 }
 
-export function headersForOpenApi(path, method = "POST") {
+export function headersForOpenApi(path, method = "POST", language = readEnv("SHEIN_LANGUAGE", "zh-cn")) {
   return headersForOpenApiCredentials(path, {
     method,
     openKeyId: requireEnv("SHEIN_OPEN_KEY_ID"),
     secretKey: requireEnv("SHEIN_SECRET_KEY"),
-    language: readEnv("SHEIN_LANGUAGE", "zh-cn"),
+    language,
   });
 }
 
@@ -113,10 +113,10 @@ export function headersForAppAuth(path) {
   };
 }
 
-export async function requestShein(path, { method = "POST", body, appAuth = false, baseUrl, timeoutMs } = {}) {
+export async function requestShein(path, { method = "POST", body, appAuth = false, baseUrl, language, timeoutMs } = {}) {
   const effectiveBaseUrl = baseUrl || readEnv("SHEIN_BASE_URL", TEST_BASE_URL);
   const url = new URL(path, effectiveBaseUrl);
-  const headers = appAuth ? headersForAppAuth(path) : headersForOpenApi(path, method);
+  const headers = appAuth ? headersForAppAuth(path) : headersForOpenApi(path, method, language);
   const normalizedBody = normalizeBody(body);
   const response = await fetch(url, {
     method,

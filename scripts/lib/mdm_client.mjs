@@ -132,12 +132,17 @@ async function queryAllPages({
   formCode,
   spuCode,
   pageSize = 50,
+  maxPages = 100,
   timeoutMs = 30000,
 }) {
+  const pageLimit = Number(maxPages);
+  if (!Number.isInteger(pageLimit) || pageLimit < 1) {
+    throw new Error("MDM maxPages must be a positive integer");
+  }
   const rows = [];
   const pages = [];
   let page = 1;
-  while (page <= 100) {
+  while (page <= pageLimit) {
     const payload = await queryMdmPage({
       config,
       token,
@@ -152,6 +157,9 @@ async function queryAllPages({
     rows.push(...(Array.isArray(payload?.DATA) ? payload.DATA : []));
     const lastPage = Number(payload?.LAST_PAGE ?? page);
     if (!Number.isFinite(lastPage) || page >= lastPage) break;
+    if (page >= pageLimit) {
+      throw new Error(`MDM ${formCode} response exceeded page limit ${pageLimit}; refusing to treat partial data as complete`);
+    }
     page += 1;
   }
   return {
@@ -164,6 +172,7 @@ export async function queryMdmProduct({
   config = resolveMdmConfig(),
   spuCode,
   pageSize = 50,
+  maxPages = 100,
   timeoutMs = 30000,
 } = {}) {
   const code = required(spuCode, "spuCode");
@@ -176,6 +185,7 @@ export async function queryMdmProduct({
       formCode: "PRODUCT_SPU",
       spuCode: code,
       pageSize,
+      maxPages,
       timeoutMs,
     }),
     queryAllPages({
@@ -185,6 +195,7 @@ export async function queryMdmProduct({
       formCode: "PRODUCT_SKU",
       spuCode: code,
       pageSize,
+      maxPages,
       timeoutMs,
     }),
   ]);

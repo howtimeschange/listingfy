@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
+
+const SERVICE_FILE = new URL("../../web/server/services/product-archive-hangtag-ocr.ts", import.meta.url);
 
 test("product archive hangtag OCR preview maps recognized compliance fields onto current draft fields", async () => {
   const service = await import("../../web/server/services/product-archive-hangtag-ocr.ts");
@@ -382,4 +385,176 @@ test("product archive hangtag OCR apply body preserves preview source refs", asy
   assert.equal(documents.length, 1);
   assert.equal(documents[0].sourceRef, "SCM洗唛吊牌下载结果.xlsx#成分汇总!R2");
   assert.equal(documents[0].fields[0].value, "SCM 明文面料成分");
+});
+
+test("hangtag OCR apply fences active submit claims before any field update", async () => {
+  const service = await import("../../web/server/services/product-archive-hangtag-ocr.ts");
+  let fieldUpdateAttempts = 0;
+  const db = {
+    prepare(sql) {
+      return {
+        all(...params) {
+          if (/from product_archive_draft\s+where spu_code in/i.test(sql)) {
+            assert.deepEqual(params, ["208426103215"]);
+            return [{
+              id: 7,
+              spu_code: "208426103215",
+              tenant_name: "电商巴拉巴拉",
+              merchant_id: "739",
+              trade_id: "190101",
+              title: "针织衫",
+              status: "manual_review",
+              updated_at: "2026-08-05T10:00:00Z",
+            }];
+          }
+          if (/from product_archive_draft_field/i.test(sql)) {
+            return [{
+              id: 101,
+              field_name: "执行标准",
+              value_text: "",
+              value_json: {},
+              source_type: "manual",
+              required: true,
+              blocking: true,
+            }];
+          }
+          return [];
+        },
+        get() {
+          if (/for update/i.test(sql)) {
+            return { id: 7, status: "manual_review", submit_claim_token: "active-claim" };
+          }
+          return null;
+        },
+        run() {
+          if (/update product_archive_draft_field/i.test(sql)) {
+            fieldUpdateAttempts += 1;
+            throw new Error("unexpected field update while claim is active");
+          }
+          return { changes: 1 };
+        },
+      };
+    },
+    transaction(fn) {
+      return () => fn();
+    },
+  };
+
+  assert.throws(
+    () => service.applyProductArchiveHangtagWashlabelOcr(db, {
+      documents: [{
+        fileName: "208426103215吊牌.pdf",
+        fileType: "pdf",
+        sourceKind: "hangtag",
+        detectedSpuCode: "208426103215",
+        status: "recognized",
+        fields: [{
+          key: "executionStandard",
+          label: "执行标准",
+          value: "Q/BALABALA 104-2022",
+          confidence: "high",
+          sourceKind: "hangtag",
+        }],
+      }],
+    }),
+    /PRODUCT_ARCHIVE_SUBMIT_IN_PROGRESS/,
+  );
+  assert.equal(fieldUpdateAttempts, 0);
+});
+
+test("hangtag OCR apply keeps locking, down-fill sync, and validation inside one transaction", async () => {
+  const source = await readFile(SERVICE_FILE, "utf8");
+  const applyStart = source.indexOf("export function applyProductArchiveHangtagWashlabelOcr");
+  assert.ok(applyStart >= 0, "apply implementation should be present");
+  const applySource = source.slice(applyStart);
+  const transactionBody = applySource.match(/return db\.transaction\(\(\) => \{[\s\S]*?\}\)\(\)/)?.[0];
+
+  assert.ok(transactionBody, "apply should return one outer transaction");
+  assert.match(transactionBody, /productArchiveDraftIdsForOcrApply\([\s\S]*assertProductArchiveDraftMutable\(db, draftId[\s\S]*buildPreviewItem/);
+  assert.match(transactionBody, /update product_archive_draft set updated_at[\s\S]*syncProductArchiveDownFillWeightSizeCharts/);
+  assert.match(transactionBody, /syncProductArchiveDownFillWeightSizeCharts\(db, draftId[\s\S]*validateProductArchiveDraft\(db, draftId/);
+});
+
+test("hangtag OCR apply fails closed when a new latest draft appears after candidate locking", async () => {
+  const service = await import("../../web/server/services/product-archive-hangtag-ocr.ts");
+  let candidateQueryCount = 0;
+  let fieldUpdateAttempts = 0;
+  const oldDraft = {
+    id: 7,
+    spu_code: "208426103215",
+    tenant_name: "电商巴拉巴拉",
+    merchant_id: "739",
+    trade_id: "190101",
+    title: "旧草稿",
+    status: "manual_review",
+    updated_at: "2026-08-05T10:00:00Z",
+  };
+  const newDraft = {
+    ...oldDraft,
+    id: 8,
+    title: "新草稿",
+    updated_at: "2026-08-19T10:00:00Z",
+  };
+  const db = {
+    prepare(sql) {
+      return {
+        all(...params) {
+          if (/from product_archive_draft\s+where spu_code in/i.test(sql)) {
+            assert.deepEqual(params, ["208426103215"]);
+            candidateQueryCount += 1;
+            return [candidateQueryCount === 1 ? oldDraft : newDraft];
+          }
+          if (/from product_archive_draft_field/i.test(sql)) {
+            return [{
+              id: 801,
+              field_name: "执行标准",
+              value_text: "",
+              value_json: {},
+              source_type: "manual",
+              required: true,
+              blocking: true,
+            }];
+          }
+          return [];
+        },
+        get() {
+          if (/for update/i.test(sql)) {
+            return { id: 7, status: "manual_review", submit_claim_token: null };
+          }
+          return null;
+        },
+        run() {
+          if (/update product_archive_draft_field/i.test(sql)) {
+            fieldUpdateAttempts += 1;
+          }
+          return { changes: 1 };
+        },
+      };
+    },
+    transaction(fn) {
+      return () => fn();
+    },
+  };
+
+  assert.throws(
+    () => service.applyProductArchiveHangtagWashlabelOcr(db, {
+      documents: [{
+        fileName: "208426103215吊牌.pdf",
+        fileType: "pdf",
+        sourceKind: "hangtag",
+        detectedSpuCode: "208426103215",
+        status: "recognized",
+        fields: [{
+          key: "executionStandard",
+          label: "执行标准",
+          value: "Q/BALABALA 104-2022",
+          confidence: "high",
+          sourceKind: "hangtag",
+        }],
+      }],
+    }),
+    /草稿数据已更新，请刷新后重试/,
+  );
+  assert.equal(candidateQueryCount, 2);
+  assert.equal(fieldUpdateAttempts, 0);
 });

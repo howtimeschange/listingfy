@@ -1,5 +1,6 @@
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import {
+  assertProductArchiveDraftMutable,
   normalizeProductArchiveDeepdrawFieldValue,
   productArchiveFieldValueMatchesOptions,
   syncProductArchiveDownFillWeightSizeCharts,
@@ -43,6 +44,8 @@ interface ApplyInput extends PreviewInput {
 function nowIso() {
   return new Date().toISOString()
 }
+
+const PRODUCT_ARCHIVE_DRAFT_LOCK_SET_CHANGED = "草稿数据已更新，请刷新后重试"
 
 function stringValue(value: unknown) {
   if (value == null) return ""
@@ -292,6 +295,24 @@ function latestDraftsBySpuCode(db: SyncPostgresDatabase, spuCodes: string[]) {
   return lookup
 }
 
+function productArchiveDraftIdsForOcrApply(db: SyncPostgresDatabase, spuCodes: string[]) {
+  const codes = Array.from(new Set(spuCodes.map(stringValue).filter(Boolean))).sort()
+  if (codes.length === 0) return []
+  const candidates = db.prepare(`
+    select id, spu_code
+    from product_archive_draft
+    where spu_code in (${codes.map(() => "?").join(", ")})
+    order by spu_code, updated_at desc nulls last, id desc
+  `).all(...codes) as JsonRecord[]
+  const lockedDraftIds = new Set<number>()
+  for (const candidate of candidates) {
+    const draftId = Number(candidate.id)
+    if (!Number.isInteger(draftId) || draftId <= 0 || lockedDraftIds.has(draftId)) continue
+    lockedDraftIds.add(draftId)
+  }
+  return Array.from(lockedDraftIds)
+}
+
 function draftFields(db: SyncPostgresDatabase, draft: JsonRecord) {
   const draftId = Number(draft.id)
   return db.prepare(`
@@ -470,29 +491,42 @@ export function previewProductArchiveHangtagWashlabelOcr(db: SyncPostgresDatabas
 }
 
 export function applyProductArchiveHangtagWashlabelOcr(db: SyncPostgresDatabase, input: ApplyInput = {}) {
-  const preview = previewProductArchiveHangtagWashlabelOcr(db, {
-    documents: input.documents,
-    overwriteExisting: input.overwriteExisting,
-  })
-  const now = nowIso()
   const applied: JsonRecord[] = []
   const skipped: JsonRecord[] = []
   const touchedDraftIds = new Set<number>()
-  const updateField = db.prepare(`
-    update product_archive_draft_field
-    set value_text = ?,
-      value_json = ?::jsonb,
-      source_type = ?,
-      source_ref = ?,
-      manual_override = true,
-      validation_status = 'valid',
-      validation_message = null,
-      updated_at = ?::timestamptz
-    where draft_id = ? and id = ?
-  `)
+  return db.transaction(() => {
+    const documents = Array.isArray(input.documents) ? input.documents : []
+    const candidateDraftIds = productArchiveDraftIdsForOcrApply(
+      db,
+      documents.map((document) => stringValue(document.detectedSpuCode)),
+    )
+    for (const draftId of candidateDraftIds) {
+      assertProductArchiveDraftMutable(db, draftId)
+    }
+    const draftLookup = latestDraftsBySpuCode(db, documents.map((document) => stringValue(document.detectedSpuCode)))
+    const lockedDraftIdSet = new Set(candidateDraftIds)
+    for (const draft of draftLookup.values()) {
+      const draftId = Number(draft.id)
+      if (!lockedDraftIdSet.has(draftId)) throw new Error(PRODUCT_ARCHIVE_DRAFT_LOCK_SET_CHANGED)
+    }
+    const items = documents.map((document) => buildPreviewItem(db, document, draftLookup, {
+      overwriteExisting: input.overwriteExisting,
+    }))
+    const now = nowIso()
+    const updateField = db.prepare(`
+      update product_archive_draft_field
+      set value_text = ?,
+        value_json = ?::jsonb,
+        source_type = ?,
+        source_ref = ?,
+        manual_override = true,
+        validation_status = 'valid',
+        validation_message = null,
+        updated_at = ?::timestamptz
+      where draft_id = ? and id = ?
+    `)
 
-  db.transaction(() => {
-    for (const item of preview.items) {
+    for (const item of items) {
       const draftId = Number(item.matchedDraft?.id)
       if (!Number.isInteger(draftId) || draftId <= 0) {
         skipped.push({ fileName: item.fileName, reason: "未匹配草稿" })
@@ -547,36 +581,35 @@ export function applyProductArchiveHangtagWashlabelOcr(db: SyncPostgresDatabase,
     for (const draftId of touchedDraftIds) {
       db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(now, draftId)
     }
-  })()
-
-  for (const draftId of touchedDraftIds) {
-    const sizeChartUpdates = syncProductArchiveDownFillWeightSizeCharts(db, draftId)
-    for (const update of sizeChartUpdates) {
-      applied.push({
-        draftId,
-        fieldId: update.fieldId,
-        fieldName: update.fieldName,
-        valueJson: update.valueJson,
-        sourceType: update.sourceType,
-        sourceRef: update.sourceRef,
-      })
+    for (const draftId of touchedDraftIds) {
+      const sizeChartUpdates = syncProductArchiveDownFillWeightSizeCharts(db, draftId)
+      for (const update of sizeChartUpdates) {
+        applied.push({
+          draftId,
+          fieldId: update.fieldId,
+          fieldName: update.fieldName,
+          valueJson: update.valueJson,
+          sourceType: update.sourceType,
+          sourceRef: update.sourceRef,
+        })
+      }
     }
-  }
 
-  const validations = Array.from(touchedDraftIds).map((draftId) => validateProductArchiveDraft(db, draftId))
-  return {
-    summary: {
-      appliedDraftCount: touchedDraftIds.size,
-      appliedFieldCount: applied.length,
-      skippedCount: skipped.length,
-    },
-    applied,
-    skipped,
-    validations: validations.map((validation) => ({
-      status: validation.status,
-      summary: validation.summary,
-      draftId: Number((validation.detail.draft as JsonRecord).id),
-      spuCode: stringValue((validation.detail.draft as JsonRecord).spu_code),
-    })),
-  }
+    const validations = Array.from(touchedDraftIds).map((draftId) => validateProductArchiveDraft(db, draftId))
+    return {
+      summary: {
+        appliedDraftCount: touchedDraftIds.size,
+        appliedFieldCount: applied.length,
+        skippedCount: skipped.length,
+      },
+      applied,
+      skipped,
+      validations: validations.map((validation) => ({
+        status: validation.status,
+        summary: validation.summary,
+        draftId: Number((validation.detail.draft as JsonRecord).id),
+        spuCode: stringValue((validation.detail.draft as JsonRecord).spu_code),
+      })),
+    }
+  })()
 }

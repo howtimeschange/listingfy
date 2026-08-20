@@ -204,7 +204,7 @@ function sourceRow(db: ReturnType<typeof getDb>, spuCode: string) {
       suggested_category.category_name as suggested_shein_category_name,
       suggested_category.path as suggested_shein_category_path
     from product_spu spu
-    left join product_content_package pkg on pkg.spu_code = spu.spu_code
+    left join v_latest_product_content_package pkg on pkg.spu_code = spu.spu_code
     left join mdm_shein_category_mapping_rule matched_rule
       on matched_rule.status = 'ACTIVE'
       and (
@@ -812,7 +812,7 @@ const bucketSelect = `
     ) as hero_image_url
   from shein_product_bucket bucket
   join product_spu spu on spu.id = bucket.product_spu_id
-  left join product_content_package pkg on pkg.spu_code = bucket.spu_code
+  left join v_latest_product_content_package pkg on pkg.spu_code = bucket.spu_code
 `
 
 sheinProducts.get("/", (c) => {
@@ -841,7 +841,7 @@ sheinProducts.get("/", (c) => {
     select count(*) as count
     from shein_product_bucket bucket
     join product_spu spu on spu.id = bucket.product_spu_id
-    left join product_content_package pkg on pkg.spu_code = bucket.spu_code
+    left join v_latest_product_content_package pkg on pkg.spu_code = bucket.spu_code
     ${clause}
   `).get(...params) as { count: number }
   const summary = db.prepare(`
@@ -893,7 +893,7 @@ sheinProducts.get("/filters", (c) => {
       count(*) as count
     from shein_product_bucket bucket
     join product_spu spu on spu.id = bucket.product_spu_id
-    left join product_content_package pkg on pkg.spu_code = bucket.spu_code
+    left join v_latest_product_content_package pkg on pkg.spu_code = bucket.spu_code
     where bucket.bucket_status <> 'REMOVED'
     group by coalesce(spu.brand_code, pkg.brand_name), coalesce(spu.brand_name, pkg.brand_name)
     order by count desc, brand_name

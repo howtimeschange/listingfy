@@ -1,5 +1,7 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import http from "node:http";
+import https from "node:https";
 
 export const DEFAULT_AI_BASE_URL = "https://api.1xm.ai/v1";
 export const DEFAULT_AI_MODEL = "gemini-3-flash-preview";
@@ -148,14 +150,14 @@ function allowedResolvedRemoteImageAddress(address) {
   return proxyFakeIpv4Address(normalized) || !privateOrReservedIpAddress(normalized);
 }
 
-async function allowedRemoteImageUrl(url, lookupImpl = dnsLookup) {
+async function resolveAllowedRemoteImageUrl(url, lookupImpl = dnsLookup) {
   let parsed;
   try {
     parsed = new URL(url);
   } catch {
-    return false;
+    return null;
   }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
   const hostname = parsed.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
   if (
     !hostname
@@ -165,18 +167,33 @@ async function allowedRemoteImageUrl(url, lookupImpl = dnsLookup) {
     || hostname.endsWith(".internal")
     || hostname.endsWith(".lan")
   ) {
-    return false;
+    return null;
   }
-  if (isIP(hostname)) return !privateOrReservedIpAddress(hostname);
+  if (isIP(hostname)) {
+    return privateOrReservedIpAddress(hostname)
+      ? null
+      : { parsed, hostname, address: hostname, family: isIP(hostname) };
+  }
   let addresses;
   try {
     addresses = await lookupImpl(hostname, { all: true, verbatim: true });
   } catch {
-    return false;
+    return null;
   }
-  return Array.isArray(addresses)
-    && addresses.length > 0
-    && addresses.every((item) => allowedResolvedRemoteImageAddress(item.address));
+  if (
+    !Array.isArray(addresses)
+    || addresses.length === 0
+    || !addresses.every((item) => allowedResolvedRemoteImageAddress(item.address))
+  ) {
+    return null;
+  }
+  const selected = addresses[0];
+  return {
+    parsed,
+    hostname,
+    address: selected.address,
+    family: Number(selected.family) || isIP(selected.address),
+  };
 }
 
 async function readResponseBufferCapped(response, maxBytes) {
@@ -204,6 +221,92 @@ async function readResponseBufferCapped(response, maxBytes) {
   return Buffer.concat(chunks, totalBytes);
 }
 
+async function requestPinnedRemoteImage({
+  resolved,
+  fetchImpl,
+  signal,
+  maxBytes,
+}) {
+  const lookup = (_hostname, _options, callback) => {
+    callback(null, resolved.address, resolved.family);
+  };
+
+  // Test and explicitly injected transports still receive the pinned lookup.
+  // The production path below uses node:http(s), whose socket lookup hook is
+  // guaranteed to connect to the exact address that passed the SSRF check.
+  if (fetchImpl && fetchImpl !== globalThis.fetch) {
+    const response = await fetchImpl(resolved.parsed.href, {
+      method: "GET",
+      redirect: "error",
+      signal,
+      lookup,
+      servername: resolved.hostname,
+    });
+    if (!response.ok) return null;
+    const contentLength = Number(response.headers?.get?.("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) return null;
+    const buffer = await readResponseBufferCapped(response, maxBytes);
+    if (!buffer) return null;
+    return {
+      buffer,
+      contentType: response.headers?.get?.("content-type") ?? "",
+    };
+  }
+
+  return await new Promise((resolve, reject) => {
+    const transport = resolved.parsed.protocol === "https:" ? https : http;
+    const request = transport.request(resolved.parsed, {
+      method: "GET",
+      signal,
+      lookup: (_hostname, _options, callback) => {
+        callback(null, resolved.address, resolved.family);
+      },
+      ...(resolved.parsed.protocol === "https:" ? { servername: resolved.hostname } : {}),
+      headers: {
+        Accept: "image/jpeg,image/png,image/webp",
+        Host: resolved.parsed.host,
+      },
+    }, (response) => {
+      const status = Number(response.statusCode ?? 0);
+      if (status < 200 || status >= 300 || response.headers.location) {
+        response.resume();
+        resolve(null);
+        return;
+      }
+      const contentLength = Number(response.headers["content-length"] ?? 0);
+      if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+        response.destroy();
+        resolve(null);
+        return;
+      }
+      const chunks = [];
+      let totalBytes = 0;
+      response.on("data", (chunk) => {
+        totalBytes += chunk.length;
+        if (totalBytes > maxBytes) {
+          response.destroy();
+          resolve(null);
+          return;
+        }
+        chunks.push(Buffer.from(chunk));
+      });
+      response.on("end", () => {
+        if (totalBytes <= 0 || totalBytes > maxBytes) {
+          resolve(null);
+          return;
+        }
+        resolve({
+          buffer: Buffer.concat(chunks, totalBytes),
+          contentType: response.headers["content-type"] ?? "",
+        });
+      });
+      response.on("error", reject);
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
+
 async function fetchImageDataUrl({
   url,
   fetchImpl,
@@ -214,22 +317,20 @@ async function fetchImageDataUrl({
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    if (!await allowedRemoteImageUrl(url, lookupImpl)) return null;
-    const response = await fetchImpl(url, {
-      method: "GET",
-      redirect: "error",
+    const resolved = await resolveAllowedRemoteImageUrl(url, lookupImpl);
+    if (!resolved) return null;
+    const image = await requestPinnedRemoteImage({
+      resolved,
+      fetchImpl,
       signal: controller.signal,
+      maxBytes,
     });
-    if (!response.ok) return null;
-    const contentLength = Number(response.headers?.get?.("content-length"));
-    if (Number.isFinite(contentLength) && contentLength > maxBytes) return null;
-    const buffer = await readResponseBufferCapped(response, maxBytes);
-    if (!buffer) return null;
-    const contentType = contentTypeMimeType(response.headers?.get?.("content-type"));
+    if (!image) return null;
+    const contentType = contentTypeMimeType(image.contentType);
     const mimeType = /^image\/(?:jpeg|png|webp)$/i.test(contentType)
       ? contentType
       : imageMimeTypeFromUrl(url);
-    return `data:${mimeType};base64,${buffer.toString("base64")}`;
+    return `data:${mimeType};base64,${image.buffer.toString("base64")}`;
   } catch {
     return null;
   } finally {

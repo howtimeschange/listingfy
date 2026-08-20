@@ -243,10 +243,11 @@ function summarizeAttribute(attribute) {
   };
 }
 
-async function sheinPost(pathName, body, baseUrl) {
+async function sheinPost(pathName, body, baseUrl, language) {
   const result = await requestSheinWithRetry(pathName, {
     body,
     baseUrl,
+    language,
     retries: 4,
     retryDelayMs: 1200,
   });
@@ -302,10 +303,10 @@ async function main() {
 
   process.stderr.write("Fetching store info, site list, store publish standard and category tree...\n");
   const [storeInfo, siteList, storePublishStandard, categoryTree] = await Promise.all([
-    sheinPost(STORE_INFO_PATH, {}, args.baseUrl),
-    sheinPost(SITE_LIST_PATH, {}, args.baseUrl),
-    sheinPost(PUBLISH_STANDARD_PATH, "", args.baseUrl),
-    sheinPost(CATEGORY_TREE_PATH, "", args.baseUrl),
+    sheinPost(STORE_INFO_PATH, {}, args.baseUrl, args.language),
+    sheinPost(SITE_LIST_PATH, {}, args.baseUrl, args.language),
+    sheinPost(PUBLISH_STANDARD_PATH, "", args.baseUrl, args.language),
+    sheinPost(CATEGORY_TREE_PATH, "", args.baseUrl, args.language),
   ]);
 
   writeJson(files.storeInfo, storeInfo.payload);
@@ -343,7 +344,7 @@ async function main() {
     process.stderr.write("Syncing category publish standards...\n");
     await concurrentMap(selectedLeaves, args.standardConcurrency, async (leaf) => {
       try {
-        const result = await sheinPost(PUBLISH_STANDARD_PATH, { category_id: leaf.category_id }, args.baseUrl);
+        const result = await sheinPost(PUBLISH_STANDARD_PATH, { category_id: leaf.category_id }, args.baseUrl, args.language);
         standardsOk += 1;
         writeJsonl(standardsStream, {
           category_id: leaf.category_id,
@@ -381,7 +382,7 @@ async function main() {
     const batches = chunk(productTypeIds, ATTRIBUTE_BATCH_SIZE);
     await concurrentMap(batches, args.attributeConcurrency, async (batch) => {
       try {
-        const result = await sheinPost(ATTRIBUTE_TEMPLATE_PATH, { product_type_id_list: batch }, args.baseUrl);
+        const result = await sheinPost(ATTRIBUTE_TEMPLATE_PATH, { product_type_id_list: batch }, args.baseUrl, args.language);
         const items = result.payload.info?.data || [];
         for (const item of items) {
           const categoryRefs = productTypeToLeaves.get(String(item.product_type_id)) || [];
@@ -445,11 +446,14 @@ async function main() {
   manifest.finished_at = new Date().toISOString();
 
   writeJson(files.manifest, manifest);
-  ensureDir(path.dirname(path.join(projectRoot, "data", "shein-metadata", "latest-manifest.json")));
-  writeJson(path.join(projectRoot, "data", "shein-metadata", "latest-manifest.json"), manifest);
+  if (manifest.failures_count === 0) {
+    ensureDir(path.dirname(path.join(projectRoot, "data", "shein-metadata", "latest-manifest.json")));
+    writeJson(path.join(projectRoot, "data", "shein-metadata", "latest-manifest.json"), manifest);
+  }
 
   process.stderr.write(`Done. Failures: ${manifest.failures_count}\n`);
   process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
+  if (manifest.failures_count > 0) process.exitCode = 1;
 }
 
 main().catch((error) => {

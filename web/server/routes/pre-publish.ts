@@ -1,6 +1,8 @@
 import fs from "node:fs"
+import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { Hono } from "hono"
+import { bodyLimit } from "hono/body-limit"
 import { HTTPException } from "hono/http-exception"
 import sharp from "sharp"
 import unzipper, { type CentralDirectory, type File as ZipFile } from "unzipper"
@@ -398,7 +400,7 @@ function productRows(
       suggested_category.category_name as suggested_shein_category_name,
       suggested_category.path as suggested_shein_category_path
     from product_spu spu
-    left join product_content_package pkg on pkg.spu_code = spu.spu_code
+    left join v_latest_product_content_package pkg on pkg.spu_code = spu.spu_code
     left join product_skc skc on skc.spu_id = spu.id
     left join mdm_shein_category_mapping_rule matched_rule
       on matched_rule.status = 'ACTIVE'
@@ -505,7 +507,7 @@ function bucketReadinessRows(
     select bucket.spu_code
     from shein_product_bucket bucket
     join product_spu spu on spu.id = bucket.product_spu_id
-    left join product_content_package pkg on pkg.spu_code = bucket.spu_code
+    left join v_latest_product_content_package pkg on pkg.spu_code = bucket.spu_code
     ${clause}
     group by bucket.spu_code
     order by max(bucket.updated_at) desc, max(bucket.id) desc
@@ -515,7 +517,7 @@ function bucketReadinessRows(
     select count(distinct bucket.id) as count
     from shein_product_bucket bucket
     join product_spu spu on spu.id = bucket.product_spu_id
-    left join product_content_package pkg on pkg.spu_code = bucket.spu_code
+    left join v_latest_product_content_package pkg on pkg.spu_code = bucket.spu_code
     ${clause}
   `).get(...params) as { count: number }
   return {
@@ -3620,9 +3622,193 @@ function deleteAutoSourceImagesForUserAsset(input: {
   `).run(...params)
 }
 
-function lockListingImageMutation(db: ReturnType<typeof getDb>, listingId: number) {
-  const listing = db.prepare("select id from listing where id = ? for update").get(listingId) as SourceRow | undefined
+function listingPublishInProgress(): never {
+  throw new HTTPException(409, {
+    message: "LISTING_PUBLISH_IN_PROGRESS: 草稿正在发布或已提交，不能继续修改",
+  })
+}
+
+const PUBLISH_MUTATION_FENCED_STATUSES = new Set([
+  "PUBLISHING",
+  "PUBLISH_SUBMITTED",
+  "PUBLISH_RESULT_UNKNOWN",
+])
+
+// A publish scope is serialized by the stable product_spu row before any
+// listing or task rows are inspected. Review/approved siblings are also
+// fenced so split publish units cannot race the same SHEIN product.
+const PUBLISH_SCOPE_FENCED_STATUSES = new Set([
+  ...PUBLISH_MUTATION_FENCED_STATUSES,
+  "UNDER_REVIEW",
+  "PARTIALLY_APPROVED",
+  "APPROVED",
+])
+
+const PUBLISH_SCOPE_ACTIVE_TASK_STATUSES = [
+  "PUBLISHING",
+  "PUBLISH_SUBMITTED",
+  "PUBLISH_RESULT_UNKNOWN",
+  "UNDER_REVIEW",
+  "PARTIALLY_APPROVED",
+  "APPROVED",
+]
+
+function lockListingForMutation(db: ReturnType<typeof getDb>, listingId: number) {
+  const listing = db.prepare("select * from listing where id = ? for update").get(listingId) as ListingRow | undefined
   if (!listing) throw new HTTPException(404, { message: "草稿不存在" })
+  if (PUBLISH_MUTATION_FENCED_STATUSES.has(normalizeText(listing.status).toUpperCase())) {
+    listingPublishInProgress()
+  }
+  return listing
+}
+
+function lockListingImageMutation(db: ReturnType<typeof getDb>, listingId: number) {
+  return lockListingForMutation(db, listingId)
+}
+
+function lockProductSpuForPublishScope(db: ReturnType<typeof getDb>, productSpuId: number) {
+  const productSpu = db.prepare(`
+    select id, spu_code
+    from product_spu
+    where id = ?
+    for update
+  `).get(productSpuId) as SourceRow | undefined
+  if (!productSpu) {
+    throw new HTTPException(404, { message: "商品档案不存在" })
+  }
+  return productSpu
+}
+
+function lockPublishScope(db: ReturnType<typeof getDb>, listing: ListingRow) {
+  const productSpuId = Number(listing.product_spu_id)
+  if (!Number.isFinite(productSpuId) || productSpuId <= 0) {
+    throw new HTTPException(409, { message: "发布范围缺少商品主档" })
+  }
+  lockProductSpuForPublishScope(db, productSpuId)
+
+  const lockedListing = db.prepare("select * from listing where id = ? for update").get(listing.id) as ListingRow | undefined
+  if (!lockedListing) {
+    throw new HTTPException(404, { message: "草稿不存在" })
+  }
+
+  const platform = normalizeText(lockedListing.platform) || "SHEIN"
+  const channelAccountId = Number(lockedListing.channel_account_id)
+  const siblings = db.prepare(`
+    select *
+    from listing
+    where platform = ?
+      and channel_account_id = ?
+      and product_spu_id = ?
+    order by id
+    for update
+  `).all(platform, channelAccountId, productSpuId) as ListingRow[]
+  const siblingIds = siblings
+    .map((row) => Number(row.id))
+    .filter((id) => Number.isFinite(id) && id > 0)
+  if (!siblingIds.includes(Number(lockedListing.id))) {
+    throw new HTTPException(404, { message: "草稿不存在" })
+  }
+
+  const activeTasks = siblingIds.length === 0
+    ? []
+    : db.prepare(`
+      select *
+      from listing_publish_task
+      where platform = ?
+        and task_type = 'PUBLISH_LISTING'
+        and listing_id in (${siblingIds.map(() => "?").join(",")})
+        and status in (${PUBLISH_SCOPE_ACTIVE_TASK_STATUSES.map(() => "?").join(",")})
+      order by id
+      for update
+    `).all(platform, ...siblingIds, ...PUBLISH_SCOPE_ACTIVE_TASK_STATUSES) as SourceRow[]
+  return { listing: lockedListing, siblings, activeTasks }
+}
+
+function assertPublishScopeAvailable(
+  db: ReturnType<typeof getDb>,
+  listing: ListingRow,
+  scope: { siblings: ListingRow[]; activeTasks: SourceRow[] },
+) {
+  const listingId = Number(listing.id)
+  const unresolvedTask = findUnresolvedPublishTask(db, listingId)
+  if (unresolvedTask) return { deduplicatedTask: unresolvedTask }
+
+  const busySibling = scope.siblings.find((sibling) => (
+    PUBLISH_SCOPE_FENCED_STATUSES.has(normalizeText(sibling.status).toUpperCase())
+    && Number(sibling.id) !== listingId
+  ))
+  if (busySibling) {
+    throw new HTTPException(409, {
+      message: `SHEIN 发布范围已有进行中的草稿（${normalizeText(busySibling.publish_unit_no) || busySibling.id}），请先完成或解除该草稿`,
+    })
+  }
+  const busyTask = scope.activeTasks.find((task) => Number(task.listing_id) !== listingId)
+  if (busyTask) {
+    throw new HTTPException(409, {
+      message: "SHEIN 发布范围已有未解决的发布任务，请先同步或处理原任务",
+    })
+  }
+  const ownStatus = normalizeText(listing.status).toUpperCase()
+  if (PUBLISH_SCOPE_FENCED_STATUSES.has(ownStatus)) {
+    throw new HTTPException(409, {
+      message: "LISTING_PUBLISH_IN_PROGRESS: 草稿正在发布、审核或已提交，不能重复发布",
+    })
+  }
+  return { deduplicatedTask: null }
+}
+
+function claimListingForPublish(db: ReturnType<typeof getDb>, listingId: number) {
+  const claimed = db.prepare(`
+    update listing
+    set status = 'PUBLISHING',
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    where id = ?
+      and status not in ('PUBLISHING', 'PUBLISH_SUBMITTED', 'PUBLISH_RESULT_UNKNOWN')
+    returning *
+  `).get(listingId) as ListingRow | undefined
+  if (claimed) return claimed
+  const current = db.prepare("select id, status from listing where id = ?").get(listingId) as ListingRow | undefined
+  if (!current) throw new HTTPException(404, { message: "草稿不存在" })
+  listingPublishInProgress()
+}
+
+function markClaimedPublishPreparationFailed(
+  db: ReturnType<typeof getDb>,
+  input: {
+    listingId: number
+    versionId?: unknown
+    errorCode: string
+    errorMessage: string
+    requestPayload?: unknown
+  },
+) {
+  const versionId = Number(input.versionId)
+  const hasVersion = Number.isFinite(versionId) && versionId > 0
+  const requestPayload = input.requestPayload === undefined ? null : JSON.stringify(input.requestPayload)
+  db.transaction(() => {
+    const current = db.prepare("select status from listing where id = ? for update").get(input.listingId) as SourceRow | undefined
+    if (normalizeText(current?.status).toUpperCase() !== "PUBLISHING") return
+    if (hasVersion) {
+      db.prepare(`
+        update listing_publish_version
+        set status = 'FAILED',
+          request_payload_json = coalesce(?, request_payload_json),
+          error_code = ?,
+          error_message = ?
+        where id = ?
+          and listing_id = ?
+          and status not in ('SUBMITTED', 'RESULT_UNKNOWN')
+      `).run(requestPayload, input.errorCode, input.errorMessage, versionId, input.listingId)
+    }
+    db.prepare(`
+      update listing
+      set status = 'PUBLISH_FAILED',
+        validation_status = 'FAILED',
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      where id = ?
+        and status = 'PUBLISHING'
+    `).run(input.listingId)
+  })()
 }
 
 function getListingAssets(db: ReturnType<typeof getDb>, listingId: number, options?: { onlySelected?: boolean }) {
@@ -7197,18 +7383,20 @@ prePublish.post("/drafts/:id/duplicate", async (c) => {
   requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
-  const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
-  if (!listing) {
-    throw new HTTPException(404, { message: "草稿不存在" })
-  }
-  const sourceRow = getSourceProductRow(db, listing.spu_code)
-  const readiness = getReadinessForListing(db, listing)
-  if (!sourceRow || !readiness) {
-    throw new HTTPException(404, { message: "商品档案不存在，无法派生草稿" })
-  }
   const result = db.transaction(() => {
-    const draft = createDraft(db, readiness, sourceRow, listing.platform)
-    updateBucketLatestForSpu(db, listing.spu_code)
+    const sourceHint = db.prepare("select id, product_spu_id from listing where id = ?").get(listingId) as ListingRow | undefined
+    if (!sourceHint) {
+      throw new HTTPException(404, { message: "草稿不存在" })
+    }
+    lockProductSpuForPublishScope(db, Number(sourceHint.product_spu_id))
+    const lockedListing = lockListingForMutation(db, listingId)
+    const sourceRow = getSourceProductRow(db, lockedListing.spu_code)
+    const readiness = getReadinessForListing(db, lockedListing)
+    if (!sourceRow || !readiness) {
+      throw new HTTPException(404, { message: "商品档案不存在，无法派生草稿" })
+    }
+    const draft = createDraft(db, readiness, sourceRow, lockedListing.platform)
+    updateBucketLatestForSpu(db, lockedListing.spu_code)
     return draft
   })()
   return c.json({
@@ -7224,26 +7412,26 @@ prePublish.patch("/drafts/:id/status", async (c) => {
   requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
-  const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
-  if (!listing) {
-    throw new HTTPException(404, { message: "草稿不存在" })
-  }
   const body = await c.req.json().catch(() => ({})) as { status?: string }
   const status = normalizeText(body.status).toUpperCase()
   const allowed = new Set(["DRAFT", "NEEDS_ENRICHMENT", "READY_TO_VALIDATE", "READY_TO_PUBLISH", "PAUSED", "ARCHIVED"])
   if (!allowed.has(status)) {
     throw new HTTPException(400, { message: "不支持的草稿状态" })
   }
-  if (!canTransitionDraftStatus(normalizeText(listing.status), status)) {
-    throw new HTTPException(400, { message: "当前草稿状态不允许切换到目标状态" })
-  }
-  db.prepare(`
-    update listing
-    set status = ?,
-      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-    where id = ?
-  `).run(status, listingId)
-  updateBucketLatestForSpu(db, listing.spu_code)
+  db.transaction(() => {
+    const locked = lockListingForMutation(db, listingId)
+    if (!canTransitionDraftStatus(normalizeText(locked.status), status)) {
+      throw new HTTPException(400, { message: "当前草稿状态不允许切换到目标状态" })
+    }
+    db.prepare(`
+      update listing
+      set status = ?,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      where id = ?
+    `).run(status, listingId)
+    updateBucketLatestForSpu(db, locked.spu_code)
+    return locked
+  })()
   return c.json({ ok: true, listing: db.prepare("select * from listing where id = ?").get(listingId) })
 })
 
@@ -7251,34 +7439,62 @@ prePublish.delete("/drafts/:id", (c) => {
   requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
-  const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
-  if (!listing) {
-    throw new HTTPException(404, { message: "草稿不存在" })
-  }
-  if (["PUBLISHING", "PUBLISH_SUBMITTED"].includes(normalizeText(listing.status))) {
-    throw new HTTPException(400, { message: "发布中或已提交的草稿不能删除" })
-  }
-  db.transaction(() => {
+  const deleted = db.transaction(() => {
+    lockListingImageMutation(db, listingId)
+    const localPaths = (db.prepare(`
+      select local_path
+      from listing_asset
+      where listing_id = ?
+        and local_path is not null
+    `).all(listingId) as SourceRow[])
+      .map((row) => normalizeText(row.local_path))
+      .filter(Boolean)
+    const skcIds = (db.prepare("select id from listing_skc where listing_id = ?").all(listingId) as SourceRow[])
+      .map((row) => Number(row.id))
+      .filter(Number.isFinite)
+    const skuIds = (db.prepare(`
+      select sku.id
+      from listing_sku sku
+      join listing_skc skc on skc.id = sku.listing_skc_id
+      where skc.listing_id = ?
+    `).all(listingId) as SourceRow[])
+      .map((row) => Number(row.id))
+      .filter(Number.isFinite)
+    const listing = db.prepare(`
+      delete from listing
+      where id = ?
+        and status not in ('PUBLISHING', 'PUBLISH_SUBMITTED', 'PUBLISH_RESULT_UNKNOWN')
+      returning *
+    `).get(listingId) as ListingRow | undefined
+    if (!listing) {
+      const current = db.prepare("select id, status from listing where id = ?").get(listingId) as ListingRow | undefined
+      if (!current) throw new HTTPException(404, { message: "草稿不存在" })
+      listingPublishInProgress()
+    }
     db.prepare("delete from platform_identity where local_type = 'listing' and local_id = ?").run(listingId)
-    db.prepare(`
-      delete from platform_identity
-      where local_type = 'listing_skc'
-        and local_id in (select id from listing_skc where listing_id = ?)
-    `).run(listingId)
-    db.prepare(`
-      delete from platform_identity
-      where local_type = 'listing_sku'
-        and local_id in (
-          select sku.id
-          from listing_sku sku
-          join listing_skc skc on skc.id = sku.listing_skc_id
-          where skc.listing_id = ?
-        )
-    `).run(listingId)
-    db.prepare("delete from listing where id = ?").run(listingId)
+    if (skcIds.length > 0) {
+      db.prepare(`
+        delete from platform_identity
+        where local_type = 'listing_skc'
+          and local_id in (${skcIds.map(() => "?").join(",")})
+      `).run(...skcIds)
+    }
+    if (skuIds.length > 0) {
+      db.prepare(`
+        delete from platform_identity
+        where local_type = 'listing_sku'
+          and local_id in (${skuIds.map(() => "?").join(",")})
+      `).run(...skuIds)
+    }
     updateBucketLatestForSpu(db, listing.spu_code)
+    return {
+      listing,
+      cleanupPaths: unreferencedLocalAssetPaths(db, localPaths),
+    }
   })()
-  return c.json({ ok: true })
+  if (!deleted) throw new HTTPException(409, { message: "LISTING_PUBLISH_IN_PROGRESS" })
+  const cleanup = cleanupUnreferencedAssetFiles(db, deleted.cleanupPaths)
+  return c.json({ ok: true, cleanup_warnings: cleanup.warnings })
 })
 
 prePublish.patch("/drafts/:id/category", async (c) => {
@@ -7298,15 +7514,18 @@ prePublish.patch("/drafts/:id/category", async (c) => {
   if (!categoryId || !productTypeId) {
     throw new HTTPException(400, { message: "请选择 SHEIN 叶子类目" })
   }
-  applyDraftCategorySelection({
-    db,
-    listing,
-    listingId,
-    categoryId,
-    productTypeId,
-    source: "MANUAL_CATEGORY_TREE",
-  })
-  const refreshed = refreshListingAfterFill(db, listingId, "人工调整 SHEIN 类目")
+  const refreshed = db.transaction(() => {
+    lockListingForMutation(db, listingId)
+    applyDraftCategorySelection({
+      db,
+      listing,
+      listingId,
+      categoryId,
+      productTypeId,
+      source: "MANUAL_CATEGORY_TREE",
+    })
+    return refreshListingAfterFill(db, listingId, "人工调整 SHEIN 类目")
+  })()
   if (!refreshed) {
     throw new HTTPException(500, { message: "调整类目后刷新草稿失败" })
   }
@@ -7333,6 +7552,7 @@ prePublish.post("/drafts/:id/convert-openapi-single-item", async (c) => {
   const titleCn = sanitizeSingleItemTitleCn(readiness?.title_cn || listing.title, category.category_name)
   const titleEn = sanitizeSingleItemTitleEn(readiness?.title_en || listing.title, category.category_name)
   const transaction = db.transaction(() => {
+    lockListingForMutation(db, listingId)
     persistFill({
       db,
       spuCode: listing.spu_code,
@@ -7398,10 +7618,9 @@ prePublish.post("/drafts/:id/convert-openapi-single-item", async (c) => {
       titleEn || titleCn || listing.title,
       listingId,
     )
+    return refreshListingAfterFill(db, listingId, "转换为 SHEIN OpenAPI 单品发布")
   })
-  transaction()
-
-  const refreshed = refreshListingAfterFill(db, listingId, "转换为 SHEIN OpenAPI 单品发布")
+  const refreshed = transaction()
   if (!refreshed) {
     throw new HTTPException(500, { message: "转换后刷新草稿失败" })
   }
@@ -7444,10 +7663,11 @@ prePublish.patch("/drafts/:id/fields", async (c) => {
     throw new HTTPException(400, { message: "没有要保存的字段" })
   }
   const transaction = db.transaction(() => {
+    lockListingForMutation(db, listingId)
     persistDraftFields({ db, listing, listingId, fields, savedFrom: "draft_detail" })
+    return refreshListingAfterFill(db, listingId, `人工编辑 ${fields.length} 个字段`)
   })
-  transaction()
-  const refreshed = refreshListingAfterFill(db, listingId, `人工编辑 ${fields.length} 个字段`)
+  const refreshed = transaction()
   if (!refreshed) {
     throw new HTTPException(500, { message: "草稿刷新失败" })
   }
@@ -7463,6 +7683,7 @@ prePublish.post("/drafts/:id/refresh-weights", (c) => {
     throw new HTTPException(404, { message: "草稿不存在" })
   }
   const transaction = db.transaction(() => {
+    lockListingForMutation(db, listingId)
     const beforeRows = listingSkuWeightRows(db, listingId)
     const weights = activeWeights(db)
     applyMissingListingSkuWeights(db, listingId, beforeRows, weights)
@@ -7507,6 +7728,7 @@ prePublish.patch("/drafts/:id/image-confirmation", async (c) => {
   }
   const confirmed = body.confirmed === true || Number(body.confirmed) === 1
   const transaction = db.transaction(() => {
+    lockListingForMutation(db, listingId)
     setListingSkcImageConfirmation({
       db,
       listingId,
@@ -7578,6 +7800,7 @@ prePublish.post("/drafts/:id/save", async (c) => {
   const selectedSkuIds = new Set((body.selected_sku_ids ?? []).map(Number).filter(Number.isFinite))
 
   const transaction = db.transaction(() => {
+    lockListingForMutation(db, listingId)
     persistDraftFields({ db, listing, listingId, fields, savedFrom: "draft_whole_save" })
 
     if (hasSkcSelection) {
@@ -7609,10 +7832,9 @@ prePublish.post("/drafts/:id/save", async (c) => {
     updateListingSkuCommercials({ db, listingId, skuCommercialValues })
     updateListingSkcColors({ db, listingId, skcColorValues })
     if (hasManualSizeChartRows) persistManualSizeChart({ db, listing, rows: manualSizeChartRows })
+    return refreshListingAfterFill(db, listingId, `保存草稿：字段 ${fields.length} 个，颜色 ${skcColorValues.length} 个，尺码 ${skuSizeValues.length} 个，毛重 ${skuWeightValues.length} 个，价格包装 ${skuCommercialValues.length} 个${hasManualSizeChartRows ? `，尺码表 ${manualSizeChartRows.length} 行` : ""}`)
   })
-  transaction()
-
-  const refreshed = refreshListingAfterFill(db, listingId, `保存草稿：字段 ${fields.length} 个，颜色 ${skcColorValues.length} 个，尺码 ${skuSizeValues.length} 个，毛重 ${skuWeightValues.length} 个，价格包装 ${skuCommercialValues.length} 个${hasManualSizeChartRows ? `，尺码表 ${manualSizeChartRows.length} 行` : ""}`)
+  const refreshed = transaction()
   if (!refreshed) {
     throw new HTTPException(500, { message: "草稿保存后刷新失败" })
   }
@@ -7654,35 +7876,41 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
       allowRuleFallback: true,
     })
     categorySelection = ruleDecision
-    const ruleApplication = applyDraftCategoryDecision({
-      db,
-      listing,
-      listingId,
-      decision: ruleDecision,
-      selectedFrom: "draft_ai_enrich_rule",
-    })
+    const ruleApplication = db.transaction(() => {
+      lockListingForMutation(db, listingId)
+      return applyDraftCategoryDecision({
+        db,
+        listing,
+        listingId,
+        decision: ruleDecision,
+        selectedFrom: "draft_ai_enrich_rule",
+      })
+    })()
     if (ruleApplication) {
       saved.push(ruleApplication)
     } else if (shouldAskLiveAiCategory(categoryReadiness.category)) {
       const liveCategory = await safeResolveLiveAiDraftCategory(db, categoryReadiness)
       if (liveCategory) {
-        const liveDecision = categoryDecisionForReadiness(db, categoryReadiness.category, {
-          allowRuleFallback: true,
-          liveAi: liveCategory,
-        })
-        categorySelection = liveDecision
-        const liveApplication = applyDraftCategoryDecision({
-          db,
-          listing,
-          listingId,
-          decision: liveDecision,
-          selectedFrom: "draft_ai_enrich",
-          payload: {
-            reason: liveCategory.reasons.join("；"),
-            risks: liveCategory.risks,
-            blocking_risks: liveCategory.blockingRisks,
-          },
-        })
+        const liveApplication = db.transaction(() => {
+          lockListingForMutation(db, listingId)
+          const liveDecision = categoryDecisionForReadiness(db, categoryReadiness.category, {
+            allowRuleFallback: true,
+            liveAi: liveCategory,
+          })
+          categorySelection = liveDecision
+          return applyDraftCategoryDecision({
+            db,
+            listing,
+            listingId,
+            decision: liveDecision,
+            selectedFrom: "draft_ai_enrich",
+            payload: {
+              reason: liveCategory.reasons.join("；"),
+              risks: liveCategory.risks,
+              blocking_risks: liveCategory.blockingRisks,
+            },
+          })
+        })()
         if (liveApplication) saved.push(liveApplication)
       }
     }
@@ -7697,16 +7925,19 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
   if (mode === "title" || (mode === "all" && !titleAlreadyReady)) {
     const titleEn = await safeAiTranslateTitle(enrichmentReadiness)
     if (titleEn) {
-      persistFill({
-        db,
-        spuCode: enrichmentReadiness.spu_code,
-        fieldKey: "title_en",
-        fieldLabel: "英文标题",
-        fieldValue: titleEn,
-        source: "AI_TRANSLATED",
-        confidence: 0.78,
-        payload: { title_cn: enrichmentReadiness.title_cn, category: enrichmentReadiness.category },
-      })
+      db.transaction(() => {
+        lockListingForMutation(db, listingId)
+        persistFill({
+          db,
+          spuCode: enrichmentReadiness.spu_code,
+          fieldKey: "title_en",
+          fieldLabel: "英文标题",
+          fieldValue: titleEn,
+          source: "AI_TRANSLATED",
+          confidence: 0.78,
+          payload: { title_cn: enrichmentReadiness.title_cn, category: enrichmentReadiness.category },
+        })
+      })()
       saved.push({
         field_key: "title_en",
         field_label: "英文标题",
@@ -7723,26 +7954,29 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
     if (shouldGenerateProductDescription(enrichmentReadiness)) {
       const productDescription = await safeAiGenerateProductDescription(enrichmentReadiness)
       if (productDescription) {
-        persistFill({
-          db,
-          spuCode: enrichmentReadiness.spu_code,
-          fieldKey: "product_description",
-          fieldLabel: "商品描述",
-          fieldValue: productDescription,
-          source: "AI_DESCRIPTION",
-          confidence: 0.74,
-          payload: {
-            title_cn: enrichmentReadiness.title_cn,
-            category: enrichmentReadiness.category,
-            context: "draft_ai_enrich",
-          },
-        })
-        db.prepare(`
-          update listing
-          set description = ?,
-            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-          where id = ?
-        `).run(productDescription, listingId)
+        db.transaction(() => {
+          lockListingForMutation(db, listingId)
+          persistFill({
+            db,
+            spuCode: enrichmentReadiness.spu_code,
+            fieldKey: "product_description",
+            fieldLabel: "商品描述",
+            fieldValue: productDescription,
+            source: "AI_DESCRIPTION",
+            confidence: 0.74,
+            payload: {
+              title_cn: enrichmentReadiness.title_cn,
+              category: enrichmentReadiness.category,
+              context: "draft_ai_enrich",
+            },
+          })
+          db.prepare(`
+            update listing
+            set description = ?,
+              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            where id = ?
+          `).run(productDescription, listingId)
+        })()
         saved.push({
           field_key: "product_description",
           field_label: "商品描述",
@@ -7753,29 +7987,32 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
   }
 
   if (mode === "all" || mode === "attributes") {
-    for (const field of deterministicAttributeFillsForAiEnrich(enrichmentReadiness)) {
-      const fieldValue = normalizeFillFieldValue(field.key, field.label, field.value)
-      if (!fieldValue) continue
-      persistFill({
-        db,
-        spuCode: enrichmentReadiness.spu_code,
-        fieldKey: field.key,
-        fieldLabel: field.label,
-        fieldValue,
-        source: normalizeText(field.source) || "RULE",
-        confidence: field.confidence ?? 0.72,
-        payload: {
-          fallback: true,
-          context: "draft_ai_enrich",
-          reason: field.note ?? "根据商品档案和 SHEIN 枚举确定性推荐。",
-        },
-      })
-      saved.push({
-        field_key: field.key,
-        field_label: field.label,
-        field_value: fieldValue,
-      })
-    }
+    db.transaction(() => {
+      lockListingForMutation(db, listingId)
+      for (const field of deterministicAttributeFillsForAiEnrich(enrichmentReadiness)) {
+        const fieldValue = normalizeFillFieldValue(field.key, field.label, field.value)
+        if (!fieldValue) continue
+        persistFill({
+          db,
+          spuCode: enrichmentReadiness.spu_code,
+          fieldKey: field.key,
+          fieldLabel: field.label,
+          fieldValue,
+          source: normalizeText(field.source) || "RULE",
+          confidence: field.confidence ?? 0.72,
+          payload: {
+            fallback: true,
+            context: "draft_ai_enrich",
+            reason: field.note ?? "根据商品档案和 SHEIN 枚举确定性推荐。",
+          },
+        })
+        saved.push({
+          field_key: field.key,
+          field_label: field.label,
+          field_value: fieldValue,
+        })
+      }
+    })()
 
     let aiFills: Array<Record<string, unknown>> = []
     try {
@@ -7787,33 +8024,39 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
       })
     }
     const byKey = new Map(aiFills.map((fill) => [String(fill.field_key), fill]))
-    for (const field of enrichmentReadiness.manual_fields) {
-      const aiFill = byKey.get(field.key)
-      const fieldValue = safeAutomaticAttributeFillValue(field, enrichmentReadiness, aiFill)
-      if (!fieldValue) continue
-      const confidence = Number(aiFill?.confidence)
-      persistFill({
-        db,
-        spuCode: enrichmentReadiness.spu_code,
-        fieldKey: field.key,
-        fieldLabel: field.label,
-        fieldValue: normalizeFillFieldValue(field.key, field.label, fieldValue),
-        source: aiFill ? "AI_SUGGESTED" : "AI_RULE_FALLBACK",
-        confidence: Number.isFinite(confidence) ? confidence : 0.62,
-        payload: aiFill ?? {
-          fallback: true,
-          context: "draft_ai_enrich",
-        },
-      })
-      saved.push({
-        field_key: field.key,
-        field_label: field.label,
-        field_value: fieldValue,
-      })
-    }
+    db.transaction(() => {
+      lockListingForMutation(db, listingId)
+      for (const field of enrichmentReadiness.manual_fields) {
+        const aiFill = byKey.get(field.key)
+        const fieldValue = safeAutomaticAttributeFillValue(field, enrichmentReadiness, aiFill)
+        if (!fieldValue) continue
+        const confidence = Number(aiFill?.confidence)
+        persistFill({
+          db,
+          spuCode: enrichmentReadiness.spu_code,
+          fieldKey: field.key,
+          fieldLabel: field.label,
+          fieldValue: normalizeFillFieldValue(field.key, field.label, fieldValue),
+          source: aiFill ? "AI_SUGGESTED" : "AI_RULE_FALLBACK",
+          confidence: Number.isFinite(confidence) ? confidence : 0.62,
+          payload: aiFill ?? {
+            fallback: true,
+            context: "draft_ai_enrich",
+          },
+        })
+        saved.push({
+          field_key: field.key,
+          field_label: field.label,
+          field_value: fieldValue,
+        })
+      }
+    })()
   }
 
-  const refreshed = refreshListingAfterFill(db, listingId, `AI 丰富草稿：${mode}`)
+  const refreshed = db.transaction(() => {
+    lockListingForMutation(db, listingId)
+    return refreshListingAfterFill(db, listingId, `AI 丰富草稿：${mode}`)
+  })()
   if (!refreshed) {
     throw new HTTPException(500, { message: "AI 丰富后刷新草稿失败" })
   }
@@ -7871,17 +8114,20 @@ prePublish.post("/drafts/:id/ai-field", async (c) => {
       detail: getListingDetailForAiWarning(db, listingId),
     })
   }
-  persistFill({
-    db,
-    spuCode: selectedReadiness.spu_code,
-    fieldKey: generated.field.key,
-    fieldLabel: generated.field.label,
-    fieldValue: generated.fieldValue,
-    source: generated.source,
-    confidence: generated.confidence,
-    payload: generated.payload,
-  })
-  const refreshed = refreshListingAfterFill(db, listingId, `AI 生成字段：${generated.field.label}`)
+  const refreshed = db.transaction(() => {
+    lockListingForMutation(db, listingId)
+    persistFill({
+      db,
+      spuCode: selectedReadiness.spu_code,
+      fieldKey: generated.field.key,
+      fieldLabel: generated.field.label,
+      fieldValue: generated.fieldValue,
+      source: generated.source,
+      confidence: generated.confidence,
+      payload: generated.payload,
+    })
+    return refreshListingAfterFill(db, listingId, `AI 生成字段：${generated.field.label}`)
+  })()
   if (!refreshed) {
     throw new HTTPException(500, { message: "AI 生成字段后刷新草稿失败" })
   }
@@ -7918,13 +8164,185 @@ function isPathInside(root: string, candidate: string) {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
 }
 
-function resolveImportFolderPath(folderPath: string) {
+export function uniqueAssetFilePath(input: {
+  rootDir?: string
+  listingId: number
+  skcCode?: unknown
+  fileName: string
+  extension: string
+}) {
+  const rootDir = input.rootDir ?? uploadsRoot()
+  const dir = path.join(rootDir, String(input.listingId), skcFingerprint(input.skcCode || "spu"))
+  const safeName = safeAssetFileName(input.fileName, input.extension)
+  return path.join(dir, `${randomUUID()}-${safeName}`)
+}
+
+export function writeExclusiveAssetFile(localPath: string, bytes: Buffer) {
+  fs.mkdirSync(path.dirname(localPath), { recursive: true })
+  try {
+    fs.writeFileSync(localPath, bytes, { flag: "wx" })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") {
+      fs.rmSync(localPath, { force: true })
+    }
+    throw error
+  }
+  return localPath
+}
+
+export function cleanupNewAssetFiles(paths: Iterable<unknown>, rootDir = uploadsRoot()) {
+  for (const value of paths) {
+    const localPath = normalizeText(value)
+    if (!localPath || !isPathInside(rootDir, localPath)) continue
+    fs.rmSync(localPath, { force: true })
+  }
+}
+
+type LocalAssetReferenceDb = {
+  prepare: (sql: string) => {
+    all: (...params: unknown[]) => unknown[]
+  }
+}
+
+function controlledLocalAssetPaths(paths: Iterable<unknown>, rootDir: string) {
+  return Array.from(new Set(Array.from(paths)
+    .map(normalizeText)
+    .filter((localPath) => Boolean(localPath) && isPathInside(rootDir, localPath))))
+}
+
+export function unreferencedLocalAssetPaths(
+  db: LocalAssetReferenceDb,
+  paths: Iterable<unknown>,
+  rootDir = uploadsRoot(),
+) {
+  const candidates = controlledLocalAssetPaths(paths, rootDir)
+  if (candidates.length === 0) return []
+  const rows = db.prepare(`
+    select distinct local_path
+    from listing_asset
+    where local_path in (${candidates.map(() => "?").join(",")})
+  `).all(...candidates) as SourceRow[]
+  const referenced = new Set(rows.map((row) => normalizeText(row.local_path)).filter(Boolean))
+  return candidates.filter((localPath) => !referenced.has(localPath))
+}
+
+export function cleanupUnreferencedAssetFiles(
+  db: LocalAssetReferenceDb,
+  paths: Iterable<unknown>,
+  rootDir = uploadsRoot(),
+  removeFile: (paths: Iterable<unknown>, rootDir?: string) => void = cleanupNewAssetFiles,
+) {
+  let candidates: string[]
+  try {
+    candidates = unreferencedLocalAssetPaths(db, paths, rootDir)
+  } catch (error) {
+    return {
+      cleaned_paths: [],
+      warnings: [{
+        local_path: "*",
+        reason: `本地图片引用检查失败：${error instanceof Error ? error.message : "请稍后重试"}`,
+      }],
+    }
+  }
+  const cleaned_paths: string[] = []
+  const warnings: Array<{ local_path: string; reason: string }> = []
+  for (const localPath of candidates) {
+    try {
+      removeFile([localPath], rootDir)
+      cleaned_paths.push(localPath)
+    } catch (error) {
+      warnings.push({
+        local_path: localPath,
+        reason: `本地图片清理失败：${error instanceof Error ? error.message : "请稍后手动清理"}`,
+      })
+    }
+  }
+  return { cleaned_paths, warnings }
+}
+
+export function cleanupReplacedAssetFiles(
+  oldAssets: Iterable<SourceRow>,
+  newLocalPaths: Iterable<unknown>,
+  rootDir = uploadsRoot(),
+) {
+  const newPathSet = new Set(Array.from(newLocalPaths)
+    .map(normalizeText)
+    .filter(Boolean))
+  for (const oldAsset of oldAssets) {
+    const localPath = normalizeText(oldAsset.local_path)
+    if (!localPath || newPathSet.has(localPath)) continue
+    cleanupNewAssetFiles([localPath], rootDir)
+  }
+}
+
+export function runImageCandidateSavepoint<T>(
+  db: { transaction: (operation: () => T) => () => T },
+  operation: () => T,
+) {
+  return db.transaction(operation)()
+}
+
+export function isListingImageCapacityFailure(error: unknown) {
+  if (!error || typeof error !== "object") return false
+  const status = Number((error as { status?: unknown }).status)
+  const message = normalizeText((error as { message?: unknown }).message)
+  return status === 409 && message.includes("最多")
+}
+
+export function assertListingImageSnapshotUnchanged(expected: ListingRow, current: ListingRow) {
+  const fields: Array<keyof ListingRow> = ["spu_code", "platform_category_id", "product_type_id"]
+  const changed = fields.some((field) => normalizeText(expected[field]) !== normalizeText(current[field]))
+  if (changed) {
+    throw new HTTPException(409, { message: "草稿类目或商品已变化，请刷新后重新上传图片" })
+  }
+  return current
+}
+
+export function assertListingSkcSnapshotUnchanged(expected: SourceRow, current: SourceRow) {
+  const expectedId = expected?.id ?? expected?.listing_skc_id
+  if (
+    Number(expectedId) !== Number(current?.id)
+    || normalizeText(expected?.skc_code) !== normalizeText(current?.skc_code)
+  ) {
+    throw new HTTPException(409, { message: "草稿款色已变化，请刷新后重新上传图片" })
+  }
+  return current
+}
+
+function configuredImageImportRoots() {
+  const configured = normalizeText(process.env.LISTINGIFY_IMAGE_IMPORT_ROOTS)
+  if (!configured) return []
+  return configured
+    .split(new RegExp(`[${path.delimiter === "\\" ? "\\\\" : path.delimiter},\\n]`))
+    .map((root) => normalizeText(root))
+    .filter(Boolean)
+    .flatMap((root) => {
+      try {
+        const realRoot = fs.realpathSync(root)
+        return fs.statSync(realRoot).isDirectory() ? [realRoot] : []
+      } catch {
+        return []
+      }
+    })
+}
+
+function assertConfiguredImageImportFolder(folderPath: string) {
+  const roots = configuredImageImportRoots()
+  if (roots.length === 0) {
+    throw new HTTPException(503, { message: "服务器未配置本地图片导入根目录" })
+  }
   try {
     const folderRealPath = fs.realpathSync(folderPath)
-    if (!fs.statSync(folderRealPath).isDirectory()) return null
+    if (!fs.statSync(folderRealPath).isDirectory()) {
+      throw new HTTPException(400, { message: "本地图片目录不存在" })
+    }
+    if (!roots.some((root) => isPathInside(root, folderRealPath))) {
+      throw new HTTPException(403, { message: "本地图片目录不在服务器允许的导入范围内" })
+    }
     return folderRealPath
-  } catch {
-    return null
+  } catch (error) {
+    if (error instanceof HTTPException) throw error
+    throw new HTTPException(400, { message: "本地图片目录不存在" })
   }
 }
 
@@ -7972,10 +8390,13 @@ function copyImportedImageToAssetRoot(input: {
   } catch (error) {
     return { skipped: true, reason: error instanceof Error ? error.message : "图片不符合平台要求" }
   }
-  const dir = path.join(uploadsRoot(), String(input.listingId), skcFingerprint(input.skcCode || "spu"))
-  fs.mkdirSync(dir, { recursive: true })
-  const localPath = path.join(dir, safeAssetFileName(input.fileName, inspection.detected.extension))
-  fs.writeFileSync(localPath, bytes)
+  const localPath = uniqueAssetFilePath({
+    listingId: input.listingId,
+    skcCode: input.skcCode,
+    fileName: input.fileName,
+    extension: inspection.detected.extension,
+  })
+  writeExclusiveAssetFile(localPath, bytes)
   return { localPath, bytes, ...inspection }
 }
 
@@ -7984,10 +8405,7 @@ function importListingImagesFromFolder(db: ReturnType<typeof getDb>, listingId: 
   if (!listing) {
     throw new HTTPException(404, { message: "草稿不存在" })
   }
-  const folderRealPath = resolveImportFolderPath(folderPath)
-  if (!folderRealPath) {
-    throw new HTTPException(400, { message: "本地图片目录不存在" })
-  }
+  const folderRealPath = assertConfiguredImageImportFolder(folderPath)
 
   const listingSkcs = db.prepare(`
     select *
@@ -8007,6 +8425,61 @@ function importListingImagesFromFolder(db: ReturnType<typeof getDb>, listingId: 
   const files = matchedFiles.slice(0, MAX_FOLDER_IMPORT_FILES)
   if (matchedFiles.length > MAX_FOLDER_IMPORT_FILES) {
     warnings.push({ file_name: "*", reason: `本次最多导入 ${MAX_FOLDER_IMPORT_FILES} 张图片` })
+  }
+  const candidates: Array<{
+    fileName: string
+    classified: ReturnType<typeof classifyImportedImage>
+    initialSkc: SourceRow
+    copied: NonNullable<ReturnType<typeof copyImportedImageToAssetRoot>>
+  }> = []
+  const newLocalPaths: string[] = []
+  let importedBytes = 0
+  for (const fileName of files) {
+    const filePath = path.join(folderRealPath, fileName)
+    const fileFinger = skcFingerprint(fileName)
+    const matchedSkc = listingSkcs.find((skc) => fileFinger.includes(skcFingerprint(skc.skc_code)))
+      ?? listingSkcs.find((skc) => fileFinger.includes(skcFingerprint(String(skc.skc_code).split(":").pop())))
+      ?? fallbackSkc
+    if (!matchedSkc) continue
+    const classified = classifyImportedImage(fileName)
+    const requirement = requirements.find((item) => item.requirement_key === classified.requirementKey)
+    if (!requirement) {
+      warnings.push({ file_name: fileName, reason: "当前类目没有对应图片规则" })
+      continue
+    }
+    const sourceFile = resolveImportImageSource(folderRealPath, filePath)
+    if ("skipped" in sourceFile) {
+      warnings.push({ file_name: fileName, reason: sourceFile.reason })
+      continue
+    }
+    if (importedBytes + sourceFile.size > MAX_FOLDER_IMPORT_BYTES) {
+      warnings.push({ file_name: fileName, reason: "本次导入图片总大小超过限制" })
+      continue
+    }
+    let copied: ReturnType<typeof copyImportedImageToAssetRoot>
+    try {
+      copied = copyImportedImageToAssetRoot({
+        listingId,
+        skcCode: matchedSkc.skc_code,
+        sourcePath: sourceFile.realPath,
+        fileName,
+        requirement,
+      })
+    } catch (error) {
+      warnings.push({ file_name: fileName, reason: error instanceof Error ? error.message : "图片文件写入失败" })
+      continue
+    }
+    if (!copied || "skipped" in copied) {
+      warnings.push({ file_name: fileName, reason: copied?.reason ?? "图片文件不可用" })
+      continue
+    }
+    importedBytes += copied.bytes.length
+    newLocalPaths.push(copied.localPath)
+    candidates.push({ fileName, classified, initialSkc: matchedSkc, copied })
+  }
+  if (candidates.length === 0) {
+    cleanupNewAssetFiles(newLocalPaths)
+    return { listing, assets: [], warnings }
   }
   const insert = db.prepare(`
     insert into listing_asset (
@@ -8028,96 +8501,108 @@ function importListingImagesFromFolder(db: ReturnType<typeof getDb>, listingId: 
     )
     values (?, ?, ?, 'MANUAL_FOLDER_IMPORT', ?, ?, ?, ?, ?, ?, 'PENDING_CONFIRM', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   `)
-  const saved: SourceRow[] = []
-  const affectedSkcIds = new Set<number>()
-  let importedBytes = 0
-  const transaction = db.transaction(() => {
-    lockListingImageMutation(db, listingId)
-    for (const fileName of files) {
-      const filePath = path.join(folderRealPath, fileName)
-      const fileFinger = skcFingerprint(fileName)
-      const matchedSkc = listingSkcs.find((skc) => fileFinger.includes(skcFingerprint(skc.skc_code)))
-        ?? listingSkcs.find((skc) => fileFinger.includes(skcFingerprint(String(skc.skc_code).split(":").pop())))
-        ?? fallbackSkc
-      if (!matchedSkc) continue
-      const classified = classifyImportedImage(fileName)
-      const requirement = requirements.find((item) => item.requirement_key === classified.requirementKey)
-      if (!requirement) {
-        warnings.push({ file_name: fileName, reason: "当前类目没有对应图片规则" })
-        continue
-      }
-      deleteAutoSourceImagesForUserAsset({
-        db,
-        listingId,
-        listingSkcId: matchedSkc.id,
-        assetType: classified.assetType,
+  const committedPaths: string[] = []
+  let result: { listing: ListingRow; assets: SourceRow[] }
+  try {
+    result = db.transaction(() => {
+      const lockedListing = lockListingImageMutation(db, listingId)
+      assertListingImageSnapshotUnchanged(listing, lockedListing)
+      const currentListingSkcs = db.prepare(`
+        select *
+        from listing_skc
+        where listing_id = ?
+        order by skc_code
+      `).all(listingId) as SourceRow[]
+      const currentRequirements = getImageRequirements(db, lockedListing)
+      const validatedCandidates = candidates.map((candidate) => {
+        const currentSkc = currentListingSkcs.find((row) => Number(row.id) === Number(candidate.initialSkc.id))
+        if (!currentSkc) {
+          throw new HTTPException(409, { message: "草稿款色已变化，请刷新后重新上传图片" })
+        }
+        assertListingSkcSnapshotUnchanged(candidate.initialSkc, currentSkc)
+        const requirement = currentRequirements.find((item) => item.requirement_key === candidate.classified.requirementKey)
+        if (!requirement) {
+          throw new HTTPException(409, { message: "草稿类目图片规则已变化，请刷新后重新上传图片" })
+        }
+        const inspection = inspectListingImageForRequirement(candidate.copied.bytes, requirement)
+        return { ...candidate, currentSkc, requirement, inspection }
       })
-      try {
-        assertListingImageCapacity({
-          db,
-          listingId,
-          listingSkcId: matchedSkc.id,
-          requirement,
-          assetType: classified.assetType,
-        })
-      } catch (error) {
-        warnings.push({
-          file_name: fileName,
-          reason: error instanceof Error ? error.message : "图片数量超过平台限制",
-        })
-        continue
+      const saved: SourceRow[] = []
+      const affectedSkcIds = new Set<number>()
+      for (const candidate of validatedCandidates) {
+        try {
+          const savedAsset = runImageCandidateSavepoint(db, () => {
+            deleteAutoSourceImagesForUserAsset({
+              db,
+              listingId,
+              listingSkcId: candidate.currentSkc.id,
+              assetType: candidate.classified.assetType,
+            })
+            assertListingImageCapacity({
+              db,
+              listingId,
+              listingSkcId: candidate.currentSkc.id,
+              requirement: candidate.requirement,
+              assetType: candidate.classified.assetType,
+            })
+            const result = insert.run(
+              listingId,
+              candidate.currentSkc.id,
+              candidate.currentSkc.skc_code,
+              candidate.classified.assetType,
+              candidate.classified.sort,
+              candidate.copied.localPath,
+              candidate.copied.bytes.length,
+              candidate.inspection.width,
+              candidate.inspection.height,
+              candidate.classified.note,
+              JSON.stringify({
+                file_name: candidate.fileName,
+                source_folder: path.basename(folderPath),
+                file_size: candidate.copied.bytes.length,
+                content_type: candidate.inspection.detected.contentType,
+                width: candidate.inspection.width,
+                height: candidate.inspection.height,
+                compliance: candidate.inspection.compliance,
+                requirement_key: candidate.classified.requirementKey,
+                classification_rule: "filename_index",
+              }),
+            )
+            return db.prepare("select * from listing_asset where id = ?").get(result.lastInsertRowid) as SourceRow
+          })
+          committedPaths.push(candidate.copied.localPath)
+          affectedSkcIds.add(Number(candidate.currentSkc.id))
+          saved.push(savedAsset)
+        } catch (error) {
+          if (!isListingImageCapacityFailure(error)) throw error
+          warnings.push({
+            file_name: candidate.fileName,
+            reason: error instanceof Error ? error.message : "图片数量超过平台限制",
+          })
+        }
       }
-      const sourceFile = resolveImportImageSource(folderRealPath, filePath)
-      if ("skipped" in sourceFile) {
-        warnings.push({ file_name: fileName, reason: sourceFile.reason })
-        continue
+      for (const skcId of affectedSkcIds) resetListingSkcImageConfirmation(db, listingId, skcId)
+      return { listing: lockedListing, assets: saved }
+    })()
+  } catch (error) {
+    try {
+      cleanupNewAssetFiles(newLocalPaths)
+    } catch (cleanupError) {
+      if (error && typeof error === "object" && !(error as { cause?: unknown }).cause) {
+        (error as { cause?: unknown }).cause = cleanupError
       }
-      if (importedBytes + sourceFile.size > MAX_FOLDER_IMPORT_BYTES) {
-        warnings.push({ file_name: fileName, reason: "本次导入图片总大小超过限制" })
-        continue
-      }
-      const copied = copyImportedImageToAssetRoot({
-        listingId,
-        skcCode: matchedSkc.skc_code,
-        sourcePath: sourceFile.realPath,
-        fileName,
-        requirement,
-      })
-      if (!copied || "skipped" in copied) {
-        warnings.push({ file_name: fileName, reason: copied?.reason ?? "图片文件不可用" })
-        continue
-      }
-      importedBytes += copied.bytes.length
-      const result = insert.run(
-        listingId,
-        matchedSkc.id,
-        matchedSkc.skc_code,
-        classified.assetType,
-        classified.sort,
-        copied.localPath,
-        copied.bytes.length,
-        copied.width,
-        copied.height,
-        classified.note,
-        JSON.stringify({
-          file_name: fileName,
-          source_folder: path.basename(folderPath),
-          file_size: copied.bytes.length,
-          content_type: copied.detected.contentType,
-          width: copied.width,
-          height: copied.height,
-          compliance: copied.compliance,
-          requirement_key: classified.requirementKey,
-          classification_rule: "filename_index",
-        }),
-      )
-      affectedSkcIds.add(Number(matchedSkc.id))
-      saved.push(db.prepare("select * from listing_asset where id = ?").get(result.lastInsertRowid) as SourceRow)
     }
-    for (const skcId of affectedSkcIds) resetListingSkcImageConfirmation(db, listingId, skcId)
-  })
-  transaction()
-  return { listing, assets: saved, warnings }
+    throw error
+  }
+  try {
+    cleanupNewAssetFiles(newLocalPaths.filter((localPath) => !committedPaths.includes(localPath)))
+  } catch (error) {
+    warnings.push({
+      file_name: "*",
+      reason: `部分失败图片文件清理失败：${error instanceof Error ? error.message : "请稍后手动清理"}`,
+    })
+  }
+  return { listing: result.listing, assets: result.assets, warnings }
 }
 
 prePublish.post("/drafts/batch-import-folders", async (c) => {
@@ -8144,12 +8629,35 @@ prePublish.post("/drafts/batch-import-folders", async (c) => {
 })
 
 const DEFAULT_MAX_IMAGE_PACKAGE_BYTES = 600 * 1024 * 1024
+const MB = 1024 * 1024
+const IMAGE_MULTIPART_OVERHEAD_BYTES = MB
+const IMAGE_PACKAGE_REPLACEMENT_FAILURE = "图包没有任何图片成功导入，旧图包保持不变"
+
+function imagePackageReplacementFailure() {
+  return new HTTPException(409, { message: IMAGE_PACKAGE_REPLACEMENT_FAILURE })
+}
+
+function isImagePackageReplacementFailure(error: unknown) {
+  return error instanceof HTTPException
+    && error.status === 409
+    && error.message === IMAGE_PACKAGE_REPLACEMENT_FAILURE
+}
 
 function maxImagePackageBytes() {
   const megabytes = Number(process.env.LISTINGIFY_MAX_IMAGE_PACKAGE_MB ?? 600)
   if (!Number.isFinite(megabytes) || megabytes <= 0) return DEFAULT_MAX_IMAGE_PACKAGE_BYTES
   return Math.floor(megabytes) * 1024 * 1024
 }
+
+const imagePackageBodyLimit = bodyLimit({
+  maxSize: maxImagePackageBytes() + IMAGE_MULTIPART_OVERHEAD_BYTES,
+  onError: (c) => c.json({ error: "SHEIN 图包请求体总大小超过限制" }, 413),
+})
+
+const imageUploadBodyLimit = bodyLimit({
+  maxSize: maxUploadBytes("image") + IMAGE_MULTIPART_OVERHEAD_BYTES,
+  onError: (c) => c.json({ error: "图片上传请求体总大小超过限制" }, 413),
+})
 
 function packageCodeMatches(listingCode: unknown, packageCode: string) {
   const listingFinger = skcFingerprint(listingCode)
@@ -8269,13 +8777,6 @@ function savePreparedPackageAssets(input: {
   packageFileName: string
   assets: PreparedPackageAsset[]
 }) {
-  const oldAssets = input.db.prepare(`
-    select id, local_path
-    from listing_asset
-    where listing_id = ?
-      and listing_skc_id = ?
-      and source_type = 'SHEIN_IMAGE_PACKAGE'
-  `).all(input.listing.id, input.listingSkc.listing_skc_id) as SourceRow[]
   const insert = input.db.prepare(`
     insert into listing_asset (
       listing_id,
@@ -8296,98 +8797,161 @@ function savePreparedPackageAssets(input: {
     )
     values (?, ?, ?, 'SHEIN_IMAGE_PACKAGE', ?, ?, ?, ?, ?, ?, 'PENDING_CONFIRM', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   `)
-  const saved: SourceRow[] = []
   const warnings: Array<{ file_name: string; reason: string }> = []
+  const stagedAssets: Array<PreparedPackageAsset & { localPath: string }> = []
   const newLocalPaths: string[] = []
-  const transaction = input.db.transaction(() => {
-    lockListingImageMutation(input.db, Number(input.listing.id))
-    input.db.prepare(`
-      delete from listing_asset
-      where listing_id = ?
-        and listing_skc_id = ?
-        and source_type = 'SHEIN_IMAGE_PACKAGE'
-    `).run(input.listing.id, input.listingSkc.listing_skc_id)
-
-    for (const asset of input.assets) {
-      deleteAutoSourceImagesForUserAsset({
-        db: input.db,
-        listingId: Number(input.listing.id),
-        listingSkcId: input.listingSkc.listing_skc_id,
-        assetType: asset.assetType,
-      })
-      try {
-        assertListingImageCapacity({
-          db: input.db,
-          listingId: Number(input.listing.id),
-          listingSkcId: input.listingSkc.listing_skc_id,
-          requirement: asset.requirement,
-          assetType: asset.assetType,
-        })
-      } catch (error) {
-        warnings.push({
-          file_name: asset.fileName,
-          reason: error instanceof Error ? error.message : "图片数量超过平台限制",
-        })
-        continue
-      }
-      const dir = path.join(
-        uploadsRoot(),
-        String(input.listing.id),
-        skcFingerprint(input.listingSkc.skc_code || input.group.skc_code),
-      )
-      fs.mkdirSync(dir, { recursive: true })
-      const localPath = path.join(dir, safeAssetFileName(asset.fileName, asset.extension))
-      fs.writeFileSync(localPath, asset.bytes)
-      newLocalPaths.push(localPath)
-      const result = insert.run(
-        input.listing.id,
-        input.listingSkc.listing_skc_id,
-        input.listingSkc.skc_code,
-        asset.assetType,
-        asset.imageSort,
-        localPath,
-        asset.bytes.length,
-        asset.width,
-        asset.height,
-        `SHEIN 图包自动填充：${asset.requirement.name}`,
-        JSON.stringify({
-          package_file_name: input.packageFileName,
-          source_entry: asset.sourceEntry.entry_path,
-          source_image_index: asset.sourceEntry.image_index,
-          requirement_key: asset.requirementKey,
-          classification_rule: "spu_skc_directory_and_image_index",
-          derivative: asset.derivative,
-          content_type: asset.contentType,
-          file_size: asset.bytes.length,
-          width: asset.width,
-          height: asset.height,
-          compliance: asset.compliance,
-        }),
-      )
-      saved.push(input.db.prepare("select * from listing_asset where id = ?").get(result.lastInsertRowid) as SourceRow)
-    }
-    resetListingSkcImageConfirmation(input.db, Number(input.listing.id), input.listingSkc.listing_skc_id)
-    input.db.prepare(`
-      update listing
-      set updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      where id = ?
-    `).run(input.listing.id)
-  })
-
   try {
-    transaction()
+    for (const asset of input.assets) {
+      const localPath = uniqueAssetFilePath({
+        listingId: Number(input.listing.id),
+        skcCode: input.listingSkc.skc_code || input.group.skc_code,
+        fileName: asset.fileName,
+        extension: asset.extension,
+      })
+      writeExclusiveAssetFile(localPath, asset.bytes)
+      newLocalPaths.push(localPath)
+      stagedAssets.push({ ...asset, localPath })
+    }
   } catch (error) {
-    for (const localPath of newLocalPaths) fs.rmSync(localPath, { force: true })
+    cleanupNewAssetFiles(newLocalPaths)
     throw error
   }
-  for (const oldAsset of oldAssets) {
-    const localPath = normalizeText(oldAsset.local_path)
-    if (localPath && isPathInside(uploadsRoot(), localPath)) fs.rmSync(localPath, { force: true })
+
+  const committedPaths: string[] = []
+  let transactionResult: { assets: SourceRow[]; oldAssets: SourceRow[]; replacedCount: number }
+  try {
+    transactionResult = input.db.transaction(() => {
+      const lockedListing = lockListingImageMutation(input.db, Number(input.listing.id))
+      assertListingImageSnapshotUnchanged(input.listing, lockedListing)
+      const currentListingSkc = input.db.prepare(
+        "select * from listing_skc where id = ? and listing_id = ?",
+      ).get(input.listingSkc.listing_skc_id, input.listing.id) as SourceRow | undefined
+      if (!currentListingSkc) {
+        throw new HTTPException(409, { message: "草稿款色已变化，请刷新后重新上传图包" })
+      }
+      assertListingSkcSnapshotUnchanged(input.listingSkc, currentListingSkc)
+      const currentRequirements = getImageRequirements(input.db, lockedListing)
+      const validatedAssets = stagedAssets.map((asset) => {
+        const requirement = currentRequirements.find((item) => item.requirement_key === asset.requirementKey)
+        if (!requirement) {
+          throw new HTTPException(409, { message: "草稿类目图片规则已变化，请刷新后重新上传图包" })
+        }
+        const inspection = inspectListingImageForRequirement(asset.bytes, requirement)
+        return { ...asset, requirement, inspection }
+      })
+      const oldAssets = input.db.prepare(`
+        select id, local_path
+        from listing_asset
+        where listing_id = ?
+          and listing_skc_id = ?
+          and source_type = 'SHEIN_IMAGE_PACKAGE'
+      `).all(input.listing.id, currentListingSkc.id) as SourceRow[]
+      input.db.prepare(`
+        delete from listing_asset
+        where listing_id = ?
+          and listing_skc_id = ?
+          and source_type = 'SHEIN_IMAGE_PACKAGE'
+      `).run(input.listing.id, currentListingSkc.id)
+
+      const saved: SourceRow[] = []
+      for (const asset of validatedAssets) {
+        try {
+          const savedAsset = runImageCandidateSavepoint(input.db, () => {
+            deleteAutoSourceImagesForUserAsset({
+              db: input.db,
+              listingId: Number(input.listing.id),
+              listingSkcId: currentListingSkc.id,
+              assetType: asset.assetType,
+            })
+            assertListingImageCapacity({
+              db: input.db,
+              listingId: Number(input.listing.id),
+              listingSkcId: currentListingSkc.id,
+              requirement: asset.requirement,
+              assetType: asset.assetType,
+            })
+            const result = insert.run(
+              input.listing.id,
+              currentListingSkc.id,
+              currentListingSkc.skc_code,
+              asset.assetType,
+              asset.imageSort,
+              asset.localPath,
+              asset.bytes.length,
+              asset.inspection.width,
+              asset.inspection.height,
+              `SHEIN 图包自动填充：${asset.requirement.name}`,
+              JSON.stringify({
+                package_file_name: input.packageFileName,
+                source_entry: asset.sourceEntry.entry_path,
+                source_image_index: asset.sourceEntry.image_index,
+                requirement_key: asset.requirementKey,
+                classification_rule: "spu_skc_directory_and_image_index",
+                derivative: asset.derivative,
+                content_type: asset.inspection.detected.contentType,
+                file_size: asset.bytes.length,
+                width: asset.inspection.width,
+                height: asset.inspection.height,
+                compliance: asset.inspection.compliance,
+              }),
+            )
+            return input.db.prepare("select * from listing_asset where id = ?").get(result.lastInsertRowid) as SourceRow
+          })
+          committedPaths.push(asset.localPath)
+          saved.push(savedAsset)
+        } catch (error) {
+          if (!isListingImageCapacityFailure(error)) throw error
+          warnings.push({
+            file_name: asset.fileName,
+            reason: error instanceof Error ? error.message : "图片数量超过平台限制",
+          })
+        }
+      }
+      if (saved.length === 0) {
+        throw imagePackageReplacementFailure()
+      }
+      resetListingSkcImageConfirmation(input.db, Number(input.listing.id), currentListingSkc.id)
+      input.db.prepare(`
+        update listing
+        set updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        where id = ?
+      `).run(input.listing.id)
+      return { assets: saved, oldAssets, replacedCount: oldAssets.length }
+    })()
+  } catch (error) {
+    try {
+      cleanupNewAssetFiles(newLocalPaths)
+    } catch (cleanupError) {
+      if (error && typeof error === "object" && !(error as { cause?: unknown }).cause) {
+        (error as { cause?: unknown }).cause = cleanupError
+      }
+    }
+    throw error
   }
-  return { assets: saved, warnings, replaced_count: oldAssets.length }
+  try {
+    cleanupNewAssetFiles(newLocalPaths.filter((localPath) => !committedPaths.includes(localPath)))
+  } catch (error) {
+    warnings.push({
+      file_name: "*",
+      reason: `部分失败图片文件清理失败：${error instanceof Error ? error.message : "请稍后手动清理"}`,
+    })
+  }
+  try {
+    cleanupReplacedAssetFiles(transactionResult.oldAssets, committedPaths)
+  } catch (error) {
+    warnings.push({
+      file_name: "*",
+      reason: `旧图包文件清理失败：${error instanceof Error ? error.message : "请稍后手动清理"}`,
+    })
+  }
+  return {
+    assets: transactionResult.assets,
+    warnings,
+    replaced_count: transactionResult.replacedCount,
+  }
 }
 
-prePublish.post("/drafts/batch-upload-image-package", async (c) => {
+prePublish.post("/drafts/batch-upload-image-package", imagePackageBodyLimit, async (c) => {
   requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   let form: FormData
@@ -8414,6 +8978,9 @@ prePublish.post("/drafts/batch-upload-image-package", async (c) => {
       .filter((id) => Number.isFinite(id) && id > 0),
   ))
   const archiveBytes = Buffer.from(await file.arrayBuffer())
+  if (archiveBytes.length > maxImagePackageBytes()) {
+    throw new HTTPException(413, { message: `SHEIN 图包不能超过 ${Math.floor(maxImagePackageBytes() / 1024 / 1024)}MB` })
+  }
   if (archiveBytes.length < 4 || archiveBytes[0] !== 0x50 || archiveBytes[1] !== 0x4b) {
     throw new HTTPException(400, { message: "上传文件不是有效的 ZIP 图包" })
   }
@@ -8458,6 +9025,7 @@ prePublish.post("/drafts/batch-upload-image-package", async (c) => {
   }>()
   const matchedSpuCodes = new Set<string>()
   const unmatchedSkcCodes: string[] = []
+  let replacementFailureSeen = false
 
   for (const group of groups) {
     const targets = listingSkcRows.filter((row) => (
@@ -8489,6 +9057,7 @@ prePublish.post("/drafts/batch-upload-image-package", async (c) => {
       try {
         const prepared = await preparePackageAssetsForListing({ listing, group, zipEntries, db })
         if (prepared.assets.length === 0) {
+          replacementFailureSeen = true
           item.warnings.push(...prepared.warnings, {
             file_name: group.skc_code,
             reason: "当前类目没有可填充的 SKC 图片字段，或图包图片均不符合要求",
@@ -8510,6 +9079,7 @@ prePublish.post("/drafts/batch-upload-image-package", async (c) => {
         item.replaced_count += saved.replaced_count
         item.warnings.push(...prepared.warnings, ...saved.warnings)
       } catch (error) {
+        if (isImagePackageReplacementFailure(error)) replacementFailureSeen = true
         item.warnings.push({
           file_name: group.skc_code,
           reason: error instanceof Error ? error.message : "SKC 图包导入失败",
@@ -8520,9 +9090,13 @@ prePublish.post("/drafts/batch-upload-image-package", async (c) => {
   }
 
   const items = Array.from(itemMap.values()).sort((left, right) => left.listing_id - right.listing_id)
+  const importedCount = items.reduce((sum, item) => sum + item.imported_count, 0)
+  if (replacementFailureSeen && importedCount === 0) {
+    throw imagePackageReplacementFailure()
+  }
   const packageSpuCodes = Array.from(new Set(groups.map((group) => group.spu_code))).sort()
   return c.json({
-    ok: items.some((item) => item.imported_count > 0),
+    ok: importedCount > 0,
     package: {
       file_name: file.name,
       size: file.size,
@@ -8535,7 +9109,7 @@ prePublish.post("/drafts/batch-upload-image-package", async (c) => {
     matched_draft_count: items.length,
     matched_spu_count: matchedSpuCodes.size,
     matched_skc_count: items.reduce((sum, item) => sum + item.matched_skc_count, 0),
-    imported_count: items.reduce((sum, item) => sum + item.imported_count, 0),
+    imported_count: importedCount,
     replaced_count: items.reduce((sum, item) => sum + item.replaced_count, 0),
     unmatched_spu_codes: packageSpuCodes.filter((spuCode) => !matchedSpuCodes.has(spuCode)),
     unmatched_skc_codes: unmatchedSkcCodes,
@@ -8704,6 +9278,28 @@ prePublish.get("/drafts/:id/image-candidates", (c) => {
   })
 })
 
+export function assertProductAssetBelongsToListing(
+  db: ReturnType<typeof getDb>,
+  productAssetId: number,
+  listingSpuCode: unknown,
+) {
+  const asset = db.prepare(`
+    select asset.*, pkg.spu_code as package_spu_code
+    from product_asset asset
+    left join product_content_package pkg on pkg.id = asset.content_package_id
+    where asset.id = ?
+  `).get(productAssetId) as SourceRow | undefined
+  if (!asset) throw new HTTPException(404, { message: "素材库图片不存在" })
+  const listingCode = normalizeText(listingSpuCode)
+  const assetCodes = [asset.spu_code, asset.package_spu_code]
+    .map(normalizeText)
+    .filter(Boolean)
+  if (!listingCode || !assetCodes.includes(listingCode)) {
+    throw new HTTPException(403, { message: "素材库图片不属于当前商品，不能写入草稿" })
+  }
+  return asset
+}
+
 prePublish.post("/drafts/:id/images/from-library", async (c) => {
   requirePermission(c, "LISTING_WRITE")
   const db = getDb()
@@ -8722,40 +9318,52 @@ prePublish.post("/drafts/:id/images/from-library", async (c) => {
   if (!Number.isFinite(productAssetId) || productAssetId <= 0) {
     throw new HTTPException(400, { message: "请选择素材库图片" })
   }
-  const productAsset = db.prepare("select * from product_asset where id = ?").get(productAssetId) as SourceRow | undefined
-  if (!productAsset) {
-    throw new HTTPException(404, { message: "素材库图片不存在" })
-  }
   const requirementKey = normalizeText(body.requirement_key)
-  const requirement = getImageRequirements(db, listing).find((item) => item.requirement_key === requirementKey)
-  if (!requirement) {
-    throw new HTTPException(400, { message: "图片规则不存在" })
-  }
-  const requestedSkcCode = normalizeText(body.skc_code)
-  if (requirement.level === "SPU" && requestedSkcCode) {
-    throw new HTTPException(400, { message: "SPU 图片不能指定 SKC 款色" })
-  }
-  const skcCode = requirement.level === "SKC"
-    ? requestedSkcCode || normalizeText(productAsset.skc_code)
+  const initialProductAsset = assertProductAssetBelongsToListing(db, productAssetId, listing.spu_code)
+  const initialRequirement = getImageRequirements(db, listing).find((item) => item.requirement_key === requirementKey)
+  const initialSkcCode = initialRequirement?.level === "SKC"
+    ? normalizeText(body.skc_code) || normalizeText(initialProductAsset.skc_code)
     : ""
-  const listingSkc = skcCode
-    ? db.prepare("select * from listing_skc where listing_id = ? and skc_code = ?").get(listingId, skcCode) as SourceRow | undefined
+  const initialListingSkc = initialSkcCode
+    ? db.prepare("select * from listing_skc where listing_id = ? and skc_code = ?").get(listingId, initialSkcCode) as SourceRow | undefined
     : undefined
-  if (requirement.level === "SKC" && !listingSkc) {
+  if (initialRequirement?.level === "SKC" && !initialListingSkc) {
     throw new HTTPException(400, { message: "SKC 图片必须指定草稿内的款色" })
   }
-  const assetType = normalizeText(body.asset_type) || inferAssetTypeFromLibraryAsset(productAsset, requirement)
-  if (!requirement.asset_types.includes(assetType)) {
-    throw new HTTPException(400, { message: `图片类型不属于${requirement.name}` })
-  }
-  const compliance = imageCompliance(productAsset, requirement)
-  if (!compliance.compliant) {
-    throw new HTTPException(400, {
-      message: `图片不符合${requirement.name}要求：${compliance.reasons.join("；")}`,
-    })
-  }
   const transaction = db.transaction(() => {
-    lockListingImageMutation(db, listingId)
+    const lockedListing = lockListingImageMutation(db, listingId)
+    assertListingImageSnapshotUnchanged(listing, lockedListing)
+    const productAsset = assertProductAssetBelongsToListing(db, productAssetId, lockedListing.spu_code)
+    const requirement = getImageRequirements(db, lockedListing).find((item) => item.requirement_key === requirementKey)
+    if (!requirement) {
+      throw new HTTPException(409, { message: "草稿类目图片规则已变化，请刷新后重新上传图片" })
+    }
+    const requestedSkcCode = normalizeText(body.skc_code)
+    if (requirement.level === "SPU" && requestedSkcCode) {
+      throw new HTTPException(400, { message: "SPU 图片不能指定 SKC 款色" })
+    }
+    const skcCode = requirement.level === "SKC"
+      ? requestedSkcCode || normalizeText(productAsset.skc_code)
+      : ""
+    const listingSkc = skcCode
+      ? db.prepare("select * from listing_skc where listing_id = ? and skc_code = ?").get(listingId, skcCode) as SourceRow | undefined
+      : undefined
+    if (requirement.level === "SKC" && !listingSkc) {
+      throw new HTTPException(409, { message: "草稿款色已变化，请刷新后重新上传图片" })
+    }
+    if (initialListingSkc && listingSkc) {
+      assertListingSkcSnapshotUnchanged(initialListingSkc, listingSkc)
+    }
+    const assetType = normalizeText(body.asset_type) || inferAssetTypeFromLibraryAsset(productAsset, requirement)
+    if (!requirement.asset_types.includes(assetType)) {
+      throw new HTTPException(400, { message: `图片类型不属于${requirement.name}` })
+    }
+    const compliance = imageCompliance(productAsset, requirement)
+    if (!compliance.compliant) {
+      throw new HTTPException(400, {
+        message: `图片不符合${requirement.name}要求：${compliance.reasons.join("；")}`,
+      })
+    }
     deleteAutoSourceImagesForUserAsset({
       db,
       listingId,
@@ -8818,9 +9426,9 @@ prePublish.post("/drafts/:id/images/from-library", async (c) => {
       }),
     )
     resetListingSkcImageConfirmation(db, listingId, listingSkc?.id)
-    return result.lastInsertRowid
+    return { assetId: result.lastInsertRowid, listing: lockedListing }
   })
-  const assetId = transaction()
+  const { assetId } = transaction()
 
   return c.json({
     ok: true,
@@ -8829,7 +9437,7 @@ prePublish.post("/drafts/:id/images/from-library", async (c) => {
   })
 })
 
-prePublish.post("/drafts/:id/images/upload", async (c) => {
+prePublish.post("/drafts/:id/images/upload", imageUploadBodyLimit, async (c) => {
   requirePermission(c, "LISTING_WRITE")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
@@ -8844,31 +9452,61 @@ prePublish.post("/drafts/:id/images/upload", async (c) => {
   }
   const skcCode = normalizeText(form.get("skc_code"))
   const requirementKey = normalizeText(form.get("requirement_key"))
-  const requirement = getImageRequirements(db, listing).find((item) => item.requirement_key === requirementKey)
-  if (!requirement) {
+  const initialRequirement = getImageRequirements(db, listing).find((item) => item.requirement_key === requirementKey)
+  if (!initialRequirement) {
     throw new HTTPException(400, { message: "图片规则不存在，请刷新草稿后重试" })
   }
-  if (requirement.level === "SPU" && skcCode) {
+  if (initialRequirement.level === "SPU" && skcCode) {
     throw new HTTPException(400, { message: "SPU 图片不能指定 SKC 款色" })
   }
-  const assetType = normalizeText(form.get("asset_type")) || inferAssetTypeFromRequirement(requirementKey, file.name)
-  if (!requirement.asset_types.includes(assetType)) {
-    throw new HTTPException(400, { message: `图片类型不属于${requirement.name}` })
-  }
-  const listingSkc = skcCode
+  const initialListingSkc = skcCode
     ? db.prepare("select * from listing_skc where listing_id = ? and skc_code = ?").get(listingId, skcCode) as SourceRow | undefined
     : undefined
-  if (requirement.level === "SKC" && !listingSkc) {
+  if (initialRequirement.level === "SKC" && !initialListingSkc) {
     throw new HTTPException(400, { message: "SKC 图片必须指定草稿内的款色" })
   }
   const bytes = await readValidatedUploadBuffer(file, "image")
-  const inspection = inspectListingImageForRequirement(bytes, requirement)
-  const safeName = safeAssetFileName(file.name, inspection.detected.extension)
-  const dir = path.join(uploadsRoot(), String(listingId), skcFingerprint(skcCode || "spu"))
-  fs.mkdirSync(dir, { recursive: true })
-  const localPath = path.join(dir, safeName)
+  const initialAssetType = normalizeText(form.get("asset_type")) || inferAssetTypeFromRequirement(requirementKey, file.name)
+  if (!initialRequirement.asset_types.includes(initialAssetType)) {
+    throw new HTTPException(400, { message: `图片类型不属于${initialRequirement.name}` })
+  }
+  const initialInspection = inspectListingImageForRequirement(bytes, initialRequirement)
+  const localPath = uniqueAssetFilePath({
+    listingId,
+    skcCode,
+    fileName: file.name,
+    extension: initialInspection.detected.extension,
+  })
+  try {
+    writeExclusiveAssetFile(localPath, bytes)
+  } catch (error) {
+    cleanupNewAssetFiles([localPath])
+    throw error
+  }
   const transaction = db.transaction(() => {
-    lockListingImageMutation(db, listingId)
+    const lockedListing = lockListingImageMutation(db, listingId)
+    assertListingImageSnapshotUnchanged(listing, lockedListing)
+    const requirement = getImageRequirements(db, lockedListing).find((item) => item.requirement_key === requirementKey)
+    if (!requirement) {
+      throw new HTTPException(409, { message: "草稿类目图片规则已变化，请刷新后重新上传图片" })
+    }
+    if (requirement.level === "SPU" && skcCode) {
+      throw new HTTPException(400, { message: "SPU 图片不能指定 SKC 款色" })
+    }
+    const listingSkc = skcCode
+      ? db.prepare("select * from listing_skc where listing_id = ? and skc_code = ?").get(listingId, skcCode) as SourceRow | undefined
+      : undefined
+    if (requirement.level === "SKC" && !listingSkc) {
+      throw new HTTPException(409, { message: "草稿款色已变化，请刷新后重新上传图片" })
+    }
+    if (initialListingSkc && listingSkc) {
+      assertListingSkcSnapshotUnchanged(initialListingSkc, listingSkc)
+    }
+    const assetType = normalizeText(form.get("asset_type")) || inferAssetTypeFromRequirement(requirementKey, file.name)
+    if (!requirement.asset_types.includes(assetType)) {
+      throw new HTTPException(400, { message: `图片类型不属于${requirement.name}` })
+    }
+    const inspection = inspectListingImageForRequirement(bytes, requirement)
     deleteAutoSourceImagesForUserAsset({
       db,
       listingId,
@@ -8890,7 +9528,6 @@ prePublish.post("/drafts/:id/images/upload", async (c) => {
         and asset_type = ?
     `).get(listingId, skcCode || null, assetType) as SourceRow | undefined
     const imageSort = Number(sortRow?.next_sort ?? 1)
-    fs.writeFileSync(localPath, bytes)
     const result = db.prepare(`
       insert into listing_asset (
         listing_id,
@@ -8938,7 +9575,7 @@ prePublish.post("/drafts/:id/images/upload", async (c) => {
   try {
     assetId = transaction()
   } catch (error) {
-    fs.rmSync(localPath, { force: true })
+    cleanupNewAssetFiles([localPath])
     throw error
   }
   return c.json({
@@ -9036,10 +9673,14 @@ prePublish.delete("/drafts/:id/images/:assetId", (c) => {
     }
     db.prepare("delete from listing_asset where id = ? and listing_id = ?").run(assetId, listingId)
     resetListingSkcImageConfirmation(db, listingId, asset.listing_skc_id)
+    const cleanupPaths = unreferencedLocalAssetPaths(db, [asset.local_path])
+    return { cleanupPaths }
   })
-  transaction()
+  const result = transaction()
+  const cleanup = cleanupUnreferencedAssetFiles(db, result.cleanupPaths)
   return c.json({
     ok: true,
+    cleanup_warnings: cleanup.warnings,
     detail: getListingDetail(db, listingId),
   })
 })
@@ -9071,13 +9712,16 @@ prePublish.post("/drafts/:id/versions", (c) => {
   if (!readiness) {
     throw new HTTPException(404, { message: "商品档案不存在" })
   }
-  persistListingValidation(db, listing.id, readiness)
-  const version = createPublishVersion({
-    db,
-    listing,
-    readiness,
-    changeSummary: "手动创建版本快照",
-  })
+  const version = db.transaction(() => {
+    lockListingForMutation(db, listingId)
+    persistListingValidation(db, listing.id, readiness)
+    return createPublishVersion({
+      db,
+      listing,
+      readiness,
+      changeSummary: "手动创建版本快照",
+    })
+  })()
   return c.json({ ok: true, version })
 })
 
@@ -9180,8 +9824,7 @@ prePublish.post("/drafts/batch-quick-fix", async (c) => {
     for (const fix of listingFixes) {
       const listingId = Number(fix.listing_id)
       if (!Number.isFinite(listingId) || listingId <= 0) continue
-      const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
-      if (!listing) continue
+      const listing = lockListingForMutation(db, listingId)
       const fields = Array.isArray(fix.fields) ? fix.fields : []
       const skuSizeValues = Array.isArray(fix.sku_size_values) ? fix.sku_size_values : []
       const skuWeightValues = Array.isArray(fix.sku_weight_values) ? fix.sku_weight_values : []
@@ -9236,12 +9879,13 @@ prePublish.post("/drafts/batch-quick-fix", async (c) => {
       }
       if (hasChanges) changedListingIds.add(listingId)
     }
+    for (const listingId of changedListingIds) {
+      if (!refreshListingAfterFill(db, listingId, "批量快速调整发布阻断项")) {
+        throw new HTTPException(500, { message: "批量调整后刷新草稿失败" })
+      }
+    }
   })
   transaction()
-
-  for (const listingId of changedListingIds) {
-    refreshListingAfterFill(db, listingId, "批量快速调整发布阻断项")
-  }
 
   return c.json(buildBatchPublishCheckResponse(db, listingIds))
 })
@@ -9250,10 +9894,6 @@ prePublish.post("/drafts/:id/publish", async (c) => {
   requirePermission(c, "PUBLISH_RUN")
   const db = getDb()
   const listingId = Number(c.req.param("id"))
-  const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
-  if (!listing) {
-    throw new HTTPException(404, { message: "草稿不存在" })
-  }
   const body = await c.req.json().catch(() => ({})) as {
     confirm?: boolean
     dry_run?: boolean
@@ -9263,6 +9903,10 @@ prePublish.post("/drafts/:id/publish", async (c) => {
   const skcCodes = Array.isArray(body.skc_codes) ? body.skc_codes : []
   const allowDefaultSkuWeight = Boolean(body.allow_default_sku_weight)
   if (body.dry_run || !body.confirm) {
+    const listing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
+    if (!listing) {
+      throw new HTTPException(404, { message: "草稿不存在" })
+    }
     const preview = buildPublishPayload(db, listingId, { skcCodes, allowDefaultSkuWeight })
     return c.json({
       ok: preview.errors.length === 0,
@@ -9273,8 +9917,37 @@ prePublish.post("/drafts/:id/publish", async (c) => {
     })
   }
 
-  const unresolvedTask = findUnresolvedPublishTask(db, listingId)
-  if (unresolvedTask) {
+  const claimResult = db.transaction(() => {
+    const sourceListing = db.prepare("select * from listing where id = ?").get(listingId) as ListingRow | undefined
+    if (!sourceListing) {
+      throw new HTTPException(404, { message: "草稿不存在" })
+    }
+    const scope = lockPublishScope(db, sourceListing)
+    const lockedListing = scope.siblings.find((row) => Number(row.id) === listingId)
+    if (!lockedListing) {
+      throw new HTTPException(404, { message: "草稿不存在" })
+    }
+    const scopeState = assertPublishScopeAvailable(db, lockedListing, scope)
+    if (scopeState.deduplicatedTask) {
+      return {
+        deduplicatedTask: scopeState.deduplicatedTask,
+        listing: null,
+        readiness: null,
+      }
+    }
+    const readiness = getReadinessForListing(db, lockedListing)
+    if (!readiness) {
+      throw new HTTPException(404, { message: "商品档案不存在" })
+    }
+    return {
+      deduplicatedTask: null,
+      listing: claimListingForPublish(db, listingId),
+      readiness,
+    }
+  })()
+
+  if (claimResult.deduplicatedTask) {
+    const unresolvedTask = claimResult.deduplicatedTask
     return c.json({
       ok: unresolvedTask.status === "PUBLISH_SUBMITTED",
       deduplicated: true,
@@ -9288,86 +9961,107 @@ prePublish.post("/drafts/:id/publish", async (c) => {
     }, unresolvedTask.status === "PUBLISH_SUBMITTED" ? 200 : 202)
   }
 
-  const readiness = getReadinessForListing(db, listing)
-  if (!readiness) {
-    throw new HTTPException(404, { message: "商品档案不存在" })
+  const claimedListing = claimResult.listing
+  const listing = claimedListing
+  const readiness = claimResult.readiness
+  if (!listing || !readiness) {
+    throw new HTTPException(500, { message: "发布草稿准备失败" })
   }
-
-  const version = createPublishVersion({
-    db,
-    listing,
-    readiness,
-    versionType: "PUBLISH",
-    changeSummary: "提交 SHEIN 发布",
-  })
-  ensureSkcSourceImageAssetsForPublish(db, listingId)
-  const preview = buildPublishPayload(db, listingId, {
-    skcCodes,
-    allowSourceImages: true,
-    allowLocalImages: true,
-    requirePreparedImages: false,
-    allowDefaultSkuWeight,
-  })
-  if (preview.errors.length > 0) {
-    db.prepare(`
-      update listing_publish_version
-      set status = 'FAILED',
-        request_payload_json = ?,
-        error_code = 'LOCAL_VALIDATION',
-        error_message = ?
-      where id = ?
-    `).run(JSON.stringify(preview.payload), `发布前仍有阻断项：${preview.errors.join("；")}`, version.id)
-    throw new HTTPException(400, { message: `发布前仍有阻断项：${preview.errors.join("；")}` })
-  }
+  let version: SourceRow | undefined
+  let taskId = 0
+  let preparationFailureRecorded = false
+  let pendingImagePreparePayloadPersisted = false
   const pendingImagePreparePayload = {
     image_prepare_status: "PENDING",
     listing_id: listing.id,
     note: "SHEIN 图片转换完成后写入正式发布 payload",
   }
-  db.prepare(`
-    update listing_publish_version
-    set status = 'PUBLISHING',
-      request_payload_json = ?
-    where id = ?
-  `).run(JSON.stringify(pendingImagePreparePayload), version.id)
-  const ensuredTask = ensurePublishTask(db, {
-    listingId: listing.id,
-    publishVersionId: Number(version.id),
-    platform: normalizeText(listing.platform) || "SHEIN",
-    taskType: "PUBLISH_LISTING",
-    status: "PUBLISHING",
-    attemptCount: 1,
-    requestPayload: pendingImagePreparePayload,
-  })
-  const task = ensuredTask.task
-  if (!ensuredTask.created) {
-    const errorMessage = "该草稿已有未解决的发布任务，本次重复发布已取消。"
+  try {
+    version = createPublishVersion({
+      db,
+      listing: claimedListing,
+      readiness,
+      versionType: "PUBLISH",
+      changeSummary: "提交 SHEIN 发布",
+    })
+    ensureSkcSourceImageAssetsForPublish(db, listingId)
+    const preview = buildPublishPayload(db, listingId, {
+      skcCodes,
+      allowSourceImages: true,
+      allowLocalImages: true,
+      requirePreparedImages: false,
+      allowDefaultSkuWeight,
+    })
+    if (preview.errors.length > 0) {
+      const errorMessage = `发布前仍有阻断项：${preview.errors.join("；")}`
+      const localValidationPayload = preview.payload
+      markClaimedPublishPreparationFailed(db, {
+        listingId,
+        versionId: version.id,
+        errorCode: "LOCAL_VALIDATION",
+        errorMessage,
+        requestPayload: localValidationPayload,
+      })
+      preparationFailureRecorded = true
+      throw new HTTPException(400, { message: errorMessage })
+    }
     db.prepare(`
       update listing_publish_version
-      set status = 'FAILED',
-        request_payload_json = ?,
-        error_code = 'DUPLICATE_ACTIVE_TASK',
-        error_message = ?
+      set status = 'PUBLISHING',
+        request_payload_json = ?
       where id = ?
-    `).run(JSON.stringify(pendingImagePreparePayload), errorMessage, version.id)
-    return c.json({
-      ok: task.status === "PUBLISH_SUBMITTED",
-      deduplicated: true,
-      task_id: task.id,
-      version_id: task.publish_version_id,
-      cancelled_version_id: version.id,
-      status: task.status,
-      message: errorMessage,
-      detail: getListingDetail(db, listingId),
-    }, task.status === "PUBLISH_SUBMITTED" ? 200 : 202)
+    `).run(JSON.stringify(pendingImagePreparePayload), version.id)
+    pendingImagePreparePayloadPersisted = true
+    const ensuredTask = ensurePublishTask(db, {
+      listingId: listing.id,
+      publishVersionId: Number(version.id),
+      platform: normalizeText(listing.platform) || "SHEIN",
+      taskType: "PUBLISH_LISTING",
+      status: "PUBLISHING",
+      attemptCount: 1,
+      requestPayload: pendingImagePreparePayload,
+    })
+    const task = ensuredTask.task
+    if (!ensuredTask.created) {
+      const errorMessage = "该草稿已有未解决的发布任务，本次重复发布已取消。"
+      db.prepare(`
+        update listing_publish_version
+        set status = 'FAILED',
+          request_payload_json = ?,
+          error_code = 'DUPLICATE_ACTIVE_TASK',
+          error_message = ?
+        where id = ?
+          and status not in ('SUBMITTED', 'RESULT_UNKNOWN')
+      `).run(JSON.stringify(pendingImagePreparePayload), errorMessage, version.id)
+      return c.json({
+        ok: task.status === "PUBLISH_SUBMITTED",
+        deduplicated: true,
+        task_id: task.id,
+        version_id: task.publish_version_id,
+        cancelled_version_id: version.id,
+        status: task.status,
+        message: errorMessage,
+        detail: getListingDetail(db, listingId),
+      }, task.status === "PUBLISH_SUBMITTED" ? 200 : 202)
+    }
+    taskId = Number(task.id)
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "SHEIN 发布准备失败"
+    if (!preparationFailureRecorded) {
+      markClaimedPublishPreparationFailed(db, {
+        listingId,
+        versionId: version?.id,
+        errorCode: "PUBLISH_PREPARE_FAILED",
+        errorMessage,
+        requestPayload: pendingImagePreparePayloadPersisted ? pendingImagePreparePayload : undefined,
+      })
+    }
+    if (error instanceof HTTPException) throw error
+    throw new HTTPException(502, { message: errorMessage })
   }
-  const taskId = Number(task.id)
-  db.prepare(`
-    update listing
-    set status = 'PUBLISHING',
-      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-    where id = ?
-  `).run(listing.id)
+  if (!version) {
+    throw new HTTPException(500, { message: "发布版本未建立" })
+  }
 
   const built = await (async () => {
     try {
@@ -9398,6 +10092,7 @@ prePublish.post("/drafts/:id/publish", async (c) => {
           error_code = 'IMAGE_PREPARE_FAILED',
           error_message = ?
         where id = ?
+          and status not in ('SUBMITTED', 'RESULT_UNKNOWN')
       `).run(message, version.id)
       db.prepare(`
         update listing
@@ -9405,6 +10100,7 @@ prePublish.post("/drafts/:id/publish", async (c) => {
           validation_status = 'FAILED',
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         where id = ?
+          and status = 'PUBLISHING'
       `).run(listing.id)
       throw new HTTPException(502, { message })
     }
@@ -9440,42 +10136,44 @@ prePublish.post("/drafts/:id/publish", async (c) => {
   const businessValidationErrors = publishBusinessValidationErrors(result.payload)
 
   if (code === "0" && info.success !== false && businessValidationErrors.length === 0) {
-    db.prepare(`
-      update listing_publish_task
-      set status = 'PUBLISH_SUBMITTED',
-        response_payload_json = ?,
-        platform_trace_id = ?,
-        platform_version = ?,
-        finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      where id = ?
-    `).run(JSON.stringify(result.payload), normalizeText(parseJsonObject(result.payload).traceId), platformVersion, taskId)
-    db.prepare(`
-      update listing_publish_version
-      set status = 'SUBMITTED',
-        response_payload_json = ?,
-        platform_version = ?,
-        submitted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      where id = ?
-    `).run(JSON.stringify(result.payload), platformVersion, version.id)
-    db.prepare(`
-      update listing
-      set status = 'PUBLISH_SUBMITTED',
-        validation_status = 'PASSED',
-        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      where id = ?
-    `).run(listing.id)
-    db.prepare(`
-      update shein_product_bucket
-      set bucket_status = 'PUBLISHED',
-        latest_listing_id = ?,
-        latest_version_no = ?,
-        latest_publish_status = 'PUBLISH_SUBMITTED',
-        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      where spu_code = ?
-    `).run(listing.id, version.version_no, listing.spu_code)
-    db.prepare("delete from listing_validation_result where listing_id = ?").run(listing.id)
-    persistPlatformIdentity({ db, listing, version, responsePayload: result.payload })
+    db.transaction(() => {
+      db.prepare(`
+        update listing_publish_task
+        set status = 'PUBLISH_SUBMITTED',
+          response_payload_json = ?,
+          platform_trace_id = ?,
+          platform_version = ?,
+          finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        where id = ?
+      `).run(JSON.stringify(result.payload), normalizeText(parseJsonObject(result.payload).traceId), platformVersion, taskId)
+      db.prepare(`
+        update listing_publish_version
+        set status = 'SUBMITTED',
+          response_payload_json = ?,
+          platform_version = ?,
+          submitted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        where id = ?
+      `).run(JSON.stringify(result.payload), platformVersion, version.id)
+      db.prepare(`
+        update listing
+        set status = 'PUBLISH_SUBMITTED',
+          validation_status = 'PASSED',
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        where id = ?
+      `).run(listing.id)
+      db.prepare(`
+        update shein_product_bucket
+        set bucket_status = 'PUBLISHED',
+          latest_listing_id = ?,
+          latest_version_no = ?,
+          latest_publish_status = 'PUBLISH_SUBMITTED',
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        where spu_code = ?
+      `).run(listing.id, version.version_no, listing.spu_code)
+      db.prepare("delete from listing_validation_result where listing_id = ?").run(listing.id)
+      persistPlatformIdentity({ db, listing, version, responsePayload: result.payload })
+    })()
     return c.json({
       ok: true,
       task_id: taskId,
@@ -9492,54 +10190,56 @@ prePublish.post("/drafts/:id/publish", async (c) => {
   const failureMessage = code === "0" && businessValidationErrors.length > 0
     ? businessValidationErrors.join("；")
     : message || `SHEIN 发布失败（HTTP ${result.status}）`
-  markPublishTaskFailed(db, {
-    taskId,
-    responsePayload: result.payload,
-    errorCode: failureCode,
-    errorMessage: failureMessage,
-  })
-  db.prepare(`
-    update listing_publish_version
-    set status = 'FAILED',
-      response_payload_json = ?,
-      error_code = ?,
-      error_message = ?
-    where id = ?
-  `).run(JSON.stringify(result.payload), failureCode, failureMessage, version.id)
-  db.prepare(`
-    update listing
-    set status = 'PUBLISH_FAILED',
-      validation_status = 'FAILED',
-      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-    where id = ?
-  `).run(listing.id)
-  db.prepare(`
-    update shein_product_bucket
-    set latest_listing_id = ?,
-      latest_version_no = ?,
-      latest_publish_status = 'PUBLISH_FAILED',
-      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-    where spu_code = ?
-  `).run(listing.id, version.version_no, listing.spu_code)
-  db.prepare(`
-    insert into listing_validation_result (
-      listing_id,
-      severity,
-      module,
-      field_key,
-      owner_type,
-      owner_id,
-      message,
-      suggestion
+  db.transaction(() => {
+    markPublishTaskFailed(db, {
+      taskId,
+      responsePayload: result.payload,
+      errorCode: failureCode,
+      errorMessage: failureMessage,
+    })
+    db.prepare(`
+      update listing_publish_version
+      set status = 'FAILED',
+        response_payload_json = ?,
+        error_code = ?,
+        error_message = ?
+      where id = ?
+    `).run(JSON.stringify(result.payload), failureCode, failureMessage, version.id)
+    db.prepare(`
+      update listing
+      set status = 'PUBLISH_FAILED',
+        validation_status = 'FAILED',
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      where id = ?
+    `).run(listing.id)
+    db.prepare(`
+      update shein_product_bucket
+      set latest_listing_id = ?,
+        latest_version_no = ?,
+        latest_publish_status = 'PUBLISH_FAILED',
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      where spu_code = ?
+    `).run(listing.id, version.version_no, listing.spu_code)
+    db.prepare(`
+      insert into listing_validation_result (
+        listing_id,
+        severity,
+        module,
+        field_key,
+        owner_type,
+        owner_id,
+        message,
+        suggestion
+      )
+      values (?, 'ERROR', 'SHEIN_PUBLISH', ?, 'LISTING', ?, ?, ?)
+    `).run(
+      listing.id,
+      failureCode,
+      listing.id,
+      failureMessage || "SHEIN 发布失败",
+      "按平台返回错误修正草稿字段后重新提交。",
     )
-    values (?, 'ERROR', 'SHEIN_PUBLISH', ?, 'LISTING', ?, ?, ?)
-  `).run(
-    listing.id,
-    failureCode,
-    listing.id,
-    failureMessage || "SHEIN 发布失败",
-    "按平台返回错误修正草稿字段后重新提交。",
-  )
+  })()
   return c.json({
     ok: false,
     task_id: taskId,

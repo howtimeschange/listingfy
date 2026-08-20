@@ -212,16 +212,23 @@ test("importDeepdrawPayloads persists structured content tables idempotently", (
       payloads: [{ productCode: "208226102001", payload: samplePayload() }],
       sourceDir: "data/deepdraw-content/test",
       manifest: { counts: { success: 1, failed: 0 } },
+      tenantName: "电商巴拉巴拉",
       syncedAt: "2026-04-29T00:00:00.000Z",
     });
     const summary2 = importDeepdrawPayloads(db, {
       payloads: [{ productCode: "208226102001", payload: samplePayload() }],
       sourceDir: "data/deepdraw-content/test",
       manifest: { counts: { success: 1, failed: 0 } },
+      tenantName: "电商巴拉巴拉",
       syncedAt: "2026-04-29T00:00:00.000Z",
     });
 
     assert.deepEqual(summary1.counts, summary2.counts);
+    assert.equal(summary1.products[0].tenantName, "电商巴拉巴拉");
+    assert.equal(
+      db.prepare("select tenant_name from product_content_package where source_code = ?").get("208226102001").tenant_name,
+      "电商巴拉巴拉",
+    );
     assert.equal(db.prepare("select count(*) as c from product_content_package").get().c, 1);
     assert.equal(db.prepare("select count(*) as c from product_content_skc").get().c, 1);
     assert.equal(db.prepare("select count(*) as c from product_content_sku").get().c, 1);

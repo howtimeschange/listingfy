@@ -11,6 +11,7 @@ function sqliteCompatibleMigration(sql, db) {
     .split(";")
     .map((statement) => statement.trim())
     .filter(Boolean)
+    .filter((statement) => !/sqlite-skip-statement/i.test(statement))
     .filter((statement) => {
       const match = statement.match(/^alter\s+table\s+([A-Za-z_][A-Za-z0-9_]*)\s+add\s+column\s+if\s+not\s+exists\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.+)$/i);
       if (!match) return true;

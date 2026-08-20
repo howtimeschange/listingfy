@@ -999,41 +999,53 @@ async function syncIdentitySequences(client) {
 }
 
 export async function applyPostgresMigrations(pool, migrationsDir = path.resolve("db", "migrations")) {
-  await pool.query(`
-    create table if not exists schema_migration (
-      version text primary key,
-      applied_at text not null default (${NOW_SQL})
-    )
-  `);
+  const client = await pool.connect();
+  let lockAcquired = false;
+  try {
+    await client.query("select pg_advisory_lock(hashtextextended('listingify:schema-migrations', 0))");
+    lockAcquired = true;
+    await client.query(`
+      create table if not exists schema_migration (
+        version text primary key,
+        applied_at text not null default (${NOW_SQL})
+      )
+    `);
 
-  const appliedRows = await pool.query("select version from schema_migration");
-  const applied = new Set(appliedRows.rows.map((row) => row.version));
-  const migrations = listMigrationFiles(migrationsDir);
+    const appliedRows = await client.query("select version from schema_migration");
+    const applied = new Set(appliedRows.rows.map((row) => row.version));
+    const migrations = listMigrationFiles(migrationsDir);
+    const appliedNow = [];
 
-  const appliedNow = [];
-  for (const file of migrations) {
-    if (applied.has(file)) continue;
+    for (const file of migrations) {
+      if (applied.has(file)) continue;
 
-    const sourceSql = fs.readFileSync(path.join(migrationsDir, file), "utf8");
-    const sql = convertSqliteMigration(sourceSql);
-    const client = await pool.connect();
-    try {
-      await client.query("begin");
-      for (const statement of splitSqlStatements(sql)) {
-        await client.query(statement);
+      const sourceSql = fs.readFileSync(path.join(migrationsDir, file), "utf8");
+      const sql = convertSqliteMigration(sourceSql);
+      try {
+        await client.query("begin");
+        for (const statement of splitSqlStatements(sql)) {
+          await client.query(statement);
+        }
+        await syncIdentitySequences(client);
+        await client.query("insert into schema_migration(version) values ($1)", [file]);
+        await client.query("commit");
+        applied.add(file);
+        appliedNow.push(file);
+      } catch (error) {
+        await client.query("rollback");
+        error.message = `Failed to apply ${file}: ${error.message}`;
+        throw error;
       }
-      await syncIdentitySequences(client);
-      await client.query("insert into schema_migration(version) values ($1)", [file]);
-      await client.query("commit");
-      appliedNow.push(file);
-    } catch (error) {
-      await client.query("rollback");
-      error.message = `Failed to apply ${file}: ${error.message}`;
-      throw error;
+    }
+
+    return appliedNow;
+  } finally {
+    try {
+      if (lockAcquired) {
+        await client.query("select pg_advisory_unlock(hashtextextended('listingify:schema-migrations', 0))");
+      }
     } finally {
       client.release();
     }
   }
-
-  return appliedNow;
 }

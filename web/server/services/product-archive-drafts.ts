@@ -1,4 +1,5 @@
 import fs from "node:fs"
+import { randomUUID } from "node:crypto"
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import {
   normalizeProductArchiveSourceRows,
@@ -145,6 +146,7 @@ interface DeepdrawResult {
 
 interface SubmitOptions {
   dryRun?: boolean
+  claimToken?: string
   search?: () => Promise<DeepdrawResult>
   create?: (payload: JsonRecord) => Promise<DeepdrawResult>
   readback?: () => Promise<DeepdrawResult>
@@ -4846,6 +4848,28 @@ function draftById(db: SyncPostgresDatabase, draftId: number) {
   return draft
 }
 
+export function assertProductArchiveDraftMutable(
+  db: SyncPostgresDatabase,
+  draftId: number,
+  options: { claimToken?: string | null } = {},
+) {
+  const draft = db.prepare(`
+    select id, status, submit_claim_token
+    from product_archive_draft
+    where id = ?
+    for update
+  `).get(draftId) as JsonRecord | undefined
+  if (!draft) throw new Error(`建档草稿不存在：${draftId}`)
+  if (options.claimToken != null) {
+    if (stringValue(draft.submit_claim_token) !== stringValue(options.claimToken)) {
+      throw new Error("PRODUCT_ARCHIVE_SUBMIT_IN_PROGRESS: 草稿提交权已失效，不能继续修改")
+    }
+  } else if (draft.submit_claim_token) {
+    throw new Error("PRODUCT_ARCHIVE_SUBMIT_IN_PROGRESS: 草稿正在提交，不能继续修改")
+  }
+  return draft
+}
+
 function fieldOptionsLookup(db: SyncPostgresDatabase, draft: JsonRecord) {
   const rows = db.prepare(`
     select field_name, field_id, field_type, options_json, required, sale_prop, raw_payload_json
@@ -5227,84 +5251,99 @@ export function getProductArchiveDraftImageFile(db: SyncPostgresDatabase, imageI
 }
 
 export function createProductArchiveDraftImage(db: SyncPostgresDatabase, input: ProductArchiveDraftImageInput) {
-  const draft = draftById(db, input.draftId)
-  const now = nowIso()
-  const sortRow = db.prepare(`
-    select coalesce(max(sort_no), 0) + 1 as next_sort
-    from product_archive_draft_image
-    where draft_id = ?
-  `).get(input.draftId) as { next_sort?: unknown } | undefined
-  const result = db.prepare(`
-    insert into product_archive_draft_image (
-      draft_id,
-      spu_code,
-      source_type,
-      source_ref,
-      local_path,
-      file_name,
-      original_file_name,
-      mime_type,
-      file_size,
-      width,
-      height,
-      sort_no,
-      uploaded_by,
-      raw_payload_json,
-      created_at,
-      updated_at
+  return db.transaction(() => {
+    assertProductArchiveDraftMutable(db, input.draftId)
+    const draft = draftById(db, input.draftId)
+    const now = nowIso()
+    const sortRow = db.prepare(`
+      select coalesce(max(sort_no), 0) + 1 as next_sort
+      from product_archive_draft_image
+      where draft_id = ?
+    `).get(input.draftId) as { next_sort?: unknown } | undefined
+    const result = db.prepare(`
+      insert into product_archive_draft_image (
+        draft_id,
+        spu_code,
+        source_type,
+        source_ref,
+        local_path,
+        file_name,
+        original_file_name,
+        mime_type,
+        file_size,
+        width,
+        height,
+        sort_no,
+        uploaded_by,
+        raw_payload_json,
+        created_at,
+        updated_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::timestamptz, ?::timestamptz)
+    `).run(
+      input.draftId,
+      stringValue(input.spuCode) || stringValue(draft.spu_code),
+      input.sourceType,
+      input.sourceRef || null,
+      input.localPath,
+      input.fileName,
+      input.originalFileName || null,
+      input.mimeType || null,
+      input.fileSize ?? null,
+      input.width ?? null,
+      input.height ?? null,
+      Number(sortRow?.next_sort ?? 1),
+      input.uploadedBy ?? null,
+      jsonText(input.rawPayload ?? {}),
+      now,
+      now,
     )
-    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::timestamptz, ?::timestamptz)
-  `).run(
-    input.draftId,
-    stringValue(input.spuCode) || stringValue(draft.spu_code),
-    input.sourceType,
-    input.sourceRef || null,
-    input.localPath,
-    input.fileName,
-    input.originalFileName || null,
-    input.mimeType || null,
-    input.fileSize ?? null,
-    input.width ?? null,
-    input.height ?? null,
-    Number(sortRow?.next_sort ?? 1),
-    input.uploadedBy ?? null,
-    jsonText(input.rawPayload ?? {}),
-    now,
-    now,
-  )
-  db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(now, input.draftId)
-  const image = getProductArchiveDraftImageFile(db, Number(result.lastInsertRowid))
-  return image ? serializeProductArchiveDraftImage(image) : null
+    db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(now, input.draftId)
+    const image = getProductArchiveDraftImageFile(db, Number(result.lastInsertRowid))
+    return image ? serializeProductArchiveDraftImage(image) : null
+  })()
 }
 
 export function deleteProductArchiveDraftImage(db: SyncPostgresDatabase, draftId: number, imageId: number) {
-  const image = db.prepare(`
-    select *
-    from product_archive_draft_image
-    where id = ?
-      and draft_id = ?
-  `).get(imageId, draftId) as JsonRecord | undefined
-  if (!image) return null
-  db.prepare("delete from product_archive_draft_image where id = ? and draft_id = ?").run(imageId, draftId)
-  db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(nowIso(), draftId)
-  return image
+  return db.transaction(() => {
+    assertProductArchiveDraftMutable(db, draftId)
+    const image = db.prepare(`
+      select *
+      from product_archive_draft_image
+      where id = ?
+        and draft_id = ?
+    `).get(imageId, draftId) as JsonRecord | undefined
+    if (!image) return null
+    db.prepare("delete from product_archive_draft_image where id = ? and draft_id = ?").run(imageId, draftId)
+    db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(nowIso(), draftId)
+    return image
+  })()
 }
 
 export function deleteProductArchiveDraft(db: SyncPostgresDatabase, draftId: number) {
-  const draft = db.prepare("select * from product_archive_draft where id = ?").get(draftId) as JsonRecord | undefined
-  if (!draft) return null
-  if (stringValue(draft.status) === "submitting") {
-    throw new Error("正在提交的草稿不能删除")
-  }
-  const images = db.prepare(`
-    select id, local_path, file_name, original_file_name
-    from product_archive_draft_image
-    where draft_id = ?
-  `).all(draftId) as JsonRecord[]
-  db.transaction(() => {
-    db.prepare("delete from product_archive_draft where id = ?").run(draftId)
+  return db.transaction(() => {
+    const current = db.prepare(`
+      select id, status, submit_claim_token
+      from product_archive_draft
+      where id = ?
+      for update
+    `).get(draftId) as JsonRecord | undefined
+    if (!current) return null
+    if (current.submit_claim_token) throw new Error("正在提交的草稿不能删除")
+    const images = db.prepare(`
+      select id, local_path, file_name, original_file_name
+      from product_archive_draft_image
+      where draft_id = ?
+    `).all(draftId) as JsonRecord[]
+    const deleted = db.prepare(`
+      delete from product_archive_draft
+      where id = ?
+        and submit_claim_token is null
+      returning *
+    `).get(draftId) as JsonRecord | undefined
+    if (!deleted) return null
+    return { draft: deleted, images }
   })()
-  return { draft, images }
 }
 
 function serializeDraftDetail(db: SyncPostgresDatabase, draftId: number) {
@@ -5562,30 +5601,63 @@ export function importProductArchiveSourceRows(db: SyncPostgresDatabase, input: 
 export function refreshDraftTradeSelectionFromLaunchPlan(
   db: SyncPostgresDatabase,
   draftId: number,
-  options: { attempt?: number; tradeCandidates?: JsonRecord[] } = {},
+  options: { attempt?: number; tradeCandidates?: JsonRecord[]; claimToken?: string | null } = {},
 ) {
-  const attempt = options.attempt ?? 0
-  const draft = draftById(db, draftId)
-  const tenantName = stringValue(draft.tenant_name)
-  const merchantId = stringValue(draft.merchant_id)
-  const evaluated = inferDeepdrawTradeSelectionFromLaunchPlan(db, {
-    tenantName,
-    merchantId,
-    sourceRows: referenceSourceRowsForDraft(db, draft),
-    skus: draftSkusForDraft(db, draftId),
-    appliedTrade: appliedTradeForDraft(draft),
-    tradeCandidates: options.tradeCandidates,
-  })
-  const merged = mergeTradeSelectionHumanState(
-    evaluated,
-    recordValue(draft.source_snapshot_json).tradeSelection,
-  )
-  if (merged.status === "human_adjusted" || merged.status === "human_confirmed") {
+  return db.transaction(() => {
+    assertProductArchiveDraftMutable(db, draftId, { claimToken: options.claimToken })
+    const attempt = options.attempt ?? 0
+    const draft = draftById(db, draftId)
+    const tenantName = stringValue(draft.tenant_name)
+    const merchantId = stringValue(draft.merchant_id)
+    const evaluated = inferDeepdrawTradeSelectionFromLaunchPlan(db, {
+      tenantName,
+      merchantId,
+      sourceRows: referenceSourceRowsForDraft(db, draft),
+      skus: draftSkusForDraft(db, draftId),
+      appliedTrade: appliedTradeForDraft(draft),
+      tradeCandidates: options.tradeCandidates,
+    })
+    const merged = mergeTradeSelectionHumanState(
+      evaluated,
+      recordValue(draft.source_snapshot_json).tradeSelection,
+    )
+    if (merged.status === "human_adjusted" || merged.status === "human_confirmed") {
+      const persisted = persistTradeSelectionDecision(
+        db,
+        draftId,
+        draft.source_snapshot_json,
+        merged,
+        nowIso(),
+        { tradeId: draft.trade_id, snapshotValue: draft.source_snapshot_json },
+      )
+      if (persisted.changes === 0) {
+        if (attempt >= 2) throw new Error("草稿数据持续更新，类目推荐刷新未完成，请稍后重试")
+        return refreshDraftTradeSelectionFromLaunchPlan(db, draftId, { ...options, attempt: attempt + 1 })
+      }
+      if (stringValue(draft.trade_id)) rebuildProductArchiveDraftFields(db, draftId)
+      validateProductArchiveDraft(db, draftId, { claimToken: options.claimToken })
+      return {
+        autoApplied: false,
+        noMatch: !evaluated.recommendedTrade,
+        refreshed: Boolean(stringValue(draft.trade_id)),
+      }
+    }
+    if (evaluated.recommendedTrade) {
+      const result = applyProductArchiveDraftTrade(db, draftId, {
+        tradeId: evaluated.recommendedTrade.tradeId,
+        tradePath: evaluated.recommendedTrade.tradePath,
+      }, { automaticDecision: evaluated, claimToken: options.claimToken })
+      return {
+        autoApplied: result.tradeSelectionAutoApplied !== false,
+        noMatch: false,
+        refreshed: true,
+      }
+    }
     const persisted = persistTradeSelectionDecision(
       db,
       draftId,
       draft.source_snapshot_json,
-      merged,
+      evaluated,
       nowIso(),
       { tradeId: draft.trade_id, snapshotValue: draft.source_snapshot_json },
     )
@@ -5594,43 +5666,13 @@ export function refreshDraftTradeSelectionFromLaunchPlan(
       return refreshDraftTradeSelectionFromLaunchPlan(db, draftId, { ...options, attempt: attempt + 1 })
     }
     if (stringValue(draft.trade_id)) rebuildProductArchiveDraftFields(db, draftId)
-    validateProductArchiveDraft(db, draftId)
+    validateProductArchiveDraft(db, draftId, { claimToken: options.claimToken })
     return {
       autoApplied: false,
-      noMatch: !evaluated.recommendedTrade,
+      noMatch: true,
       refreshed: Boolean(stringValue(draft.trade_id)),
     }
-  }
-  if (evaluated.recommendedTrade) {
-    const result = applyProductArchiveDraftTrade(db, draftId, {
-      tradeId: evaluated.recommendedTrade.tradeId,
-      tradePath: evaluated.recommendedTrade.tradePath,
-    }, { automaticDecision: evaluated })
-    return {
-      autoApplied: result.tradeSelectionAutoApplied !== false,
-      noMatch: false,
-      refreshed: true,
-    }
-  }
-  const persisted = persistTradeSelectionDecision(
-    db,
-    draftId,
-    draft.source_snapshot_json,
-    evaluated,
-    nowIso(),
-    { tradeId: draft.trade_id, snapshotValue: draft.source_snapshot_json },
-  )
-  if (persisted.changes === 0) {
-    if (attempt >= 2) throw new Error("草稿数据持续更新，类目推荐刷新未完成，请稍后重试")
-    return refreshDraftTradeSelectionFromLaunchPlan(db, draftId, { ...options, attempt: attempt + 1 })
-  }
-  if (stringValue(draft.trade_id)) rebuildProductArchiveDraftFields(db, draftId)
-  validateProductArchiveDraft(db, draftId)
-  return {
-    autoApplied: false,
-    noMatch: true,
-    refreshed: Boolean(stringValue(draft.trade_id)),
-  }
+  })()
 }
 
 export function refreshProductArchiveDraftsFromSourceBatch(db: SyncPostgresDatabase, input: RefreshSourceBatchInput) {
@@ -5661,20 +5703,24 @@ export function refreshProductArchiveDraftsFromSourceBatch(db: SyncPostgresDatab
     const draftId = numberValue(draft.id)
     if (draftId === null) continue
     try {
-      appendSourceBatchIdToDraft(db, draftId, sourceType, sourceBatchId)
+      db.transaction(() => {
+        assertProductArchiveDraftMutable(db, draftId)
+        appendSourceBatchIdToDraft(db, draftId, sourceType, sourceBatchId)
+        const currentDraft = draftById(db, draftId)
 
-      if (sourceType === "launch_plan") {
-        const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
-        if (tradeRefresh.autoApplied) autoAppliedTradeCount += 1
-        if (tradeRefresh.noMatch) skippedNoTradeMatchCount += 1
-        if (tradeRefresh.refreshed) refreshedDraftCount += 1
-      } else if (stringValue(draft.trade_id)) {
-        rebuildProductArchiveDraftFields(db, draftId)
-        validateProductArchiveDraft(db, draftId)
-        refreshedDraftCount += 1
-      } else {
-        validateProductArchiveDraft(db, draftId)
-      }
+        if (sourceType === "launch_plan") {
+          const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
+          if (tradeRefresh.autoApplied) autoAppliedTradeCount += 1
+          if (tradeRefresh.noMatch) skippedNoTradeMatchCount += 1
+          if (tradeRefresh.refreshed) refreshedDraftCount += 1
+        } else if (stringValue(currentDraft.trade_id)) {
+          rebuildProductArchiveDraftFields(db, draftId)
+          validateProductArchiveDraft(db, draftId)
+          refreshedDraftCount += 1
+        } else {
+          validateProductArchiveDraft(db, draftId)
+        }
+      })()
     } catch (error) {
       failedDrafts.push({
         draftId,
@@ -5729,20 +5775,24 @@ export async function refreshProductArchiveDraftsFromSourceBatchInChunks(
       const draftId = numberValue(draft.id)
       if (draftId === null) continue
       try {
-        appendSourceBatchIdToDraft(db, draftId, sourceType, sourceBatchId)
+        db.transaction(() => {
+          assertProductArchiveDraftMutable(db, draftId)
+          appendSourceBatchIdToDraft(db, draftId, sourceType, sourceBatchId)
+          const currentDraft = draftById(db, draftId)
 
-        if (sourceType === "launch_plan") {
-          const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
-          if (tradeRefresh.autoApplied) autoAppliedTradeCount += 1
-          if (tradeRefresh.noMatch) skippedNoTradeMatchCount += 1
-          if (tradeRefresh.refreshed) refreshedDraftCount += 1
-        } else if (stringValue(draft.trade_id)) {
-          rebuildProductArchiveDraftFields(db, draftId)
-          validateProductArchiveDraft(db, draftId)
-          refreshedDraftCount += 1
-        } else {
-          validateProductArchiveDraft(db, draftId)
-        }
+          if (sourceType === "launch_plan") {
+            const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
+            if (tradeRefresh.autoApplied) autoAppliedTradeCount += 1
+            if (tradeRefresh.noMatch) skippedNoTradeMatchCount += 1
+            if (tradeRefresh.refreshed) refreshedDraftCount += 1
+          } else if (stringValue(currentDraft.trade_id)) {
+            rebuildProductArchiveDraftFields(db, draftId)
+            validateProductArchiveDraft(db, draftId)
+            refreshedDraftCount += 1
+          } else {
+            validateProductArchiveDraft(db, draftId)
+          }
+        })()
       } catch (error) {
         failedDrafts.push({
           draftId,
@@ -6153,42 +6203,43 @@ export function applyProductArchiveDraftTrade(
   db: SyncPostgresDatabase,
   draftId: number,
   input: ApplyTradeInput,
-  options: { automaticDecision?: TradeSelectionDecision } = {},
+  options: { automaticDecision?: TradeSelectionDecision; claimToken?: string | null } = {},
 ) {
-  const draft = draftById(db, draftId)
-  const tradeId = stringValue(input.tradeId)
-  if (!tradeId) throw new Error("请选择深绘类目")
-  if (options.automaticDecision && hasHumanTradeSelection(draft.source_snapshot_json)) {
-    return {
-      ...validateProductArchiveDraft(db, draftId),
-      tradeSelectionAutoApplied: false,
-    }
-  }
-  const trade = db.prepare(`
-    select *
-    from deepdraw_trade_cache
-    where tenant_name = ?
-      and merchant_id = ?
-      and trade_id = ?
-    limit 1
-  `).get(draft.tenant_name, draft.merchant_id, tradeId) as JsonRecord | undefined
-  if (!trade) throw new Error("本地未找到该深绘类目，请先同步类目主数据")
-
-  const now = nowIso()
-  const tradePath = stringValue(input.tradePath) || stringValue(trade.trade_path) || stringValue(trade.trade_name) || tradeId
-  const appliedTrade = { tradeId, tradePath }
-  const decision = options.automaticDecision
-    ? { ...options.automaticDecision, appliedTrade }
-    : applyHumanTradeSelectionDecision(
-        currentTradeSelectionDecision(db, { ...draft, trade_id: tradeId, trade_path: tradePath }),
-        appliedTrade,
-        now,
-      )
-  const snapshot = {
-    ...recordValue(draft.source_snapshot_json),
-    tradeSelection: decision,
-  }
   return db.transaction(() => {
+    assertProductArchiveDraftMutable(db, draftId, { claimToken: options.claimToken })
+    const draft = draftById(db, draftId)
+    const tradeId = stringValue(input.tradeId)
+    if (!tradeId) throw new Error("请选择深绘类目")
+    if (options.automaticDecision && hasHumanTradeSelection(draft.source_snapshot_json)) {
+      return {
+        ...validateProductArchiveDraft(db, draftId, { claimToken: options.claimToken }),
+        tradeSelectionAutoApplied: false,
+      }
+    }
+    const trade = db.prepare(`
+      select *
+      from deepdraw_trade_cache
+      where tenant_name = ?
+        and merchant_id = ?
+        and trade_id = ?
+      limit 1
+    `).get(draft.tenant_name, draft.merchant_id, tradeId) as JsonRecord | undefined
+    if (!trade) throw new Error("本地未找到该深绘类目，请先同步类目主数据")
+
+    const now = nowIso()
+    const tradePath = stringValue(input.tradePath) || stringValue(trade.trade_path) || stringValue(trade.trade_name) || tradeId
+    const appliedTrade = { tradeId, tradePath }
+    const decision = options.automaticDecision
+      ? { ...options.automaticDecision, appliedTrade }
+      : applyHumanTradeSelectionDecision(
+          currentTradeSelectionDecision(db, { ...draft, trade_id: tradeId, trade_path: tradePath }),
+          appliedTrade,
+          now,
+        )
+    const snapshot = {
+      ...recordValue(draft.source_snapshot_json),
+      tradeSelection: decision,
+    }
     const updateResult = db.prepare(`
       update product_archive_draft
       set trade_id = ?,
@@ -6211,14 +6262,14 @@ export function applyProductArchiveDraftTrade(
       const currentDraft = draftById(db, draftId)
       if (options.automaticDecision && hasHumanTradeSelection(currentDraft.source_snapshot_json)) {
         return {
-          ...validateProductArchiveDraft(db, draftId),
+          ...validateProductArchiveDraft(db, draftId, { claimToken: options.claimToken }),
           tradeSelectionAutoApplied: false,
         }
       }
       throw new Error("草稿数据已更新，请刷新后重试")
     }
     rebuildProductArchiveDraftFields(db, draftId)
-    const result = validateProductArchiveDraft(db, draftId)
+    const result = validateProductArchiveDraft(db, draftId, { claimToken: options.claimToken })
     return options.automaticDecision
       ? { ...result, tradeSelectionAutoApplied: true }
       : result
@@ -6231,6 +6282,7 @@ export function confirmProductArchiveDraftRecommendedTrade(
   input: ConfirmTradeInput = {},
 ) {
   return db.transaction(() => {
+    assertProductArchiveDraftMutable(db, draftId)
     const draft = draftById(db, draftId)
     const decision = currentTradeSelectionDecision(db, draft)
     const recommendedTradeId = decision.recommendedTrade?.tradeId ?? ""
@@ -6321,7 +6373,8 @@ export function patchProductArchiveDraftFields(db: SyncPostgresDatabase, draftId
   const shouldSyncDownFillWeightSizeCharts = (input.fields ?? []).some((field) => (
     ["充绒量", "充绒量文本"].includes(compactFieldKey(field.fieldName ?? field.field_name))
   ))
-  db.transaction(() => {
+  return db.transaction(() => {
+    assertProductArchiveDraftMutable(db, draftId)
     for (const field of input.fields ?? []) {
       const fieldName = stringValue(field.fieldName ?? field.field_name)
       const valueText = field.valueText ?? field.value_text ?? null
@@ -6348,56 +6401,86 @@ export function patchProductArchiveDraftFields(db: SyncPostgresDatabase, draftId
     }
     if (shouldSyncDownFillWeightSizeCharts) syncProductArchiveDownFillWeightSizeCharts(db, draftId)
     db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(now, draftId)
+    return validateProductArchiveDraft(db, draftId)
   })()
-  return validateProductArchiveDraft(db, draftId)
 }
 
 export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDatabase, draftId: number, options: AiFillOptions = {}) {
-  rebuildProductArchiveDraftFields(db, draftId)
-  syncProductArchiveDownFillWeightSizeCharts(db, draftId)
-  const detail = validateProductArchiveDraft(db, draftId).detail
-  const draft = detail.draft as JsonRecord
-  const fields = detail.fields as JsonRecord[]
-  const skus = detail.skus as JsonRecord[]
-  const issues = detail.issues as JsonRecord[]
-  const referenceImages = detail.images as JsonRecord[] ?? []
-  const sourceRows = referenceSourceRowsForDraft(db, draft)
-  const mdmSpu = resolveProductArchiveDraftSpu(db, draft)
-  const candidates = buildProductArchiveAiFillCandidateFields(fields, issues, skus).filter((field) => (
-    compactFieldKey(field.fieldName) !== compactFieldKey("25鞋子尺码表")
-    || shouldProductArchiveAiFill25ShoeSizeTable({
-      tradeId: draft.trade_id,
-      tradePath: draft.trade_path,
+  const prepared = db.transaction(() => {
+    assertProductArchiveDraftMutable(db, draftId)
+    rebuildProductArchiveDraftFields(db, draftId)
+    syncProductArchiveDownFillWeightSizeCharts(db, draftId)
+    const detail = validateProductArchiveDraft(db, draftId).detail
+    const draft = detail.draft as JsonRecord
+    const fields = detail.fields as JsonRecord[]
+    const skus = detail.skus as JsonRecord[]
+    const issues = detail.issues as JsonRecord[]
+    const referenceImages = detail.images as JsonRecord[] ?? []
+    const sourceRows = referenceSourceRowsForDraft(db, draft)
+    const mdmSpu = resolveProductArchiveDraftSpu(db, draft)
+    const candidates = buildProductArchiveAiFillCandidateFields(fields, issues, skus).filter((field) => (
+      compactFieldKey(field.fieldName) !== compactFieldKey("25鞋子尺码表")
+      || shouldProductArchiveAiFill25ShoeSizeTable({
+        tradeId: draft.trade_id,
+        tradePath: draft.trade_path,
+      })
+    ))
+    const evidenceRuleFills = buildProductArchiveEvidenceRuleFills({
+      draft,
+      fields,
+      sourceRows,
+      referenceImages,
     })
-  ))
-  const evidenceRuleFills = buildProductArchiveEvidenceRuleFills({
-    draft,
-    fields,
-    sourceRows,
+    const evidenceRuleFillById = new Map(evidenceRuleFills.map((fill) => [Number(fill.field_id), fill]))
+    const aiFillCandidates = candidates.filter((field) => !evidenceRuleFillById.has(field.id))
+    const materialEvidenceFills = buildProductArchiveMaterialEvidenceFills(fields, aiFillCandidates, sourceRows)
+    const materialEvidenceById = new Map(materialEvidenceFills.map((fill) => [Number(fill.field_id), fill]))
+    const aiCandidates = aiFillCandidates.filter((field) => !materialEvidenceById.has(field.id))
+    const prompt = aiCandidates.length > 0
+      ? buildDeepdrawAiFillPrompt({
+          draft,
+          fields: aiCandidates,
+          skus,
+          allFields: fields,
+          sourceRows,
+          mdmSpu,
+          referenceImages,
+        })
+      : ""
+    const fieldSnapshots = new Map(
+      fields
+        .map((field) => [Number(field.id), aiFillFieldSnapshot(field)] as const)
+        .filter(([fieldId]) => Number.isInteger(fieldId) && fieldId > 0),
+    )
+    return {
+      detail,
+      referenceImages,
+      fieldSnapshots,
+      candidates,
+      evidenceRuleFills,
+      evidenceRuleFillById,
+      materialEvidenceById,
+      aiCandidates,
+      prompt,
+      warnings: [] as ProductArchiveAiFillWarning[],
+    }
+  })()
+  const {
+    detail,
     referenceImages,
-  })
-  const evidenceRuleFillById = new Map(evidenceRuleFills.map((fill) => [Number(fill.field_id), fill]))
-  const aiFillCandidates = candidates.filter((field) => !evidenceRuleFillById.has(field.id))
-  const warnings: ProductArchiveAiFillWarning[] = []
+    fieldSnapshots,
+    candidates,
+    evidenceRuleFills,
+    evidenceRuleFillById,
+    materialEvidenceById,
+    aiCandidates,
+    prompt,
+    warnings,
+  } = prepared
 
   if (candidates.length === 0 && evidenceRuleFills.length === 0) {
     return { saved: [], detail, warnings }
   }
-  const materialEvidenceFills = buildProductArchiveMaterialEvidenceFills(fields, aiFillCandidates, sourceRows)
-  const materialEvidenceById = new Map(materialEvidenceFills.map((fill) => [Number(fill.field_id), fill]))
-  const aiCandidates = aiFillCandidates.filter((field) => !materialEvidenceById.has(field.id))
-
-  const prompt = aiCandidates.length > 0
-    ? buildDeepdrawAiFillPrompt({
-        draft,
-        fields: aiCandidates,
-        skus,
-        allFields: fields,
-        sourceRows,
-        mdmSpu,
-        referenceImages,
-      })
-    : ""
   let aiFills: JsonRecord[] = []
   if (aiCandidates.length > 0) {
     try {
@@ -6420,8 +6503,15 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
   const aiById = new Map(aiFills.map((fill) => [Number(fill.field_id), fill]))
   const now = nowIso()
   const saved: Array<{ field_id: number; field_name: string; field_value: string; source: string; confidence: number | null }> = []
+  const markDraftChanged = () => {
+    if (warnings.some((warning) => warning.code === "draft_changed")) return
+    warnings.push({
+      code: "draft_changed",
+      message: "草稿字段在 AI 等待期间已更新，已跳过冲突字段",
+    })
+  }
   const updateField = db.prepare(`
-    update product_archive_draft_field
+    update product_archive_draft_field field
     set value_text = ?,
       value_json = ?::jsonb,
       source_type = ?,
@@ -6430,14 +6520,78 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
       validation_status = 'valid',
       validation_message = null,
       updated_at = ?::timestamptz
-    where draft_id = ? and id = ?
+    where field.draft_id = ?
+      and field.id = ?
+      and field.field_name is not distinct from ?
+      and field.field_id is not distinct from ?
+      and field.source_type is not distinct from ?
+      and field.source_ref is not distinct from ?
+      and field.value_text is not distinct from ?
+      and field.value_json is not distinct from ?::jsonb
+      and field.required is not distinct from ?
+      and field.blocking is not distinct from ?
+      and field.manual_override is not distinct from ?
+      and field.validation_status is not distinct from ?
+      and field.validation_message is not distinct from ?
+      and field.updated_at is not distinct from ?::timestamptz
   `)
 
-  db.transaction(() => {
+  const validated = db.transaction(() => {
+    assertProductArchiveDraftMutable(db, draftId)
+    const applyFieldFill = (input: {
+      fieldId: number
+      fieldName: string
+      fieldValue: string
+      valueJson: unknown
+      sourceType: string
+      sourceRef: string | null
+      source: string
+      confidence: number | null
+    }) => {
+      const snapshot = fieldSnapshots.get(input.fieldId)
+      if (!snapshot) {
+        markDraftChanged()
+        return
+      }
+      const update = updateField.run(
+        input.fieldValue,
+        jsonText(input.valueJson),
+        input.sourceType,
+        input.sourceRef,
+        now,
+        draftId,
+        input.fieldId,
+        snapshot.fieldName,
+        snapshot.fieldId,
+        snapshot.sourceType,
+        snapshot.sourceRef,
+        snapshot.valueText,
+        jsonText(snapshot.valueJson),
+        snapshot.required,
+        snapshot.blocking,
+        snapshot.manualOverride,
+        snapshot.validationStatus,
+        snapshot.validationMessage,
+        snapshot.updatedAt,
+      )
+      if (Number(update?.changes ?? 0) !== 1) {
+        markDraftChanged()
+        return
+      }
+      saved.push({
+        field_id: input.fieldId,
+        field_name: input.fieldName,
+        field_value: input.fieldValue,
+        source: input.source,
+        confidence: input.confidence,
+      })
+    }
     for (const fill of evidenceRuleFills) {
-      updateField.run(
-        fill.field_value,
-        jsonText({
+      applyFieldFill({
+        fieldId: fill.field_id,
+        fieldName: fill.field_name,
+        fieldValue: fill.field_value,
+        valueJson: {
           evidence_rule: {
             field_name: fill.field_name,
             confidence: fill.confidence,
@@ -6445,17 +6599,9 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
             applied_at: now,
           },
           source: "EVIDENCE_RULE",
-        }),
-        fill.source_type,
-        fill.source_ref,
-        now,
-        draftId,
-        fill.field_id,
-      )
-      saved.push({
-        field_id: fill.field_id,
-        field_name: fill.field_name,
-        field_value: fill.field_value,
+        },
+        sourceType: fill.source_type,
+        sourceRef: fill.source_ref,
         source: "EVIDENCE_RULE",
         confidence: fill.confidence,
       })
@@ -6472,9 +6618,11 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
         ? aiValue
         : normalizeProductArchiveAiFillValue(field.fieldName, field.currentValue, aiValue, field.options)
       if (!fieldValue || !productArchiveFieldValueMatchesOptions(fieldValue, field.options)) continue
-      updateField.run(
+      applyFieldFill({
+        fieldId: field.id,
+        fieldName: field.fieldName,
         fieldValue,
-        jsonText(materialFill
+        valueJson: materialFill
           ? {
               material_composition_rule: materialFill,
               source: "MATERIAL_COMPOSITION_RULE",
@@ -6483,26 +6631,17 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
               ai_fill: aiFill,
               field_strategy: field.strategy,
               source: "AI_SUGGESTED",
-            }),
-        materialFill ? "source_rule" : "ai",
-        null,
-        now,
-        draftId,
-        field.id,
-      )
-      saved.push({
-        field_id: field.id,
-        field_name: field.fieldName,
-        field_value: fieldValue,
+            },
+        sourceType: materialFill ? "source_rule" : "ai",
+        sourceRef: null,
         source: materialFill ? "MATERIAL_COMPOSITION_RULE" : "AI_SUGGESTED",
         confidence,
       })
     }
     db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(now, draftId)
+    rebuildProductArchiveDraftFields(db, draftId)
+    return validateProductArchiveDraft(db, draftId)
   })()
-
-  rebuildProductArchiveDraftFields(db, draftId)
-  const validated = validateProductArchiveDraft(db, draftId)
   return { saved, detail: validated.detail, warnings }
 }
 
@@ -6702,11 +6841,12 @@ export function saveProductArchiveSizeChartMappings(db: SyncPostgresDatabase, dr
   mappings?: JsonRecord[]
   applyToDraft?: boolean
 }) {
-  const draft = draftById(db, draftId)
   const mappings = Array.isArray(input.mappings) ? input.mappings : []
   const now = nowIso()
   const saved: JsonRecord[] = []
-  db.transaction(() => {
+  const validated = db.transaction(() => {
+    assertProductArchiveDraftMutable(db, draftId)
+    const draft = draftById(db, draftId)
     const saveMapping = db.prepare(`
       insert into product_archive_size_chart_mapping (
         tenant_name,
@@ -6755,12 +6895,11 @@ export function saveProductArchiveSizeChartMappings(db: SyncPostgresDatabase, dr
       )
       saved.push({ ...mapping, reviewStatus })
     }
-  })()
-  if (input.applyToDraft) {
+    if (!input.applyToDraft) return null
     rebuildProductArchiveDraftFields(db, draftId)
-    const validated = validateProductArchiveDraft(db, draftId)
-    return { draftId, saved, detail: validated.detail }
-  }
+    return validateProductArchiveDraft(db, draftId)
+  })()
+  if (validated) return { draftId, saved, detail: validated.detail }
   return { draftId, saved }
 }
 
@@ -6768,8 +6907,14 @@ function sizeChartAllowedSizes(_fields: JsonRecord[], skus: JsonRecord[]) {
   return draftSkuSizeValues(skus)
 }
 
-export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: number) {
-  const draft = draftById(db, draftId)
+export function validateProductArchiveDraft(
+  db: SyncPostgresDatabase,
+  draftId: number,
+  options: { claimToken?: string | null } = {},
+) {
+  return db.transaction(() => {
+    assertProductArchiveDraftMutable(db, draftId, { claimToken: options.claimToken })
+    const draft = draftById(db, draftId)
   const fields = db.prepare("select * from product_archive_draft_field where draft_id = ?").all(draftId) as JsonRecord[]
   const skus = db.prepare("select * from product_archive_draft_sku where draft_id = ?").all(draftId) as JsonRecord[]
   const templateLookup = fieldOptionsLookup(db, draft)
@@ -6902,25 +7047,37 @@ export function validateProductArchiveDraft(db: SyncPostgresDatabase, draftId: n
   }
   const status = productArchiveDraftStatusFromValidationIssues(issues, fields)
 
-  db.transaction(() => {
-    db.prepare("delete from product_archive_validation_issue where draft_id = ?").run(draftId)
-    const insertIssue = db.prepare(`
-      insert into product_archive_validation_issue(draft_id, severity, issue_type, field_name, sku_code, message)
-      values (?, ?, ?, ?, ?, ?)
-    `)
-    for (const issue of issues) {
-      insertIssue.run(draftId, issue.severity, issue.issueType, issue.fieldName ?? null, issue.skuCode ?? null, issue.message)
-    }
-    db.prepare(`
-      update product_archive_draft
-      set status = ?,
-        validation_summary_json = ?::jsonb,
-        updated_at = ?::timestamptz
-      where id = ?
-    `).run(status, jsonText(summary), now, draftId)
-  })()
+  db.prepare("delete from product_archive_validation_issue where draft_id = ?").run(draftId)
+  const insertIssue = db.prepare(`
+    insert into product_archive_validation_issue(draft_id, severity, issue_type, field_name, sku_code, message)
+    values (?, ?, ?, ?, ?, ?)
+  `)
+  for (const issue of issues) {
+    insertIssue.run(draftId, issue.severity, issue.issueType, issue.fieldName ?? null, issue.skuCode ?? null, issue.message)
+  }
+  const draftUpdate = options.claimToken != null
+    ? db.prepare(`
+        update product_archive_draft
+        set status = case when submit_claim_token is null then ? else status end,
+          validation_summary_json = ?::jsonb,
+          updated_at = ?::timestamptz
+        where id = ?
+          and submit_claim_token = ?
+      `).run(status, jsonText(summary), now, draftId, options.claimToken)
+    : db.prepare(`
+        update product_archive_draft
+        set status = case when submit_claim_token is null then ? else status end,
+          validation_summary_json = ?::jsonb,
+          updated_at = ?::timestamptz
+        where id = ?
+          and submit_claim_token is null
+      `).run(status, jsonText(summary), now, draftId)
+  if (Number(draftUpdate?.changes ?? 0) === 0) {
+    throw new Error("草稿提交权已失效，请刷新后重试")
+  }
 
   return { status, summary, issues, detail: serializeDraftDetail(db, draftId) }
+  })()
 }
 
 export function isStructuredProductPayloadField(field: JsonRecord) {
@@ -6955,6 +7112,28 @@ function isStaleSizeChartScalarOverride(fieldName: unknown, field: JsonRecord) {
   return key.includes("尺码表")
     && !hasValue(recordValue(field.value_json))
     && hasValue(stringValue(field.value_text))
+}
+
+function aiFillFieldSnapshot(field: JsonRecord) {
+  const updatedAt = field.updated_at == null
+    ? null
+    : field.updated_at instanceof Date
+      ? field.updated_at.toISOString()
+      : String(field.updated_at)
+  return {
+    fieldName: stringValue(field.field_name),
+    fieldId: field.field_id == null ? null : stringValue(field.field_id) || null,
+    sourceType: field.source_type == null ? null : stringValue(field.source_type) || null,
+    sourceRef: field.source_ref == null ? null : stringValue(field.source_ref) || null,
+    valueText: field.value_text == null ? null : String(field.value_text),
+    valueJson: recordValue(field.value_json),
+    required: Boolean(field.required),
+    blocking: Boolean(field.blocking),
+    manualOverride: Boolean(field.manual_override),
+    validationStatus: field.validation_status == null ? null : stringValue(field.validation_status) || null,
+    validationMessage: field.validation_message == null ? null : stringValue(field.validation_message) || null,
+    updatedAt,
+  }
 }
 
 export function productArchivePayloadFieldValue(field: JsonRecord) {
@@ -7052,6 +7231,30 @@ function writeSubmitLog(
   )
 }
 
+export function recordProductArchiveSubmitTransportUnknown(
+  db: SyncPostgresDatabase,
+  input: {
+    draftId: number
+    claimToken: string
+    requestSummary: unknown
+    message: string
+  },
+) {
+  db.transaction(() => {
+    writeSubmitLog(db, input.draftId, "create", {
+      requestSummary: input.requestSummary,
+      responseReason: input.message,
+    })
+    db.prepare(`
+      update product_archive_draft
+      set duplicate_result_json = jsonb_set(coalesce(duplicate_result_json, '{}'::jsonb), '{submit_transport_unknown}', to_jsonb(?::text), true),
+        updated_at = ?::timestamptz
+      where id = ?
+        and submit_claim_token = ?
+    `).run(input.message, nowIso(), input.draftId, input.claimToken)
+  })()
+}
+
 function assertDeepdrawProductArchiveSuccess(result: DeepdrawResult, type: string) {
   const payload = recordValue(result.payload)
   const business = deepdrawBusinessResult(payload)
@@ -7130,17 +7333,38 @@ export async function checkDuplicateProductArchiveDraft(db: SyncPostgresDatabase
     requestId: result.requestId ?? null,
   }
   db.transaction(() => {
+    const update = options.claimToken
+      ? db.prepare(`
+          update product_archive_draft
+          set status = case when ? then 'duplicate_found' else status end,
+            submit_claim_token = case when ? then null else submit_claim_token end,
+            duplicate_result_json = ?::jsonb,
+            updated_at = ?::timestamptz
+          where id = ?
+            and submit_claim_token = ?
+          returning id
+        `).get(
+          duplicateFound,
+          duplicateFound,
+          jsonText(sanitizeDeepdrawLogPayload(summary)),
+          nowIso(),
+          draftId,
+          options.claimToken,
+        )
+      : db.prepare(`
+          update product_archive_draft
+          set status = case when ? then 'duplicate_found' else status end,
+            duplicate_result_json = ?::jsonb,
+            updated_at = ?::timestamptz
+          where id = ?
+            and submit_claim_token is null
+          returning id
+        `).get(duplicateFound, jsonText(sanitizeDeepdrawLogPayload(summary)), nowIso(), draftId)
+    if (!update) throw new Error("草稿提交权已失效，请刷新后重试")
     writeSubmitLog(db, draftId, "search", {
       ...result,
       requestSummary: { spuCode: draft.spu_code, tenantName: draft.tenant_name },
     })
-    db.prepare(`
-      update product_archive_draft
-      set status = case when ? then 'duplicate_found' else status end,
-        duplicate_result_json = ?::jsonb,
-        updated_at = ?::timestamptz
-      where id = ?
-    `).run(duplicateFound, jsonText(sanitizeDeepdrawLogPayload(summary)), nowIso(), draftId)
   })()
   return summary
 }
@@ -7150,31 +7374,141 @@ export async function checkDuplicateProductArchiveDraft(db: SyncPostgresDatabase
  * A transport timeout leaves the row in `submitting`, which is intentionally
  * outside the claimable statuses so a retry cannot blindly create a duplicate.
  */
-export function claimProductArchiveDraftForSubmit(db: SyncPostgresDatabase, draftId: number, now = nowIso()) {
+export function claimProductArchiveDraftForSubmit(
+  db: SyncPostgresDatabase,
+  draftId: number,
+  now = nowIso(),
+  claimToken = randomUUID(),
+) {
   return db.prepare(`
+    with previous as (
+      select id, status as submit_claim_previous_status
+      from product_archive_draft
+      where id = $3
+        and submit_claim_token is null
+        and status in ('draft', 'missing_fields', 'manual_review', 'ready', 'update_pending')
+      for update
+    )
     update product_archive_draft
     set status = 'submitting',
+      submit_claim_token = ?,
+      updated_at = ?::timestamptz
+    from previous
+    where product_archive_draft.id = previous.id
+      and product_archive_draft.submit_claim_token is null
+      and product_archive_draft.status in ('draft', 'missing_fields', 'manual_review', 'ready', 'update_pending')
+    returning product_archive_draft.*, previous.submit_claim_previous_status
+  `).get(claimToken, now, draftId) as JsonRecord | undefined
+}
+
+const PRODUCT_ARCHIVE_SUBMIT_CLAIMABLE_STATUSES = new Set([
+  "draft",
+  "missing_fields",
+  "manual_review",
+  "ready",
+  "update_pending",
+])
+
+function restoreProductArchiveDraftAfterSubmitPreparationFailure(
+  db: SyncPostgresDatabase,
+  draftId: number,
+  claimToken: string,
+  previousStatusValue: unknown,
+) {
+  const previousStatus = stringValue(previousStatusValue)
+  // A missing or unexpected previous status must not silently turn a claimed
+  // row into a claimable `ready` draft. The claim remains fenced for manual
+  // reconciliation in that impossible/malformed adapter case.
+  if (!PRODUCT_ARCHIVE_SUBMIT_CLAIMABLE_STATUSES.has(previousStatus)) return false
+  const result = db.prepare(`
+    update product_archive_draft
+    set status = ?,
+      submit_claim_token = null,
       updated_at = ?::timestamptz
     where id = ?
-      and status in ('draft', 'missing_fields', 'manual_review', 'ready', 'update_pending')
-    returning *
-  `).get(now, draftId) as JsonRecord | undefined
+      and submit_claim_token = ?
+  `).run(previousStatus, nowIso(), draftId, claimToken)
+  return Number(result?.changes ?? 0) > 0
+}
+
+function prepareProductArchiveDraftDryRun(db: SyncPostgresDatabase, draftId: number) {
+  return db.transaction(() => {
+    assertProductArchiveDraftMutable(db, draftId)
+    refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
+    rebuildProductArchiveDraftFields(db, draftId)
+    validateProductArchiveDraft(db, draftId)
+    return productPayload(db, draftId)
+  })()
 }
 
 export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftId: number, options: SubmitOptions = {}) {
-  refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
-  rebuildProductArchiveDraftFields(db, draftId)
-  const validation = validateProductArchiveDraft(db, draftId)
-  const payload = productPayload(db, draftId)
-  const summary = { fieldCount: payload.fields.length, skuCount: payload.skus.length }
   if (options.dryRun) {
+    const currentDraft = draftById(db, draftId)
+    if (currentDraft.submit_claim_token) throw new Error("草稿正在提交，暂不能生成新预览")
+    const payload = prepareProductArchiveDraftDryRun(db, draftId)
+    const summary = { fieldCount: payload.fields.length, skuCount: payload.skus.length }
     writeSubmitLog(db, draftId, "dry_run", { requestSummary: summary, status: 200, payload: { dryRun: true } })
     return { dryRun: true, payload, summary }
   }
+
+  const claimedDraft = claimProductArchiveDraftForSubmit(db, draftId)
+  if (!claimedDraft) {
+    const currentDraft = draftById(db, draftId)
+    return {
+      alreadySubmitting: Boolean(currentDraft?.submit_claim_token) || stringValue(currentDraft?.status) === "submitting",
+      status: stringValue(currentDraft?.status),
+      draftId,
+    }
+  }
+  const claimToken = stringValue(claimedDraft.submit_claim_token)
+  let validation: ReturnType<typeof validateProductArchiveDraft>
+  let payload: ReturnType<typeof productPayload>
+  try {
+    const prepared = db.transaction(() => {
+      assertProductArchiveDraftMutable(db, draftId, { claimToken })
+      refreshDraftTradeSelectionFromLaunchPlan(db, draftId, { claimToken })
+      rebuildProductArchiveDraftFields(db, draftId)
+      const nextValidation = validateProductArchiveDraft(db, draftId, { claimToken })
+      const nextPayload = productPayload(db, draftId)
+      return { validation: nextValidation, payload: nextPayload }
+    })()
+    validation = prepared.validation
+    payload = prepared.payload
+  } catch (error) {
+    restoreProductArchiveDraftAfterSubmitPreparationFailure(
+      db,
+      draftId,
+      claimToken,
+      claimedDraft.submit_claim_previous_status,
+    )
+    throw error
+  }
+  const summary = { fieldCount: payload.fields.length, skuCount: payload.skus.length }
   if (validation.summary.blocker_count > 0) {
+    db.prepare(`
+      update product_archive_draft
+      set status = ?,
+        submit_claim_token = null,
+        updated_at = ?::timestamptz
+      where id = ?
+        and submit_claim_token = ?
+    `).run(validation.status, nowIso(), draftId, claimToken)
     throw new Error("草稿存在阻断问题，不能提交")
   }
-  const duplicate = await checkDuplicateProductArchiveDraft(db, draftId, options)
+  let duplicate
+  try {
+    duplicate = await checkDuplicateProductArchiveDraft(db, draftId, { ...options, claimToken })
+  } catch (error) {
+    db.prepare(`
+      update product_archive_draft
+      set submit_claim_token = null,
+        status = case when status = 'submitting' then 'ready' else status end,
+        updated_at = ?::timestamptz
+      where id = ?
+        and submit_claim_token = ?
+    `).run(nowIso(), draftId, claimToken)
+    throw error
+  }
   if (duplicate.duplicateFound) return { duplicateFound: true, duplicate }
 
   const draft = draftById(db, draftId)
@@ -7189,35 +7523,17 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
       timeoutMs: Number(process.env.DEEPDRAW_TIMEOUT_MS ?? 30000),
     }) as DeepdrawResult
   })
-  const claimedDraft = claimProductArchiveDraftForSubmit(db, draftId)
-  if (!claimedDraft) {
-    const currentDraft = draftById(db, draftId)
-    return {
-      alreadySubmitting: stringValue(currentDraft?.status) === "submitting",
-      status: stringValue(currentDraft?.status),
-      draftId,
-    }
-  }
   let result: DeepdrawResult
   try {
     result = await runCreate(payload)
   } catch (error) {
     const createError = error instanceof Error ? error : new Error(String(error))
-    db.transaction(() => {
-      writeSubmitLog(db, draftId, "create", {
-        requestSummary: summary,
-        responseReason: createError.message,
-      })
-      // Transport uncertainty intentionally does not set status = 'failed':
-      // the submitting claim blocks blind duplicate creates until reconciliation.
-      db.prepare(`
-        update product_archive_draft
-        set duplicate_result_json = jsonb_set(coalesce(duplicate_result_json, '{}'::jsonb), '{submit_transport_unknown}', to_jsonb(?::text), true),
-          updated_at = ?::timestamptz
-        where id = ?
-          and status = 'submitting'
-      `).run(createError.message, nowIso(), draftId)
-    })()
+    recordProductArchiveSubmitTransportUnknown(db, {
+      draftId,
+      claimToken,
+      requestSummary: summary,
+      message: createError.message,
+    })
     throw createError
   }
   const body = deepdrawBusinessResult(result.payload).body
@@ -7235,16 +7551,27 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
       set status = ?,
         created_product_id = ?,
         created_product_code = ?,
+        submit_claim_token = case when ? then null else submit_claim_token end,
         updated_at = ?::timestamptz
       where id = ?
-    `).run(createError ? "failed" : "created", productId || null, stringValue(body.code) || stringValue(payload.code), nowIso(), draftId)
+        and submit_claim_token = ?
+    `).run(
+      createError ? "failed" : "created",
+      productId || null,
+      stringValue(body.code) || stringValue(payload.code),
+      Boolean(createError),
+      nowIso(),
+      draftId,
+      claimToken,
+    )
   })()
   if (createError) throw createError
-  return await readbackProductArchiveDraft(db, draftId, options)
+  return await readbackProductArchiveDraft(db, draftId, { ...options, claimToken })
 }
 
 export async function readbackProductArchiveDraft(db: SyncPostgresDatabase, draftId: number, options: SubmitOptions = {}) {
   const draft = draftById(db, draftId)
+  const claimToken = options.claimToken ?? stringValue(draft.submit_claim_token)
   const runReadback = options.readback ?? (async () => {
     const config = resolveDeepdrawConfig({
       projectRoot: options.projectRoot,
@@ -7257,7 +7584,21 @@ export async function readbackProductArchiveDraft(db: SyncPostgresDatabase, draf
       timeoutMs: Number(process.env.DEEPDRAW_TIMEOUT_MS ?? 30000),
     }) as DeepdrawResult
   })
-  const result = await runReadback()
+  let result: DeepdrawResult
+  try {
+    result = await runReadback()
+  } catch (error) {
+    if (claimToken) {
+      db.prepare(`
+        update product_archive_draft
+        set duplicate_result_json = jsonb_set(coalesce(duplicate_result_json, '{}'::jsonb), '{submit_readback_unknown}', to_jsonb(?::text), true),
+          updated_at = ?::timestamptz
+        where id = ?
+          and submit_claim_token = ?
+      `).run(error instanceof Error ? error.message : String(error), nowIso(), draftId, claimToken)
+    }
+    throw error
+  }
   const body = deepdrawBusinessResult(result.payload).body
   const titleMatches = !stringValue(draft.title) || !stringValue(body.title) || stringValue(draft.title) === stringValue(body.title)
   const status = result.ok && titleMatches ? "readback_verified" : "readback_mismatch"
@@ -7267,12 +7608,28 @@ export async function readbackProductArchiveDraft(db: SyncPostgresDatabase, draf
       requestSummary: { spuCode: draft.spu_code },
       productId: stringValue(body.productId ?? body.id) || stringValue(draft.created_product_id) || null,
     })
-    db.prepare(`
-      update product_archive_draft
-      set status = ?,
-        updated_at = ?::timestamptz
-      where id = ?
-    `).run(status, nowIso(), draftId)
+    if (claimToken) {
+      const updated = db.prepare(`
+        update product_archive_draft
+        set status = ?,
+          submit_claim_token = null,
+          updated_at = ?::timestamptz
+        where id = ?
+          and submit_claim_token = ?
+        returning id
+      `).get(status, nowIso(), draftId, claimToken)
+      if (!updated) throw new Error("草稿提交权已失效，回读结果未写入")
+    } else {
+      const updated = db.prepare(`
+        update product_archive_draft
+        set status = ?,
+          updated_at = ?::timestamptz
+        where id = ?
+          and submit_claim_token is null
+        returning id
+      `).get(status, nowIso(), draftId)
+      if (!updated) throw new Error("草稿正在由其他请求提交，回读结果未写入")
+    }
   })()
   return { ok: result.ok, status, result }
 }

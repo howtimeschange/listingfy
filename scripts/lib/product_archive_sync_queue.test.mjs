@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import {
+  createPostgresProductArchiveSyncJobStore,
   createProductArchiveSyncQueue,
   parseSpuCodes,
 } from "./product_archive_sync_queue.mjs";
@@ -366,6 +367,446 @@ test("queue recovers persisted running jobs and keeps completed jobs readable af
     },
   });
   assert.equal(restarted.getJob(persisted.id).status, "completed");
+});
+
+test("a recovered worker that loses its PostgreSQL lease stops before the external sync", async () => {
+  let syncCalls = 0;
+  const queue = createProductArchiveSyncQueue({
+    autoRecover: false,
+    store: {
+      requiresLease: true,
+      recover: () => [{
+        id: "stale-lease-job",
+        source: "mdm",
+        status: "running",
+        interval_ms: 0,
+        options: { deepdrawTenantName: null },
+        codes: ["208226102001"],
+        total_count: 1,
+        completed_count: 0,
+        failed_count: 0,
+        created_at: "2026-08-19T00:00:00.000Z",
+        started_at: "2026-08-19T00:00:01.000Z",
+        finished_at: null,
+        items: [{
+          spu_code: "208226102001",
+          status: "running",
+          started_at: "2026-08-19T00:00:01.000Z",
+          finished_at: null,
+          result: null,
+          error: null,
+          attempt_count: 0,
+          max_attempts: 1,
+          next_retry_at: null,
+        }],
+      }],
+      save: () => false,
+      get: () => null,
+    },
+    syncOne: async () => {
+      syncCalls += 1;
+      return { ok: true };
+    },
+  });
+
+  queue.resume();
+  await queue.waitForIdle();
+
+  assert.equal(syncCalls, 0);
+});
+
+test("queue renews a held lease repeatedly during a long sync and clears its timer", async () => {
+  const renewals = [];
+  let heartbeat = null;
+  let clearCount = 0;
+  let resolveSync;
+  let resolveStarted;
+  const syncStarted = new Promise((resolve) => {
+    resolveStarted = resolve;
+  });
+  const store = {
+    requiresLease: true,
+    leaseRenewIntervalMs: 5,
+    save: () => true,
+    renew: (id) => {
+      renewals.push(id);
+      return true;
+    },
+  };
+  const queue = createProductArchiveSyncQueue({
+    store,
+    onInternalError: () => {},
+    setIntervalFn: (callback, intervalMs) => {
+      assert.equal(intervalMs, 5);
+      heartbeat = callback;
+      return { unref() {} };
+    },
+    clearIntervalFn: () => {
+      clearCount += 1;
+    },
+    syncOne: async () => {
+      resolveStarted();
+      return new Promise((resolve) => {
+        resolveSync = resolve;
+      });
+    },
+  });
+
+  const job = queue.enqueue({ source: "mdm", rawCodes: ["208226102001"] });
+  await syncStarted;
+  assert.equal(typeof heartbeat, "function");
+  heartbeat();
+  heartbeat();
+  resolveSync({ ok: true });
+  await queue.waitForIdle();
+
+  assert.deepEqual(renewals, [job.id, job.id]);
+  assert.equal(clearCount, 1);
+  assert.equal(queue.getJob(job.id).status, "completed");
+});
+
+test("a lost lease fences the in-flight result and all subsequent items", async () => {
+  let heartbeat = null;
+  let clearCount = 0;
+  let resolveSync;
+  let resolveStarted;
+  let syncCalls = 0;
+  const syncStarted = new Promise((resolve) => {
+    resolveStarted = resolve;
+  });
+  const saved = [];
+  const store = {
+    requiresLease: true,
+    leaseRenewIntervalMs: 5,
+    save: (job) => {
+      saved.push(structuredClone(job));
+      return true;
+    },
+    renew: () => false,
+  };
+  const queue = createProductArchiveSyncQueue({
+    store,
+    onInternalError: () => {},
+    setIntervalFn: (callback) => {
+      heartbeat = callback;
+      return { unref() {} };
+    },
+    clearIntervalFn: () => {
+      clearCount += 1;
+    },
+    syncOne: async () => {
+      syncCalls += 1;
+      resolveStarted();
+      return new Promise((resolve) => {
+        resolveSync = resolve;
+      });
+    },
+  });
+
+  const job = queue.enqueue({
+    source: "mdm",
+    rawCodes: ["208226102001", "208226103201"],
+    intervalMs: 0,
+  });
+  await syncStarted;
+  heartbeat();
+  resolveSync({ shouldNotPersist: true });
+  await queue.waitForIdle();
+
+  assert.equal(syncCalls, 1);
+  assert.equal(clearCount, 1);
+  assert.equal(queue.getJob(job.id), null);
+  assert.equal(saved.some((entry) => entry.status === "completed"), false);
+  assert.equal(saved.some((entry) => entry.items.some((item) => item.spu_code === "208226103201" && item.status !== "queued")), false);
+});
+
+test("lease loss evicts the stale local snapshot so a recovered owner state is readable", async () => {
+  let heartbeat = null;
+  let resolveSync;
+  let resolveStarted;
+  let stored = null;
+  const syncStarted = new Promise((resolve) => {
+    resolveStarted = resolve;
+  });
+  const store = {
+    requiresLease: true,
+    leaseRenewIntervalMs: 5,
+    save: (job) => {
+      stored = structuredClone(job);
+      return true;
+    },
+    get: () => structuredClone(stored),
+    renew: () => false,
+  };
+  const queue = createProductArchiveSyncQueue({
+    store,
+    onInternalError: () => {},
+    setIntervalFn: (callback) => {
+      heartbeat = callback;
+      return { unref() {} };
+    },
+    clearIntervalFn: () => {},
+    syncOne: async () => {
+      resolveStarted();
+      return new Promise((resolve) => {
+        resolveSync = resolve;
+      });
+    },
+  });
+
+  const job = queue.enqueue({ source: "mdm", rawCodes: ["208226102001"] });
+  await syncStarted;
+  heartbeat();
+  stored = {
+    ...stored,
+    status: "completed",
+    outcome: "succeeded",
+    completed_count: 1,
+    finished_at: "2026-08-19T00:01:00.000Z",
+    items: [{
+      spu_code: "208226102001",
+      status: "completed",
+      result: { recovered: true },
+    }],
+  };
+  resolveSync({ stale: true });
+  await queue.waitForIdle();
+
+  assert.equal(queue.getJob(job.id).status, "completed");
+  assert.deepEqual(queue.getJob(job.id).items[0].result, { recovered: true });
+});
+
+test("lease heartbeat runs while retry and item interval waits are pending", async () => {
+  let heartbeat = null;
+  let clearCount = 0;
+  let renewCount = 0;
+  let attempts = 0;
+  const queue = createProductArchiveSyncQueue({
+    store: {
+      requiresLease: true,
+      leaseRenewIntervalMs: 5,
+      save: () => true,
+      renew: () => {
+        renewCount += 1;
+        return true;
+      },
+    },
+    maxAttempts: 2,
+    retryDelayMs: 5,
+    onInternalError: () => {},
+    setIntervalFn: (callback) => {
+      heartbeat = callback;
+      return { unref() {} };
+    },
+    clearIntervalFn: () => {
+      clearCount += 1;
+    },
+    wait: async () => {
+      heartbeat?.();
+    },
+    syncOne: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("network timeout");
+      return { ok: true };
+    },
+  });
+
+  const job = queue.enqueue({
+    source: "mdm",
+    rawCodes: ["208226102001", "208226103201"],
+    intervalMs: 5,
+  });
+  await queue.waitForIdle();
+
+  assert.equal(queue.getJob(job.id).status, "completed");
+  assert.ok(renewCount >= 2);
+  assert.equal(clearCount, 1);
+});
+
+test("lease heartbeat timer is cleared after a terminal sync exception", async () => {
+  let clearCount = 0;
+  const queue = createProductArchiveSyncQueue({
+    store: {
+      requiresLease: true,
+      leaseRenewIntervalMs: 5,
+      save: () => true,
+      renew: () => true,
+    },
+    onInternalError: () => {},
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {
+      clearCount += 1;
+    },
+    syncOne: async () => {
+      throw new Error("terminal sync failure");
+    },
+  });
+
+  const job = queue.enqueue({ source: "mdm", rawCodes: ["208226102001"] });
+  await queue.waitForIdle();
+
+  assert.equal(clearCount, 1);
+  assert.equal(queue.getJob(job.id).status, "completed");
+  assert.equal(queue.getJob(job.id).items[0].status, "failed");
+});
+
+test("queue without a persistent store keeps its existing no-heartbeat behavior", async () => {
+  let intervalCalled = false;
+  const queue = createProductArchiveSyncQueue({
+    setIntervalFn: () => {
+      intervalCalled = true;
+      return { unref() {} };
+    },
+    syncOne: async () => ({ ok: true }),
+  });
+
+  queue.enqueue({ source: "mdm", rawCodes: ["208226102001"] });
+  await queue.waitForIdle();
+
+  assert.equal(intervalCalled, false);
+});
+
+test("PostgreSQL job recovery atomically claims rows with lease fencing", async () => {
+  const source = await readFile(path.join(path.resolve(import.meta.dirname, "../.."), "scripts/lib/product_archive_sync_queue.mjs"), "utf8");
+  const leaseMigration = await readFile(
+    path.join(path.resolve(import.meta.dirname, "../.."), "db/migrations/051_product_archive_sync_job_leases.sql"),
+    "utf8",
+  ).catch(() => "");
+
+  assert.equal(typeof createPostgresProductArchiveSyncJobStore, "function");
+  assert.match(source, /for update skip locked/i);
+  assert.match(source, /lease_token/i);
+  assert.match(source, /lease_expires_at/i);
+  assert.match(source, /on conflict[\s\S]*where product_archive_sync_job\.lease_token = excluded\.lease_token/i);
+  assert.match(leaseMigration, /add column if not exists lease_token text/i);
+  assert.match(leaseMigration, /add column if not exists lease_expires_at timestamptz/i);
+  assert.match(leaseMigration, /add column if not exists lease_version bigint/i);
+});
+
+test("PostgreSQL lease renew extends only the matching queue job token", () => {
+  const calls = [];
+  const db = {
+    prepare(sql) {
+      return {
+        get(...args) {
+          calls.push({ sql, args });
+          if (/insert into product_archive_sync_job/i.test(sql)) {
+            return { lease_token: args[5], lease_version: 1 };
+          }
+          return { id: args[2] };
+        },
+      };
+    },
+  };
+  const store = createPostgresProductArchiveSyncJobStore({
+    getDb: () => db,
+    queueName: "product_archives",
+    leaseMs: 60000,
+  });
+  const job = {
+    id: "renew-job-1",
+    source: "mdm",
+    status: "running",
+    payload: true,
+    codes: ["208226102001"],
+    options: {},
+    items: [],
+    created_at: "2026-08-19T00:00:00.000Z",
+  };
+
+  assert.equal(store.save(job), true);
+  assert.equal(store.renew(job.id), true);
+
+  const renewCall = calls.at(-1);
+  assert.match(renewCall.sql, /update product_archive_sync_job/i);
+  assert.match(renewCall.sql, /set lease_expires_at[\s\S]*updated_at/);
+  assert.match(renewCall.sql, /where queue_name = \?[\s\S]*id = \?[\s\S]*lease_token = \?/);
+  assert.doesNotMatch(renewCall.sql, /payload_json\s*=|status\s*=\s*excluded/i);
+  assert.equal(renewCall.args[0], 60000);
+  assert.equal(renewCall.args[1], "product_archives");
+  assert.equal(renewCall.args[2], job.id);
+  assert.equal(typeof renewCall.args[3], "string");
+  assert.ok(renewCall.args[3].length > 0);
+  assert.equal(store.leaseRenewIntervalMs, 20000);
+});
+
+test("PostgreSQL save fencing failure evicts the claim before the next renew", () => {
+  let saveCalls = 0;
+  let prepareCalls = 0;
+  const db = {
+    prepare(sql) {
+      return {
+        get(...args) {
+          if (!/insert into product_archive_sync_job/i.test(sql)) return { id: args[2] };
+          prepareCalls += 1;
+          if (saveCalls++ === 0) return { lease_token: args[5], lease_version: 1 };
+          return null;
+        },
+      };
+    },
+  };
+  const store = createPostgresProductArchiveSyncJobStore({
+    getDb: () => db,
+    queueName: "product_archives",
+  });
+  const job = {
+    id: "fenced-save-job",
+    source: "mdm",
+    status: "running",
+    codes: ["208226102001"],
+    options: {},
+    items: [],
+    created_at: "2026-08-19T00:00:00.000Z",
+  };
+
+  assert.equal(store.save(job), true);
+  assert.equal(store.save({ ...job, status: "running" }), false);
+  const callsAfterFence = prepareCalls;
+  assert.equal(store.renew(job.id), false);
+  assert.equal(prepareCalls, callsAfterFence);
+});
+
+test("PostgreSQL job recovery drains bounded batches without duplicates", () => {
+  const persisted = Array.from({ length: 3 }, (_, index) => ({
+    id: `recovery-job-${index + 1}`,
+    payload_json: JSON.stringify({
+      id: `recovery-job-${index + 1}`,
+      source: "mdm",
+      status: "queued",
+    }),
+  }));
+  const prepareCalls = [];
+  const allBatchSizes = [];
+  const db = {
+    prepare(sql) {
+      prepareCalls.push(sql);
+      return {
+        all(_queueName, limit, _workerToken, _leaseMs) {
+          const rows = persisted.splice(0, limit);
+          allBatchSizes.push(rows.length);
+          return rows;
+        },
+      };
+    },
+  };
+
+  const store = createPostgresProductArchiveSyncJobStore({
+    getDb: () => db,
+    queueName: "product_archives",
+    recoveryBatchSize: 2,
+  });
+  const recovered = store.recover();
+
+  assert.deepEqual(recovered.map((job) => job.id), [
+    "recovery-job-1",
+    "recovery-job-2",
+    "recovery-job-3",
+  ]);
+  assert.deepEqual(allBatchSizes, [2, 1]);
+  assert.equal(prepareCalls.length, 2);
+  assert.ok(prepareCalls.every((sql) => /for update\s+skip locked/i.test(sql)));
+  assert.ok(prepareCalls.every((sql) => /limit \?/i.test(sql)));
+  assert.equal(persisted.length, 0);
 });
 
 test("product archive and draft routes use separate PostgreSQL-backed queue stores", async () => {

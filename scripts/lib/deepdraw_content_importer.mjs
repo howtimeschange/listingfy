@@ -49,16 +49,17 @@ function prepareStatements(db) {
   return {
     package: db.prepare(`
       insert into product_content_package (
-        source_system, source_code, spu_code, deepdraw_product_id, deepdraw_body_id,
+        tenant_name, source_system, source_code, spu_code, deepdraw_product_id, deepdraw_body_id,
         title, brand_name, category_id, category_name, trade_path, retail_price,
         primary_color, version, complete, create_date, last_update_date, onsale_date,
         places_json, colors_json, sizes_json, response_code, response_text, reason,
         request_id, raw_payload_json, raw_response_json, source_hash, sync_batch_id,
         synced_at, updated_at
       )
-      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      on conflict(source_system, source_code)
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict (tenant_name, source_system, source_code)
       do update set
+        tenant_name = excluded.tenant_name,
         spu_code = excluded.spu_code,
         deepdraw_product_id = excluded.deepdraw_product_id,
         deepdraw_body_id = excluded.deepdraw_body_id,
@@ -170,8 +171,9 @@ function prepareStatements(db) {
   };
 }
 
-function insertPackage(stmt, row, syncBatchId, updatedAt) {
+function insertPackage(stmt, row, tenantName, syncBatchId, updatedAt) {
   return stmt.get(
+    tenantName,
     row.sourceSystem,
     row.sourceCode,
     row.spuCode,
@@ -418,6 +420,7 @@ export function importDeepdrawPayloads(db, {
   payloads,
   sourceDir = null,
   manifest = {},
+  tenantName = manifest?.tenant_name,
   syncedAt = currentIso(),
 } = {}) {
   if (!Array.isArray(payloads) || payloads.length === 0) {
@@ -425,6 +428,7 @@ export function importDeepdrawPayloads(db, {
   }
 
   const statements = prepareStatements(db);
+  const effectiveTenantName = String(tenantName || "legacy").trim() || "legacy";
   const updatedAt = currentIso();
   return runInTransaction(db, () => {
     const syncBatchId = upsertSyncBatch(db, { sourceDir, manifest });
@@ -447,11 +451,12 @@ export function importDeepdrawPayloads(db, {
         productCode: item.productCode,
         syncedAt,
       });
-      const packageId = insertPackage(statements.package, rows.package, syncBatchId, updatedAt);
+      const packageId = insertPackage(statements.package, rows.package, effectiveTenantName, syncBatchId, updatedAt);
       clearPackageChildren(statements, packageId);
       importRows(statements, rows, { packageId, syncBatchId, updatedAt });
       addCounts(counts, rows);
       products.push({
+        tenantName: effectiveTenantName,
         spuCode: rows.package.spuCode,
         packageId,
         skcs: rows.skcs.length,

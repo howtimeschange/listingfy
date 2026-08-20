@@ -276,7 +276,7 @@ function listUnmappedGroups(db: ReturnType<typeof getDb>, limit: number, spuCode
         json_group_array(distinct spu.spu_code) as spus,
         count(distinct spu.spu_code) as spu_count
       from product_spu spu
-      left join product_content_package pkg on pkg.spu_code = spu.spu_code
+      left join v_latest_product_content_package pkg on pkg.spu_code = spu.spu_code
       where coalesce(spu.subclass_name, '') <> ''
         ${spuFilter}
       group by

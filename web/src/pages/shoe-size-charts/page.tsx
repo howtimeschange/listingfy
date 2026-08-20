@@ -7,6 +7,7 @@ import { useAuth } from "@/lib/auth-context"
 import { formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { ImportDialog } from "@/components/import-dialog"
+import { QueryErrorState } from "@/components/query-error-state"
 import { ServerPagination } from "@/components/server-pagination"
 import {
   CompactListCard,
@@ -367,8 +368,14 @@ export default function ShoeSizeChartsPage() {
         </div>
       ) : null}
 
-      <div className="grid gap-3 md:grid-cols-3">
-        {(charts.data?.charts ?? []).map((chart) => (
+      {charts.isError ? (
+        <QueryErrorState
+          message={charts.error instanceof Error ? `鞋品尺码模板加载失败：${charts.error.message}` : "鞋品尺码模板加载失败，请稍后重试。"}
+          onRetry={() => void charts.refetch()}
+        />
+      ) : (
+        <div className="grid gap-3 md:grid-cols-3">
+          {(charts.data?.charts ?? []).map((chart) => (
           <button
             key={chart.chart_code}
             type="button"
@@ -392,8 +399,9 @@ export default function ShoeSizeChartsPage() {
               {formatNumber(chart.row_count)} 个号码 · {chart.min_size ?? "-"}–{chart.max_size ?? "-"} 码
             </p>
           </button>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
 
       <CompactListCard>
         <CompactListCardHeader>
@@ -435,8 +443,15 @@ export default function ShoeSizeChartsPage() {
           </CompactListToolbar>
         </CompactListCardHeader>
         <CompactListCardContent>
-          <CompactListTableFrame>
-            <Table>
+          {rows.isError ? (
+            <QueryErrorState
+              message={rows.error instanceof Error ? `鞋品尺码明细加载失败：${rows.error.message}` : "鞋品尺码明细加载失败，请稍后重试。"}
+              onRetry={() => void rows.refetch()}
+            />
+          ) : (
+            <>
+              <CompactListTableFrame>
+                <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>号码</TableHead>
@@ -482,18 +497,20 @@ export default function ShoeSizeChartsPage() {
                   </TableRow>
                 ))}
               </TableBody>
-            </Table>
-          </CompactListTableFrame>
-          <ServerPagination
-            pagination={{
-              total: rows.data?.pagination.total ?? 0,
-              limit: pagination.limit,
-              offset: pagination.offset,
-            }}
-            onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
-            onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
-            isLoading={rows.isFetching}
-          />
+                </Table>
+              </CompactListTableFrame>
+              <ServerPagination
+                pagination={{
+                  total: rows.data?.pagination.total ?? 0,
+                  limit: pagination.limit,
+                  offset: pagination.offset,
+                }}
+                onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
+                onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
+                isLoading={rows.isFetching}
+              />
+            </>
+          )}
         </CompactListCardContent>
       </CompactListCard>
 

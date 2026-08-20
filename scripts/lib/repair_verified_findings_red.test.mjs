@@ -75,7 +75,7 @@ test("RED P2: two submit claims must result in exactly one DeepDraw create", asy
     prepare(sql) {
       const normalized = sql.replace(/\s+/g, " ").trim().toLowerCase()
       return {
-        get: (_now, id) => {
+        get: (_claimToken, _now, id) => {
           if (!normalized.includes("returning") || statuses.get(id) !== "ready") return undefined
           statuses.set(id, "submitting")
           return { id, status: "submitting" }

@@ -1,12 +1,14 @@
+import { randomUUID } from "node:crypto"
 import { mkdir, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { Hono, type Context } from "hono"
+import { bodyLimit } from "hono/body-limit"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
 import { auditFromContext } from "../lib/audit"
 import { requirePermission } from "../lib/auth"
-import { safeUploadFileName, writeValidatedUploadFile } from "../lib/upload-guard"
+import { maxUploadBytes, safeUploadFileName, writeValidatedUploadFile } from "../lib/upload-guard"
 import { parseDeepdrawFieldMappingRows } from "../../../scripts/lib/deepdraw_field_mapping_importer.mjs"
 import { readSpreadsheetSheetsFromFile } from "../../../scripts/lib/listing_launch_plan_importer.mjs"
 import {
@@ -19,6 +21,12 @@ import {
 
 const deepdrawFieldMappings = new Hono()
 const UPLOAD_DIR = path.join(os.tmpdir(), "listingify-upload")
+const MB = 1024 * 1024
+const SPREADSHEET_MULTIPART_OVERHEAD_BYTES = MB
+const spreadsheetUploadBodyLimit = bodyLimit({
+  maxSize: maxUploadBytes("spreadsheet") + SPREADSHEET_MULTIPART_OVERHEAD_BYTES,
+  onError: (c) => c.json({ error: "深绘字段对应关系表上传请求体过大，请压缩后重新上传" }, 413),
+})
 
 function stringValue(value: unknown) {
   if (value == null) return ""
@@ -54,8 +62,13 @@ async function saveUploadedSpreadsheet(c: Context) {
     throw new HTTPException(400, { message: "请上传深绘字段对应关系表" })
   }
   await mkdir(UPLOAD_DIR, { recursive: true })
-  const filePath = path.join(UPLOAD_DIR, safeUploadName(file.name))
-  await writeValidatedUploadFile(file, "spreadsheet", filePath)
+  const filePath = path.join(UPLOAD_DIR, `${randomUUID()}-${safeUploadName(file.name)}`)
+  try {
+    await writeValidatedUploadFile(file, "spreadsheet", filePath)
+  } catch (error) {
+    await rm(filePath, { force: true }).catch(() => undefined)
+    throw error
+  }
   return { form, file, filePath }
 }
 
@@ -72,16 +85,16 @@ deepdrawFieldMappings.get("/", (c) => {
   }))
 })
 
-deepdrawFieldMappings.post("/imports", async (c) => {
+deepdrawFieldMappings.post("/imports", spreadsheetUploadBodyLimit, async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_RULE_MANAGE")
   const db = getDb()
   const { form, file, filePath } = await saveUploadedSpreadsheet(c)
-  const tenantName = stringValue(form.get("tenantName") ?? form.get("tenant_name"))
-  const merchantId = stringValue(form.get("merchantId") ?? form.get("merchant_id"))
-  if (!tenantName || !merchantId) {
-    throw new HTTPException(400, { message: "请先选择深绘品牌租户和商户 ID" })
-  }
   try {
+    const tenantName = stringValue(form.get("tenantName") ?? form.get("tenant_name"))
+    const merchantId = stringValue(form.get("merchantId") ?? form.get("merchant_id"))
+    if (!tenantName || !merchantId) {
+      throw new HTTPException(400, { message: "请先选择深绘品牌租户和商户 ID" })
+    }
     const sheets = await readSpreadsheetSheetsFromFile(filePath, { fileName: file.name })
     const rows = sheets.flatMap((sheet) => parseDeepdrawFieldMappingRows(sheet.rows))
     const result = importDeepdrawFieldMappingRows(db, {

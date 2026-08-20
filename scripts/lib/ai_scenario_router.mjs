@@ -546,6 +546,9 @@ function transientError(error) {
 
 async function invokeProviderWithRetry(input) {
   for (let transportAttempts = 1; transportAttempts <= 2; transportAttempts += 1) {
+    if (typeof input.beforeTransport === "function") {
+      await input.beforeTransport(transportAttempts);
+    }
     try {
       return {
         response: await invokeAiProvider(input),
@@ -667,49 +670,6 @@ export function createAiScenarioRouter({
         fallbackReason = "MODEL_COOLDOWN";
         continue;
       }
-      if (route.providerKey === "current_1xm") {
-        const usageKey = dateKey(now);
-        const requestBudget = budgetLimit(
-          env.AI_1XM_DAILY_REQUEST_BUDGET,
-          0,
-        );
-        const tokenBudget = budgetLimit(env.AI_1XM_DAILY_TOKEN_BUDGET);
-        const reserved = typeof paidStore.tryReserveRequest === "function"
-          ? paidStore.tryReserveRequest(
-            usageKey,
-            route.providerKey,
-            requestBudget,
-            tokenBudget,
-          )
-          : (() => {
-            const usage = paidStore.get(usageKey, route.providerKey);
-            if (
-              usage.requests >= requestBudget
-              || usage.tokens >= tokenBudget
-            ) {
-              return false;
-            }
-            paidStore.incrementRequest(usageKey, route.providerKey);
-            return true;
-          })();
-        if (!reserved) {
-          fallbackReason = "USER_PAID_BUDGET_EXHAUSTED";
-          safeAudit(audit, {
-            scenario,
-            mode: policy.mode,
-            role,
-            promptVersion,
-            inputHash,
-            candidateHash,
-            providerKey: route.providerKey,
-            model: route.model,
-            status: "BUDGET_EXHAUSTED",
-            httpStatus: null,
-            latencyMs: 0,
-          });
-          continue;
-        }
-      }
 
       const startedAt = timestampMs(now);
       try {
@@ -726,6 +686,31 @@ export function createAiScenarioRouter({
           maxImages: env.AI_GEMINI_INLINE_IMAGE_LIMIT,
           lookupImpl,
           sleep,
+          beforeTransport: route.providerKey === "current_1xm"
+            ? (transportAttempt) => {
+              const usageKey = dateKey(now);
+              const requestBudget = budgetLimit(env.AI_1XM_DAILY_REQUEST_BUDGET, 0);
+              const tokenBudget = budgetLimit(env.AI_1XM_DAILY_TOKEN_BUDGET);
+              const reserved = typeof paidStore.tryReserveRequest === "function"
+                ? paidStore.tryReserveRequest(
+                  usageKey,
+                  route.providerKey,
+                  requestBudget,
+                  tokenBudget,
+                )
+                : (() => {
+                  const usage = paidStore.get(usageKey, route.providerKey);
+                  if (usage.requests >= requestBudget || usage.tokens >= tokenBudget) return false;
+                  paidStore.incrementRequest(usageKey, route.providerKey);
+                  return true;
+                })();
+              if (reserved) return;
+              const budgetError = new Error("1xm daily paid request budget exhausted");
+              budgetError.code = "USER_PAID_BUDGET_EXHAUSTED";
+              budgetError.transportAttempts = Math.max(0, transportAttempt - 1);
+              throw budgetError;
+            }
+            : null,
         });
         const json = JSON.parse(extractAiJsonText(response.content));
         if (!validate(json)) {
@@ -793,7 +778,9 @@ export function createAiScenarioRouter({
         };
       } catch (error) {
         const httpStatus = Number(error?.httpStatus) || null;
-        let status = attemptStatus(httpStatus);
+        let status = error?.code === "USER_PAID_BUDGET_EXHAUSTED"
+          ? "BUDGET_EXHAUSTED"
+          : attemptStatus(httpStatus);
         const failureCount = Number(currentState?.failureCount ?? 0) + 1;
         if (httpStatus === 429) {
           const quotaExhausted = dailyQuotaError(error)

@@ -28,7 +28,7 @@ import {
   Trash2,
 } from "lucide-react"
 import { toast } from "sonner"
-import { api } from "@/lib/api-client"
+import { api, ApiError } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { exportSpreadsheet, readSpreadsheetFile, type SpreadsheetRow } from "@/lib/spreadsheet"
 import { cn } from "@/lib/utils"
@@ -37,6 +37,7 @@ import { EmptyState } from "@/components/empty-state"
 import { ImportDialog } from "@/components/import-dialog"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
+import { QueryErrorState } from "@/components/query-error-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -1856,7 +1857,7 @@ function WorkbenchElevator({
 export default function PrePublishDraftDetailPage() {
   const { listingId } = useParams()
   const queryClient = useQueryClient()
-  const { data, isLoading } = useDraftDetail(listingId)
+  const { data, isLoading, isError, error, refetch } = useDraftDetail(listingId)
   const [manualValues, setManualValues] = useState<Record<string, string>>({})
   const [selectedSkcIds, setSelectedSkcIds] = useState<Set<number>>(new Set())
   const [selectedSkuIds, setSelectedSkuIds] = useState<Set<number>>(new Set())
@@ -1866,7 +1867,7 @@ export default function PrePublishDraftDetailPage() {
   const [skuCommercialValues, setSkuCommercialValues] = useState<Record<number, SkuCommercialDraft>>({})
   const [skcColorValues, setSkcColorValues] = useState<Record<number, string>>({})
   const [manualSizeChartValues, setManualSizeChartValues] = useState<Record<number, Record<string, string>>>({})
-  const [folderPath, setFolderPath] = useState("/Users/xingyicheng/Downloads/20112210410530435")
+  const [folderPath, setFolderPath] = useState("")
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false)
   const [imageImportDialogOpen, setImageImportDialogOpen] = useState(false)
   const [imageLibraryPicker, setImageLibraryPicker] = useState<ImageLibraryPickerState>(null)
@@ -2292,15 +2293,25 @@ export default function PrePublishDraftDetailPage() {
   const publishMutation = useMutation({
     mutationFn: async () => {
       await api.post(`/pre-publish/drafts/${listingId}/save`, buildSaveDraftPayload())
-      return api.post(`/pre-publish/drafts/${listingId}/publish`, {
+      return api.post<{
+        ok?: boolean
+        status?: string
+        message?: string
+      }>(`/pre-publish/drafts/${listingId}/publish`, {
         confirm: true,
         skc_codes: skcGroups
           .filter((group) => selectedSkcIds.has(group.skc.id))
           .map((group) => group.skc.skc_code),
       })
     },
-    onSuccess: () => {
-      toast.success("已提交 SHEIN 发布，状态已回写")
+    onSuccess: (result) => {
+      if (result.ok && result.status === "PUBLISH_SUBMITTED") {
+        toast.success("已提交 SHEIN 发布，状态已回写")
+      } else if (result.status === "PUBLISH_RESULT_UNKNOWN") {
+        toast.warning(result.message || "SHEIN 发布结果未知，请先同步平台状态，勿重复提交")
+      } else {
+        toast.error(result.message || `SHEIN 发布未确认成功，当前状态：${result.status || "unknown"}`)
+      }
       queryClient.invalidateQueries({ queryKey: ["pre-publish", "draft", listingId] })
       queryClient.invalidateQueries({ queryKey: ["pre-publish", "drafts"] })
       queryClient.invalidateQueries({ queryKey: ["shein-products"] })
@@ -2615,8 +2626,22 @@ export default function PrePublishDraftDetailPage() {
     return <PageContainer><div className="py-16 text-center text-sm text-muted-foreground">加载草稿详情...</div></PageContainer>
   }
 
+  if (isError) {
+    if (error instanceof ApiError && error.status === 404) {
+      return <PageContainer><EmptyState message="草稿不存在" /></PageContainer>
+    }
+    return (
+      <PageContainer>
+        <QueryErrorState
+          message={error instanceof Error ? `草稿详情加载失败：${error.message}` : "草稿详情加载失败，请稍后重试。"}
+          onRetry={() => void refetch()}
+        />
+      </PageContainer>
+    )
+  }
+
   if (!data) {
-    return <PageContainer><EmptyState message="草稿不存在" /></PageContainer>
+    return <PageContainer><EmptyState message="未获取到草稿数据" /></PageContainer>
   }
 
   const spuDimension = dimensionGroups.find((group) => group.dimension === "SPU")

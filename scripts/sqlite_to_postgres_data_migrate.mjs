@@ -16,7 +16,8 @@ function parseArgs(argv) {
     databaseUrl: process.env.DATABASE_URL,
     sqlitePath: process.env.SQLITE_SOURCE_PATH || DEFAULT_SQLITE_PATH,
     batchSize: Number(process.env.SQLITE_MIGRATION_BATCH_SIZE || DEFAULT_BATCH_SIZE),
-    truncate: true,
+    truncate: false,
+    confirmTarget: null,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -30,6 +31,8 @@ function parseArgs(argv) {
     if (arg === "--database-url") args.databaseUrl = next();
     else if (arg === "--sqlite") args.sqlitePath = next();
     else if (arg === "--batch-size") args.batchSize = Number(next());
+    else if (arg === "--replace") args.truncate = true;
+    else if (arg === "--confirm-target") args.confirmTarget = next();
     else if (arg === "--no-truncate") args.truncate = false;
     else if (arg === "--help" || arg === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
@@ -42,6 +45,23 @@ function parseArgs(argv) {
   return args;
 }
 
+function targetDatabaseFingerprint(databaseUrl) {
+  const url = new URL(databaseUrl);
+  const databaseName = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
+  if (!url.hostname || !databaseName) {
+    throw new Error("PostgreSQL URL must include a host and database name.");
+  }
+  return `${url.hostname}:${url.port || "5432"}/${databaseName}`;
+}
+
+function assertReplaceConfirmation({ truncate, databaseUrl, confirmTarget }) {
+  if (!truncate) return;
+  const expected = targetDatabaseFingerprint(databaseUrl);
+  if (String(confirmTarget ?? "").trim() !== expected) {
+    throw new Error(`Refusing to replace PostgreSQL data. Re-run with --replace --confirm-target ${expected}`);
+  }
+}
+
 function usage() {
   process.stdout.write(`SQLite to PostgreSQL data migration
 
@@ -49,11 +69,13 @@ Options:
   --database-url <url>  PostgreSQL connection URL. Default: DATABASE_URL.
   --sqlite <path>       SQLite source file. Default: data/app.sqlite.
   --batch-size <n>      Insert batch size. Default: ${DEFAULT_BATCH_SIZE}.
-  --no-truncate         Append to PostgreSQL instead of replacing table data.
+  --replace             Replace all matching PostgreSQL tables. Default is append-only.
+  --confirm-target <id> Required with --replace; exact host:port/database fingerprint.
 
 Examples:
   DATABASE_URL=postgres://listingify:listingify@localhost:5432/listingify npm run db:migrate:sqlite-data
   npm run db:migrate:sqlite-data -- --sqlite data/app.sqlite
+  npm run db:migrate:sqlite-data -- --replace --confirm-target localhost:5432/listingify
 `);
 }
 
@@ -282,6 +304,11 @@ const config = getDatabaseConfig({
   ...process.env,
   DATABASE_PROVIDER: "postgres",
   DATABASE_URL: args.databaseUrl,
+});
+assertReplaceConfirmation({
+  truncate: args.truncate,
+  databaseUrl: config.url,
+  confirmTarget: args.confirmTarget,
 });
 
 const summary = await migrateData({

@@ -1282,6 +1282,55 @@ test("1xm request budget uses an atomic reservation when the store supports it",
   }]);
 });
 
+test("1xm atomically reserves budget before every retry transport", async () => {
+  let fetchCalls = 0;
+  const reservations = [];
+  const usageStore = {
+    addTokens() {},
+    tryReserveRequest(date, providerKey, requestBudget, tokenBudget) {
+      reservations.push({ date, providerKey, requestBudget, tokenBudget });
+      return reservations.length <= 2;
+    },
+  };
+  const router = routerModule.createAiScenarioRouter({
+    env: {
+      AI_ROUTING_ENABLED: "true",
+      AI_SCENARIO_SIZE_MAPPING_MODE: "guarded",
+      AI_PROVIDER_1XM_API_KEY: "paid-test-key",
+      AI_1XM_DAILY_REQUEST_BUDGET: "2",
+    },
+    usageStore,
+    sleep: async () => {},
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      if (fetchCalls === 1) {
+        return new Response(JSON.stringify({ error: { message: "temporary" } }), {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "{\"mappings\":[]}" } }],
+        usage: { total_tokens: 4 },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+    now: () => new Date("2026-08-19T08:00:00.000Z"),
+  });
+
+  const result = await router.callJson({
+    scenario: "size_mapping",
+    messages: [{ role: "user", content: "mapping" }],
+    validate: (json) => Array.isArray(json?.mappings),
+  });
+
+  assert.equal(result.provider.key, "current_1xm");
+  assert.equal(fetchCalls, 2);
+  assert.equal(reservations.length, 2);
+});
+
 test("guarded paid fallback is disabled until an explicit daily request budget is set", async () => {
   let fetchCalls = 0;
   const router = routerModule.createAiScenarioRouter({
