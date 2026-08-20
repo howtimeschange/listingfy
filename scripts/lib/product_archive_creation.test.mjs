@@ -2918,7 +2918,7 @@ test("product archive service derives remaining field values from launch plan an
     "春亚纺贴膜\n防风防泼水透湿，多方面防护，户外出行无忧\n防泼水 防风 透湿",
   );
   assert.equal(derive("小红书标题", "去掉巴拉巴拉"), "儿童外套男童女童衣服2026新款秋装卡通萌趣满印防护上衣");
-  assert.equal(derive("主面料成分含量"), "");
+  assert.equal(derive("主面料成分含量"), "100%");
   assert.equal(derive("微信视频小店标题", "内容平台标题"), "【balaOne】巴拉巴拉儿童外套男女2026新秋卡通萌趣满印防护上衣");
   assert.equal(derive("商品详情"), "潮流满印外套，防风防泼水透湿");
 });
@@ -3457,8 +3457,8 @@ test("product archive service follows DeepDraw field adjustment doc for optional
   assert.equal(derive("图案(多选)"), "");
   assert.equal(derive("微信视频小店副标题"), "");
   assert.equal(derive("快手商品卖点"), "");
-  assert.equal(derive("成分含量"), "");
-  assert.equal(derive("主面料成分含量"), "");
+  assert.equal(derive("成分含量"), "100%");
+  assert.equal(derive("主面料成分含量"), "100%");
   assert.equal(derive("商品详情"), "潮流满印外套，防风防泼水透湿");
   assert.equal(derive("安全等级"), "A类");
   assert.equal(derive("适用年龄多选"), "2-7岁");
@@ -4045,6 +4045,34 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "2026年夏季" },
     { value: "2026年秋季" },
   ]), "2026年夏季");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("成分含量", "48.5%", [
+    { value: "95%及以上" },
+    { value: "70%（含）-95%" },
+    { value: "50%(含)-70%" },
+    { value: "30%（含）-50%" },
+  ]), "30%（含）-50%");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("尺码", "100cm;120cm;140cm;160cm;170cm", [
+    { value: "100" },
+    { value: "120" },
+    { value: "140" },
+    { value: "160" },
+    { value: "170" },
+  ]), "100;120;140;160;170");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("尺码.", "100cm;120cm;140cm;160cm;170cm", [
+    { value: "18cm以下" },
+    { value: "18-20cm" },
+    { value: "20-22cm" },
+    { value: "22-24cm" },
+    { value: "24-26cm" },
+  ]), "18cm以下;18-20cm;20-22cm;22-24cm;24-26cm");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("抖音参考价格类型", "79.9", [
+    { value: "厂商建议零售价" },
+    { value: "吊牌价" },
+  ]), "吊牌价");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("主图1", "两条装", [
+    { value: "内裤2条装" },
+    { value: "内裤2条装225" },
+  ]), "内裤2条装225");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用性别", "中", [
     { value: "男女通用" },
     { value: "中性/男女均可" },

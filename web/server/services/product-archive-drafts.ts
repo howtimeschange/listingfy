@@ -1006,8 +1006,6 @@ const PRODUCT_ARCHIVE_ALWAYS_BLANK_FIELDS = new Set([
   "商品短标题",
   "微信视频小店副标题",
   "快手商品卖点",
-  "成分含量",
-  "主面料成分含量",
   "图案",
   "图案多选",
 ])
@@ -4186,6 +4184,40 @@ function downContentTemplateOption(value: unknown, options: unknown[]) {
   ])
 }
 
+function percentRangeTemplateOption(value: unknown, options: unknown[]) {
+  const percentText = stringValue(value).replace(/％/g, "%").match(/(\d+(?:\.\d+)?)\s*%/)?.[1]
+  if (!percentText) return ""
+  const percent = Number(percentText)
+  if (!Number.isFinite(percent)) return ""
+  const exact = pickOption(options, [
+    (option) => {
+      const normalized = option.replace(/％/g, "%").replace(/\s+/g, "")
+      if (/(?:以上|及以上|起|以下|及以下)/.test(normalized)) return false
+      const values = Array.from(normalized.matchAll(/(\d+(?:\.\d+)?)%/g)).map((match) => Number(match[1]))
+      return values.length === 1 && values[0] === percent
+    },
+  ])
+  if (exact) return exact
+  return pickOption(options, [
+    (option) => {
+      const normalized = option.replace(/％/g, "%").replace(/\s+/g, "")
+      const threshold = normalized.match(/(\d+(?:\.\d+)?)%(?:以上|及以上|起)/)
+      return Boolean(threshold) && percent >= Number(threshold[1])
+    },
+    (option) => {
+      const normalized = option.replace(/％/g, "%").replace(/\s+/g, "")
+      const threshold = normalized.match(/(\d+(?:\.\d+)?)%(?:以下|及以下)/)
+      return Boolean(threshold) && percent <= Number(threshold[1])
+    },
+    (option) => {
+      const values = Array.from(option.replace(/％/g, "%").matchAll(/(\d+(?:\.\d+)?)%/g)).map((match) => Number(match[1]))
+      if (values.length === 1) return percent === values[0]
+      if (values.length >= 2) return percent >= Math.min(...values) && percent <= Math.max(...values)
+      return false
+    },
+  ])
+}
+
 function copywritingPopularElementValue(sourceRows: JsonRecord[]) {
   const sourceText = sourceRowJsonByType(sourceRows, "copywriting")
     .flatMap((row) => Object.values(row).map(stringValue))
@@ -4202,11 +4234,72 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
   if (!text || !options.length) return text
   const exact = pickOption(options, [(option) => option === text])
   if (exact) return exact
+  if (isProductArchiveSkuSizeFieldName(fieldName)) {
+    const optionByKey = new Map<string, string>()
+    for (const option of optionValues(options)) {
+      for (const key of sizeMatchKeys(option)) {
+        if (!optionByKey.has(key)) optionByKey.set(key, option)
+      }
+    }
+    const values = text.split(/[;；,，]/).map((part) => part.trim()).filter(Boolean)
+    const normalized = values.map((value) => {
+      for (const key of sizeMatchKeys(value)) {
+        const option = optionByKey.get(key)
+        if (option) return option
+      }
+      return ""
+    }).filter(Boolean)
+    if (normalized.length) return uniqueTextValues(normalized).join(";")
+  }
+  if (/^尺码\s*[.。]$/.test(stringValue(fieldName))) {
+    const values = text.split(/[;；,，]/).map((part) => part.trim()).filter(Boolean)
+    const normalized = values.map((value) => {
+      const size = Number(deepdrawSizeValue(value).match(/^(\d+)cm$/i)?.[1] ?? stringValue(value).match(/^0*(\d{2,3})$/)?.[1])
+      if (!Number.isFinite(size)) return ""
+      if (size <= 110) return pickOption(options, [(option) => /18\s*cm?以下|18以下/i.test(option)])
+      if (size <= 130) return pickOption(options, [(option) => /18\s*-\s*20\s*cm?/i.test(option)])
+      if (size <= 150) return pickOption(options, [(option) => /20\s*-\s*22\s*cm?/i.test(option)])
+      if (size <= 165) return pickOption(options, [(option) => /22\s*-\s*24\s*cm?/i.test(option)])
+      if (size <= 180) return pickOption(options, [(option) => /24\s*-\s*26\s*cm?/i.test(option)])
+      return pickOption(options, [(option) => /26\s*cm?以上|26以上/i.test(option)])
+    }).filter(Boolean)
+    if (normalized.length) return uniqueTextValues(normalized).join(";")
+  }
   if (isProductArchiveDownContentFieldKey(key)) {
     return downContentTemplateOption(text, options) || text
   }
+  if (key === "成分含量" || key === "主面料成分含量" || key === "里料成分含量多选" || key === "里料材质成分含量多选") {
+    const percentOption = percentRangeTemplateOption(text, options)
+    if (percentOption) return percentOption
+  }
   if (key === "单位" || key === "计量单位") {
     return pickOption(options, [(option) => option === "件"]) || text
+  }
+  if (/^主图\d+$/.test(key)) {
+    if (/两条装|2条装/.test(text)) {
+      return pickOption(options, [
+        (option) => option === "内裤2条装225",
+        (option) => option === "内裤2条装",
+        (option) => /2条装/.test(option),
+      ]) || text
+    }
+    if (/两双装|2双装/.test(text)) {
+      return pickOption(options, [
+        (option) => option === "袜子2双装225",
+        (option) => option === "袜子2双装",
+        (option) => /2双装/.test(option),
+      ]) || text
+    }
+    if (/两件装|2件装/.test(text)) {
+      return pickOption(options, [
+        (option) => option === "两件套225",
+        (option) => option === "两件套",
+        (option) => /2件装|两件/.test(option),
+      ]) || text
+    }
+  }
+  if (key.includes("参考价格类型")) {
+    return pickOption(options, [(option) => option === "吊牌价", (option) => option.includes("吊牌")]) || text
   }
   if (key === "模特实拍") {
     if (/有模拍|有模特|真人|模特/.test(text)) {
