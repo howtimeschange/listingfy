@@ -7564,12 +7564,20 @@ export function productArchivePayloadFieldValue(field: JsonRecord) {
   return hasValue(jsonValue) ? jsonValue : null
 }
 
+export function shouldIncludeProductArchivePayloadField(field: JsonRecord) {
+  const required = Boolean(field.required)
+  const blocking = Boolean(field.blocking)
+  if (stringValue(field.source_type) === "skip" && !required && !blocking) return false
+  if (stringValue(field.validation_status) === "invalid" && !required && !blocking) return false
+  return true
+}
+
 function productPayload(db: SyncPostgresDatabase, draftId: number) {
   const detail = serializeDraftDetail(db, draftId)
   const draft = detail.draft as JsonRecord
   const sourceRows = sourceRowsForDraft(db, draft)
   const fields = (detail.fields as JsonRecord[])
-    .filter((field) => stringValue(field.source_type) !== "skip" || Boolean(field.required) || Boolean(field.blocking))
+    .filter(shouldIncludeProductArchivePayloadField)
     .map((field) => ({
       id: stringValue(field.field_id) || undefined,
       name: stringValue(field.field_name),

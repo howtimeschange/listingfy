@@ -2546,7 +2546,31 @@ test("product archive create payload omits scalar size-chart fields", async () =
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const serviceSource = await readText(files.draftService);
 
-  assert.match(serviceSource, /\.filter\(\(field\) => stringValue\(field\.source_type\) !== "skip" \|\| Boolean\(field\.required\) \|\| Boolean\(field\.blocking\)\)/);
+  assert.match(serviceSource, /\.filter\(shouldIncludeProductArchivePayloadField\)/);
+  assert.equal(service.shouldIncludeProductArchivePayloadField({
+    source_type: "skip",
+    required: false,
+    blocking: false,
+    validation_status: "skipped",
+  }), false);
+  assert.equal(service.shouldIncludeProductArchivePayloadField({
+    source_type: "skip",
+    required: true,
+    blocking: true,
+    validation_status: "missing",
+  }), true);
+  assert.equal(service.shouldIncludeProductArchivePayloadField({
+    source_type: "fixed",
+    required: false,
+    blocking: false,
+    validation_status: "invalid",
+  }), false);
+  assert.equal(service.shouldIncludeProductArchivePayloadField({
+    source_type: "fixed",
+    required: true,
+    blocking: true,
+    validation_status: "invalid",
+  }), true);
   assert.equal(service.productArchivePayloadFieldValue({
     field_name: "抖音尺码表",
     field_type: "MULTI_TEXT",
