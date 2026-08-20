@@ -406,10 +406,10 @@ export function AsyncTaskTrigger() {
       size="sm"
       className="relative"
       onClick={openTaskCenter}
-      aria-label="异步任务"
+      aria-label="任务中心"
     >
       <Activity className="size-4" />
-      异步任务
+      任务中心
       {badgeCount > 0 ? (
         <span className={`absolute -right-1 -top-1 min-w-5 rounded-full px-1 text-center text-[10px] font-semibold text-white ${badgeClass}`}>
           {badgeCount}
@@ -439,7 +439,7 @@ function AsyncTaskDrawer({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-[420px] sm:max-w-[420px]">
         <SheetHeader>
-          <SheetTitle>异步任务</SheetTitle>
+          <SheetTitle>任务中心</SheetTitle>
           <SheetDescription>
             统一查看 MDM 同步、批量建档、导出等后台任务进度，保留最近 7 天。
           </SheetDescription>

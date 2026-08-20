@@ -420,7 +420,7 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
 
   assert.match(appLayout, /AsyncTaskProvider/);
   assert.match(appHeader, /AsyncTaskTrigger/);
-  assert.match(asyncTaskCenter, /异步任务/);
+  assert.match(asyncTaskCenter, /任务中心/);
   assert.match(asyncTaskCenter, /SheetContent[^\\n]+side="right"/s);
   assert.match(asyncTaskCenter, /localStorage/);
   assert.match(asyncTaskCenter, /product-archive-drafts\/batch-jobs/);

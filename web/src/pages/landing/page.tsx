@@ -109,7 +109,7 @@ const workflowSteps = [
 const architectureItems = [
   "PlatformAdapter 隔离 SHEIN、TEMU 等平台差异，核心商品模型不绑定单一渠道",
   "深绘建档草稿、发布草稿、平台商品和运营动作分层建模，便于追踪生命周期",
-  "OCR 识别、AI 补齐、异步任务、发布版本、审核状态和操作日志全链路留痕",
+  "OCR 识别、AI 补齐、任务中心、发布版本、审核状态和操作日志全链路留痕",
   "PostgreSQL、RBAC、角色菜单、凭据加密、种子快照和测试入口支撑持续交付",
 ]
 

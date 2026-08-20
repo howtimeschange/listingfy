@@ -938,7 +938,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
         description: `后台同步列表并补齐商品详情，任务 ${job.id.slice(0, 8)}`,
         endpoint: `/shein-platform-products/sync-jobs/${job.id}`,
       })
-      toast.success("已加入异步任务：同步 SHEIN 平台商品")
+      toast.success("已加入任务中心：同步 SHEIN 平台商品")
       openTaskCenter()
       setSyncDialogOpen(false)
     },
@@ -959,7 +959,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
         description: `后台同步 ${formatNumber(job.total_count)} 个 SPU 详情`,
         endpoint: `/shein-platform-products/sync-jobs/${job.id}`,
       })
-      toast.success(`已加入异步任务：${formatNumber(job.total_count)} 个 SPU`)
+      toast.success(`已加入任务中心：${formatNumber(job.total_count)} 个 SPU`)
       openTaskCenter()
       setSyncDialogOpen(false)
     },
@@ -1459,7 +1459,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
         description: `后台生成 SHEIN平台商品列表.xlsx，预计 ${formatNumber(pagination.total)} 条平台商品`,
         endpoint: `/shein-platform-products/export-jobs/${job.id}`,
       })
-      toast.success("已加入异步任务：导出 SHEIN 平台商品列表")
+      toast.success("已加入任务中心：导出 SHEIN 平台商品列表")
       openTaskCenter()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "导出平台商品失败")

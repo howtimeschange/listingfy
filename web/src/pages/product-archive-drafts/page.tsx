@@ -1333,7 +1333,7 @@ export default function ProductArchiveDraftsPage() {
         description: `待补齐 ${formatNumber(job.total_count)} 个深绘建档草稿的空字段`,
         endpoint: `/product-archive-drafts/ai-fill-jobs/${job.id}`,
       })
-      toast.success("已加入异步任务：批量 AI 填充字段")
+      toast.success("已加入任务中心：批量 AI 填充字段")
       openTaskCenter()
     },
     onError: (error) => {
@@ -1353,7 +1353,7 @@ export default function ProductArchiveDraftsPage() {
         description: `待预检 ${formatNumber(job.total_count)} 个深绘建档草稿，按校验、查重、提交预览串行执行`,
         endpoint: `/product-archive-drafts/precheck-jobs/${job.id}`,
       })
-      toast.success("已加入异步任务：批量发布预检")
+      toast.success("已加入任务中心：批量发布预检")
       openTaskCenter()
     },
     onError: (error) => {
@@ -1375,7 +1375,7 @@ export default function ProductArchiveDraftsPage() {
       })
       setPublishDialogOpen(false)
       setSelectedDraftIds(new Set())
-      toast.success("已加入异步任务：批量发布到深绘")
+      toast.success("已加入任务中心：批量发布到深绘")
       openTaskCenter()
     },
     onError: (error) => {
@@ -1902,7 +1902,7 @@ export default function ProductArchiveDraftsPage() {
         <DialogHeader>
           <DialogTitle>MDM 同步进度</DialogTitle>
           <DialogDescription>
-            正在按未建档款号同步 MDM 并生成深绘建档草稿，关闭弹窗后可从左上角异步任务继续查看。
+            正在按未建档款号同步 MDM 并生成深绘建档草稿，关闭弹窗后可从任务中心继续查看。
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4">
