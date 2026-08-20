@@ -2430,8 +2430,8 @@ test("product archive service derives DeepDraw size-chart fields from PLM source
   });
 
   assert.deepEqual(value.valueJson, {
-    title: "领口,肩宽,袖长,胸围,衣长",
-    "80cm": "0,26.5,24.5,66,38",
+    title: "肩宽,袖长,胸围,衣长",
+    "80cm": "26.5,24.5,66,38",
   });
   assert.equal(value.sourceType, "size_chart");
   assert.equal(value.mappings.find((item) => item.targetField === "袖长")?.confidence, "medium");
@@ -2528,7 +2528,9 @@ test("product archive SKU size field validation blocks values inconsistent with 
 
 test("product archive create payload omits scalar size-chart fields", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const serviceSource = await readText(files.draftService);
 
+  assert.match(serviceSource, /\.filter\(\(field\) => stringValue\(field\.source_type\) !== "skip" \|\| Boolean\(field\.required\) \|\| Boolean\(field\.blocking\)\)/);
   assert.equal(service.productArchivePayloadFieldValue({
     field_name: "抖音尺码表",
     field_type: "MULTI_TEXT",
@@ -2550,6 +2552,18 @@ test("product archive create payload omits scalar size-chart fields", async () =
       source: "AI_RULE_FALLBACK",
       ai_fill: { fallback: true },
     },
+  }), null);
+  assert.deepEqual(service.productArchivePayloadFieldValue({
+    field_name: "尺码表",
+    field_type: "MULTI_TEXT",
+    value_text: "",
+    value_json: { title: "腰围,直裆,裤长", "80cm": "41,0,43", "90cm": "42,0,48" },
+  }), { title: "腰围,裤长", "80cm": "41,43", "90cm": "42,48" });
+  assert.equal(service.productArchivePayloadFieldValue({
+    field_name: "抖音尺码表",
+    field_type: "MULTI_TEXT",
+    value_text: "",
+    value_json: { title: "身高(cm),体重(斤)", "80cm": "0,0", "90cm": "0,0" },
   }), null);
   assert.deepEqual(service.productArchivePayloadFieldValue({
     field_name: "尺码表",
@@ -3487,28 +3501,44 @@ test("product archive service maps launch-plan size segments to Balabala age ran
   assert.equal(deriveAge("130-175", {}, "适合年龄段(多选)"), "7-16岁");
 });
 
-test("product archive service does not locally block document-approved empty DeepDraw fields", async () => {
+test("product archive local requirement follows the DeepDraw template when present", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
   for (const fieldName of ["商品描述", "商品短标题", "图案(多选)", "微信视频小店副标题", "快手商品卖点", "成分含量"]) {
     assert.equal(
-      service.isProductArchiveFieldLocallyRequired(fieldName, { templateRequired: true, ruleBlocking: true }),
-      false,
-      `${fieldName} should be upload-probed instead of locally blocked`,
+      service.isProductArchiveFieldLocallyRequired(fieldName, { templatePresent: true, templateRequired: true, ruleBlocking: true }),
+      true,
+      `${fieldName} should follow the category template when present`,
     );
   }
   assert.equal(service.isProductArchiveFieldLocallyRequired("商品详情", { templateRequired: true }), true);
   assert.equal(service.isProductArchiveFieldLocallyRequired("安全等级", { templateRequired: true }), true);
   assert.equal(service.isProductArchiveFieldLocallyRequired("适用年龄", { templateRequired: true }), true);
-  assert.equal(service.isProductArchiveFieldLocallyRequired("尺码表", { templateRequired: true, ruleBlocking: true }), false);
-  assert.equal(service.isProductArchiveFieldLocallyRequired("多平台尺码", { templateRequired: true, ruleBlocking: true }), false);
+  assert.equal(service.isProductArchiveFieldLocallyRequired("尺码表", { templatePresent: true, templateRequired: true, ruleBlocking: true }), true);
+  assert.equal(service.isProductArchiveFieldLocallyRequired("多平台尺码", { templatePresent: true, templateRequired: true, ruleBlocking: true }), true);
   assert.equal(
     service.isProductArchiveFieldLocallyRequired("是否有腰带", { templatePresent: false, templateRequired: false, ruleBlocking: true }),
     false,
   );
   assert.equal(
+    service.isProductArchiveFieldLocallyRequired("单色平台AI标", { templatePresent: true, templateRequired: false, ruleBlocking: true }),
+    false,
+  );
+  assert.equal(
+    service.isProductArchiveFieldLocallyRequired("多色平台AI", { templatePresent: true, templateRequired: false, ruleBlocking: true }),
+    false,
+  );
+  assert.equal(
     service.isProductArchiveFieldLocallyRequired("是否有腰带", { templatePresent: true, templateRequired: true, ruleBlocking: false }),
     true,
+  );
+  assert.equal(
+    service.isProductArchiveFieldLocallyRequired("洗涤说明", { templatePresent: true, templateRequired: true, sourceType: "skip" }),
+    true,
+  );
+  assert.equal(
+    service.isProductArchiveFieldLocallyRequired("洗涤说明", { templatePresent: true, templateRequired: false, sourceType: "skip" }),
+    false,
   );
 });
 
@@ -3592,6 +3622,9 @@ test("product archive AI field strategies productize P0 P1 P2 field coverage", a
   assert.equal(service.productArchiveAiFieldStrategyForField("详情页AI标注")?.priority, "P2");
   assert.equal(service.productArchiveAiFieldStrategyForField("原产国(AKC)"), null);
   assert.equal(service.productArchiveAiFieldStrategyForField("尺码表"), null);
+  assert.equal(service.productArchiveAiFieldStrategyForField("22Q4-童鞋尺码表")?.priority, "P0");
+  assert.equal(service.productArchiveAiFieldStrategyForField("25鞋子模板类型")?.priority, "P0");
+  assert.equal(service.productArchiveAiFieldStrategyForField("25鞋子尺码表")?.priority, "P0");
 });
 
 test("product archive AI field strategy route exposes the productized mapping policy", async () => {
@@ -3797,6 +3830,70 @@ test("product archive AI fill skips structural multi-platform size fields", asyn
 
   assert.deepEqual(candidates.map((field) => field.fieldName), ["适用季节"]);
   assert.equal(service.chooseProductArchiveAiFallbackOption, undefined);
+});
+
+test("product archive AI fill admits shoe enum fields without admitting structured size tables", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(service.isProductArchiveShoeAiEnumField("22Q4-童鞋尺码表"), true);
+  assert.equal(service.isProductArchiveShoeAiEnumField("25鞋子模板类型"), true);
+  assert.equal(service.isProductArchiveShoeAiEnumField("25鞋子尺码表"), true);
+  assert.equal(service.isProductArchiveShoeAiEnumField("尺码表"), false);
+  assert.equal(service.shouldProductArchiveAiFillShoeEnumField({
+    fieldName: "22Q4-童鞋尺码表",
+    tradePath: "童鞋/亲子鞋 / 运动鞋",
+  }), true);
+  assert.equal(service.shouldProductArchiveAiFillShoeEnumField({
+    fieldName: "25鞋子模板类型",
+    tradePath: "童鞋/亲子鞋 / 雪地靴",
+  }), true);
+  assert.equal(service.shouldProductArchiveAiFillShoeEnumField({
+    fieldName: "25鞋子尺码表",
+    tradePath: "童鞋/亲子鞋 / 雪地靴",
+  }), false);
+  assert.equal(service.shouldProductArchiveAiFillShoeEnumField({
+    fieldName: "25鞋子尺码表",
+    tradePath: "童鞋/亲子鞋 / 凉鞋",
+  }), true);
+  assert.equal(service.shouldProductArchiveAiFillShoeEnumField({
+    fieldName: "22Q4-童鞋尺码表",
+    tradePath: "童装婴幼儿服装 / 裤子",
+  }), false);
+
+  const candidates = service.buildProductArchiveAiFillCandidateFields([
+    {
+      id: 501,
+      field_name: "22Q4-童鞋尺码表",
+      source_type: "shoe_size_chart",
+      value_text: "轻跑鞋",
+      value_json: {},
+      validation_status: "valid",
+      options_json: [{ value: "轻跑鞋" }, { value: "篮球鞋" }],
+    },
+    {
+      id: 502,
+      field_name: "25鞋子模板类型",
+      source_type: "shoe_size_chart",
+      value_text: "运动",
+      value_json: {},
+      validation_status: "valid",
+      options_json: [{ value: "运动" }, { value: "休闲" }],
+    },
+    {
+      id: 503,
+      field_name: "淘宝尺码表",
+      source_type: "manual",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      options_json: [{ value: "身高" }, { value: "衣长" }],
+    },
+  ], [], []);
+
+  assert.deepEqual(candidates.map((field) => field.fieldName), [
+    "22Q4-童鞋尺码表",
+    "25鞋子模板类型",
+  ]);
 });
 
 test("product archive AI fill normalizes color choices back to DeepDraw alias values", async () => {

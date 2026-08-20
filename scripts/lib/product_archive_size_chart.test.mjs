@@ -25,8 +25,8 @@ test("normalizes PLM long-table rows and builds a high-confidence top size chart
   const result = buildSizeChartForTemplate({ rows, spuCode: "208326100020", template });
 
   assert.deepEqual(result.valueJson, {
-    title: "领口,肩宽,袖长,袖口,胸围,腰围,衣长,下摆围",
-    "80cm": "0,26.5,24.5,8.4,66,0,38,80",
+    title: "肩宽,袖长,袖口,胸围,衣长,下摆围",
+    "80cm": "26.5,24.5,8.4,66,38,80",
   });
   assert.equal(result.mappings.find((item) => item.targetField === "袖长")?.sourcePoint, "里：袖长");
   assert.equal(result.mappings.find((item) => item.targetField === "袖长")?.confidence, "medium");
@@ -34,7 +34,7 @@ test("normalizes PLM long-table rows and builds a high-confidence top size chart
   assert.equal(result.unmatchedTargets.includes("领口"), true);
 });
 
-test("keeps every DeepDraw size-chart field and fills unmapped values with zero", () => {
+test("omits unmapped DeepDraw size-chart fields instead of filling zero values", () => {
   const rows = [
     { "款号": "208326100020", "测量点": "衣长", "尺码": "080", "尺码值": "38" },
     { "款号": "208326100020", "测量点": "胸围", "尺码": "080", "尺码值": "66" },
@@ -47,10 +47,53 @@ test("keeps every DeepDraw size-chart field and fills unmapped values with zero"
   });
 
   assert.deepEqual(result.valueJson, {
-    title: "领口,胸围,衣长",
-    "80cm": "0,66,38",
+    title: "胸围,衣长",
+    "80cm": "66,38",
   });
   assert.equal(result.unmatchedTargets.includes("领口"), true);
+});
+
+test("normalizes platform size-chart unit suffixes and pants aliases", () => {
+  const rows = [
+    { "款号": "208426108218", "测量点": "全腰围（平量）", "尺码": "080", "尺码值": "41" },
+    { "款号": "208426108218", "测量点": "臀围", "尺码": "080", "尺码值": "74" },
+    { "款号": "208426108218", "测量点": "裤长", "尺码": "080", "尺码值": "43" },
+    { "款号": "208426108218", "测量点": "前浪（弯量）", "尺码": "080", "尺码值": "21.8" },
+    { "款号": "208426108218", "测量点": "后浪（弯量）", "尺码": "080", "尺码值": "27.1" },
+    { "款号": "208426108218", "测量点": "1/2脾围", "尺码": "080", "尺码值": "22" },
+  ];
+
+  const douyin = buildSizeChartForTemplate({
+    rows,
+    spuCode: "208426108218",
+    template: { fieldName: "抖音尺码表", options: ["身高(cm)", "体重(斤)", "腰围(cm)", "臀围(cm)", "裤长(cm)", "备注"] },
+  });
+  const haoyiku = buildSizeChartForTemplate({
+    rows,
+    spuCode: "208426108218",
+    template: { fieldName: "好衣库尺码表", options: ["身高(cm)", "体重(kg)", "腰围(cm)", "臀围(cm)", "裤长(cm)"] },
+  });
+  const vip = buildSizeChartForTemplate({
+    rows,
+    spuCode: "208426108218",
+    template: { fieldName: "唯品会尺码表", options: ["号型", "适合年龄", "身高", "腰围", "臀围", "裤长", "前浪", "后浪", "大腿围"] },
+  });
+
+  assert.deepEqual(douyin.valueJson, {
+    title: "身高(cm),腰围(cm),臀围(cm),裤长(cm)",
+    "80cm": "80,41,74,43",
+  });
+  assert.deepEqual(haoyiku.valueJson, {
+    title: "身高(cm),腰围(cm),臀围(cm),裤长(cm)",
+    "80cm": "80,41,74,43",
+  });
+  assert.deepEqual(vip.valueJson, {
+    title: "身高,腰围,臀围,裤长,前浪,后浪,大腿围",
+    "80cm": "80,41,74,43,21.8,27.1,22",
+  });
+  assert.deepEqual(douyin.unmatchedTargets, ["体重(斤)", "备注"]);
+  assert.deepEqual(haoyiku.unmatchedTargets, ["体重(kg)"]);
+  assert.deepEqual(vip.unmatchedTargets, ["号型", "适合年龄"]);
 });
 
 test("derives height from the size label while filling PLM mapped size-chart values", () => {
@@ -149,7 +192,7 @@ test("builds separate size charts for set templates using field-specific source 
   });
 
   assert.deepEqual(top.valueJson, { title: "衣长,胸围,腰围", "80cm": "36,72,42" });
-  assert.deepEqual(pants.valueJson, { title: "裤长,腰围,臀围", "80cm": "49,42,0" });
+  assert.deepEqual(pants.valueJson, { title: "裤长,腰围", "80cm": "49,42" });
   assert.equal(pants.unmatchedTargets.includes("臀围"), true);
 });
 

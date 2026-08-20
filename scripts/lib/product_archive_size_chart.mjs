@@ -24,8 +24,10 @@ export const MEDIUM_CONFIDENCE_SIZE_CHART_RULES = [
   ["袖长", ["袖长", "内袖长", "里：袖长"]],
   ["袖口", ["1/2袖口（平量）", "里：1/2袖口（平量）", "1/2袖口"]],
   ["袖口围", ["1/2袖口（平量）", "里：1/2袖口（平量）", "1/2袖口"]],
+  ["前浪", ["前浪（弯量）"]],
   ["前档", ["前浪（弯量）"]],
   ["前裆", ["前浪（弯量）"]],
+  ["后浪", ["后浪（弯量）"]],
   ["后裆", ["后浪（弯量）"]],
   ["大腿围", ["1/2脾围"]],
   ["袖笼围", ["1/2夹圈（弯量）", "1/2夹圈弯量", "1/2夹直（边至边量）背心"]],
@@ -50,6 +52,7 @@ function compactKey(value) {
     .replace(/\s+/g, "")
     .replace(/[()（）]/g, "")
     .replace(/[：:]/g, ":")
+    .replace(/(?:cm|厘米|kg|公斤|斤|g|克)$/i, "")
     .toLowerCase();
 }
 
@@ -347,6 +350,13 @@ function derivedValueForMapping(mapping, size) {
   return null;
 }
 
+function isBlankSizeChartValue(value) {
+  const text = stringValue(value);
+  if (!text) return true;
+  const numeric = Number(text);
+  return Number.isFinite(numeric) && numeric === 0;
+}
+
 export function buildSizeChartForTemplate({ rows = [], spuCode, template = {}, mappings: explicitMappings = [], allowedSizes = [] } = {}) {
   const allowedSizeKeys = new Set(
     (Array.isArray(allowedSizes) ? allowedSizes : [])
@@ -371,18 +381,36 @@ export function buildSizeChartForTemplate({ rows = [], spuCode, template = {}, m
     if (!valueByPointAndSize.has(key)) valueByPointAndSize.set(key, row.sizeValue);
   }
 
+  const valuesBySize = new Map();
+  for (const size of sortSizes(sizes)) {
+    const values = mappings.map((mapping) => {
+      const derivedValue = derivedValueForMapping(mapping, size);
+      if (derivedValue != null) return derivedValue;
+      return mapping.sourcePoint
+        ? valueByPointAndSize.get(`${compactKey(mapping.sourcePoint)}\u0000${size}`) ?? "0"
+        : "0";
+    });
+    valuesBySize.set(size, values);
+  }
+  const activeMappingIndexes = new Set();
+  for (let index = 0; index < mappings.length; index += 1) {
+    const values = Array.from(valuesBySize.values()).map((rowValues) => rowValues[index]);
+    if (values.length > 0 && values.every((value) => !isBlankSizeChartValue(value))) {
+      activeMappingIndexes.add(index);
+    }
+  }
+
+  const activeMappings = mappings.filter((_, index) => activeMappingIndexes.has(index));
   const valueJson = {};
   if (mappings.length > 0 && sizes.size > 0) {
-    valueJson.title = mappings.map((mapping) => mapping.targetField).join(",");
-    for (const size of sortSizes(sizes)) {
-      const values = mappings.map((mapping) => {
-        const derivedValue = derivedValueForMapping(mapping, size);
-        if (derivedValue != null) return derivedValue;
-        return mapping.sourcePoint
-          ? valueByPointAndSize.get(`${compactKey(mapping.sourcePoint)}\u0000${size}`) ?? "0"
-          : "0";
-      });
-      valueJson[size] = values.join(",");
+    if (activeMappings.length > 0) {
+      valueJson.title = activeMappings.map((mapping) => mapping.targetField).join(",");
+      for (const size of sortSizes(sizes)) {
+        const values = valuesBySize.get(size) ?? [];
+        valueJson[size] = values
+          .filter((_, index) => activeMappingIndexes.has(index))
+          .join(",");
+      }
     }
   }
 

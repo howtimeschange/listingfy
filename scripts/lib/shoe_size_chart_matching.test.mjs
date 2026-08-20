@@ -97,6 +97,9 @@ test("sandal category waits for multimodal evidence and maps visible constructio
   assert.match(service.shoeSandalVisualClassificationPrompt(), /前后空凉鞋/);
   assert.match(service.shoeSandalVisualClassificationPrompt(), /中空凉鞋/);
   assert.match(service.shoeSandalVisualClassificationPrompt(), /鞋头和后跟/);
+  assert.match(service.shoeEnumClassificationPrompt(), /25鞋子模板类型/);
+  assert.match(service.shoeEnumClassificationPrompt(), /22Q4-童鞋尺码表/);
+  assert.match(service.shoeEnumClassificationPrompt(), /不要把鞋品枚举字段当作 MULTI_TEXT 尺码表/);
 });
 
 test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw columns", async () => {
@@ -263,7 +266,7 @@ test("shoe MDM derivation never creates clothing size placeholders or cm enum va
     templatePresent: true,
     ruleBlocking: false,
     shoeProduct: false,
-  }), false);
+  }), true);
   assert.deepEqual(service.validateProductArchiveSkuSizeFieldValue({
     fieldName: "尺码.",
     valueText: "34码以上",
@@ -374,7 +377,7 @@ test("shoe static facts fall back to older launch-plan rows without reviving dyn
 test("shoe visual blockers are admitted to the multimodal AI strategy", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
-  for (const fieldName of ["帮面材质(多选)", "材质(1688)", "材质功能", "鞋垫材质", "靴筒高度"]) {
+  for (const fieldName of ["帮面材质(多选)", "材质(1688)", "材质功能", "鞋垫材质", "靴筒高度", "22Q4-童鞋尺码表", "25鞋子模板类型"]) {
     assert.ok(service.productArchiveAiFieldStrategyForField(fieldName), `${fieldName} should have an AI field strategy`);
   }
 });

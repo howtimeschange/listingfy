@@ -53,7 +53,7 @@ test("parseDeepdrawFieldMappingRows maps the DeepDraw field relation workbook sh
     ["产品标题", "copywriting", "搜索标题", null],
     ["模特实拍", "manual", null, null],
   ]);
-  assert.equal(rows[3].blocking, true);
+  assert.equal(rows[3].blocking, false);
   assert.equal(rows[3].fieldType, "需判断字段");
   assert.equal(rows[3].importability, "人为判断");
 });
@@ -133,7 +133,31 @@ test("parseDeepdrawFieldMappingRows keeps v2 field source, mapped field, and dom
     ["鞋品字段", "鞋子模板类型", "固定", "通用鞋品尺码表", "fixed", null, "通用鞋品尺码表"],
   ]);
   assert.equal(rows[4].blocking, false);
-  assert.equal(rows[5].blocking, true);
+  assert.equal(rows[5].blocking, false);
+});
+
+test("parseDeepdrawFieldMappingRows only blocks manual rules with an explicit blocking flag", () => {
+  const rows = parseDeepdrawFieldMappingRows([
+    {
+      "深绘字段": "是否有腰带",
+      "字段来源": "人工判断",
+      "字段类型": "需判断字段",
+      "是否能MDM导入": "人为判断",
+    },
+    {
+      "深绘字段": "流行元素(多选)",
+      "字段来源": "人工判断",
+      "字段类型": "需判断字段",
+      "是否能MDM导入": "人为判断",
+      "是否必填": "是",
+    },
+  ]);
+
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].sourceType, "manual");
+  assert.equal(rows[0].blocking, false);
+  assert.equal(rows[1].sourceType, "manual");
+  assert.equal(rows[1].blocking, true);
 });
 
 test("parseDeepdrawFieldMappingRows treats fixed source field names as source references", () => {

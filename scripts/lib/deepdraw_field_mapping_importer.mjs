@@ -238,17 +238,9 @@ export function parseDeepdrawFieldMappingRows(rows = []) {
       const resolvedDefaultValue = sourceType === "fixed"
         ? defaultValue || fixedDefaultValue({ mappedField, notes })
         : defaultValue || null;
-      const manualBlocking = sourceType === "manual"
-        && !/开发中/.test(importability ?? "")
-        && (
-          /需判断/.test(fieldType ?? "")
-          || /人为判断|人工判断/.test(importability ?? "")
-          || sourceTypeFromText(fieldSource ?? "") === "manual"
-          || (!fieldSource && !mappedField)
-        );
       const blocking = sourceType === "skip"
         ? false
-        : booleanValue(firstValue(row, FIELD_ALIASES.blocking), manualBlocking);
+        : booleanValue(firstValue(row, FIELD_ALIASES.blocking), false);
 
       return {
         fieldDomainType: currentFieldDomainType || "通用字段",

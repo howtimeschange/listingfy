@@ -156,6 +156,16 @@ export function shoeSandalVisualClassificationPrompt() {
   ].join("\n")
 }
 
+export function shoeEnumClassificationPrompt() {
+  return [
+    "鞋品枚举字段判断规则：",
+    "1. 25鞋子模板类型 用于鞋品主模板，必须在 运动 / 休闲 / 雪地靴 / 婴童 中按类目、标题、SKU尺码段和参考图选择；非鞋品不要返回。",
+    "2. 22Q4-童鞋尺码表 用于童鞋细分类，必须在字段现有枚举里选择最具体鞋型；证据只能支持泛运动鞋时可选轻跑鞋，证据不足则省略。",
+    "3. 25鞋子尺码表 只用于凉鞋结构分类，会影响凉鞋尺码模板选择；只能在凉鞋款且参考图足够判断时选择包头凉鞋、镂空凉鞋、运动公主鞋或凉鞋。",
+    "4. 不要把鞋品枚举字段当作 MULTI_TEXT 尺码表，不要为这些字段返回尺码行、表头或数值。",
+  ].join("\n")
+}
+
 function optionText(option: unknown) {
   if (typeof option === "string" || typeof option === "number") return stringValue(option)
   if (!option || typeof option !== "object" || Array.isArray(option)) return ""

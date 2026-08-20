@@ -21,8 +21,10 @@ import {
 } from "../../../scripts/lib/ai_routing_context.mjs"
 import {
   buildShoeSizeChartFieldValues,
+  isShoeProductContext,
   loadShoeSizeChartRows,
   normalizeShoeSkuSize,
+  shoeEnumClassificationPrompt,
   resolveShoeSizeChartMatch,
   shoeSandalVisualClassificationPrompt,
 } from "./shoe-size-chart-matching"
@@ -748,7 +750,9 @@ const PRODUCT_ARCHIVE_AI_FIELD_STRATEGIES: ProductArchiveAiFieldStrategyDefiniti
       "是否多件套",
       "件数(单选)",
       "内胆类型",
+      "22Q4-童鞋尺码表",
       "25鞋子尺码表",
+      "25鞋子模板类型",
       "靴筒高度",
     ],
     fieldKeyPatterns: [
@@ -760,12 +764,14 @@ const PRODUCT_ARCHIVE_AI_FIELD_STRATEGIES: ProductArchiveAiFieldStrategyDefiniti
       /^袖长(?:多选)?$/,
       /^款式(?:多选|单选)?$/,
       /^内胆类型$/,
+      /^22q4童鞋尺码表$/,
       /^25鞋子尺码表$/,
+      /^25鞋子模板类型$/,
       /^靴筒高度$/,
     ],
     evidence: ["reference_images", "product_title", "trade_path", "source_rows", "filled_fields"],
-    decision: "优先根据商品图判断款式、结构、图案、门襟、领型、帽子、腰带、毛领和套件数量；标题和类目只作为辅助。",
-    guardrail: "图片看不清、只有字段名、或无法从标题/类目交叉验证时不要填写。",
+    decision: "优先根据商品图判断款式、结构、图案、门襟、领型、帽子、腰带、毛领、套件数量和鞋品细分类；标题和类目只作为辅助。",
+    guardrail: "图片看不清、只有字段名、或无法从标题/类目交叉验证时不要填写；非鞋品不要填写鞋品枚举。",
     includeWhenSourceSkipped: true,
   },
   {
@@ -932,6 +938,41 @@ export function shouldProductArchiveAiFill25ShoeSizeTable(input: {
   }).status === "needs_visual_classification"
 }
 
+export function isProductArchiveShoeAiEnumField(fieldName: unknown) {
+  return PRODUCT_ARCHIVE_SHOE_AI_ENUM_FIELDS.has(compactFieldKey(fieldName))
+}
+
+function isShoeDraftContext(input: {
+  draft?: JsonRecord
+  spu?: JsonRecord
+  sourceRows?: JsonRecord[]
+}) {
+  return isShoeProduct(input.spu, input.sourceRows ?? [])
+    || isShoeProductContext({
+      tradeId: input.draft?.trade_id,
+      tradePath: input.draft?.trade_path,
+      productLineName: input.spu?.product_line_name,
+    })
+}
+
+export function shouldProductArchiveAiFillShoeEnumField(input: {
+  fieldName?: unknown
+  tradeId?: unknown
+  tradePath?: unknown
+  productLineName?: unknown
+}) {
+  if (!isProductArchiveShoeAiEnumField(input.fieldName)) return false
+  if (!isShoeProductContext({
+    tradeId: input.tradeId,
+    tradePath: input.tradePath,
+    productLineName: input.productLineName,
+  })) return false
+  if (compactFieldKey(input.fieldName) === compactFieldKey("25鞋子尺码表")) {
+    return shouldProductArchiveAiFill25ShoeSizeTable(input)
+  }
+  return true
+}
+
 export function isStaleNonSandalAi25ShoeSizeTable(input: {
   fieldName?: unknown
   sourceType?: unknown
@@ -970,6 +1011,12 @@ const PRODUCT_ARCHIVE_SHOE_CONTEXT_FIELDS = new Set([
   "25鞋子模板类型",
   "鞋子尺码表",
   "鞋子模板类型",
+])
+
+const PRODUCT_ARCHIVE_SHOE_AI_ENUM_FIELDS = new Set([
+  "22q4童鞋尺码表",
+  "25鞋子尺码表",
+  "25鞋子模板类型",
 ])
 
 const PRODUCT_ARCHIVE_BRA_CONTEXT_FIELDS = new Set([
@@ -1023,7 +1070,7 @@ function productTextIncludesAny(text: string, needles: string[]) {
 }
 
 function isShoeProduct(spu: JsonRecord = {}, sourceRows: JsonRecord[] = []) {
-  return productTextIncludesAny(productCategoryText(spu, sourceRows), ["鞋"])
+  return productTextIncludesAny(productCategoryText(spu, sourceRows), ["鞋", "靴"])
 }
 
 function isCupProduct(spu: JsonRecord = {}, sourceRows: JsonRecord[] = []) {
@@ -1066,10 +1113,13 @@ export function isProductArchiveFieldLocallyRequired(fieldName: string, input: {
   sourceType?: unknown
   shoeProduct?: unknown
 } = {}) {
+  if (Object.prototype.hasOwnProperty.call(input, "templatePresent")) {
+    if (!input.templatePresent) return false
+    return Boolean(input.templateRequired)
+  }
   if (stringValue(input.sourceType) === "skip") return false
   const shoeRequiredSizeChart = Boolean(input.shoeProduct) && compactFieldKey(fieldName) === compactFieldKey("尺码表")
   if (!shoeRequiredSizeChart && isProductArchiveDocumentOptionalField(fieldName)) return false
-  if (Object.prototype.hasOwnProperty.call(input, "templatePresent") && !input.templatePresent) return false
   return Boolean(input.templateRequired) || Boolean(input.ruleBlocking)
 }
 
@@ -1729,6 +1779,40 @@ function sizeChartLooksLikeTable(valueJson: unknown) {
 
 function hasProductArchiveSizeChartTableValue(valueJson: unknown) {
   return sizeChartTitleOptions(valueJson).length > 0 && sizeChartDataEntries(valueJson).length > 0
+}
+
+function sizeChartCellValues(value: unknown) {
+  return stringValue(value).split(",").map((item) => item.trim())
+}
+
+function isBlankSizeChartCellValue(value: unknown) {
+  const text = stringValue(value)
+  if (!text) return true
+  const numeric = Number(text)
+  return Number.isFinite(numeric) && numeric === 0
+}
+
+function cleanProductArchiveSizeChartTableValue(valueJson: unknown) {
+  const titles = sizeChartTitleOptions(valueJson)
+  const entries = sizeChartDataEntries(valueJson)
+  if (titles.length === 0 || entries.length === 0) return {}
+
+  const rows = entries.map(([rawSize, rawValues]) => ({
+    rawSize,
+    values: sizeChartCellValues(rawValues),
+  }))
+  const activeIndexes = titles
+    .map((_, index) => index)
+    .filter((index) => rows.every((row) => !isBlankSizeChartCellValue(row.values[index])))
+  if (activeIndexes.length === 0) return {}
+
+  const output: JsonRecord = {
+    title: activeIndexes.map((index) => titles[index]).join(","),
+  }
+  for (const row of rows) {
+    output[row.rawSize] = activeIndexes.map((index) => row.values[index]).join(",")
+  }
+  return output
 }
 
 function sizeChartTemplateOptionsForField(templateOptions: unknown, existingValueJson: unknown, fieldName: string) {
@@ -4620,11 +4704,14 @@ export function buildProductArchiveAiFillCandidateFields(
     .map((field) => {
       const valueText = stringValue(field.value_text)
       const valueJson = recordValue(field.value_json)
+      const sourceType = stringValue(field.source_type)
       const aiRuleFallback = isAiRuleFallbackField(field)
       const emptyValue = !hasValue(valueText) && (!hasValue(valueJson) || aiRuleFallback)
       const validationStatus = stringValue(field.validation_status)
       const invalidValue = validationStatus === "invalid"
       const colorNeedsAiFill = compactFieldKey(field.field_name).includes("颜色") && colorIssueValues.length > 0
+      const shoeEnumNeedsAiReview = isProductArchiveShoeAiEnumField(field.field_name)
+        && ["shoe_size_chart", "ai", "ai_rule_fallback"].includes(sourceType)
       const strategy = productArchiveAiFieldStrategyForField(field.field_name)
       const required = Boolean(field.required)
         || Boolean(field.blocking)
@@ -4641,9 +4728,9 @@ export function buildProductArchiveAiFillCandidateFields(
         validationStatus,
         validationMessage: stringValue(field.validation_message),
         required,
-        sourceType: stringValue(field.source_type),
+        sourceType,
         strategy,
-        needsAiFill: emptyValue || invalidValue || colorNeedsAiFill,
+        needsAiFill: emptyValue || invalidValue || colorNeedsAiFill || shoeEnumNeedsAiReview,
         options: fieldOptionsFromTemplate(field.options_json),
       }
     })
@@ -4944,6 +5031,9 @@ function buildDeepdrawAiFillPrompt(input: {
       "每个字段的 field_strategy.guardrail 是硬约束；违反该边界时省略字段。",
       `confidence 低于 ${AI_FILL_MIN_CONFIDENCE} 的字段不要返回。`,
       "颜色字段如果 current_value 有多个用分号分隔的原颜色名，field_value 返回同数量标准色，按顺序用分号分隔；每个标准色都必须来自 options[].value，系统会自动保留原颜色别名。",
+      ...(input.fields.some((field) => isProductArchiveShoeAiEnumField(field.fieldName))
+        ? [shoeEnumClassificationPrompt()]
+        : []),
       ...(input.fields.some((field) => compactFieldKey(field.fieldName) === compactFieldKey("25鞋子尺码表"))
         ? [shoeSandalVisualClassificationPrompt(), "凉鞋结构必须优先依据参考图；识别结果只能映射为 25鞋子尺码表 的现有枚举值。"]
         : []),
@@ -5274,7 +5364,10 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     const shoeDerived = !existingManual ? shoeFieldValues[fieldName] : undefined
     const hasShoeDerivedValue = Boolean(shoeDerived)
     const sourceValueText = readSourceValue(spu, rule, sourceRows, fieldName)
-    const sizeChartDerived = !existingManual && !hasShoeDerivedValue && compactFieldKey(fieldName).includes("尺码表")
+    const sizeChartDerived = !existingManual && !hasShoeDerivedValue && compactFieldKey(fieldName).includes("尺码表") && isStructuredProductPayloadField({
+      field_name: fieldName,
+      field_type: template.field_type,
+    })
       ? buildProductArchiveSizeChartFieldValue({
           fieldName,
           spuCode: stringValue(draft.spu_code),
@@ -5329,7 +5422,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
       shoeProduct,
     })
     const blocking = required
-    const missing = blocking && fieldSourceType !== "skip" && !hasValue(valueText) && !hasValue(valueJson)
+    const missing = blocking && !hasValue(valueText) && !hasValue(valueJson)
     const ruleSourceRef = stringValue(rule.mapped_field || rule.source_field || rule.field_source || rule.source_table) || null
     return {
       fieldName,
@@ -5345,7 +5438,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
       required,
       blocking,
       manualOverride: existingManual,
-      validationStatus: fieldSourceType === "skip" ? "skipped" : missing ? "missing" : "valid",
+      validationStatus: fieldSourceType === "skip" && !required ? "skipped" : missing ? "missing" : "valid",
       validationMessage: missing ? "必填字段缺失" : null,
     }
   })
@@ -6611,13 +6704,18 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
     const referenceImages = detail.images as JsonRecord[] ?? []
     const sourceRows = referenceSourceRowsForDraft(db, draft)
     const mdmSpu = resolveProductArchiveDraftSpu(db, draft)
-    const candidates = buildProductArchiveAiFillCandidateFields(fields, issues, skus).filter((field) => (
-      compactFieldKey(field.fieldName) !== compactFieldKey("25鞋子尺码表")
-      || shouldProductArchiveAiFill25ShoeSizeTable({
-        tradeId: draft.trade_id,
-        tradePath: draft.trade_path,
-      })
-    ))
+    const shoeDraftContext = isShoeDraftContext({ draft, spu: mdmSpu, sourceRows })
+    const candidates = buildProductArchiveAiFillCandidateFields(fields, issues, skus).filter((field) => {
+      if (!isProductArchiveShoeAiEnumField(field.fieldName)) return true
+      if (!shoeDraftContext) return false
+      if (compactFieldKey(field.fieldName) === compactFieldKey("25鞋子尺码表")) {
+        return shouldProductArchiveAiFill25ShoeSizeTable({
+          tradeId: draft.trade_id,
+          tradePath: draft.trade_path,
+        })
+      }
+      return true
+    })
     const evidenceRuleFills = buildProductArchiveEvidenceRuleFills({
       draft,
       fields,
@@ -7148,7 +7246,7 @@ export function validateProductArchiveDraft(
     const options = template?.options ?? []
     let status: string
     let message = ""
-    if (stringValue(field.source_type) === "skip") {
+    if (stringValue(field.source_type) === "skip" && !blocking) {
       status = "skipped"
     } else if (blocking && !hasValue(value)) {
       status = "missing"
@@ -7192,15 +7290,25 @@ export function validateProductArchiveDraft(
   for (const field of fields) {
     const fieldName = stringValue(field.field_name)
     if (!compactFieldKey(fieldName).includes("尺码表")) continue
+    const template = templateLookup.get(fieldName)
     if (!isStructuredProductPayloadField({
       ...field,
-      field_type: templateLookup.get(fieldName)?.fieldType,
+      field_type: template?.fieldType,
     })) continue
+    const childRequirementActive = template
+      ? templateChildRequirementActive({ rawPayload: template.rawPayload }, fields)
+      : true
+    const blocking = childRequirementActive && isProductArchiveFieldLocallyRequired(fieldName, {
+      templateRequired: template?.required,
+      templatePresent: Boolean(template),
+      ruleBlocking: Boolean(field.blocking) || Boolean(field.required),
+      sourceType: field.source_type,
+    })
     issues.push(...validateProductArchiveSizeChartValue({
       fieldName,
       valueJson: field.value_json,
       allowedSizes: allowedSizeChartSizes,
-      blocking: Boolean(field.blocking) || Boolean(field.required),
+      blocking,
     }))
   }
 
@@ -7283,7 +7391,7 @@ export function isStructuredProductPayloadField(field: JsonRecord) {
 function isUnsupportedAiFillField(fieldName: unknown) {
   if (/^尺码\s*[.。]$/.test(stringValue(fieldName))) return true
   const key = compactFieldKey(fieldName)
-  if (key === compactFieldKey("25鞋子尺码表")) return false
+  if (isProductArchiveShoeAiEnumField(fieldName)) return false
   return key === "多平台尺码" || key.includes("尺码表") || isProductArchiveSkuSizeFieldName(fieldName)
 }
 
@@ -7333,7 +7441,11 @@ export function productArchivePayloadFieldValue(field: JsonRecord) {
   const jsonValue = recordValue(field.value_json)
   if (isProductArchiveStructuredSizeFieldName(field.field_name)) {
     const fieldType = stringValue(field.field_type).toUpperCase()
-    if (hasProductArchiveSizeChartTableValue(jsonValue)) return isStructuredProductPayloadField(field) ? jsonValue : null
+    if (hasProductArchiveSizeChartTableValue(jsonValue)) {
+      if (!isStructuredProductPayloadField(field)) return null
+      const cleanedValue = cleanProductArchiveSizeChartTableValue(jsonValue)
+      return hasProductArchiveSizeChartTableValue(cleanedValue) ? cleanedValue : null
+    }
     if (!fieldType || fieldType === "MULTI_TEXT") return null
   }
   const text = stringValue(field.value_text)
@@ -7346,7 +7458,7 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
   const draft = detail.draft as JsonRecord
   const sourceRows = sourceRowsForDraft(db, draft)
   const fields = (detail.fields as JsonRecord[])
-    .filter((field) => stringValue(field.source_type) !== "skip")
+    .filter((field) => stringValue(field.source_type) !== "skip" || Boolean(field.required) || Boolean(field.blocking))
     .map((field) => ({
       id: stringValue(field.field_id) || undefined,
       name: stringValue(field.field_name),

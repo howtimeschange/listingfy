@@ -154,7 +154,7 @@ function normalizeRuleInput(input: FieldMappingRuleInput, defaults: {
     defaultValue,
     fieldType: stringValue(input.fieldType ?? input.field_type) || null,
     importability: stringValue(input.importability) || null,
-    blocking: booleanValue(input.blocking, sourceType === "manual"),
+    blocking: booleanValue(input.blocking, false),
     enabled: booleanValue(input.enabled, true),
     notes: stringValue(input.notes) || null,
     rawRowJson: input.rawRowJson ?? input.raw_row_json ?? {},

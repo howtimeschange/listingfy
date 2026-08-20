@@ -61,10 +61,17 @@ test("importDeepdrawFieldMappingRows prunes stale rules outside the imported dom
         mappedField: "名称",
         sourceType: "copywriting",
       },
+      {
+        fieldDomainType: "通用字段",
+        deepdrawField: "是否有腰带",
+        fieldSource: "人工判断",
+        sourceType: "manual",
+      },
     ],
   });
 
-  assert.equal(upserts.length, 2);
+  assert.equal(upserts.length, 3);
+  assert.equal(upserts[2][12], false);
   assert.deepEqual(deletes, [2]);
   assert.equal(result.deletedStaleCount, 1);
 });
