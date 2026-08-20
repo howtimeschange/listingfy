@@ -7878,8 +7878,12 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
   const claimedDraft = claimProductArchiveDraftForSubmit(db, draftId)
   if (!claimedDraft) {
     const currentDraft = draftById(db, draftId)
+    const currentClaimToken = stringValue(currentDraft?.submit_claim_token)
+    if (currentClaimToken && stringValue(currentDraft?.status) === "created") {
+      return await readbackProductArchiveDraft(db, draftId, { ...options, claimToken: currentClaimToken })
+    }
     return {
-      alreadySubmitting: Boolean(currentDraft?.submit_claim_token) || stringValue(currentDraft?.status) === "submitting",
+      alreadySubmitting: Boolean(currentClaimToken) || stringValue(currentDraft?.status) === "submitting",
       status: stringValue(currentDraft?.status),
       draftId,
     }

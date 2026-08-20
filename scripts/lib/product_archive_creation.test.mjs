@@ -4316,6 +4316,92 @@ test("DeepDraw create transport uncertainty keeps the submit claim and does not 
   assert.equal(logs.length, 1);
 });
 
+test("DeepDraw submit resumes readback for a created draft that kept its claim", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const state = {
+    id: 79,
+    status: "created",
+    submit_claim_token: "claim-79",
+    duplicate_result_json: { submit_readback_unknown: "readback timeout" },
+    title: "针织衫",
+    spu_code: "208226102001",
+    created_product_id: "product-79",
+  };
+  let readbackCalls = 0;
+  let createCalls = 0;
+  let claimCalls = 0;
+  let submitLogs = 0;
+  const db = {
+    transaction(fn) {
+      return () => fn();
+    },
+    prepare(sql) {
+      const normalized = sql.replace(/\s+/g, " ").trim();
+      return {
+        get(...args) {
+          if (/set status = 'submitting'/i.test(normalized)) {
+            claimCalls += 1;
+            return undefined;
+          }
+          if (/select \* from product_archive_draft where id = \?/i.test(normalized)) {
+            return { ...state };
+          }
+          if (/update product_archive_draft set status = \?, submit_claim_token = null/i.test(normalized)) {
+            const [status, _updatedAt, draftId, claimToken] = args;
+            assert.equal(draftId, state.id);
+            assert.equal(claimToken, state.submit_claim_token);
+            state.status = status;
+            state.submit_claim_token = null;
+            return { id: state.id };
+          }
+          throw new Error(`Unexpected SQL get: ${normalized}`);
+        },
+        run(...args) {
+          if (/insert into product_archive_submit_log/i.test(normalized)) {
+            submitLogs += 1;
+            return { changes: 1 };
+          }
+          throw new Error(`Unexpected SQL run: ${normalized}`);
+        },
+      };
+    },
+  };
+
+  const result = await service.submitProductArchiveDraft(db, state.id, {
+    create: async () => {
+      createCalls += 1;
+      throw new Error("create must not be called while resuming readback");
+    },
+    readback: async () => {
+      readbackCalls += 1;
+      return {
+        ok: true,
+        status: 200,
+        payload: {
+          status: 200,
+          response: {
+            code: 10200,
+            response: "success",
+            body: {
+              productId: "product-79",
+              code: "208226102001",
+              title: "针织衫",
+            },
+          },
+        },
+      };
+    },
+  });
+
+  assert.equal(result.status, "readback_verified");
+  assert.equal(state.status, "readback_verified");
+  assert.equal(state.submit_claim_token, null);
+  assert.equal(claimCalls, 1);
+  assert.equal(createCalls, 0);
+  assert.equal(readbackCalls, 1);
+  assert.equal(submitLogs, 1);
+});
+
 test("DeepDraw submit restores the fenced pre-claim status when local preparation throws", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const state = {
