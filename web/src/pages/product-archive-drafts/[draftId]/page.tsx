@@ -1060,25 +1060,25 @@ function DraftAssetPreviewDialog({
       if (!open) onClose()
     }}>
       {target && image ? (
-        <DialogContent className="max-w-[min(96vw,1100px)]">
+        <DialogContent className="max-h-[calc(100vh-2rem)] w-[min(96vw,1120px)] max-w-none overflow-hidden sm:max-w-[min(96vw,1120px)]">
           <DialogHeader>
             <DialogTitle className="truncate">{label}</DialogTitle>
             <DialogDescription>
               {draftAssetTypeLabel(target.kind)} · {draftAssetMetaText(image)}
             </DialogDescription>
           </DialogHeader>
-          <div className="overflow-hidden rounded-md border bg-muted/30">
+          <div className="flex min-h-0 min-w-0 items-center justify-center overflow-hidden rounded-md border bg-muted/30">
             {isPdf ? (
               <iframe
                 src={source}
                 title={label}
-                className="h-[72vh] min-h-[420px] w-full bg-background"
+                className="h-[min(72vh,760px)] min-h-[420px] w-full min-w-0 bg-background"
               />
             ) : (
               <img
                 src={source}
                 alt={label}
-                className="max-h-[72vh] min-h-[320px] w-full object-contain"
+                className="block h-auto max-h-[min(72vh,760px)] max-w-full object-contain"
               />
             )}
           </div>
