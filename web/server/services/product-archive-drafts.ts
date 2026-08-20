@@ -1003,6 +1003,7 @@ const PRODUCT_ARCHIVE_SHOE_CONTEXT_FIELDS = new Set([
   "22q4童鞋卖点",
   "22q4童鞋卖点解析",
   "22q4童鞋品名",
+  "22q4-童鞋尺码表",
   "22q4童鞋尺码表",
   "童鞋核心卖点",
   "品名童鞋",
@@ -1014,6 +1015,7 @@ const PRODUCT_ARCHIVE_SHOE_CONTEXT_FIELDS = new Set([
 ])
 
 const PRODUCT_ARCHIVE_SHOE_AI_ENUM_FIELDS = new Set([
+  "22q4-童鞋尺码表",
   "22q4童鞋尺码表",
   "25鞋子尺码表",
   "25鞋子模板类型",
