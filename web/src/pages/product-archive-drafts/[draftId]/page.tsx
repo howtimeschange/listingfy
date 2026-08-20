@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useRef, useState, type ReactNode } from "react"
 import { Link, useParams } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, ClipboardCheck, Images, ListTree, Loader2, Pin, PinOff, RefreshCw, Save, Search, Send, Sparkles, Trash2, Upload, X } from "lucide-react"
+import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, ClipboardCheck, ExternalLink, FileText, Images, ListTree, Loader2, Maximize2, Pin, PinOff, RefreshCw, Save, Search, Send, Sparkles, Trash2, Upload, X } from "lucide-react"
 import { toast } from "sonner"
 import { api, ApiError } from "@/lib/api-client"
 import { useAuth } from "@/lib/auth-context"
@@ -135,7 +135,15 @@ interface DraftImage {
   width: number | null
   height: number | null
   preview_url: string | null
+  raw_payload_json?: unknown
   created_at: string
+}
+
+type DraftAssetKind = "reference" | "hangtag" | "washlabel"
+
+type DraftAssetPreviewTarget = {
+  image: DraftImage
+  kind: DraftAssetKind
 }
 
 interface DraftDetail {
@@ -765,12 +773,105 @@ function DraftImageUploadDialog({
   )
 }
 
-function DraftReferenceImagePreview({ src, label }: { src: string | null; label: string }) {
+function textValue(value: unknown) {
+  if (value == null) return ""
+  if (typeof value === "string") return value.trim()
+  if (typeof value === "number" || typeof value === "boolean") return String(value).trim()
+  return ""
+}
+
+function pathBaseName(value: unknown) {
+  const text = textValue(value).replace(/\\/g, "/")
+  return text.split("/").filter(Boolean).at(-1) ?? text
+}
+
+function draftImagePayload(image: DraftImage) {
+  return recordValue(image.raw_payload_json)
+}
+
+function draftAssetName(image: DraftImage) {
+  return image.original_file_name || image.source_ref || image.file_name || `附件 ${image.id}`
+}
+
+function draftAssetComparableName(image: DraftImage) {
+  const payload = draftImagePayload(image)
+  return [
+    pathBaseName(image.original_file_name),
+    pathBaseName(image.source_ref),
+    pathBaseName(image.file_name),
+    pathBaseName(payload.original_file_name),
+    pathBaseName(payload.source_ref),
+  ].filter(Boolean).join(" ")
+}
+
+function draftAssetKind(image: DraftImage): DraftAssetKind {
+  const payloadKind = textValue(draftImagePayload(image).asset_kind).toLowerCase()
+  if (payloadKind === "hangtag" || payloadKind === "washlabel") return payloadKind
+  const name = draftAssetComparableName(image)
+  if (/(洗唛|洗标|水洗|wash)/i.test(name)) return "washlabel"
+  if (/(吊牌|合格证|hangtag|(?:^|[_\-\s])tag(?:[_\-\s.]|$))/i.test(name)) return "hangtag"
+  return "reference"
+}
+
+function groupDraftAssets(images: DraftImage[]) {
+  return images.reduce<{
+    referenceImages: DraftImage[]
+    hangtagImages: DraftImage[]
+    washlabelImages: DraftImage[]
+  }>((groups, image) => {
+    const kind = draftAssetKind(image)
+    if (kind === "hangtag") {
+      groups.hangtagImages.push(image)
+    } else if (kind === "washlabel") {
+      groups.washlabelImages.push(image)
+    } else {
+      groups.referenceImages.push(image)
+    }
+    return groups
+  }, { referenceImages: [], hangtagImages: [], washlabelImages: [] })
+}
+
+function isDraftPdfAsset(image: DraftImage) {
+  return textValue(image.mime_type).toLowerCase() === "application/pdf"
+    || pathBaseName(image.file_name).toLowerCase().endsWith(".pdf")
+    || pathBaseName(image.original_file_name).toLowerCase().endsWith(".pdf")
+    || pathBaseName(image.source_ref).toLowerCase().endsWith(".pdf")
+}
+
+function draftAssetTypeLabel(kind: DraftAssetKind) {
+  if (kind === "hangtag") return "吊牌"
+  if (kind === "washlabel") return "洗唛"
+  return "SPU"
+}
+
+function draftAssetMetaText(image: DraftImage) {
+  const parts = []
+  if (image.width && image.height) {
+    parts.push(`${image.width} × ${image.height}`)
+  } else if (isDraftPdfAsset(image)) {
+    parts.push("PDF")
+  } else {
+    parts.push("尺寸未知")
+  }
+  if (image.file_size) parts.push(`${formatNumber(Math.round(image.file_size / 1024))}KB`)
+  return parts.join(" · ")
+}
+
+function DraftAssetThumbnail({ image, label }: { image: DraftImage; label: string }) {
   const [failed, setFailed] = useState(false)
+  const src = image.preview_url
+  if (isDraftPdfAsset(image)) {
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-2 rounded-sm bg-muted text-xs font-medium text-muted-foreground">
+        <FileText className="size-8" />
+        <span>PDF</span>
+      </div>
+    )
+  }
   if (!src || failed) {
     return (
       <div className="flex h-full w-full items-center justify-center rounded-sm bg-muted text-xs text-muted-foreground">
-        无图
+        无预览
       </div>
     )
   }
@@ -785,15 +886,84 @@ function DraftReferenceImagePreview({ src, label }: { src: string | null; label:
   )
 }
 
+function DraftAssetCard({
+  image,
+  kind,
+  onPreview,
+  onDelete,
+  deletingImageId,
+  canWrite,
+  showDelete = false,
+}: {
+  image: DraftImage
+  kind: DraftAssetKind
+  onPreview: (target: DraftAssetPreviewTarget) => void
+  onDelete?: (imageId: number) => void
+  deletingImageId?: number | null
+  canWrite?: boolean
+  showDelete?: boolean
+}) {
+  const label = draftAssetName(image)
+  const previewable = Boolean(image.preview_url)
+  return (
+    <div className="min-w-0 overflow-hidden rounded-md border bg-background">
+      <button
+        type="button"
+        className={cn(
+          "group relative block aspect-square w-full bg-muted/60 p-2 text-left focus:outline-none focus:ring-2 focus:ring-ring",
+          previewable ? "cursor-zoom-in hover:bg-muted" : "cursor-default",
+        )}
+        disabled={!previewable}
+        onClick={() => onPreview({ image, kind })}
+        aria-label={`预览${label}`}
+        title="查看原件"
+      >
+        <DraftAssetThumbnail image={image} label={label} />
+        {previewable ? (
+          <span className="absolute right-2 top-2 rounded-full bg-background/90 p-1 text-muted-foreground opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+            <Maximize2 className="size-3.5" />
+          </span>
+        ) : null}
+      </button>
+      <div className="grid gap-1.5 p-2 text-xs">
+        <div className="flex min-w-0 items-center gap-1.5">
+          {kind === "reference" ? null : (
+            <Badge variant="outline" className="h-5 shrink-0 rounded-md px-1.5 py-0 text-[10px]">
+              {draftAssetTypeLabel(kind)}
+            </Badge>
+          )}
+          <div className="truncate font-medium">{label}</div>
+        </div>
+        <div className="truncate text-muted-foreground">{draftAssetMetaText(image)}</div>
+        {showDelete && onDelete ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="w-fit text-muted-foreground hover:text-[#d45656]"
+            disabled={!canWrite || deletingImageId === image.id}
+            onClick={() => onDelete(image.id)}
+          >
+            {deletingImageId === image.id ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
+            删除
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 function DraftReferenceImagesSection({
   images,
   uploadDialog,
+  onPreview,
   onDelete,
   deletingImageId,
   canWrite,
 }: {
   images: DraftImage[]
   uploadDialog: ReactNode
+  onPreview: (target: DraftAssetPreviewTarget) => void
   onDelete: (imageId: number) => void
   deletingImageId: number | null
   canWrite: boolean
@@ -810,32 +980,16 @@ function DraftReferenceImagesSection({
       {images.length > 0 ? (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(132px,156px))] justify-start gap-3">
           {images.map((image) => (
-            <div key={image.id} className="min-w-0 overflow-hidden rounded-md border bg-background">
-              <div className="aspect-square bg-muted/60 p-2">
-                <DraftReferenceImagePreview
-                  src={image.preview_url}
-                  label={image.original_file_name ?? image.file_name ?? "SPU 参考图"}
-                />
-              </div>
-              <div className="grid gap-1.5 p-2 text-xs">
-                <div className="truncate font-medium">{image.original_file_name ?? image.file_name}</div>
-                <div className="truncate text-muted-foreground">
-                  {image.width && image.height ? `${image.width} × ${image.height}` : "尺寸未知"}
-                  {image.file_size ? ` · ${formatNumber(Math.round(image.file_size / 1024))}KB` : ""}
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="xs"
-                  className="w-fit text-muted-foreground hover:text-[#d45656]"
-                  disabled={!canWrite || deletingImageId === image.id}
-                  onClick={() => onDelete(image.id)}
-                >
-                  {deletingImageId === image.id ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
-                  删除
-                </Button>
-              </div>
-            </div>
+            <DraftAssetCard
+              key={image.id}
+              image={image}
+              kind="reference"
+              onPreview={onPreview}
+              onDelete={onDelete}
+              deletingImageId={deletingImageId}
+              canWrite={canWrite}
+              showDelete
+            />
           ))}
         </div>
       ) : (
@@ -844,6 +998,103 @@ function DraftReferenceImagesSection({
         </div>
       )}
     </section>
+  )
+}
+
+function DraftEvidenceAssetsSection({
+  hangtagImages,
+  washlabelImages,
+  onPreview,
+}: {
+  hangtagImages: DraftImage[]
+  washlabelImages: DraftImage[]
+  onPreview: (target: DraftAssetPreviewTarget) => void
+}) {
+  const assets = [
+    ...hangtagImages.map((image) => ({ image, kind: "hangtag" as const })),
+    ...washlabelImages.map((image) => ({ image, kind: "washlabel" as const })),
+  ]
+  return (
+    <section className="rounded-lg border bg-card p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="text-sm font-semibold">吊牌/洗唛图</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            吊牌 {formatNumber(hangtagImages.length)} 个 · 洗唛 {formatNumber(washlabelImages.length)} 个
+          </p>
+        </div>
+      </div>
+      {assets.length > 0 ? (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(132px,156px))] justify-start gap-3">
+          {assets.map(({ image, kind }) => (
+            <DraftAssetCard
+              key={image.id}
+              image={image}
+              kind={kind}
+              onPreview={onPreview}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
+          暂无吊牌/洗唛附件
+        </div>
+      )}
+    </section>
+  )
+}
+
+function DraftAssetPreviewDialog({
+  target,
+  onClose,
+}: {
+  target: DraftAssetPreviewTarget | null
+  onClose: () => void
+}) {
+  const image = target?.image
+  const label = image ? draftAssetName(image) : ""
+  const source = image?.preview_url ?? ""
+  const isPdf = image ? isDraftPdfAsset(image) : false
+  return (
+    <Dialog open={Boolean(target)} onOpenChange={(open) => {
+      if (!open) onClose()
+    }}>
+      {target && image ? (
+        <DialogContent className="max-w-[min(96vw,1100px)]">
+          <DialogHeader>
+            <DialogTitle className="truncate">{label}</DialogTitle>
+            <DialogDescription>
+              {draftAssetTypeLabel(target.kind)} · {draftAssetMetaText(image)}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="overflow-hidden rounded-md border bg-muted/30">
+            {isPdf ? (
+              <iframe
+                src={source}
+                title={label}
+                className="h-[72vh] min-h-[420px] w-full bg-background"
+              />
+            ) : (
+              <img
+                src={source}
+                alt={label}
+                className="max-h-[72vh] min-h-[320px] w-full object-contain"
+              />
+            )}
+          </div>
+          {source ? (
+            <DialogFooter>
+              <Button asChild variant="outline" size="sm">
+                <a href={source} target="_blank" rel="noreferrer">
+                  <ExternalLink className="size-4" />
+                  打开原文件
+                </a>
+              </Button>
+            </DialogFooter>
+          ) : null}
+        </DialogContent>
+      ) : null}
+    </Dialog>
   )
 }
 
@@ -871,6 +1122,7 @@ export default function ProductArchiveDraftDetailPage() {
   const [imageUploadDialogOpen, setImageUploadDialogOpen] = useState(false)
   const [imageUploadFiles, setImageUploadFiles] = useState<File[]>([])
   const [deletingImageId, setDeletingImageId] = useState<number | null>(null)
+  const [previewTarget, setPreviewTarget] = useState<DraftAssetPreviewTarget | null>(null)
   const debouncedTradeSearch = useDebounce(tradeSearch, 250)
 
   const draft = detail.data?.draft
@@ -881,7 +1133,7 @@ export default function ProductArchiveDraftDetailPage() {
     && tradeSelectionDecision.recommendedTrade.tradeId !== tradeSelectionDecision.appliedTrade?.tradeId,
   )
   const launchPlanReference = detail.data?.launchPlanReference ?? { matched: false, fields: [] }
-  const referenceImages = detail.data?.images ?? []
+  const draftAssets = useMemo(() => groupDraftAssets(detail.data?.images ?? []), [detail.data?.images])
   const trades = useQuery<TradeListResponse>({
     queryKey: ["deepdraw-metadata-trades", draft?.tenant_name, debouncedTradeSearch],
     enabled: Boolean(draft && tradeDialogOpen),
@@ -1405,18 +1657,28 @@ export default function ProductArchiveDraftDetailPage() {
         </Dialog>
         </PageHeader>
 
-      <DraftReferenceImagesSection
-        images={referenceImages}
-        deletingImageId={deletingImageId}
-        canWrite={canWrite}
-        onDelete={(imageId) => deleteDraftImage.mutate(imageId)}
-        uploadDialog={(
-          <Button type="button" variant="outline" size="sm" disabled={!canWrite} onClick={() => setImageUploadDialogOpen(true)}>
-            <Images className="size-4" />
-            上传参考图
-          </Button>
-        )}
-      />
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.72fr)]">
+        <DraftReferenceImagesSection
+          images={draftAssets.referenceImages}
+          deletingImageId={deletingImageId}
+          canWrite={canWrite}
+          onPreview={setPreviewTarget}
+          onDelete={(imageId) => deleteDraftImage.mutate(imageId)}
+          uploadDialog={(
+            <Button type="button" variant="outline" size="sm" disabled={!canWrite} onClick={() => setImageUploadDialogOpen(true)}>
+              <Images className="size-4" />
+              上传参考图
+            </Button>
+          )}
+        />
+        <DraftEvidenceAssetsSection
+          hangtagImages={draftAssets.hangtagImages}
+          washlabelImages={draftAssets.washlabelImages}
+          onPreview={setPreviewTarget}
+        />
+      </div>
+
+      <DraftAssetPreviewDialog target={previewTarget} onClose={() => setPreviewTarget(null)} />
 
       {tradeSelectionDecision ? (
         <section

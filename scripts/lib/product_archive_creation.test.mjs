@@ -128,6 +128,41 @@ test("product archive duplicate and readback calls keep DeepDraw resource reads 
   assert.match(readbackImplementation, /getDeepdrawProduct\(\{[\s\S]*resource: "form"[\s\S]*\}\)/);
 });
 
+test("product archive draft creation refreshes only unpublished reusable drafts", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const serviceSource = await readFile(files.draftService, "utf8");
+  const createStart = serviceSource.indexOf("export function createProductArchiveDraftFromSpu");
+  const createEnd = serviceSource.indexOf("export function getProductArchiveDraftDetail", createStart);
+  const createImplementation = serviceSource.slice(createStart, createEnd);
+
+  assert.equal(typeof service.isReusableProductArchiveDraftStatus, "function");
+  for (const status of ["draft", "missing_fields", "manual_review", "ready"]) {
+    assert.equal(service.isReusableProductArchiveDraftStatus(status), true, status);
+  }
+  for (const status of [
+    "submitting",
+    "created",
+    "readback_verified",
+    "readback_mismatch",
+    "duplicate_found",
+    "failed",
+    "update_pending",
+  ]) {
+    assert.equal(service.isReusableProductArchiveDraftStatus(status), false, status);
+  }
+
+  assert.match(serviceSource, /function nonReusableProductArchiveDraftForSpu/);
+  assert.match(serviceSource, /function reusableProductArchiveDraftForSpu/);
+  assert.ok(
+    createImplementation.indexOf("const blockedDraft = nonReusableProductArchiveDraftForSpu") <
+      createImplementation.indexOf("const existingDraft = reusableProductArchiveDraftForSpu"),
+    "non-reusable draft states must block before any old reusable draft is refreshed",
+  );
+  assert.match(createImplementation, /已有不可覆盖状态草稿/);
+  assert.match(createImplementation, /duplicate_result_json = '\{\}'::jsonb/);
+  assert.match(createImplementation, /replaceProductArchiveDraftSkuRows\(db, draftId, input\.spuCode, skuRows, now\)/);
+});
+
 test("product archive draft source rows stay scoped to the import batch when present", async () => {
   const service = await readFile(files.draftService, "utf8");
 
@@ -611,6 +646,59 @@ test("Bala DeepDraw priority does not bypass a first-tier ambiguity", async () =
   assert.equal(decision.reasonCode, "ambiguous_match");
   assert.equal(decision.recommendedTrade, null);
   assert.match(decision.reason, /第一优先级/);
+});
+
+test("Bala DeepDraw priority uses official category context to break generic leaf ties", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    {
+      source_type: "launch_plan",
+      row_json: {
+        "官方发布类目": "童装/婴儿装/亲子装>儿童内衣裤>内裤",
+        "品类": "内裤",
+        "小类": "平角裤",
+        "性别": "男",
+        "年龄段": "中童",
+      },
+    },
+  ], [
+    deepdrawRoot("7", "童装婴幼儿服装"),
+    deepdrawChild("331", "7", "内裤", "童装婴幼儿服装 / 儿童内衣裤 / 内裤"),
+    deepdrawChild("9664", "7", "内裤", "童装婴幼儿服装 / 中大童 / 内裤"),
+    deepdrawChild("9689", "7", "内裤", "童装婴幼儿服装 / 男童 / 内裤"),
+  ], {
+    tenantName: "电商巴拉巴拉",
+    evaluatedAt: "2026-08-19T09:47:40.900Z",
+  });
+
+  assert.equal(decision.recommendedTrade?.tradeId, "331");
+  assert.equal(decision.reasonCode, "unique_high_confidence");
+  assert.equal(decision.matchedField, "官方发布类目");
+});
+
+test("Bala DeepDraw priority uses source context when same leaf candidates remain otherwise tied", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    {
+      source_type: "launch_plan",
+      row_json: {
+        "官方发布类目": "童鞋/亲子鞋>运动鞋",
+        "品类": "鞋",
+        "性别": "女",
+        "年龄段": "中童",
+      },
+    },
+  ], [
+    deepdrawRoot("531", "童鞋/亲子鞋"),
+    deepdrawChild("53101", "531", "运动鞋", "童鞋/亲子鞋 / 男童鞋 / 运动鞋"),
+    deepdrawChild("53102", "531", "运动鞋", "童鞋/亲子鞋 / 女童鞋 / 运动鞋"),
+  ], {
+    tenantName: "电商巴拉巴拉",
+    evaluatedAt: "2026-08-19T09:47:40.900Z",
+  });
+
+  assert.equal(decision.recommendedTrade?.tradeId, "53102");
+  assert.notEqual(decision.reasonCode, "ambiguous_match");
 });
 
 test("Bala DeepDraw priority excludes exact matches outside the approved scopes", async () => {
@@ -2563,6 +2651,27 @@ test("product archive routes fence prechecks, owned image files, and mutation co
   const precheck = section("async function runPrecheckItemOnce", "function finishJob(job");
   assert.match(precheck, /const prepared = db\.transaction\(\(\) => \{[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, item\.draft_id\)[\s\S]*validateProductArchiveDraft\(db, item\.draft_id\)[\s\S]*return \{ tradeRefresh, validation \}/);
 
+  const queueableRefresh = section("function queueableDraftRefreshCodesForCodes", "function numericIdValue");
+  assert.match(queueableRefresh, /isReusableProductArchiveDraftStatus\(row\.status\)/);
+  assert.match(queueableRefresh, /if \(current\.hasNonReusable\) return false/);
+  assert.match(queueableRefresh, /return current\.hasReusable/);
+
+  const batchRoute = section(
+    'productArchiveDrafts.post("/batch"',
+    'productArchiveDrafts.post("/mdm-batch"',
+  );
+  assert.match(batchRoute, /const rawCodes = parseSpuCodes\(body\.codes \?\? body\.rawCodes\)/);
+  assert.match(batchRoute, /const queueCodes = queueableDraftRefreshCodesForCodes/);
+  assert.match(batchRoute, /rawCodes: queueCodes/);
+
+  const mdmBatchRoute = section(
+    'productArchiveDrafts.post("/mdm-batch"',
+    'productArchiveDrafts.post("/source-imports"',
+  );
+  assert.match(mdmBatchRoute, /const rawCodes = parseSpuCodes\(body\.codes \?\? body\.rawCodes\)/);
+  assert.match(mdmBatchRoute, /const queueCodes = queueableDraftRefreshCodesForCodes/);
+  assert.match(mdmBatchRoute, /rawCodes: queueCodes/);
+
   const validateRoute = section(
     'productArchiveDrafts.post("/:draftId/validate"',
     'productArchiveDrafts.post("/:draftId/check-duplicate"',
@@ -2575,6 +2684,16 @@ test("product archive routes fence prechecks, owned image files, and mutation co
   assert.match(imageSave, /writeFile\(localPath, input\.file\.buffer, \{ flag: "wx" \}\)/);
   assert.match(imageSave, /catch \(error\)[\s\S]*rm\(localPath, \{ force: true \}\)[\s\S]*throw error/);
 
+  const assetSave = section("async function saveDraftAssetUpload", "async function repairLegacyDraftImageLocalPath");
+  assert.match(assetSave, /sourceType: "crawshrimp_asset_package"/);
+  assert.match(assetSave, /asset_kind: input\.file\.assetKind/);
+  assert.match(assetSave, /ocr_asset: true/);
+
+  const ocrProcess = section("async function processFileItem", "async function applyRecognizedDocuments");
+  assert.match(ocrProcess, /importOcrAssetJobFile/);
+  assert.match(ocrProcess, /assetImport/);
+  assert.match(ocrProcess, /importedImageCount: assetImport\?\.status === "imported" \? 1 : 0/);
+
   const legacyRepair = section("async function repairLegacyDraftImageLocalPath", "async function deleteDraftImageFiles");
   assert.match(legacyRepair, /writeFile\(localPath, buffer, \{ flag: "wx" \}\)/);
   assert.match(legacyRepair, /db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*select id, draft_id, source_type, local_path[\s\S]*source_type = 'crawshrimp_asset_package'[\s\S]*for update[\s\S]*update product_archive_draft_image/);
@@ -2585,6 +2704,8 @@ test("product archive routes fence prechecks, owned image files, and mutation co
     'productArchiveDrafts.post("/:draftId/images"',
   );
   assert.match(imageFileRead, /requirePermission\(c, "PRODUCT_ARCHIVE_DRAFT_READ"\)/);
+  assert.match(imageFileRead, /assertLocalProductArchiveAssetFile/);
+  assert.match(imageFileRead, /PDF 文件不支持缩略图/);
   assert.match(
     imageFileRead,
     /if \(stringValue\(image\.source_type\) === "crawshrimp_asset_package"\) \{\s*requirePermission\(c, "PRODUCT_ARCHIVE_DRAFT_WRITE"\)[\s\S]*repairLegacyDraftImageLocalPath/,
@@ -3141,6 +3262,8 @@ test("product archive asset package helpers classify reference images and model 
 
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_洗唛_1.jpg"), "washlabel");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_吊牌_yq1.jpg"), "hangtag");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_洗唛.pdf"), "washlabel");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_吊牌.pdf"), "hangtag");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013-00455_有模拍.jpg"), "reference_image");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("幼童测试洗唛吊牌/208426108013/208426108013_吊牌_yq1.jpg"), "hangtag");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("幼童测试洗唛吊牌/208426108013/208426108013-00455_有模拍.jpg"), "reference_image");
@@ -3153,6 +3276,7 @@ test("product archive asset package helpers classify reference images and model 
   assert.match(route, /resize\(160, 160, \{ fit: "cover"/);
   assert.match(route, /source_type\) !== "crawshrimp_asset_package"/);
   assert.match(route, /assertLocalImageFile\(\{ rootDir: DRAFT_IMAGE_DIR, filePath: localPath \}\)/);
+  assert.match(route, /assertLocalProductArchiveAssetFile\(\{ rootDir: DRAFT_IMAGE_DIR, filePath: localPath \}\)/);
   assert.match(serviceSource, /thumbnail_image_url: draftImagePreviewUrl\(row\.thumbnail_image_id, \{ thumbnail: true \}\)/);
 });
 

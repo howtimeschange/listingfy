@@ -14,6 +14,7 @@ const VALID_JPEG = Buffer.from(
   "/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAAaADAAQAAAABAAAAAQAAAAD/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9sAQwACAgICAgIDAgIDBQMDAwUGBQUFBQYIBgYGBgYICggICAgICAoKCgoKCgoKDAwMDAwMDg4ODg4PDw8PDw8PDw8P/9sAQwECAgIEBAQHBAQHEAsJCxAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ/90ABAAB/9oADAMBAAIRAxEAPwD9OKKKK+TPUP/Z",
   "base64",
 );
+const VALID_PDF = Buffer.from("%PDF-1.7\n", "ascii");
 
 const {
   assertUploadFile,
@@ -25,6 +26,7 @@ const {
 } = await import("../../web/server/lib/upload-guard.ts");
 const {
   assertLocalImageFile,
+  assertLocalProductArchiveAssetFile,
 } = await import("../../web/server/lib/local-path-guard.ts");
 
 function file(bytes, name, type = "") {
@@ -183,6 +185,35 @@ test("local path guard serves only real image files inside the controlled asset 
     const text = path.join(root, "listing", "note.txt");
     await writeFile(text, "not an image");
     await assert.rejects(() => assertLocalImageFile({ rootDir: root, filePath: text }), /不是支持的图片/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("local path guard serves only real product archive OCR assets inside the controlled asset root", async () => {
+  const root = await fsTempDir("listingify-draft-assets-");
+  const outside = await fsTempDir("listingify-outside-assets-");
+  try {
+    const valid = path.join(root, "draft", "hangtag.pdf");
+    await mkdir(path.dirname(valid), { recursive: true });
+    await writeFile(valid, VALID_PDF);
+
+    const result = await assertLocalProductArchiveAssetFile({ rootDir: root, filePath: valid });
+    assert.equal(result.contentType, "application/pdf");
+    assert.equal(result.extension, ".pdf");
+
+    const escaped = path.join(outside, "washlabel.pdf");
+    await writeFile(escaped, VALID_PDF);
+    await assert.rejects(() => assertLocalProductArchiveAssetFile({ rootDir: root, filePath: escaped }), /图片不存在/);
+
+    const link = path.join(root, "draft", "escape.pdf");
+    await symlink(escaped, link);
+    await assert.rejects(() => assertLocalProductArchiveAssetFile({ rootDir: root, filePath: link }), /图片不存在/);
+
+    const text = path.join(root, "draft", "note.pdf");
+    await writeFile(text, "not a pdf");
+    await assert.rejects(() => assertLocalProductArchiveAssetFile({ rootDir: root, filePath: text }), /不是支持的图片文件/);
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });

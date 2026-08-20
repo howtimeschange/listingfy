@@ -76,8 +76,19 @@ const PRODUCT_ARCHIVE_TRADE_BACKFILL_EDITABLE_STATUSES = new Set([
   "ready",
 ])
 
+const PRODUCT_ARCHIVE_DRAFT_REUSE_STATUSES = [
+  "draft",
+  "missing_fields",
+  "manual_review",
+  "ready",
+] as const
+
 export function isProductArchiveTradeBackfillStatus(status: unknown) {
   return PRODUCT_ARCHIVE_TRADE_BACKFILL_EDITABLE_STATUSES.has(stringValue(status))
+}
+
+export function isReusableProductArchiveDraftStatus(status: unknown) {
+  return (PRODUCT_ARCHIVE_DRAFT_REUSE_STATUSES as readonly string[]).includes(stringValue(status))
 }
 
 type ProductArchiveValidationIssueLike = {
@@ -2257,7 +2268,7 @@ function sourceBatchesById(db: SyncPostgresDatabase, sourceBatchIds: number[]) {
 }
 
 function latestSourceBatchesForSpu(db: SyncPostgresDatabase, spuCode: string, sourceTypes: string[]) {
-  const types = Array.from(new Set(sourceTypes.filter((type) => ['launch_plan', 'size_chart'].includes(type))))
+  const types = Array.from(new Set(sourceTypes.filter((type) => ['copywriting', 'launch_plan', 'size_chart'].includes(type))))
   if (!spuCode || types.length === 0) return [] as JsonRecord[]
   return db.prepare(`
     select distinct on (source.source_type)
@@ -2280,6 +2291,13 @@ export function resolveDraftSourceBatchIdsForSpu(
   const resolved: Record<string, number[]> = {}
   for (const batch of sourceBatchesById(db, sourceBatchIdList(requested))) {
     appendResolvedSourceBatchId(resolved, batch.source_type, batch.id)
+  }
+
+  const latestTypes = ["launch_plan"]
+  if ((resolved.copywriting?.length ?? 0) === 0) latestTypes.push("copywriting")
+  if ((resolved.size_chart?.length ?? 0) === 0) latestTypes.push("size_chart")
+  for (const batch of latestSourceBatchesForSpu(db, spuCode, latestTypes)) {
+    appendResolvedSourceBatchId(resolved, batch.source_type, batch.source_batch_id)
   }
 
   if ((resolved.copywriting?.length ?? 0) > 0) {
@@ -2648,6 +2666,92 @@ function officialCategoryLeafTerms(value: string) {
   )
 }
 
+interface WeightedTradeContextTerm {
+  value: string
+  weight: number
+}
+
+function categoryPathContextTerms(value: unknown) {
+  const text = stringValue(value)
+    .replace(/[＞〉》]/g, ">")
+    .replace(/\/+/g, ">")
+    .replace(/>+/g, ">")
+  const parts = text.split(">").map((part) => part.trim()).filter(Boolean)
+  return parts.slice(0, -1)
+}
+
+function addWeightedTradeContextTerm(
+  terms: WeightedTradeContextTerm[],
+  seen: Set<string>,
+  value: unknown,
+  weight: number,
+) {
+  const normalized = normalizeOfficialTradeSearchText(value)
+  if (normalized.length < 2 || seen.has(normalized)) return
+  seen.add(normalized)
+  terms.push({ value: normalized, weight })
+}
+
+function sourceGenderContextTerms(value: unknown) {
+  const text = normalizeOfficialTradeSearchText(value)
+  if (!text) return []
+  if (text.includes("女")) return ["女童", "女"]
+  if (text.includes("男")) return ["男童", "男"]
+  if (text.includes("中性")) return ["中性"]
+  return [text]
+}
+
+function sourceAgeContextTerms(value: unknown) {
+  const text = normalizeOfficialTradeSearchText(value)
+  if (!text) return []
+  if (text.includes("婴") || text.includes("幼")) return [text, "婴幼儿"]
+  if (text.includes("中童")) return [text, "中大童", "儿童"]
+  if (text.includes("大童")) return [text, "中大童", "儿童"]
+  return [text]
+}
+
+function launchPlanTradeContextTerms(sourceRows: JsonRecord[], categories: Array<{ field: string; value: string }>) {
+  const terms: WeightedTradeContextTerm[] = []
+  const seen = new Set<string>()
+  for (const category of categories) {
+    const weight = category.field.includes("官方") ? 90 : category.field.includes("唯品四级") ? 70 : 55
+    for (const term of categoryPathContextTerms(category.value)) {
+      addWeightedTradeContextTerm(terms, seen, term, weight)
+    }
+  }
+  for (const row of latestLaunchPlanCategoryRows(sourceRows)) {
+    const rowJson = recordValue(row.row_json)
+    for (const field of ["小类", "子类", "细分类目", "主款式 （唯品四级品类）", "主款式（唯品四级品类）"]) {
+      addWeightedTradeContextTerm(terms, seen, rowJson[field], 65)
+    }
+    for (const field of ["品类", "类目", "分类"]) {
+      addWeightedTradeContextTerm(terms, seen, rowJson[field], 35)
+    }
+    for (const field of ["性别", "适用性别"]) {
+      for (const term of sourceGenderContextTerms(rowJson[field])) {
+        addWeightedTradeContextTerm(terms, seen, term, 35)
+      }
+    }
+    for (const field of ["年龄段", "适用年龄", "年龄"]) {
+      for (const term of sourceAgeContextTerms(rowJson[field])) {
+        addWeightedTradeContextTerm(terms, seen, term, 30)
+      }
+    }
+  }
+  return terms
+}
+
+function tradeContextMatchScore(trade: JsonRecord, terms: WeightedTradeContextTerm[]) {
+  if (terms.length === 0) return 0
+  const candidatePathText = normalizeOfficialTradeSearchText(stringValue(trade.trade_path))
+  const candidateNameText = normalizeOfficialTradeSearchText(stringValue(trade.trade_name))
+  const candidateText = `${candidatePathText}${candidateNameText}`
+  if (!candidateText) return 0
+  return terms.reduce((score, term) => (
+    term.value && candidateText.includes(term.value) ? score + term.weight : score
+  ), 0)
+}
+
 function launchPlanCategoryValues(sourceRows: JsonRecord[]) {
   const values: Array<{ field: string; value: string }> = []
   const seen = new Set<string>()
@@ -2926,6 +3030,7 @@ function scoreOfficialCategoryLeafSearch(trade: JsonRecord, category: { field: s
 function bestOfficialCategoryLeafTradeMatch(
   tier: DeepdrawTradePriorityTier,
   categories: Array<{ field: string; value: string }>,
+  contextTerms: WeightedTradeContextTerm[] = [],
   requiredSizes: string[] = [],
 ) {
   if (tier.key === "default" || tier.key === "fallback") return { best: null, tied: false, sizeIncompatible: false }
@@ -2941,8 +3046,9 @@ function bestOfficialCategoryLeafTradeMatch(
     for (const category of officialCategories) {
       const categoryScore = scoreOfficialCategoryLeafSearch(candidate.trade, category)
       if (categoryScore <= 0) continue
-      if (categoryScore > score) {
-        score = categoryScore
+      const contextualScore = categoryScore + tradeContextMatchScore(candidate.trade, contextTerms)
+      if (contextualScore > score) {
+        score = contextualScore
         matchedCategory = category
       }
     }
@@ -2965,6 +3071,7 @@ function bestOfficialCategoryLeafTradeMatch(
 function bestDeepdrawTradeMatch(
   candidates: PrioritizedDeepdrawTrade[],
   categories: Array<{ field: string; value: string }>,
+  contextTerms: WeightedTradeContextTerm[] = [],
 ) {
   let best: {
     candidate: PrioritizedDeepdrawTrade
@@ -2981,9 +3088,10 @@ function bestDeepdrawTradeMatch(
     for (const category of categories) {
       const categoryScore = scoreTradeMatch(candidate.trade, category)
       if (categoryScore <= 0) continue
-      score += categoryScore
-      if (categoryScore > matchScore) {
-        matchScore = categoryScore
+      const contextualScore = categoryScore + tradeContextMatchScore(candidate.trade, contextTerms)
+      score += contextualScore
+      if (contextualScore > matchScore) {
+        matchScore = contextualScore
         matchedCategory = category
       }
     }
@@ -3061,6 +3169,7 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
   const sourceConflict = launchPlanCategorySourceConflict(sourceRows)
   const platformGroups = requiredLaunchPlanPlatformGroups(categories)
   const requiredPlatforms = platformGroups.map((group) => group.join("|"))
+  const contextTerms = launchPlanTradeContextTerms(sourceRows, categories)
   if (categories.length === 0) {
     return manualTradeSelectionDecision({
       reasonCode: "missing_source_category",
@@ -3083,7 +3192,7 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
   let foundPlatformEligibleTrade = false
   let foundSizeIncompatibleTrade = false
   for (const tier of candidateTiers) {
-    const officialLeafMatch = bestOfficialCategoryLeafTradeMatch(tier, categories, requiredSizes)
+    const officialLeafMatch = bestOfficialCategoryLeafTradeMatch(tier, categories, contextTerms, requiredSizes)
     if (officialLeafMatch.sizeIncompatible) foundSizeIncompatibleTrade = true
     if (officialLeafMatch.tied) {
       return manualTradeSelectionDecision({
@@ -3117,7 +3226,7 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
     })
     if (eligibleCandidates.length === 0) continue
     foundPlatformEligibleTrade = true
-    const match = bestDeepdrawTradeMatch(eligibleCandidates, categories)
+    const match = bestDeepdrawTradeMatch(eligibleCandidates, categories, contextTerms)
     if (!match.best) continue
     if (match.tied) {
       return manualTradeSelectionDecision({
@@ -3543,6 +3652,97 @@ function chooseTitle(spu: JsonRecord, sourceRows: JsonRecord[] = []) {
     || stringValue(spu.spu_name)
     || stringValue(spu.listing_title_en)
     || stringValue(spu.spu_name_en)
+}
+
+function reusableProductArchiveDraftForSpu(
+  db: SyncPostgresDatabase,
+  input: { spuCode: string; tenantName: string; merchantId: string },
+) {
+  const placeholders = PRODUCT_ARCHIVE_DRAFT_REUSE_STATUSES.map(() => "?").join(", ")
+  return db.prepare(`
+    select *
+    from product_archive_draft
+    where spu_code = ?
+      and tenant_name = ?
+      and merchant_id = ?
+      and status in (${placeholders})
+    order by updated_at desc, id desc
+    limit 1
+    for update
+  `).get(
+    input.spuCode,
+    input.tenantName,
+    input.merchantId,
+    ...PRODUCT_ARCHIVE_DRAFT_REUSE_STATUSES,
+  ) as JsonRecord | undefined
+}
+
+function nonReusableProductArchiveDraftForSpu(
+  db: SyncPostgresDatabase,
+  input: { spuCode: string; tenantName: string; merchantId: string },
+) {
+  const placeholders = PRODUCT_ARCHIVE_DRAFT_REUSE_STATUSES.map(() => "?").join(", ")
+  return db.prepare(`
+    select *
+    from product_archive_draft
+    where spu_code = ?
+      and tenant_name = ?
+      and merchant_id = ?
+      and status not in (${placeholders})
+    order by updated_at desc, id desc
+    limit 1
+    for update
+  `).get(
+    input.spuCode,
+    input.tenantName,
+    input.merchantId,
+    ...PRODUCT_ARCHIVE_DRAFT_REUSE_STATUSES,
+  ) as JsonRecord | undefined
+}
+
+function replaceProductArchiveDraftSkuRows(
+  db: SyncPostgresDatabase,
+  draftId: number,
+  spuCode: string,
+  skuRows: JsonRecord[],
+  now: string,
+) {
+  db.prepare("delete from product_archive_draft_sku where draft_id = ?").run(draftId)
+  const insertSku = db.prepare(`
+    insert into product_archive_draft_sku (
+      draft_id,
+      spu_code,
+      skc_code,
+      sku_code,
+      barcode,
+      color_name,
+      color_code,
+      size_name,
+      size_code,
+      price,
+      seller_code,
+      raw_payload_json,
+      updated_at
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::timestamptz)
+  `)
+  for (const sku of skuRows) {
+    insertSku.run(
+      draftId,
+      spuCode,
+      sku.skc_code,
+      sku.sku_code,
+      sku.ean_code,
+      sku.color_name,
+      sku.color_code,
+      sku.size_name,
+      sku.size_code,
+      numberValue(sku.price_tag),
+      stringValue(sku.inner_code) || stringValue(sku.ean_code) || stringValue(sku.sku_code),
+      jsonText(recordValue(sku.raw_payload_json)),
+      now,
+    )
+  }
 }
 
 function readMdmField(spu: JsonRecord, sourceField: string) {
@@ -6044,13 +6244,15 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
     ? sourceRowsForSpuBatchIds(db, input.spuCode, sourceBatchIdValues)
     : sourceRowsForSpu(db, input.spuCode, null)
   const now = nowIso()
-  const evaluatedTradeSelection = inferDeepdrawTradeSelectionFromLaunchPlan(db, {
+  const evaluateTradeSelection = (appliedTrade?: TradeSelectionDecision["appliedTrade"]) => inferDeepdrawTradeSelectionFromLaunchPlan(db, {
     tenantName,
     merchantId,
     sourceRows,
     skus: skuRows,
+    appliedTrade,
     evaluatedAt: now,
   })
+  const evaluatedTradeSelection = evaluateTradeSelection()
   const selectedTrade = input.tradeId
     ? {
         tradeId: input.tradeId,
@@ -6064,9 +6266,6 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
     : evaluatedTradeSelection
   const draftTradeId = selectedTrade?.tradeId ?? null
   const draftTradePath = selectedTrade?.tradePath ?? null
-  const tradeFields = draftTradeId
-    ? tradeFieldsForDraft(db, { tenant_name: tenantName, merchant_id: merchantId, trade_id: draftTradeId }, draftTradeId)
-    : []
 
   const sourceBatchId = sourceBatchIds.launch_plan?.[0] ?? null
   const sourceSnapshot = {
@@ -6085,6 +6284,74 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
     tradeSelection,
   }
   const result = db.transaction(() => {
+    const blockedDraft = nonReusableProductArchiveDraftForSpu(db, {
+      spuCode: input.spuCode,
+      tenantName,
+      merchantId,
+    })
+    if (blockedDraft) {
+      throw new Error(`款号 ${input.spuCode} 已有不可覆盖状态草稿 ${blockedDraft.id}（${stringValue(blockedDraft.status)}），未创建重复草稿`)
+    }
+
+    const existingDraft = reusableProductArchiveDraftForSpu(db, {
+      spuCode: input.spuCode,
+      tenantName,
+      merchantId,
+    })
+    if (existingDraft) {
+      const draftId = numberValue(existingDraft.id) ?? 0
+      const existingSnapshot = recordValue(existingDraft.source_snapshot_json)
+      const existingAppliedTrade = appliedTradeForDraft(existingDraft)
+      const existingEvaluatedTradeSelection = evaluateTradeSelection(existingAppliedTrade)
+      const nextTradeSelection = input.tradeId && selectedTrade
+        ? applyHumanTradeSelectionDecision(existingEvaluatedTradeSelection, selectedTrade, now)
+        : mergeTradeSelectionHumanState(existingEvaluatedTradeSelection, existingSnapshot.tradeSelection)
+      const shouldPreserveHumanTrade = !input.tradeId && hasHumanTradeSelection(existingSnapshot) && existingAppliedTrade
+      const nextSelectedTrade = shouldPreserveHumanTrade
+        ? existingAppliedTrade
+        : input.tradeId
+          ? selectedTrade
+          : nextTradeSelection.recommendedTrade
+      const nextSourceSnapshot = {
+        ...sourceSnapshot,
+        autoMatchedTrade: existingEvaluatedTradeSelection.recommendedTrade
+          ? {
+              ...existingEvaluatedTradeSelection.recommendedTrade,
+              confidence: existingEvaluatedTradeSelection.confidence,
+              matchedField: existingEvaluatedTradeSelection.matchedField,
+              matchedValue: existingEvaluatedTradeSelection.matchedValue,
+            }
+          : null,
+        tradeSelection: nextSelectedTrade
+          ? { ...nextTradeSelection, appliedTrade: nextSelectedTrade }
+          : nextTradeSelection,
+      }
+      db.prepare(`
+        update product_archive_draft
+        set trade_id = ?,
+          trade_path = ?,
+          title = ?,
+          retail_price = ?,
+          source_snapshot_json = ?::jsonb,
+          duplicate_result_json = '{}'::jsonb,
+          updated_at = ?::timestamptz
+        where id = ?
+      `).run(
+        nextSelectedTrade?.tradeId ?? null,
+        nextSelectedTrade?.tradePath ?? null,
+        chooseTitle(spu, sourceRows),
+        numberValue(spu.price_tag),
+        jsonText(nextSourceSnapshot),
+        now,
+        draftId,
+      )
+      replaceProductArchiveDraftSkuRows(db, draftId, input.spuCode, skuRows, now)
+      rebuildProductArchiveDraftFields(db, draftId, nextSelectedTrade?.tradeId
+        ? tradeFieldsForDraft(db, { tenant_name: tenantName, merchant_id: merchantId, trade_id: nextSelectedTrade.tradeId }, nextSelectedTrade.tradeId)
+        : [])
+      return draftId
+    }
+
     const inserted = db.prepare(`
       insert into product_archive_draft (
         draft_no,
@@ -6114,84 +6381,10 @@ export function createProductArchiveDraftFromSpu(db: SyncPostgresDatabase, input
       now,
     )
     const draftId = Number(inserted.lastInsertRowid)
-    const fieldRows = fieldInsertData(db, {
-      id: draftId,
-      spu_code: input.spuCode,
-      tenant_name: tenantName,
-      merchant_id: merchantId,
-      trade_id: draftTradeId,
-      source_snapshot_json: jsonText(sourceSnapshot),
-    }, tradeFields)
-    const insertField = db.prepare(`
-      insert into product_archive_draft_field (
-        draft_id,
-        field_name,
-        field_id,
-        source_type,
-        source_ref,
-        value_text,
-        value_json,
-        required,
-        blocking,
-        manual_override,
-        validation_status,
-        validation_message,
-        updated_at
-      )
-      values (?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, false, ?, ?, ?::timestamptz)
-    `)
-    for (const field of fieldRows) {
-      insertField.run(
-        draftId,
-        field.fieldName,
-        field.fieldId,
-        field.sourceType,
-        field.sourceRef,
-        field.valueText,
-        jsonText(field.valueJson),
-        field.required,
-        field.blocking,
-        field.validationStatus,
-        field.validationMessage,
-        now,
-      )
-    }
-
-    const insertSku = db.prepare(`
-      insert into product_archive_draft_sku (
-        draft_id,
-        spu_code,
-        skc_code,
-        sku_code,
-        barcode,
-        color_name,
-        color_code,
-        size_name,
-        size_code,
-        price,
-        seller_code,
-        raw_payload_json,
-        updated_at
-      )
-      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::timestamptz)
-    `)
-    for (const sku of skuRows) {
-      insertSku.run(
-        draftId,
-        input.spuCode,
-        sku.skc_code,
-        sku.sku_code,
-        sku.ean_code,
-        sku.color_name,
-        sku.color_code,
-        sku.size_name,
-        sku.size_code,
-        numberValue(sku.price_tag),
-        stringValue(sku.inner_code) || stringValue(sku.ean_code) || stringValue(sku.sku_code),
-        jsonText(recordValue(sku.raw_payload_json)),
-        now,
-      )
-    }
+    replaceProductArchiveDraftSkuRows(db, draftId, input.spuCode, skuRows, now)
+    rebuildProductArchiveDraftFields(db, draftId, draftTradeId
+      ? tradeFieldsForDraft(db, { tenant_name: tenantName, merchant_id: merchantId, trade_id: draftTradeId }, draftTradeId)
+      : [])
     return draftId
   })()
 

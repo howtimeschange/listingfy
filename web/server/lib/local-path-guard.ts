@@ -1,11 +1,22 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import { HTTPException } from "hono/http-exception"
-import { detectImageUploadType, maxUploadBytes, type ImageUploadType } from "./upload-guard"
+import {
+  detectImageUploadType,
+  detectProductArchiveOcrUploadType,
+  maxUploadBytes,
+  type ImageUploadType,
+  type ProductArchiveOcrUploadType,
+} from "./upload-guard"
 
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"])
 
 export type LocalImageFile = ImageUploadType & {
+  realPath: string
+  size: number
+}
+
+export type LocalProductArchiveAssetFile = ProductArchiveOcrUploadType & {
   realPath: string
   size: number
 }
@@ -47,5 +58,36 @@ export async function assertLocalImageFile(input: { rootDir: string; filePath: s
 
   const buffer = await fs.readFile(fileReal)
   const detected = detectImageUploadType(buffer)
+  return { ...detected, realPath: fileReal, size: stat.size }
+}
+
+export async function assertLocalProductArchiveAssetFile(input: { rootDir: string; filePath: string }): Promise<LocalProductArchiveAssetFile> {
+  let rootReal: string
+  let fileReal: string
+  try {
+    rootReal = await fs.realpath(input.rootDir)
+    fileReal = await fs.realpath(input.filePath)
+  } catch {
+    throw missingImage()
+  }
+  if (!isInside(rootReal, fileReal)) {
+    throw missingImage()
+  }
+
+  const ext = path.extname(fileReal).toLowerCase()
+  if (![".pdf", ".jpg", ".jpeg", ".png"].includes(ext)) {
+    throw new HTTPException(400, { message: "不是支持的草稿附件文件" })
+  }
+
+  const stat = await fs.stat(fileReal).catch(() => null)
+  if (!stat?.isFile()) {
+    throw missingImage()
+  }
+  if (stat.size > maxUploadBytes("product_archive_ocr")) {
+    throw new HTTPException(413, { message: "草稿附件文件过大，请重新导入文件" })
+  }
+
+  const buffer = await fs.readFile(fileReal)
+  const detected = detectProductArchiveOcrUploadType(buffer)
   return { ...detected, realPath: fileReal, size: stat.size }
 }

@@ -8,8 +8,9 @@ import { HTTPException } from "hono/http-exception"
 import { bodyLimit } from "hono/body-limit"
 import { getDb } from "../db"
 import { requirePermission, trustedClientAddress } from "../lib/auth"
-import { assertLocalImageFile } from "../lib/local-path-guard"
+import { assertLocalImageFile, assertLocalProductArchiveAssetFile } from "../lib/local-path-guard"
 import {
+  detectProductArchiveOcrUploadType,
   detectImageUploadType,
   maxUploadBytes,
   readImageDimensions,
@@ -29,6 +30,7 @@ import {
   createProductArchiveSyncQueue,
   isProductArchiveSyncLeaseError,
   isRetryableProductArchiveSyncError,
+  parseSpuCodes,
   ProductArchiveSyncLeaseError,
 } from "../../../scripts/lib/product_archive_sync_queue.mjs"
 import { resolveDeepdrawConfig } from "../../../scripts/lib/deepdraw_client.mjs"
@@ -53,6 +55,7 @@ import {
   getProductArchiveDraftImageFile,
   getProductArchiveDraftDetail,
   importProductArchiveSourceRows,
+  isReusableProductArchiveDraftStatus,
   latestProductArchiveDraftForSpuCode,
   listProductArchiveAiFieldStrategies,
   listProductArchiveDrafts,
@@ -216,6 +219,18 @@ type DraftImageUploadFile = {
   extension: string
   hasModelShot?: boolean
   assetKind?: string
+}
+
+type DraftAssetUploadFile = {
+  buffer: Buffer
+  fileName: string
+  originalFileName: string
+  mimeType: string
+  size: number
+  extension: string
+  assetKind: "hangtag" | "washlabel"
+  width?: number | null
+  height?: number | null
 }
 
 type HangtagWashlabelOcrJobItem = {
@@ -1482,6 +1497,62 @@ async function importReferenceImageJobFile(file: HangtagWashlabelOcrUploadFile, 
   }
 }
 
+async function importOcrAssetJobFile(
+  file: HangtagWashlabelOcrUploadFile,
+  actorId: number | null,
+  detectedSpuCode?: string | null,
+) {
+  const spuCode = stringValue(detectedSpuCode) || extractProductArchiveImageSpuCode(file.fileName)
+  const assetKind = ocrAssetKind(file.assetKind)
+  if (!spuCode) {
+    return {
+      fileName: file.fileName,
+      assetKind,
+      status: "skipped",
+      reason: "文件名和 OCR 结果未识别到款号",
+    }
+  }
+  const db = getDb()
+  const draft = latestProductArchiveDraftForSpuCode(db, spuCode)
+  if (!draft) {
+    return {
+      fileName: file.fileName,
+      assetKind,
+      spuCode,
+      status: "skipped",
+      reason: "未找到对应建档草稿",
+    }
+  }
+  const buffer = await readFile(file.filePath)
+  const detected = detectProductArchiveOcrUploadType(buffer)
+  const dimensions = detected.contentType === "application/pdf" ? null : readImageDimensions(buffer)
+  const image = await saveDraftAssetUpload({
+    db,
+    draft,
+    file: {
+      buffer,
+      fileName: path.basename(file.fileName),
+      originalFileName: file.fileName,
+      mimeType: detected.contentType,
+      size: buffer.length,
+      extension: detected.extension,
+      assetKind,
+      width: dimensions?.width ?? null,
+      height: dimensions?.height ?? null,
+    },
+    sourceRef: file.fileName,
+    uploadedBy: actorId,
+  })
+  return {
+    fileName: file.fileName,
+    assetKind,
+    spuCode,
+    draftId: Number(draft.id),
+    status: image ? "imported" : "skipped",
+    image,
+  }
+}
+
 function createHangtagWashlabelOcrQueue({
   store,
   onInternalError = (error: unknown) => console.error("Hangtag washlabel OCR queue internal error", error),
@@ -1568,12 +1639,33 @@ function createHangtagWashlabelOcrQueue({
         fetchImpl: fetch,
       }),
     })
+    let assetImport: Record<string, unknown> | null = null
+    if (file.kind === "ocr_asset") {
+      try {
+        assetImport = await importOcrAssetJobFile(
+          file,
+          job.options.actor?.id ?? null,
+          document?.detectedSpuCode ?? null,
+        )
+      } catch (error) {
+        assetImport = {
+          fileName: file.fileName,
+          assetKind: ocrAssetKind(file.assetKind),
+          status: "failed",
+          error: errorMessage(error),
+        }
+        reportInternalError(error, { phase: "import_ocr_asset", jobId: job.id, fileName: file.fileName })
+      }
+    }
     const result = {
       fileName: document?.fileName ?? file.fileName,
       detectedSpuCode: document?.detectedSpuCode ?? null,
       status: document?.status ?? "ocr_failed",
       extractedFieldCount: Array.isArray(document?.fields) ? document.fields.length : 0,
       document,
+      assetImport,
+      importedImageCount: assetImport?.status === "imported" ? 1 : 0,
+      draftId: assetImport?.draftId ?? null,
     }
     if (document?.status === "ocr_failed") {
       setItemFinished(job, item, "failed", result, stringValue(document.error) || "OCR 识别失败")
@@ -1628,7 +1720,7 @@ function createHangtagWashlabelOcrQueue({
         module: "PRODUCT_ARCHIVE_DRAFT",
         entityType: "product_archive_draft_batch",
         entityId: job.id,
-        summary: `后台写入吊牌/洗唛 OCR 字段 ${apply.summary.appliedFieldCount} 个，关联参考图 ${importedImageCount} 张`,
+        summary: `后台写入吊牌/洗唛 OCR 字段 ${apply.summary.appliedFieldCount} 个，关联附件 ${importedImageCount} 个`,
         metadata: {
           fileCount: preview.summary.fileCount,
           matchedCount: preview.summary.matchedCount,
@@ -1932,6 +2024,10 @@ function safeDraftImageUploadName(fileName: string, extension: string) {
   return safeUploadFileName(fileName, { fallbackName: "spu-reference-image.jpg", extension })
 }
 
+function safeDraftAssetUploadName(fileName: string, extension: string) {
+  return safeUploadFileName(fileName, { fallbackName: "draft-asset.pdf", extension })
+}
+
 function cleanUploadDisplayName(value: unknown, fallback: string) {
   const raw = stringValue(value) || fallback
   const parts = raw
@@ -1960,6 +2056,10 @@ function isProductArchiveReferenceImageName(value: string) {
 
 function draftImageAssetKind(fileName: string) {
   return productArchiveImageHasModelShot(fileName) ? "model_image" : "flat_image"
+}
+
+function ocrAssetKind(value: unknown): "hangtag" | "washlabel" {
+  return value === "washlabel" ? "washlabel" : "hangtag"
 }
 
 function productArchiveDraftImageSourceType(value: unknown) {
@@ -2071,6 +2171,52 @@ async function saveDraftImageUpload(input: {
         has_model_shot: input.file.hasModelShot === true,
         asset_kind: input.file.assetKind || null,
         asset_package: input.sourceType === "crawshrimp_asset_package",
+      },
+    })
+  } catch (error) {
+    await rm(localPath, { force: true })
+    throw error
+  }
+}
+
+async function saveDraftAssetUpload(input: {
+  db: ReturnType<typeof getDb>
+  draft: Record<string, unknown>
+  file: DraftAssetUploadFile
+  sourceRef: string
+  uploadedBy: number | null
+}) {
+  const draftId = Number(input.draft.id)
+  const spuCode = stringValue(input.draft.spu_code)
+  const assetDir = path.join(DRAFT_IMAGE_DIR, String(draftId))
+  await mkdir(assetDir, { recursive: true })
+  const fileName = safeDraftAssetUploadName(input.file.fileName, input.file.extension)
+  const localPath = path.join(assetDir, `${randomUUID()}-${fileName}`)
+  try {
+    await writeFile(localPath, input.file.buffer, { flag: "wx" })
+    return createProductArchiveDraftImage(input.db, {
+      draftId,
+      spuCode,
+      sourceType: "crawshrimp_asset_package",
+      sourceRef: input.sourceRef,
+      localPath,
+      fileName,
+      originalFileName: input.file.originalFileName,
+      mimeType: input.file.mimeType,
+      fileSize: input.file.size,
+      width: input.file.width ?? null,
+      height: input.file.height ?? null,
+      uploadedBy: input.uploadedBy,
+      rawPayload: {
+        original_file_name: input.file.originalFileName,
+        source_ref: input.sourceRef,
+        width: input.file.width ?? null,
+        height: input.file.height ?? null,
+        file_size: input.file.size,
+        mime_type: input.file.mimeType,
+        asset_kind: input.file.assetKind,
+        asset_package: true,
+        ocr_asset: true,
       },
     })
   } catch (error) {
@@ -2341,14 +2487,18 @@ async function saveOcrFormFiles(c: Context) {
       if (!isProductArchiveOcrAssetName(fileName)) {
         throw new HTTPException(400, { message: "仅支持 PDF、JPG、PNG 吊牌/洗唛文件、平铺图和 SCM 下载结果 .xlsx" })
       }
+      const buffer = await readValidatedUploadBuffer(file, "product_archive_ocr")
+      const detected = detectProductArchiveOcrUploadType(buffer)
       const filePath = path.join(uploadDir, `${randomUUID()}-${safeOcrUploadName(file.name)}`)
-      await writeValidatedUploadFile(file, "product_archive_ocr", filePath)
+      await writeFile(filePath, buffer)
       files.push({
         file,
         filePath,
         fileName,
-        mimeType: file.type,
-        size: file.size,
+        mimeType: detected.contentType,
+        size: buffer.length,
+        extension: detected.extension,
+        assetKind: ocrAssetKind(packageKind),
       })
     }
   } catch (error) {
@@ -2437,21 +2587,37 @@ function launchPlanBatchIdsForSpuCodes(db: ReturnType<typeof getDb>, spuCodes: s
   return rows.map((row) => Number(row.source_batch_id)).filter((id) => Number.isInteger(id) && id > 0)
 }
 
-function missingDraftCodesForCodes(db: ReturnType<typeof getDb>, spuCodes: string[], input: {
+function queueableDraftRefreshCodesForCodes(db: ReturnType<typeof getDb>, spuCodes: string[], input: {
   tenantName?: string | null
   merchantId?: string | null
 }) {
   const codes = uniqueStrings(spuCodes)
   if (codes.length === 0) return []
   const rows = db.prepare(`
-    select distinct draft.spu_code
+    select draft.spu_code, draft.status
     from product_archive_draft draft
     where draft.tenant_name = ?
       and draft.merchant_id = ?
       and draft.spu_code in (${codes.map(() => "?").join(", ")})
-  `).all(input.tenantName, input.merchantId, ...codes) as Array<{ spu_code: unknown }>
-  const existing = new Set(uniqueStrings(rows.map((row) => row.spu_code)))
-  return codes.filter((code) => !existing.has(code))
+  `).all(input.tenantName, input.merchantId, ...codes) as Array<{ spu_code: unknown; status: unknown }>
+  const existing = new Map<string, { hasReusable: boolean; hasNonReusable: boolean }>()
+  for (const row of rows) {
+    const code = stringValue(row.spu_code)
+    if (!code) continue
+    const current = existing.get(code) ?? { hasReusable: false, hasNonReusable: false }
+    if (isReusableProductArchiveDraftStatus(row.status)) {
+      current.hasReusable = true
+    } else {
+      current.hasNonReusable = true
+    }
+    existing.set(code, current)
+  }
+  return codes.filter((code) => {
+    const current = existing.get(code)
+    if (!current) return true
+    if (current.hasNonReusable) return false
+    return current.hasReusable
+  })
 }
 
 function numericIdValue(value: unknown) {
@@ -2672,12 +2838,30 @@ productArchiveDrafts.post("/batch", async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const body = await readJson(c)
   try {
+    const db = getDb()
+    const deepdrawConfig = resolveDeepdrawConfig({
+      projectRoot: PROJECT_ROOT,
+      tenantName: body.deepdrawTenantName ?? body.tenantName,
+    })
+    const rawCodes = parseSpuCodes(body.codes ?? body.rawCodes)
+    const queueCodes = queueableDraftRefreshCodesForCodes(db, rawCodes, {
+      tenantName: deepdrawConfig.tenantName,
+      merchantId: deepdrawConfig.merchantId == null ? null : String(deepdrawConfig.merchantId),
+    })
+    if (queueCodes.length === 0) {
+      return c.json({
+        status: "skipped",
+        total_count: 0,
+        skippedNonReusableDraftCount: rawCodes.length,
+        message: "所选款号已有不可覆盖状态的深绘建档草稿，未创建新任务。",
+      })
+    }
     const job = draftQueue.enqueue({
       source: "draft",
-      rawCodes: body.codes ?? body.rawCodes,
+      rawCodes: queueCodes,
       intervalMs: body.intervalMs,
       options: {
-        deepdrawTenantName: body.deepdrawTenantName ?? body.tenantName,
+        deepdrawTenantName: deepdrawConfig.tenantName,
         tradeId: body.tradeId,
         tradePath: body.tradePath,
         sourceBatchId: body.sourceBatchId,
@@ -2691,7 +2875,7 @@ productArchiveDrafts.post("/batch", async (c) => {
       entityType: "product_archive_draft_batch",
       entityId: job.id,
       summary: `批量生成深绘建档草稿 ${job.total_count} 个款号`,
-      metadata: { jobId: job.id, count: job.total_count },
+      metadata: { jobId: job.id, count: job.total_count, skippedNonReusableDraftCount: rawCodes.length - queueCodes.length },
     })
     return c.json(job, 202)
   } catch (error) {
@@ -2705,12 +2889,30 @@ productArchiveDrafts.post("/mdm-batch", async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const body = await readJson(c)
   try {
+    const db = getDb()
+    const deepdrawConfig = resolveDeepdrawConfig({
+      projectRoot: PROJECT_ROOT,
+      tenantName: body.deepdrawTenantName ?? body.tenantName,
+    })
+    const rawCodes = parseSpuCodes(body.codes ?? body.rawCodes)
+    const queueCodes = queueableDraftRefreshCodesForCodes(db, rawCodes, {
+      tenantName: deepdrawConfig.tenantName,
+      merchantId: deepdrawConfig.merchantId == null ? null : String(deepdrawConfig.merchantId),
+    })
+    if (queueCodes.length === 0) {
+      return c.json({
+        status: "skipped",
+        total_count: 0,
+        skippedNonReusableDraftCount: rawCodes.length,
+        message: "所选款号已有不可覆盖状态的深绘建档草稿，未创建新任务。",
+      })
+    }
     const job = draftQueue.enqueue({
       source: "mdm_draft",
-      rawCodes: body.codes ?? body.rawCodes,
+      rawCodes: queueCodes,
       intervalMs: body.intervalMs,
       options: {
-        deepdrawTenantName: body.deepdrawTenantName ?? body.tenantName,
+        deepdrawTenantName: deepdrawConfig.tenantName,
         tradeId: body.tradeId,
         tradePath: body.tradePath,
         sourceBatchId: body.sourceBatchId,
@@ -2724,7 +2926,7 @@ productArchiveDrafts.post("/mdm-batch", async (c) => {
       entityType: "product_archive_draft_batch",
       entityId: job.id,
       summary: `批量同步 MDM 并生成深绘建档草稿 ${job.total_count} 个款号`,
-      metadata: { jobId: job.id, count: job.total_count, source: "mdm_draft" },
+      metadata: { jobId: job.id, count: job.total_count, source: "mdm_draft", skippedNonReusableDraftCount: rawCodes.length - queueCodes.length },
     })
     return c.json(job, 202)
   } catch (error) {
@@ -3036,7 +3238,7 @@ productArchiveDrafts.post("/workflow/start", productArchiveWorkflowSpreadsheetBo
     projectRoot: PROJECT_ROOT,
     tenantName: stringValue(form.get("deepdrawTenantName") ?? form.get("tenantName")),
   })
-  const draftCodes = missingDraftCodesForCodes(db, candidateCodes, {
+  const draftCodes = queueableDraftRefreshCodesForCodes(db, candidateCodes, {
     tenantName: deepdrawConfig.tenantName,
     merchantId: deepdrawConfig.merchantId == null ? null : String(deepdrawConfig.merchantId),
   })
@@ -3487,6 +3689,25 @@ productArchiveDrafts.get("/images/:imageId/file", async (c) => {
   const localPath = stringValue(image?.local_path)
   if (!image || !localPath) {
     throw new HTTPException(404, { message: "图片不存在" })
+  }
+  const mimeType = stringValue(image.mime_type).toLowerCase()
+  const extension = path.extname(stringValue(image.file_name) || localPath).toLowerCase()
+  if (mimeType === "application/pdf" || extension === ".pdf") {
+    let file: Awaited<ReturnType<typeof assertLocalProductArchiveAssetFile>>
+    try {
+      file = await assertLocalProductArchiveAssetFile({ rootDir: DRAFT_IMAGE_DIR, filePath: localPath })
+    } catch (error) {
+      throw productArchiveDraftMutationException(error)
+    }
+    if (file.contentType === "application/pdf" && imageFileVariant(c.req.query("variant") ?? c.req.query("size")) === "thumbnail") {
+      throw new HTTPException(400, { message: "PDF 文件不支持缩略图" })
+    }
+    return new Response(await readFile(file.realPath), {
+      headers: {
+        "Content-Type": file.contentType,
+        "Cache-Control": "private, max-age=3600",
+      },
+    })
   }
   let file: Awaited<ReturnType<typeof assertLocalImageFile>>
   try {

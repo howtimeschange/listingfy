@@ -141,7 +141,8 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
   assert.match(draftRoute, /extractProductArchiveImageSpuCode/);
   assert.match(draftRoute, /DRAFT_IMAGE_DIR/);
   assert.match(draftRoute, /assertLocalImageFile/);
-  assert.match(draftRoute, /writeValidatedUploadFile\(file,\s*"product_archive_ocr"/);
+  assert.match(draftRoute, /readValidatedUploadBuffer\(file,\s*"product_archive_ocr"\)/);
+  assert.match(draftRoute, /detectProductArchiveOcrUploadType\(buffer\)/);
   assert.match(draftRoute, /writeValidatedUploadFile\(file,\s*"spreadsheet"/);
   assert.match(draftRoute, /filePaths/);
   assert.match(draftRoute, /copywriting/);
@@ -613,9 +614,15 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftDetailPage, /应用类目并生成字段/);
   assert.match(draftDetailPage, /待确认类目/);
   assert.match(draftDetailPage, /DraftReferenceImagesSection/);
-  assert.match(draftDetailPage, /function DraftReferenceImagePreview/);
+  assert.match(draftDetailPage, /DraftEvidenceAssetsSection/);
+  assert.match(draftDetailPage, /DraftAssetPreviewDialog/);
+  assert.match(draftDetailPage, /function DraftAssetThumbnail/);
   assert.match(draftDetailPage, /onError=\{\(\) => setFailed\(true\)\}/);
   assert.match(draftDetailPage, /SPU 参考图/);
+  assert.match(draftDetailPage, /吊牌\/洗唛图/);
+  assert.match(draftDetailPage, /isDraftPdfAsset/);
+  assert.match(draftDetailPage, /iframe/);
+  assert.match(draftDetailPage, /Maximize2/);
   assert.match(draftDetailPage, /上传 SPU 图/);
   assert.match(draftDetailPage, /grid-cols-\[repeat\(auto-fill,minmax\(132px,156px\)\)\]/);
   assert.match(draftDetailPage, /api\.postForm<[\s\S]*?>\(\s*`\/product-archive-drafts\/\$\{draftId\}\/images`/);
