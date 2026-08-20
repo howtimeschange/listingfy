@@ -24,6 +24,14 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function scheduleProductArchiveSyncWorker(run) {
+  if (typeof setImmediate === "function") {
+    setImmediate(run);
+    return;
+  }
+  setTimeout(run, 0);
+}
+
 export class ProductArchiveSyncLeaseError extends Error {
   constructor(message = "Product archive sync job lease was lost", options = undefined) {
     super(message, options);
@@ -359,7 +367,7 @@ export function createProductArchiveSyncQueue({
     pending.push(job);
     if (!processScheduled) {
       processScheduled = true;
-      queueMicrotask(() => {
+      scheduleProductArchiveSyncWorker(() => {
         void processLoop().catch((error) => {
           reportInternalError(error, { phase: "process_loop" });
         });
@@ -419,7 +427,7 @@ export function createProductArchiveSyncQueue({
     }
     if (pending.length > 0 && !processScheduled) {
       processScheduled = true;
-      queueMicrotask(() => {
+      scheduleProductArchiveSyncWorker(() => {
         void processLoop().catch((error) => {
           reportInternalError(error, { phase: "recovery_loop" });
         });

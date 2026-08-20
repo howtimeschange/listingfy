@@ -51,6 +51,14 @@ const MAX_FIELD_CONCURRENCY = 12
 const DEFAULT_FIELD_RETRY_COUNT = 2
 const MAX_FIELD_RETRY_COUNT = 4
 
+function scheduleMetadataSyncWorker(run: () => void) {
+  if (typeof setImmediate === "function") {
+    setImmediate(run)
+    return
+  }
+  setTimeout(run, 0)
+}
+
 export function createMetadataSyncScheduler(drain: () => Promise<void>) {
   let requested = false
   let activeRun: Promise<void> | null = null
@@ -58,13 +66,16 @@ export function createMetadataSyncScheduler(drain: () => Promise<void>) {
   function schedule(): Promise<void> {
     requested = true
     if (!activeRun) {
-      activeRun = Promise.resolve()
-        .then(async () => {
-          while (requested) {
-            requested = false
-            await drain()
-          }
+      activeRun = new Promise<void>((resolve, reject) => {
+        scheduleMetadataSyncWorker(() => {
+          void (async () => {
+            while (requested) {
+              requested = false
+              await drain()
+            }
+          })().then(resolve, reject)
         })
+      })
         .finally(() => {
           activeRun = null
           if (requested) return schedule()

@@ -376,6 +376,14 @@ function objectValue(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
+function scheduleProductArchiveBackgroundWorker(run: () => void) {
+  if (typeof setImmediate === "function") {
+    setImmediate(run)
+    return
+  }
+  setTimeout(run, 0)
+}
+
 function cloneProductArchiveAiFillJob(job: ProductArchiveAiFillJob) {
   const currentItem = job.items.find((item) => item.status === "running") ?? null
   return {
@@ -542,7 +550,7 @@ function createProductArchiveAiFillQueue({
   function schedule() {
     if (processScheduled) return
     processScheduled = true
-    queueMicrotask(() => {
+    scheduleProductArchiveBackgroundWorker(() => {
       void processLoop().catch((error) => {
         reportInternalError(error, { phase: "process_loop" })
       })
@@ -961,7 +969,7 @@ function createProductArchivePrecheckQueue({
   function schedule() {
     if (processScheduled) return
     processScheduled = true
-    queueMicrotask(() => {
+    scheduleProductArchiveBackgroundWorker(() => {
       void processLoop().catch((error) => {
         reportInternalError(error, { phase: "process_loop" })
       })
@@ -1325,7 +1333,7 @@ function createProductArchivePublishQueue({
   function schedule() {
     if (processScheduled) return
     processScheduled = true
-    queueMicrotask(() => {
+    scheduleProductArchiveBackgroundWorker(() => {
       void processLoop().catch((error) => {
         reportInternalError(error, { phase: "process_loop" })
       })
@@ -1799,7 +1807,7 @@ function createHangtagWashlabelOcrQueue({
   function schedule() {
     if (processScheduled) return
     processScheduled = true
-    queueMicrotask(() => {
+    scheduleProductArchiveBackgroundWorker(() => {
       void processLoop().catch((error) => {
         reportInternalError(error, { phase: "process_loop" })
       })

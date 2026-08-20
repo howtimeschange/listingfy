@@ -190,6 +190,20 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
   assert.match(metadataService, /runFieldWorker/);
 });
 
+test("product archive background jobs start after the enqueue response can flush", async () => {
+  const [draftRoute, syncQueue] = await Promise.all([
+    readFile(files.draftRoute, "utf8"),
+    readFile(path.join(PROJECT_ROOT, "scripts/lib/product_archive_sync_queue.mjs"), "utf8"),
+  ]);
+
+  assert.match(draftRoute, /function scheduleProductArchiveBackgroundWorker/);
+  assert.match(syncQueue, /function scheduleProductArchiveSyncWorker/);
+  assert.match(draftRoute, /setImmediate|setTimeout/);
+  assert.match(syncQueue, /setImmediate|setTimeout/);
+  assert.doesNotMatch(draftRoute, /queueMicrotask\(\(\) => \{\s*void processLoop\(\)/);
+  assert.doesNotMatch(syncQueue, /queueMicrotask\(\(\) => \{\s*void processLoop\(\)/);
+});
+
 test("product archive draft service compiles for the API server", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   assert.equal(typeof service.getProductArchiveDraftDetail, "function");

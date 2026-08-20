@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 import { SyncPostgresDatabase } from "./postgres_db.mjs";
 
+const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
+const SERVICE_FILE = path.join(PROJECT_ROOT, "web/server/services/deepdraw-metadata.ts");
 const service = await import("../../web/server/services/deepdraw-metadata.ts");
 
 test("DeepDraw metadata workers atomically claim queued jobs and recover stale running jobs", () => {
@@ -77,6 +81,15 @@ test("DeepDraw metadata scheduler drains again when scheduled during an active d
 
   await Promise.all([firstRun, rescheduledRun]);
   assert.equal(drainCount, 2);
+});
+
+test("DeepDraw metadata scheduler starts after enqueue responses can flush", async () => {
+  const source = await readFile(SERVICE_FILE, "utf8");
+
+  assert.match(source, /function scheduleMetadataSyncWorker/);
+  assert.match(source, /setImmediate|setTimeout/);
+  assert.doesNotMatch(source, /Promise\.resolve\(\)\s*\.then/);
+  assert.doesNotMatch(source, /queueMicrotask/);
 });
 
 test("DeepDraw metadata drain marks one failed job and continues with the next job", async () => {

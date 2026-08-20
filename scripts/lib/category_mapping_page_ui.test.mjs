@@ -48,7 +48,9 @@ test("category mapping AI generation runs as an async job to avoid gateway timeo
 
   assert.match(route, /categoryMapping\.post\("\/ai-suggestions\/jobs"/);
   assert.match(route, /categoryMapping\.get\("\/ai-suggestions\/jobs\/:jobId"/);
-  assert.match(route, /queueMicrotask/);
+  assert.match(route, /function scheduleCategoryAiSuggestionWorker/);
+  assert.match(route, /setImmediate|setTimeout/);
+  assert.doesNotMatch(route, /queueMicrotask/);
   assert.match(route, /runCategoryAiSuggestionJob/);
   assert.match(route, /refreshBucketProduct/);
   assert.match(route, /status:\s*"queued"/);

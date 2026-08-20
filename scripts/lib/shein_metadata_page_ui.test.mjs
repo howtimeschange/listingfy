@@ -22,4 +22,7 @@ test("SHEIN metadata sync is launched from the metadata page", async () => {
 
   assert.match(route, /metadata\.post\("\/sync-jobs"/);
   assert.match(route, /metadata\.get\("\/sync-jobs\/:jobId"/);
+  assert.match(route, /function scheduleSheinMetadataSyncWorker/);
+  assert.match(route, /setImmediate|setTimeout/);
+  assert.doesNotMatch(route, /queueMicrotask/);
 });

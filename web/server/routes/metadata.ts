@@ -75,6 +75,14 @@ const metadataSyncPending: MetadataSyncJob[] = []
 let metadataSyncRunning = false
 let metadataSyncScheduled = false
 
+function scheduleSheinMetadataSyncWorker(run: () => void) {
+  if (typeof setImmediate === "function") {
+    setImmediate(run)
+    return
+  }
+  setTimeout(run, 0)
+}
+
 function timestampForPath(date = new Date()) {
   return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")
 }
@@ -311,7 +319,7 @@ function enqueueMetadataSyncJob(options: MetadataSyncOptions) {
 
   if (!metadataSyncScheduled) {
     metadataSyncScheduled = true
-    queueMicrotask(() => {
+    scheduleSheinMetadataSyncWorker(() => {
       void processMetadataSyncQueue()
     })
   }

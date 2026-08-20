@@ -730,13 +730,21 @@ function buildCategoryAiJobItems(groups: UnmappedGroup[], requestedSpuCodes: str
   }))
 }
 
+function scheduleCategoryAiSuggestionWorker(run: () => void) {
+  if (typeof setImmediate === "function") {
+    setImmediate(run)
+    return
+  }
+  setTimeout(run, 0)
+}
+
 function scheduleCategoryAiSuggestionJob(jobId: string) {
   if (!categoryAiPending.includes(jobId)) {
     categoryAiPending.push(jobId)
   }
   if (!categoryAiScheduled) {
     categoryAiScheduled = true
-    queueMicrotask(() => {
+    scheduleCategoryAiSuggestionWorker(() => {
       void processCategoryAiSuggestionQueue()
     })
   }
