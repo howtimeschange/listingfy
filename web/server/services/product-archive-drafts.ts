@@ -603,7 +603,7 @@ function isProductArchiveSkuSizeFieldName(fieldName: unknown) {
 
 function baseColorName(value: unknown) {
   const text = stringValue(value)
-  if (/卡其|贝壳卡|卡色/.test(text)) return "卡其"
+  if (/卡其|贝壳卡|沙卡|卡色/.test(text)) return "卡其"
   if (text.includes("粉")) return "粉红"
   const colors = ["黑色", "白色", "红色", "蓝色", "绿色", "黄色", "紫色", "灰色", "棕色", "橙色"]
   for (const color of colors) {
@@ -638,7 +638,7 @@ function colorFamily(value: unknown) {
   if (/绿|青|橄榄/.test(text)) return "green"
   if (/蓝/.test(text)) return "blue"
   if (/紫/.test(text)) return "purple"
-  if (/棕|褐|咖|卡其|驼|杏|米|裸/.test(text)) return "neutral"
+  if (/棕|褐|咖|卡其|沙卡|驼|杏|米|裸/.test(text)) return "neutral"
   return ""
 }
 

@@ -3980,6 +3980,11 @@ test("product archive color field rebuild can merge launch colors with every MDM
     ["红色", "卡其"],
     [{ field_name: "颜色", value_text: value }],
   ), true);
+
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("颜色", "沙卡50403", [
+    { value: "红色" },
+    { value: "卡其" },
+  ]), "卡其,沙卡50403");
 });
 
 test("product archive draft reference image upload extracts style codes from folder paths", async () => {
