@@ -6019,18 +6019,101 @@ export function extractProductArchiveImageSpuCode(value: unknown) {
   return fallback.at(-1) ?? ""
 }
 
-function draftImagePreviewUrl(imageId: unknown, options: { thumbnail?: boolean } = {}) {
+function draftImagePreviewUrl(imageId: unknown, options: { thumbnail?: boolean; preview?: boolean } = {}) {
   const id = Number(imageId)
   if (!Number.isInteger(id) || id <= 0) return null
-  const variant = options.thumbnail ? "?variant=thumbnail" : ""
+  const variant = options.thumbnail ? "?variant=thumbnail" : options.preview ? "?variant=preview" : ""
   return `/api/product-archive-drafts/images/${id}/file${variant}`
 }
 
 function serializeProductArchiveDraftImage(image: JsonRecord) {
+  const isPdf = isProductArchiveDraftPdfAsset(image)
   return {
     ...image,
-    preview_url: draftImagePreviewUrl(image.id),
+    kind: productArchiveDraftListImageKind(image),
+    label: stringValue(image.original_file_name)
+      || stringValue(image.source_ref)
+      || stringValue(image.file_name)
+      || `图片 ${image.id}`,
+    preview_url: isPdf ? draftImagePreviewUrl(image.id) : draftImagePreviewUrl(image.id, { preview: true }),
+    full_url: draftImagePreviewUrl(image.id),
+    thumbnail_url: isPdf ? null : draftImagePreviewUrl(image.id, { thumbnail: true }),
   }
+}
+
+type ProductArchiveDraftListImageKind = "reference" | "hangtag" | "washlabel"
+
+function isProductArchiveDraftPdfAsset(image: JsonRecord) {
+  const mimeType = stringValue(image.mime_type).toLowerCase()
+  return mimeType === "application/pdf"
+    || uploadExtension(image.file_name) === ".pdf"
+    || uploadExtension(image.original_file_name) === ".pdf"
+    || uploadExtension(image.source_ref) === ".pdf"
+}
+
+function productArchiveDraftListImageKind(image: JsonRecord): ProductArchiveDraftListImageKind {
+  const payload = recordValue(image.raw_payload_json)
+  const payloadKind = stringValue(payload.asset_kind).toLowerCase()
+  if (payloadKind === "hangtag" || payloadKind === "washlabel") return payloadKind
+
+  const candidates = [
+    image.original_file_name,
+    image.source_ref,
+    image.file_name,
+    payload.original_file_name,
+    payload.source_ref,
+  ]
+  for (const candidate of candidates) {
+    const kind = classifyProductArchiveAssetPackageFileName(candidate)
+    if (kind === "hangtag" || kind === "washlabel") return kind
+  }
+  return "reference"
+}
+
+function serializeProductArchiveDraftListImagePreview(image: JsonRecord) {
+  const label = stringValue(image.original_file_name)
+    || stringValue(image.source_ref)
+    || stringValue(image.file_name)
+    || `图片 ${image.id}`
+  const isPdf = isProductArchiveDraftPdfAsset(image)
+  return {
+    id: image.id,
+    draft_id: image.draft_id,
+    kind: productArchiveDraftListImageKind(image),
+    label,
+    file_name: image.file_name,
+    original_file_name: image.original_file_name,
+    mime_type: image.mime_type,
+    width: image.width,
+    height: image.height,
+    preview_url: isPdf ? draftImagePreviewUrl(image.id) : draftImagePreviewUrl(image.id, { preview: true }),
+    full_url: draftImagePreviewUrl(image.id),
+    thumbnail_url: isPdf ? null : draftImagePreviewUrl(image.id, { thumbnail: true }),
+  }
+}
+
+function listProductArchiveDraftImagePreviews(db: SyncPostgresDatabase, draftIds: number[]) {
+  const ids = Array.from(new Set(draftIds.filter((id) => Number.isInteger(id) && id > 0)))
+  const emptyGroup = () => ({ reference: [], hangtag: [], washlabel: [] } as Record<ProductArchiveDraftListImageKind, ReturnType<typeof serializeProductArchiveDraftListImagePreview>[]>)
+  const previewMap = new Map<number, ReturnType<typeof emptyGroup>>()
+  for (const id of ids) previewMap.set(id, emptyGroup())
+  if (ids.length === 0) return previewMap
+
+  const rows = db.prepare(`
+    select id, draft_id, source_type, source_ref, file_name, original_file_name, mime_type, width, height, raw_payload_json, sort_no
+    from product_archive_draft_image
+    where draft_id in (${ids.map(() => "?").join(",")})
+    order by draft_id, sort_no, id
+  `).all(...ids) as JsonRecord[]
+  for (const row of rows) {
+    const draftId = Number(row.draft_id)
+    const group = previewMap.get(draftId)
+    if (!group) continue
+    const preview = serializeProductArchiveDraftListImagePreview(row)
+    if (group[preview.kind].length >= 4) continue
+    group[preview.kind].push(preview)
+  }
+  return previewMap
 }
 
 export function latestProductArchiveDraftForSpuCode(db: SyncPostgresDatabase, spuCode: string) {
@@ -6242,6 +6325,7 @@ export function listProductArchiveDrafts(db: SyncPostgresDatabase, input: ListDr
       draft.title,
       draft.tenant_name,
       draft.merchant_id,
+      draft.trade_id,
       draft.trade_path,
       draft.status,
       draft.created_product_id,
@@ -6296,9 +6380,16 @@ export function listProductArchiveDrafts(db: SyncPostgresDatabase, input: ListDr
     from product_archive_draft draft
     ${clause}
   `).get(...params) as { count: number }
+  const previewMap = listProductArchiveDraftImagePreviews(
+    db,
+    (rows as JsonRecord[]).map((row) => Number(row.id)),
+  )
   const items = (rows as JsonRecord[]).map((row) => ({
     ...row,
     thumbnail_image_url: draftImagePreviewUrl(row.thumbnail_image_id, { thumbnail: true }),
+    thumbnail_preview_url: draftImagePreviewUrl(row.thumbnail_image_id, { preview: true }),
+    thumbnail_full_url: draftImagePreviewUrl(row.thumbnail_image_id),
+    image_previews: previewMap.get(Number(row.id)) ?? { reference: [], hangtag: [], washlabel: [] },
   }))
   return { items, pagination: { total: Number(total.count ?? 0), limit, offset } }
 }

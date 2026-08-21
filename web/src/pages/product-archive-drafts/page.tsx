@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type FocusEvent, type PointerEvent, type ReactNode } from "react"
+import { createPortal } from "react-dom"
 import { Link } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ChevronDown, ChevronUp, CircleHelp, Download, FileSpreadsheet, FileText, Loader2, PackagePlus, RefreshCw, Search, Send, ShieldCheck, Sparkles, Trash2, Upload } from "lucide-react"
+import { ChevronDown, ChevronRight, ChevronUp, CircleHelp, Download, ExternalLink, FileSpreadsheet, FileText, ListTree, Loader2, Maximize2, PackagePlus, RefreshCw, Save, Search, Send, ShieldCheck, Sparkles, Trash2, Upload, X } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { useAuth } from "@/lib/auth-context"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
+import { cn } from "@/lib/utils"
 import { ImportDialog } from "@/components/import-dialog"
 import { ServerPagination } from "@/components/server-pagination"
 import { useAsyncTasks, type AsyncTaskJob } from "@/lib/async-task-context"
@@ -24,6 +26,14 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
 import { Progress } from "@/components/ui/progress"
 import {
   Dialog,
@@ -35,6 +45,12 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Select,
   SelectContent,
@@ -61,6 +77,7 @@ interface ProductArchiveDraftRow {
   title: string | null
   tenant_name: string
   merchant_id: string
+  trade_id: string | null
   trade_path: string | null
   status: string
   blocker_count: number
@@ -68,12 +85,116 @@ interface ProductArchiveDraftRow {
   sku_count: number
   image_count: number
   thumbnail_image_url: string | null
+  thumbnail_preview_url: string | null
+  thumbnail_full_url: string | null
   thumbnail_file_name: string | null
   asset_package_image_count: number
   hangtag_upload_count: number
   washlabel_upload_count: number
   created_product_id: string | null
   updated_at: string
+  image_previews?: ProductArchiveDraftImagePreviewGroups
+}
+
+type DraftAssetKind = "reference" | "hangtag" | "washlabel"
+
+interface ProductArchiveDraftImagePreview {
+  id: number | string
+  draft_id?: number
+  kind?: DraftAssetKind
+  label: string
+  file_name?: string | null
+  original_file_name?: string | null
+  mime_type?: string | null
+  width?: number | null
+  height?: number | null
+  preview_url: string | null
+  full_url?: string | null
+  thumbnail_url?: string | null
+}
+
+type ProductArchiveDraftImagePreviewGroups = Record<DraftAssetKind, ProductArchiveDraftImagePreview[]>
+
+interface Draft {
+  id: number
+  draft_no: string
+  spu_code: string
+  tenant_name: string
+  merchant_id: string
+  trade_id: string | null
+  trade_path: string | null
+  title: string | null
+  status: string
+  validation_summary_json: { blocker_count?: number; warning_count?: number; validated_at?: string }
+  updated_at: string
+}
+
+interface DraftField {
+  id: number
+  field_name: string
+  source_type: string
+  value_text: string | null
+  value_json?: unknown
+  field_type?: string | null
+  required: boolean
+  blocking: boolean
+  manual_override: boolean
+  validation_status: string
+  validation_message: string | null
+  options_json?: unknown
+}
+
+interface DraftIssue {
+  id: number
+  severity: string
+  issue_type: string
+  field_name: string | null
+  sku_code: string | null
+  message: string
+  resolved_at: string | null
+}
+
+interface TradeSelectionDecision {
+  status: "auto_applied" | "pending_confirmation" | "manual_selection_required" | "human_confirmed" | "human_adjusted"
+  confidence: "high" | "medium" | "none"
+  recommendedTrade: { tradeId: string; tradePath: string } | null
+  appliedTrade: { tradeId: string; tradePath: string } | null
+  reason: string
+}
+
+interface LaunchPlanReferenceField {
+  key: string
+  label: string
+  value: string
+}
+
+interface LaunchPlanReference {
+  matched: boolean
+  fields: LaunchPlanReferenceField[]
+}
+
+interface DraftDetail {
+  draft: Draft
+  tradeSelectionDecision: TradeSelectionDecision
+  launchPlanReference?: LaunchPlanReference
+  fields: DraftField[]
+  issues: DraftIssue[]
+  images?: ProductArchiveDraftImagePreview[]
+}
+
+interface TradeRow {
+  trade_id: string
+  trade_name: string
+  trade_path: string | null
+}
+
+interface TradeListResponse {
+  items: TradeRow[]
+}
+
+interface FieldOption {
+  label: string
+  value: string
 }
 
 interface DraftListResponse {
@@ -467,9 +588,402 @@ function buildSpuImageImportForm(files: File[], sourceType?: string) {
   return form
 }
 
-function DraftThumbnail({ src, label }: { src: string | null; label: string }) {
+function textValue(value: unknown) {
+  if (value == null) return ""
+  if (typeof value === "string") return value.trim()
+  if (typeof value === "number" || typeof value === "boolean") return String(value).trim()
+  return ""
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
+    } catch {
+      return {}
+    }
+  }
+  return {}
+}
+
+function parseOptionList(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value)
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>
+    for (const key of ["options", "values", "items", "list"]) {
+      if (Array.isArray(record[key])) return record[key] as unknown[]
+    }
+  }
+  return []
+}
+
+function stringOptionValue(value: unknown) {
+  if (value == null) return ""
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value).trim()
+  return ""
+}
+
+function fieldOptionText(option: unknown, keys: string[]) {
+  if (!option || typeof option !== "object") return stringOptionValue(option)
+  const record = option as Record<string, unknown>
+  for (const key of keys) {
+    const value = stringOptionValue(record[key])
+    if (value) return value
+  }
+  return stringOptionValue(record.value) || stringOptionValue(record.label) || stringOptionValue(record.name)
+}
+
+function fieldOptions(field: DraftField): FieldOption[] {
+  const options = parseOptionList(field.options_json)
+    .map((option) => {
+      const value = fieldOptionText(option, ["value", "code", "id", "optionValue", "option_value", "key", "name", "label"])
+      const label = fieldOptionText(option, ["label", "name", "text", "optionName", "option_name", "title", "value", "code"])
+      if (!value && !label) return null
+      return { value: value || label, label: label || value }
+    })
+    .filter(Boolean) as FieldOption[]
+  return Array.from(new Map(options.map((option) => [option.value, option])).values())
+}
+
+function compactFieldKey(value: string) {
+  return value.replace(/\s+/g, "").replace(/[()（）]/g, "").toLowerCase()
+}
+
+function deepdrawFieldType(field: DraftField) {
+  return String(field.field_type ?? "").trim().toUpperCase()
+}
+
+const MULTI_CHOICE_FIELD_TYPES = new Set(["MULTI_CHOICE", "MULTIPLE_CHOICE", "MULTI_SELECT", "CHECKBOX"])
+
+function isChoiceFieldType(field: DraftField) {
+  const type = deepdrawFieldType(field)
+  if (fieldOptions(field).length > 0) return true
+  if (["SINGLE_CHOICE", "SINGLE_SELECT", "SELECT", "RADIO", "ENUM"].includes(type)) return true
+  if (MULTI_CHOICE_FIELD_TYPES.has(type)) return true
+  return false
+}
+
+function splitMultiFieldValue(value: string) {
+  return value.split(/[;；]/).map((part) => part.trim()).filter(Boolean)
+}
+
+function isMultiChoiceFieldType(field: DraftField, value = "") {
+  const type = deepdrawFieldType(field)
+  const key = compactFieldKey(field.field_name)
+  const hasOptions = fieldOptions(field).length > 0
+  return MULTI_CHOICE_FIELD_TYPES.has(type)
+    || (hasOptions && type === "MULTI_TEXT")
+    || (hasOptions && key.includes("多选"))
+    || (hasOptions && splitMultiFieldValue(value).length > 1)
+}
+
+function isLongTextFieldType(field: DraftField) {
+  return ["TEXTAREA", "LONG_TEXT", "RICH_TEXT", "MULTI_TEXT"].includes(deepdrawFieldType(field))
+}
+
+function isProductArchiveSizeChartField(field: DraftField) {
+  if (!compactFieldKey(field.field_name).includes("尺码表")) return false
+  const fieldType = deepdrawFieldType(field)
+  return fieldType === "MULTI_TEXT" || !fieldType
+}
+
+function multiFieldOptionValue(value: string, options: FieldOption[]) {
+  if (options.some((option) => option.value === value)) return value
+  const aliases = value.split(/[,，]/).map((part) => part.trim()).filter(Boolean)
+  return options.find((option) => aliases.includes(option.value))?.value ?? ""
+}
+
+function addMultiFieldValue(value: string, optionValue: string, options: FieldOption[]) {
+  const values = splitMultiFieldValue(value)
+  if (values.some((item) => item === optionValue || multiFieldOptionValue(item, options) === optionValue)) return value
+  return [...values, optionValue].join(";")
+}
+
+function removeMultiFieldValue(value: string, optionValue: string, options: FieldOption[]) {
+  const nextValues = splitMultiFieldValue(value).filter((item) => (
+    item !== optionValue && multiFieldOptionValue(item, options) !== optionValue
+  ))
+  return nextValues.join(";")
+}
+
+function clearInvalidMultiFieldValue(value: string, rawValue: string) {
+  const nextValues = splitMultiFieldValue(value).filter((item) => item !== rawValue)
+  return Array.from(new Set(nextValues)).join(";")
+}
+
+function previewImageLabel(image: ProductArchiveDraftImagePreview) {
+  return textValue(image.label)
+    || textValue(image.original_file_name)
+    || textValue(image.file_name)
+    || `图片 ${image.id}`
+}
+
+function isPreviewPdf(image: ProductArchiveDraftImagePreview) {
+  const mimeType = textValue(image.mime_type).toLowerCase()
+  const fileName = `${textValue(image.file_name)} ${textValue(image.original_file_name)} ${previewImageLabel(image)}`.toLowerCase()
+  return mimeType === "application/pdf" || /\.pdf(?:\s|$)/.test(fileName)
+}
+
+function previewImageMeta(image: ProductArchiveDraftImagePreview) {
+  const parts = []
+  if (image.width && image.height) parts.push(`${image.width} × ${image.height}`)
+  else if (isPreviewPdf(image)) parts.push("PDF")
+  if (textValue(image.mime_type) && !isPreviewPdf(image)) parts.push(textValue(image.mime_type))
+  return parts.join(" · ")
+}
+
+function previewableImages(images: ProductArchiveDraftImagePreview[]) {
+  return images.filter((image) => Boolean(image.preview_url))
+}
+
+function HoverImagePreview({
+  images,
+  children,
+  align = "center",
+  side = "right",
+  previewSize = "compact",
+  previewLayerClassName = "z-40",
+}: {
+  images: ProductArchiveDraftImagePreview[]
+  children: (props: {
+    onPointerEnter: (event: PointerEvent<HTMLElement>) => void
+    onPointerLeave: () => void
+    onFocus: (event: FocusEvent<HTMLElement>) => void
+    onBlur: () => void
+  }) => ReactNode
+  align?: "start" | "center" | "end"
+  side?: "top" | "right" | "bottom" | "left"
+  previewSize?: "compact" | "large"
+  previewLayerClassName?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null)
+  const availableImages = previewableImages(images)
+  const visibleImages = availableImages.slice(0, 4)
+  const largePreview = previewSize === "large"
+  const previewWidth = largePreview ? (visibleImages.length > 1 ? 344 : 176) : (visibleImages.length > 1 ? 248 : 128)
+  const previewHeight = largePreview ? (visibleImages.length > 2 ? 392 : 200) : (visibleImages.length > 2 ? 296 : 152)
+  const imageBoxClassName = largePreview ? "size-40" : "size-28"
+  const labelClassName = largePreview ? "max-w-40" : "max-w-28"
+  const updatePosition = (element: HTMLElement) => {
+    const rect = element.getBoundingClientRect()
+    const gap = 8
+    const viewportWidth = window.innerWidth
+    const viewportHeight = window.innerHeight
+    let left = rect.right + gap
+    let top = rect.top
+    if (side === "left") left = rect.left - previewWidth - gap
+    if (side === "top" || side === "bottom") {
+      left = rect.left + rect.width / 2 - previewWidth / 2
+      top = side === "top" ? rect.top - previewHeight - gap : rect.bottom + gap
+    } else if (align === "center") {
+      top = rect.top + rect.height / 2 - previewHeight / 2
+    } else if (align === "end") {
+      top = rect.bottom - previewHeight
+    }
+    left = Math.min(Math.max(8, left), Math.max(8, viewportWidth - previewWidth - 8))
+    top = Math.min(Math.max(8, top), Math.max(8, viewportHeight - previewHeight - 8))
+    setPosition({ left, top })
+  }
+  const triggerProps = {
+    onPointerEnter: (event: PointerEvent<HTMLElement>) => {
+      updatePosition(event.currentTarget)
+      setOpen(true)
+    },
+    onPointerLeave: () => setOpen(false),
+    onFocus: (event: FocusEvent<HTMLElement>) => {
+      updatePosition(event.currentTarget)
+      setOpen(true)
+    },
+    onBlur: () => setOpen(false),
+  }
+
+  if (availableImages.length === 0) return <>{children(triggerProps)}</>
+
+  return (
+    <>
+      {children(triggerProps)}
+      {open && position && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className={cn("pointer-events-none fixed w-auto rounded-lg border bg-popover p-2 text-popover-foreground shadow-lg", previewLayerClassName)}
+              style={{ left: position.left, top: position.top }}
+            >
+              <div className={cn("grid gap-2", visibleImages.length > 1 ? "grid-cols-2" : "grid-cols-1")}>
+                {visibleImages.map((image) => (
+                  <div key={image.id} className="min-w-0">
+                    <div className={cn("flex items-center justify-center overflow-hidden rounded-md border bg-muted/30", imageBoxClassName)}>
+                      {isPreviewPdf(image) ? (
+                        <div className="grid gap-1 text-center text-xs text-muted-foreground">
+                          <FileText className="mx-auto size-7" />
+                          PDF
+                        </div>
+                      ) : (
+                        <img
+                          src={image.thumbnail_url || image.preview_url || ""}
+                          alt={previewImageLabel(image)}
+                          className="h-full w-full object-contain"
+                          loading="eager"
+                        />
+                      )}
+                    </div>
+                    <div className={cn("mt-1 truncate text-[11px] text-muted-foreground", labelClassName)}>
+                      {previewImageLabel(image)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {availableImages.length > visibleImages.length ? (
+                <div className="mt-2 text-xs text-muted-foreground">还有 {formatNumber(availableImages.length - visibleImages.length)} 张</div>
+              ) : null}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  )
+}
+
+interface ImagePreviewDialogTarget {
+  title: string
+  description?: string
+  images: ProductArchiveDraftImagePreview[]
+  initialImageId?: number | string
+}
+
+function ImagePreviewDialog({
+  target,
+  onClose,
+}: {
+  target: ImagePreviewDialogTarget | null
+  onClose: () => void
+}) {
+  const availableImages = previewableImages(target?.images ?? [])
+  const initialId = target?.initialImageId ?? availableImages[0]?.id
+  const [activeImageId, setActiveImageId] = useState<number | string | undefined>(initialId)
+  const activeImage = availableImages.find((image) => image.id === activeImageId)
+    ?? availableImages.find((image) => image.id === initialId)
+    ?? availableImages[0]
+  const activeLabel = activeImage ? previewImageLabel(activeImage) : ""
+  const activeIsPdf = activeImage ? isPreviewPdf(activeImage) : false
+
+  return (
+    <Dialog modal={false} open={Boolean(target)} onOpenChange={(open) => {
+      if (!open) onClose()
+    }}>
+      {target ? (
+        <DialogContent
+          showOverlay={false}
+          className="z-[95] max-h-[calc(100vh-2rem)] w-[min(96vw,1040px)] max-w-none overflow-hidden sm:max-w-[min(96vw,1040px)]"
+        >
+          <DialogHeader>
+            <DialogTitle className="truncate">{target.title}</DialogTitle>
+            <DialogDescription className="truncate">
+              {target.description || activeLabel || "图片预览"}
+            </DialogDescription>
+          </DialogHeader>
+          {activeImage ? (
+            <div className="grid min-h-0 gap-3">
+              <div className="flex min-h-0 min-w-0 items-center justify-center overflow-hidden rounded-md border bg-muted/30">
+                {activeIsPdf ? (
+                  <iframe
+                    src={activeImage.preview_url || activeImage.full_url || ""}
+                    title={activeLabel}
+                    className="h-[min(72vh,720px)] min-h-[420px] w-full min-w-0 bg-background"
+                  />
+                ) : (
+                  <img
+                    src={activeImage.preview_url || activeImage.full_url || ""}
+                    alt={activeLabel}
+                    className="block h-auto max-h-[min(72vh,720px)] max-w-full object-contain"
+                  />
+                )}
+              </div>
+              {availableImages.length > 1 ? (
+                <div className="flex max-w-full gap-2 overflow-x-auto pb-1">
+                  {availableImages.map((image) => {
+                    const selected = image.id === activeImage.id
+                    return (
+                      <button
+                        key={image.id}
+                        type="button"
+                        className={cn(
+                          "flex size-14 shrink-0 items-center justify-center overflow-hidden rounded-md border bg-muted/30 focus:outline-none focus:ring-2 focus:ring-ring",
+                          selected && "border-[#18e299] ring-2 ring-[#18e299]/50",
+                        )}
+                        onClick={() => setActiveImageId(image.id)}
+                        aria-label={`查看${previewImageLabel(image)}`}
+                      >
+                        {isPreviewPdf(image) ? (
+                          <FileText className="size-5 text-muted-foreground" />
+                        ) : (
+                          <img
+                            src={image.thumbnail_url || image.preview_url || ""}
+                            alt={previewImageLabel(image)}
+                            className="h-full w-full object-cover"
+                            loading="eager"
+                          />
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="rounded-md border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+              暂无可预览图片
+            </div>
+          )}
+          {activeImage?.preview_url || activeImage?.full_url ? (
+            <DialogFooter>
+              <div className="mr-auto truncate text-xs text-muted-foreground">
+                {activeLabel}{previewImageMeta(activeImage) ? ` · ${previewImageMeta(activeImage)}` : ""}
+              </div>
+              <Button asChild variant="outline" size="sm">
+                <a href={activeImage.full_url || activeImage.preview_url || ""} target="_blank" rel="noreferrer">
+                  <ExternalLink className="size-4" />
+                  打开原文件
+                </a>
+              </Button>
+            </DialogFooter>
+          ) : null}
+        </DialogContent>
+      ) : null}
+    </Dialog>
+  )
+}
+
+function DraftThumbnail({
+  item,
+  onPreview,
+}: {
+  item: ProductArchiveDraftRow
+  onPreview: (target: ImagePreviewDialogTarget) => void
+}) {
   const [failed, setFailed] = useState(false)
-  if (!src || failed) {
+  const label = item.thumbnail_file_name ?? item.spu_code
+  const image: ProductArchiveDraftImagePreview | null = item.thumbnail_full_url || item.thumbnail_image_url
+    ? {
+        id: `thumbnail-${item.id}`,
+        label,
+        preview_url: item.thumbnail_preview_url ?? item.thumbnail_full_url ?? item.thumbnail_image_url,
+        full_url: item.thumbnail_full_url,
+        thumbnail_url: item.thumbnail_image_url,
+      }
+    : null
+  const thumbnailUrl = image?.thumbnail_url
+  if (!image || !thumbnailUrl || failed) {
     return (
       <div className="flex h-14 w-14 items-center justify-center rounded-md border bg-muted text-[11px] text-muted-foreground">
         无图
@@ -477,15 +991,549 @@ function DraftThumbnail({ src, label }: { src: string | null; label: string }) {
     )
   }
   return (
-    <img
-      src={src}
-      alt={label}
-      title={label}
-      className="h-14 w-14 rounded-md border bg-muted object-cover"
-      loading="eager"
-      onError={() => setFailed(true)}
+    <HoverImagePreview images={[image]} side="right" align="start">
+      {(triggerProps) => (
+        <button
+          type="button"
+          {...triggerProps}
+          className="group relative block h-14 w-14 cursor-zoom-in overflow-hidden rounded-md border bg-muted transition-all hover:-translate-y-px hover:border-[#18d892] hover:shadow-[0_4px_14px_rgba(15,23,42,0.12)] focus:outline-none focus:ring-2 focus:ring-ring active:translate-y-0"
+          onClick={() => onPreview({
+            title: item.spu_code,
+            description: label,
+            images: [image],
+            initialImageId: image.id,
+          })}
+          aria-label={`查看${label}`}
+          title={label}
+        >
+          <img
+            src={thumbnailUrl}
+            alt={label}
+            className="h-full w-full object-cover"
+            loading="eager"
+            onError={() => setFailed(true)}
+          />
+          <span className="absolute right-1 top-1 rounded-full bg-background/90 p-1 text-muted-foreground opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+            <Maximize2 className="size-3" />
+          </span>
+        </button>
+      )}
+    </HoverImagePreview>
+  )
+}
+
+function draftImageGroups(item: ProductArchiveDraftRow): ProductArchiveDraftImagePreviewGroups {
+  return item.image_previews ?? { reference: [], hangtag: [], washlabel: [] }
+}
+
+function previewImageKind(image: ProductArchiveDraftImagePreview): DraftAssetKind {
+  if (image.kind === "hangtag" || image.kind === "washlabel" || image.kind === "reference") return image.kind
+  const name = `${textValue(image.label)} ${textValue(image.original_file_name)} ${textValue(image.file_name)}`.toLowerCase()
+  if (/(洗唛|洗标|水洗|wash)/i.test(name)) return "washlabel"
+  if (/(吊牌|合格证|hangtag|(?:^|[_\-\s])tag(?:[_\-\s.]|$))/i.test(name)) return "hangtag"
+  return "reference"
+}
+
+function groupPreviewImages(images: ProductArchiveDraftImagePreview[]): ProductArchiveDraftImagePreviewGroups {
+  return images.reduce<ProductArchiveDraftImagePreviewGroups>((groups, image) => {
+    groups[previewImageKind(image)].push(image)
+    return groups
+  }, { reference: [], hangtag: [], washlabel: [] })
+}
+
+function AssetPreviewBadge({
+  label,
+  uploaded,
+  images,
+  onPreview,
+}: {
+  label: string
+  uploaded: boolean
+  images: ProductArchiveDraftImagePreview[]
+  onPreview: () => void
+}) {
+  const availableImages = previewableImages(images)
+  const badge = (triggerProps: {
+    onPointerEnter: (event: PointerEvent<HTMLElement>) => void
+    onPointerLeave: () => void
+    onFocus: (event: FocusEvent<HTMLElement>) => void
+    onBlur: () => void
+  }) => (
+    <button
+      type="button"
+      {...triggerProps}
+      className={cn(
+        "inline-flex h-6 max-w-[96px] items-center rounded-full border px-2 text-[11px] font-medium leading-none shadow-[0_1px_4px_rgba(15,23,42,0.06)] transition-all focus:outline-none focus:ring-2 focus:ring-ring active:translate-y-px",
+        uploaded
+          ? "border-[#9decc9] bg-white text-[#08794f] hover:border-[#18d892] hover:bg-[#f2fff8] hover:text-[#086b49]"
+          : "border-[#e2e8f0] bg-white text-muted-foreground hover:border-[#cbd5e1] hover:bg-[#f8fafc]",
+        availableImages.length > 0 ? "cursor-zoom-in" : "cursor-default",
+      )}
+      onClick={() => {
+        if (availableImages.length > 0) onPreview()
+      }}
+      title={availableImages.length > 0 ? "点击查看图片" : "暂无图片预览"}
+    >
+      <span className="truncate">{label}{uploaded ? "已传" : "未传"}</span>
+    </button>
+  )
+
+  return (
+    <HoverImagePreview images={availableImages} side="left" align="start">
+      {badge}
+    </HoverImagePreview>
+  )
+}
+
+function AssetPackageCell({
+  item,
+  onPreview,
+}: {
+  item: ProductArchiveDraftRow
+  onPreview: (target: ImagePreviewDialogTarget) => void
+}) {
+  const groups = draftImageGroups(item)
+  const openGroupPreview = (kind: DraftAssetKind, label: string) => {
+    const images = previewableImages(groups[kind])
+    if (images.length === 0) return
+    onPreview({
+      title: `${item.spu_code} · ${label}`,
+      description: `${label}图片 ${formatNumber(images.length)} 张`,
+      images,
+      initialImageId: images[0]?.id,
+    })
+  }
+  return (
+    <div>
+      <div>{formatNumber(item.image_count ?? 0)} 张</div>
+      <div className="mt-1 flex flex-wrap gap-1">
+        <AssetPreviewBadge
+          label="吊牌"
+          uploaded={item.hangtag_upload_count > 0}
+          images={groups.hangtag}
+          onPreview={() => openGroupPreview("hangtag", "吊牌")}
+        />
+        <AssetPreviewBadge
+          label="洗唛"
+          uploaded={item.washlabel_upload_count > 0}
+          images={groups.washlabel}
+          onPreview={() => openGroupPreview("washlabel", "洗唛")}
+        />
+        <AssetPreviewBadge
+          label="平铺图"
+          uploaded={item.asset_package_image_count > 0}
+          images={groups.reference}
+          onPreview={() => openGroupPreview("reference", "平铺图")}
+        />
+      </div>
+    </div>
+  )
+}
+
+function draftMainPreviewImage(item: ProductArchiveDraftRow | null): ProductArchiveDraftImagePreview | null {
+  if (!item || (!item.thumbnail_full_url && !item.thumbnail_image_url)) return null
+  const label = item.thumbnail_file_name ?? item.spu_code
+  return {
+    id: `thumbnail-${item.id}`,
+    label,
+    preview_url: item.thumbnail_preview_url ?? item.thumbnail_full_url ?? item.thumbnail_image_url,
+    full_url: item.thumbnail_full_url,
+    thumbnail_url: item.thumbnail_image_url,
+  }
+}
+
+function EvidenceImageTile({
+  image,
+  compact = false,
+  onPreview,
+}: {
+  image: ProductArchiveDraftImagePreview
+  compact?: boolean
+  onPreview?: () => void
+}) {
+  const label = previewImageLabel(image)
+  return (
+    <HoverImagePreview
+      images={[image]}
+      side="right"
+      align="center"
+      previewSize="large"
+      previewLayerClassName="z-[90]"
+    >
+      {(triggerProps) => (
+        <button
+          type="button"
+          {...triggerProps}
+          className={cn(
+            "group relative flex shrink-0 cursor-zoom-in items-center justify-center overflow-hidden rounded-md border bg-background shadow-sm outline-none transition-all hover:-translate-y-px hover:border-[#18d892] hover:shadow-[0_4px_14px_rgba(15,23,42,0.12)] focus:ring-2 focus:ring-ring",
+            compact ? "size-14" : "h-32 w-full",
+          )}
+          onClick={onPreview}
+          title={label}
+          aria-label={`查看${label}`}
+        >
+          {isPreviewPdf(image) ? (
+            <div className="grid gap-1 text-center text-xs text-muted-foreground">
+              <FileText className="mx-auto size-6" />
+              PDF
+            </div>
+          ) : (
+            <img
+              src={image.thumbnail_url || image.preview_url || ""}
+              alt={label}
+              className="h-full w-full object-contain"
+              loading="eager"
+            />
+          )}
+          <span className="pointer-events-none absolute bottom-0 left-0 right-0 truncate bg-background/85 px-1.5 py-0.5 text-[10px] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus:opacity-100">
+            {label}
+          </span>
+        </button>
+      )}
+    </HoverImagePreview>
+  )
+}
+
+function EvidenceImageGroup({
+  title,
+  images,
+  onPreview,
+}: {
+  title: string
+  images: ProductArchiveDraftImagePreview[]
+  onPreview: (image: ProductArchiveDraftImagePreview) => void
+}) {
+  const availableImages = previewableImages(images)
+  return (
+    <section className="min-w-0">
+      <div className="mb-1.5 flex items-center justify-between gap-2 text-xs">
+        <span className="font-medium text-foreground">{title}</span>
+        <span className="text-muted-foreground">{formatNumber(availableImages.length)} 张</span>
+      </div>
+      {availableImages.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {availableImages.map((image) => (
+            <EvidenceImageTile
+              key={image.id}
+              image={image}
+              compact
+              onPreview={() => onPreview(image)}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-md border border-dashed bg-background/70 px-3 py-2 text-xs text-muted-foreground">
+          暂无图片
+        </div>
+      )}
+    </section>
+  )
+}
+
+function QuickFieldEvidencePanel({
+  draft,
+  detailImages,
+  onPreview,
+}: {
+  draft: ProductArchiveDraftRow | null
+  detailImages?: ProductArchiveDraftImagePreview[]
+  onPreview: (target: ImagePreviewDialogTarget) => void
+}) {
+  const mainImage = draftMainPreviewImage(draft)
+  const groups = detailImages ? groupPreviewImages(detailImages) : draft ? draftImageGroups(draft) : { reference: [], hangtag: [], washlabel: [] }
+  const openEvidencePreview = (title: string, images: ProductArchiveDraftImagePreview[], image: ProductArchiveDraftImagePreview) => {
+    const availableImages = previewableImages(images)
+    if (availableImages.length === 0) return
+    onPreview({
+      title: draft ? `${draft.spu_code} · ${title}` : title,
+      description: `${title}图片 ${formatNumber(availableImages.length)} 张`,
+      images: availableImages,
+      initialImageId: image.id,
+    })
+  }
+  return (
+    <aside
+      className="flex h-full min-h-[220px] max-h-[34vh] min-w-0 flex-col overflow-hidden rounded-lg border bg-muted/20 p-3 lg:min-h-0 lg:max-h-full"
+      data-testid="quick-field-evidence-panel"
+    >
+      <div className="mb-3 shrink-0">
+        <div className="text-sm font-semibold">填字段参考图</div>
+        <div className="mt-1 text-xs text-muted-foreground">鼠标移入缩略图查看放大预览</div>
+      </div>
+      <div
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1 [scrollbar-gutter:stable]"
+        data-testid="quick-field-evidence-scroll"
+      >
+        <div className="grid gap-4">
+          <section>
+            <div className="mb-1.5 flex items-center justify-between gap-2 text-xs">
+              <span className="font-medium text-foreground">商品主图</span>
+              <span className="text-muted-foreground">{mainImage ? "1 张" : "0 张"}</span>
+            </div>
+            {mainImage ? (
+              <EvidenceImageTile
+                image={mainImage}
+                onPreview={() => openEvidencePreview("商品主图", [mainImage], mainImage)}
+              />
+            ) : (
+              <div className="flex h-32 items-center justify-center rounded-md border border-dashed bg-background/70 text-xs text-muted-foreground">
+                暂无主图
+              </div>
+            )}
+          </section>
+          <EvidenceImageGroup
+            title="吊牌"
+            images={groups.hangtag}
+            onPreview={(image) => openEvidencePreview("吊牌", groups.hangtag, image)}
+          />
+          <EvidenceImageGroup
+            title="洗唛"
+            images={groups.washlabel}
+            onPreview={(image) => openEvidencePreview("洗唛", groups.washlabel, image)}
+          />
+          <EvidenceImageGroup
+            title="平铺图"
+            images={groups.reference}
+            onPreview={(image) => openEvidencePreview("平铺图", groups.reference, image)}
+          />
+        </div>
+      </div>
+    </aside>
+  )
+}
+
+function tradeSelectionTitle(status: TradeSelectionDecision["status"]) {
+  if (status === "auto_applied") return "已自动应用推荐类目"
+  if (status === "pending_confirmation") return "已自动应用，待人工确认"
+  if (status === "manual_selection_required") return "需要人工选择"
+  if (status === "human_confirmed") return "人工已确认"
+  return "人工已调整"
+}
+
+function tradeSelectionConfidenceLabel(confidence: TradeSelectionDecision["confidence"]) {
+  if (confidence === "high") return "高置信度"
+  if (confidence === "medium") return "中置信度"
+  return "无自动匹配置信度"
+}
+
+function tradeSelectionClass(status: TradeSelectionDecision["status"]) {
+  if (status === "auto_applied" || status === "human_confirmed") {
+    return "border-[#b9f4d8] bg-[#f2fcf7]"
+  }
+  if (status === "pending_confirmation") return "border-[#f4ddb3] bg-[#fffaf0]"
+  if (status === "manual_selection_required") return "border-[#f1cccc] bg-[#fff6f6]"
+  return "border-[#d7e5fb] bg-[#f4f8ff]"
+}
+
+function issueSeverityLabel(severity: string) {
+  if (severity === "blocker") return "阻断"
+  if (severity === "warning") return "警告"
+  return severity || "提示"
+}
+
+function issueSeverityClass(severity: string) {
+  if (severity === "blocker") return "border-[#f1cccc] bg-[#fff1f1] text-[#d45656]"
+  if (severity === "warning") return "border-[#f4ddb3] bg-[#fff8e8] text-[#c37d0d]"
+  return "border-[#d7e5fb] bg-[#eef5ff] text-[#3772cf]"
+}
+
+function issueSummaryText(issues: DraftIssue[]) {
+  return Array.from(new Set(issues.map((issue) => issue.message).filter(Boolean))).join("；")
+}
+
+function MultiChoiceFieldEditor({
+  field,
+  value,
+  options,
+  onChange,
+  disabled = false,
+}: {
+  field: DraftField
+  value: string
+  options: FieldOption[]
+  onChange: (value: string) => void
+  disabled?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const selectedValues = splitMultiFieldValue(value)
+  const selectedOptionValues = new Set(
+    selectedValues
+      .map((item) => multiFieldOptionValue(item, options))
+      .filter(Boolean),
+  )
+  const selectedTags = selectedValues.map((item) => {
+    const optionValue = multiFieldOptionValue(item, options)
+    const option = optionValue ? options.find((candidate) => candidate.value === optionValue) : null
+    return {
+      rawValue: item,
+      optionValue,
+      label: option && item === option.value ? option.label : item,
+      valid: Boolean(option),
+    }
+  })
+  const availableOptions = options.filter((option) => !selectedOptionValues.has(option.value))
+
+  return (
+    <div className="min-w-[260px] max-w-[420px] space-y-2">
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 w-full justify-between px-3 font-normal"
+            disabled={disabled}
+          >
+            <span className="truncate">
+              {selectedTags.length ? `已选 ${formatNumber(selectedTags.length)} 项，继续添加` : "添加选项"}
+            </span>
+            <Search className="ml-2 size-4 shrink-0 text-muted-foreground" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-[min(420px,calc(100vw-4rem))] p-0">
+          <Command>
+            <CommandInput placeholder={`搜索${field.field_name}选项`} />
+            <CommandList className="max-h-72">
+              <CommandEmpty>{availableOptions.length ? "没有匹配的选项" : "没有可添加的选项"}</CommandEmpty>
+              <CommandGroup>
+                {availableOptions.map((option) => (
+                  <CommandItem
+                    key={option.value}
+                    value={`${option.label} ${option.value}`}
+                    onSelect={() => {
+                      if (!disabled) onChange(addMultiFieldValue(value, option.value, options))
+                    }}
+                    className="gap-2"
+                  >
+                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+            <div className="flex items-center justify-between border-t px-3 py-2">
+              <span className="text-xs text-muted-foreground">当前已选 {formatNumber(selectedTags.length)} 项</span>
+              <Button type="button" variant="ghost" size="sm" onClick={() => onChange("")} disabled={disabled || selectedTags.length === 0}>
+                清空
+              </Button>
+            </div>
+          </Command>
+        </PopoverContent>
+      </Popover>
+      {selectedTags.length > 0 ? (
+        <div className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto rounded-md border bg-background p-2">
+          {selectedTags.map((tag) => (
+            <Badge
+              key={`${tag.rawValue}\u0000${tag.optionValue}`}
+              variant="outline"
+              className={cn(
+                "max-w-full gap-1 rounded-md border-[#5bdca8] bg-[#dff8ed] px-2 py-1 font-medium text-[#0b7f56] shadow-sm",
+                !tag.valid && "border-[#f1cccc] bg-[#fff1f1] text-[#d45656]",
+              )}
+            >
+              <span className="max-w-[300px] truncate">{tag.valid ? tag.label : `${tag.label}（不在模板）`}</span>
+              <button
+                type="button"
+                className={cn(
+                  "rounded-sm text-[#0b7f56]/70 hover:text-[#075f42] focus:outline-none focus:ring-2 focus:ring-ring",
+                  !tag.valid && "text-[#d45656]/70 hover:text-[#b63f3f]",
+                )}
+                onClick={() => onChange(tag.optionValue
+                  ? removeMultiFieldValue(value, tag.optionValue, options)
+                  : clearInvalidMultiFieldValue(value, tag.rawValue))}
+                disabled={disabled}
+                aria-label={`移除${tag.label}`}
+              >
+                <X className="size-3" />
+              </button>
+            </Badge>
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">未选择</div>
+      )}
+    </div>
+  )
+}
+
+function DraftFieldEditor({
+  field,
+  value,
+  canWrite,
+  onChange,
+  onOpenDetail,
+}: {
+  field: DraftField
+  value: string
+  canWrite: boolean
+  onChange: (value: string) => void
+  onOpenDetail: () => void
+}) {
+  const options = fieldOptions(field)
+  const isSizeChartField = isProductArchiveSizeChartField(field)
+  const isChoiceField = isChoiceFieldType(field)
+  const isMultiChoiceField = isMultiChoiceFieldType(field, value)
+  if (isSizeChartField) {
+    return (
+      <Button type="button" variant="outline" size="sm" onClick={onOpenDetail}>
+        <ExternalLink className="size-4" />
+        进入详情配置尺码表
+      </Button>
+    )
+  }
+  if (isChoiceField && isMultiChoiceField && options.length > 0) {
+    return (
+      <MultiChoiceFieldEditor
+        field={field}
+        value={value}
+        options={options}
+        disabled={!canWrite}
+        onChange={onChange}
+      />
+    )
+  }
+  if (isChoiceField && options.length > 0) {
+    return (
+      <Select
+        value={options.some((option) => option.value === value) ? value : ""}
+        onValueChange={onChange}
+      >
+        <SelectTrigger className="h-8" disabled={!canWrite}>
+          <SelectValue placeholder="选择字段值" />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    )
+  }
+  if (isLongTextFieldType(field)) {
+    return (
+      <Textarea
+        value={value}
+        disabled={!canWrite}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="填写目标值"
+        className="min-h-20 min-w-[260px]"
+      />
+    )
+  }
+  return (
+    <Input
+      value={value}
+      disabled={!canWrite}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder="填写目标值"
+      className="h-8"
     />
   )
+}
+
+function CheckMini() {
+  return <span className="ml-1 size-1.5 shrink-0 rounded-full bg-[#0fa76e]" aria-hidden="true" />
 }
 
 interface ProductArchiveDraftGuideDialogProps {
@@ -1044,8 +2092,15 @@ export default function ProductArchiveDraftsPage() {
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
   const [batchJobId, setBatchJobId] = useState<string | null>(null)
   const [selectedDraftIds, setSelectedDraftIds] = useState<Set<number>>(new Set())
+  const [imagePreviewTarget, setImagePreviewTarget] = useState<ImagePreviewDialogTarget | null>(null)
+  const [tradeEditorDraft, setTradeEditorDraft] = useState<ProductArchiveDraftRow | null>(null)
+  const [fieldEditorDraft, setFieldEditorDraft] = useState<ProductArchiveDraftRow | null>(null)
+  const [tradeSearch, setTradeSearch] = useState("")
+  const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null)
+  const [quickFieldValues, setQuickFieldValues] = useState<Record<number, string>>({})
   const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
   const debouncedQuery = useDebounce(searchText, 300)
+  const debouncedTradeSearch = useDebounce(tradeSearch, 250)
   const drafts = useDrafts(debouncedQuery, status, pagination, appliedMultiLineSpuCodes)
   const { data: batchJob } = useQuery<DraftBatchJob>({
     queryKey: ["product-archive-draft-batch-job", batchJobId],
@@ -1057,6 +2112,23 @@ export default function ProductArchiveDraftsPage() {
     },
     refetchOnWindowFocus: false,
   })
+  const activeDetailDraft = tradeEditorDraft ?? fieldEditorDraft
+  const activeDetailDraftId = activeDetailDraft?.id
+  const activeDraftDetail = useQuery<DraftDetail>({
+    queryKey: ["product-archive-drafts", activeDetailDraftId],
+    enabled: Boolean(activeDetailDraftId),
+    queryFn: () => api.get<DraftDetail>(`/product-archive-drafts/${activeDetailDraftId}`),
+  })
+  const activeTradeTenantName = activeDraftDetail.data?.draft.tenant_name ?? tradeEditorDraft?.tenant_name ?? ""
+  const trades = useQuery<TradeListResponse>({
+    queryKey: ["deepdraw-metadata-trades", activeTradeTenantName, debouncedTradeSearch],
+    enabled: Boolean(tradeEditorDraft && activeTradeTenantName),
+    queryFn: () =>
+      api.get<TradeListResponse>(`/deepdraw-metadata/trades?q=${encodeURIComponent(debouncedTradeSearch)}&tenantName=${encodeURIComponent(activeTradeTenantName)}`),
+  })
+  const selectedTrade = useMemo(() => {
+    return (trades.data?.items ?? []).find((trade) => trade.trade_id === selectedTradeId) ?? null
+  }, [selectedTradeId, trades.data?.items])
 
   const summary = useMemo(() => {
     const items = drafts.data?.items ?? []
@@ -1082,6 +2154,32 @@ export default function ProductArchiveDraftsPage() {
     : 0
   const failedJobItems = trackedJob?.items?.filter((item) => item.status === "failed") ?? []
   const appliedMultiLineCount = multiLineCodeCount(appliedMultiLineSpuCodes)
+  const unresolvedQuickIssues = useMemo(() => {
+    return (activeDraftDetail.data?.issues ?? []).filter((issue) => !issue.resolved_at && issue.severity === "blocker" && Boolean(issue.field_name))
+  }, [activeDraftDetail.data?.issues])
+  const quickFieldIssueMap = useMemo(() => {
+    const map = new Map<string, DraftIssue[]>()
+    for (const issue of unresolvedQuickIssues) {
+      if (!issue.field_name) continue
+      const issues = map.get(issue.field_name) ?? []
+      issues.push(issue)
+      map.set(issue.field_name, issues)
+    }
+    return map
+  }, [unresolvedQuickIssues])
+  const quickRequiredBlockerFields = useMemo(() => {
+    return (activeDraftDetail.data?.fields ?? []).filter((field) => (
+      field.required
+      && field.blocking
+      && quickFieldIssueMap.has(field.field_name)
+    ))
+  }, [activeDraftDetail.data?.fields, quickFieldIssueMap])
+  const quickChangedFields = useMemo(() => {
+    const currentFields = new Map((activeDraftDetail.data?.fields ?? []).map((field) => [field.id, field.value_text ?? ""]))
+    return Object.entries(quickFieldValues)
+      .filter(([id, value]) => value !== (currentFields.get(Number(id)) ?? ""))
+      .map(([id, valueText]) => ({ id: Number(id), valueText }))
+  }, [activeDraftDetail.data?.fields, quickFieldValues])
 
   function handleGuideDialogOpenChange(open: boolean) {
     setGuideDialogOpen(open)
@@ -1383,6 +2481,44 @@ export default function ProductArchiveDraftsPage() {
     },
   })
 
+  const applyTradeFromList = useMutation({
+    mutationFn: () => {
+      if (!tradeEditorDraft?.id) throw new Error("请选择要编辑的草稿")
+      return api.patch<DraftDetail>(`/product-archive-drafts/${tradeEditorDraft.id}/trade`, {
+        tradeId: selectedTrade?.trade_id ?? selectedTradeId,
+        tradePath: selectedTrade?.trade_path,
+      })
+    },
+    onSuccess: (result) => {
+      toast.success("已应用类目并生成字段")
+      queryClient.setQueryData(["product-archive-drafts", result.draft.id], result)
+      setTradeEditorDraft(null)
+      setSelectedTradeId(null)
+      setTradeSearch("")
+      setQuickFieldValues({})
+      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "应用类目失败")
+    },
+  })
+
+  const saveQuickFields = useMutation({
+    mutationFn: () => {
+      if (!fieldEditorDraft?.id) throw new Error("请选择要编辑的草稿")
+      return api.patch<DraftDetail>(`/product-archive-drafts/${fieldEditorDraft.id}/fields`, { fields: quickChangedFields })
+    },
+    onSuccess: (result) => {
+      toast.success("字段已保存并重新校验")
+      queryClient.setQueryData(["product-archive-drafts", result.draft.id], result)
+      setQuickFieldValues({})
+      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "保存字段失败")
+    },
+  })
+
   const deleteDraft = useMutation({
     mutationFn: (draftId: number) => api.delete<{ ok: boolean }>(`/product-archive-drafts/${draftId}`),
     onSuccess: async (_, draftId) => {
@@ -1449,6 +2585,22 @@ export default function ProductArchiveDraftsPage() {
       return
     }
     batchPublishToDeepdraw.mutate(selectedDrafts.map((item) => item.id))
+  }
+
+  function openTradeEditor(item: ProductArchiveDraftRow) {
+    setFieldEditorDraft(null)
+    setQuickFieldValues({})
+    setTradeSearch("")
+    setSelectedTradeId(item.trade_id)
+    setTradeEditorDraft(item)
+  }
+
+  function openFieldEditor(item: ProductArchiveDraftRow) {
+    setTradeEditorDraft(null)
+    setTradeSearch("")
+    setSelectedTradeId(null)
+    setQuickFieldValues({})
+    setFieldEditorDraft(item)
   }
 
   function refreshDraftList() {
@@ -1555,6 +2707,248 @@ export default function ProductArchiveDraftsPage() {
         open={guideDialogOpen}
         onOpenChange={handleGuideDialogOpenChange}
       />
+
+      <ImagePreviewDialog
+        target={imagePreviewTarget}
+        onClose={() => setImagePreviewTarget(null)}
+      />
+
+      <Dialog
+        open={Boolean(tradeEditorDraft)}
+        onOpenChange={(open) => {
+          if (open) return
+          setTradeEditorDraft(null)
+          setSelectedTradeId(null)
+          setTradeSearch("")
+        }}
+      >
+        <DialogContent className="grid max-h-[82vh] grid-rows-[auto_auto_auto_auto_minmax(0,1fr)_auto] sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>选择深绘类目</DialogTitle>
+            <DialogDescription>
+              {tradeEditorDraft ? `${tradeEditorDraft.spu_code} · ${tradeEditorDraft.title || "未命名"}` : "从已同步的深绘类目主数据中选择模板。"}
+            </DialogDescription>
+          </DialogHeader>
+          {activeDraftDetail.isLoading ? (
+            <div className="flex items-center gap-2 rounded-lg border px-3 py-4 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              正在加载草稿类目上下文
+            </div>
+          ) : activeDraftDetail.isError ? (
+            <div className="rounded-lg border border-[#f1cccc] bg-[#fff8f8] px-3 py-4 text-sm text-[#d45656]">
+              {activeDraftDetail.error instanceof Error ? activeDraftDetail.error.message : "草稿详情加载失败"}
+            </div>
+          ) : (
+            <>
+              {activeDraftDetail.data?.tradeSelectionDecision ? (
+                <div className={cn("rounded-lg border p-3", tradeSelectionClass(activeDraftDetail.data.tradeSelectionDecision.status))}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-xs text-muted-foreground">系统选择结论</div>
+                      <div className="mt-0.5 text-sm font-medium">{tradeSelectionTitle(activeDraftDetail.data.tradeSelectionDecision.status)}</div>
+                    </div>
+                    <Badge variant="outline">{tradeSelectionConfidenceLabel(activeDraftDetail.data.tradeSelectionDecision.confidence)}</Badge>
+                  </div>
+                  <div className="mt-2 text-sm leading-5 text-muted-foreground">{activeDraftDetail.data.tradeSelectionDecision.reason}</div>
+                  <div className="mt-2 text-xs">
+                    推荐：{activeDraftDetail.data.tradeSelectionDecision.recommendedTrade?.tradePath || "暂无唯一推荐"}
+                    {activeDraftDetail.data.tradeSelectionDecision.recommendedTrade ? ` · ${activeDraftDetail.data.tradeSelectionDecision.recommendedTrade.tradeId}` : ""}
+                  </div>
+                </div>
+              ) : null}
+              <div className="rounded-lg border bg-muted/30 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-medium">上市计划表类目参考</div>
+                  <Badge variant={activeDraftDetail.data?.launchPlanReference?.matched ? "secondary" : "outline"}>
+                    {activeDraftDetail.data?.launchPlanReference?.matched ? "已匹配上市计划表" : "未匹配上市计划表"}
+                  </Badge>
+                </div>
+                {activeDraftDetail.data?.launchPlanReference?.matched ? (
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {activeDraftDetail.data.launchPlanReference.fields.map((field) => (
+                      <div key={field.key} className="rounded-md border bg-background px-3 py-2">
+                        <div className="text-xs text-muted-foreground">{field.label}</div>
+                        <div className="mt-1 break-words text-sm leading-5">{field.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-3 rounded-md border border-dashed bg-background px-3 py-2 text-sm text-muted-foreground">
+                    未匹配上市计划表
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" />
+            <Input
+              value={tradeSearch}
+              onChange={(event) => setTradeSearch(event.target.value)}
+              placeholder="搜索类目名称、路径或 tradeId"
+              className="pl-9"
+            />
+          </div>
+          <ScrollArea className="min-h-0 rounded-lg border">
+            <div className="divide-y">
+              {(trades.data?.items ?? []).map((trade) => {
+                const selected = selectedTradeId === trade.trade_id
+                return (
+                  <button
+                    key={trade.trade_id}
+                    type="button"
+                    className={cn("grid w-full gap-1 px-4 py-3 text-left text-sm hover:bg-muted", selected && "bg-[#d4fae8]")}
+                    onClick={() => setSelectedTradeId(trade.trade_id)}
+                  >
+                    <span className="font-medium">{trade.trade_name || trade.trade_id}</span>
+                    <span className="flex min-w-0 items-center gap-1 truncate text-xs text-muted-foreground">
+                      <span className="truncate">{trade.trade_path || "未维护路径"}</span>
+                      <span>· {trade.trade_id}</span>
+                      {selected ? <CheckMini /> : null}
+                    </span>
+                  </button>
+                )
+              })}
+              {!trades.isFetching && (trades.data?.items ?? []).length === 0 ? (
+                <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+                  未找到类目，请先到“深绘类目字段”同步主数据。
+                </div>
+              ) : null}
+              {trades.isFetching ? (
+                <div className="flex items-center gap-2 px-4 py-8 text-sm text-muted-foreground">
+                  <Loader2 className="size-4 animate-spin" />
+                  正在加载类目
+                </div>
+              ) : null}
+            </div>
+          </ScrollArea>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setTradeEditorDraft(null)}>
+              取消
+            </Button>
+            <Button
+              type="button"
+              disabled={!canWrite || !selectedTradeId || applyTradeFromList.isPending}
+              onClick={() => applyTradeFromList.mutate()}
+            >
+              {applyTradeFromList.isPending ? <Loader2 className="size-4 animate-spin" /> : <ListTree className="size-4" />}
+              应用类目并生成字段
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(fieldEditorDraft)}
+        onOpenChange={(open) => {
+          if (open) return
+          setFieldEditorDraft(null)
+          setQuickFieldValues({})
+        }}
+      >
+        <DialogContent
+          className="grid max-h-[86vh] w-[min(96vw,1180px)] max-w-none grid-rows-[auto_minmax(0,1fr)_auto] sm:max-w-[min(96vw,1180px)]"
+          onEscapeKeyDown={(event) => {
+            if (imagePreviewTarget) event.preventDefault()
+          }}
+          onInteractOutside={(event) => {
+            if (imagePreviewTarget) event.preventDefault()
+          }}
+          onPointerDownOutside={(event) => {
+            if (imagePreviewTarget) event.preventDefault()
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>快速填充阻断必填字段</DialogTitle>
+            <DialogDescription>
+              {fieldEditorDraft ? `${fieldEditorDraft.spu_code} · ${fieldEditorDraft.trade_path || "待确认类目"}` : "只显示当前有阻断问题的必填字段。"}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid h-full min-h-0 overflow-hidden gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
+            <QuickFieldEvidencePanel
+              draft={fieldEditorDraft}
+              detailImages={activeDraftDetail.data?.images}
+              onPreview={setImagePreviewTarget}
+            />
+            <ScrollArea className="min-h-0 rounded-lg border">
+              {activeDraftDetail.isLoading ? (
+                <div className="flex items-center gap-2 px-4 py-8 text-sm text-muted-foreground">
+                  <Loader2 className="size-4 animate-spin" />
+                  正在加载字段
+                </div>
+              ) : activeDraftDetail.isError ? (
+                <div className="px-4 py-8 text-sm text-[#d45656]">
+                  {activeDraftDetail.error instanceof Error ? activeDraftDetail.error.message : "字段加载失败"}
+                </div>
+              ) : quickRequiredBlockerFields.length > 0 ? (
+                <Table className="w-max min-w-full">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>字段名</TableHead>
+                      <TableHead>当前值</TableHead>
+                      <TableHead>问题原因</TableHead>
+                      <TableHead>填充</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {quickRequiredBlockerFields.map((field) => {
+                      const value = quickFieldValues[field.id] ?? field.value_text ?? ""
+                      const fieldIssues = quickFieldIssueMap.get(field.field_name) ?? []
+                      return (
+                        <TableRow key={field.id} className="border-l-4 border-l-[#d45656] bg-[#fff8f8] hover:bg-[#fff8f8]">
+                          <TableCell className="min-w-[150px] whitespace-normal align-top">
+                            <div className="font-medium text-[#d45656]">{field.field_name}</div>
+                            <div className="mt-1 text-xs text-muted-foreground">{field.source_type || "manual"}</div>
+                          </TableCell>
+                          <TableCell className="max-w-[180px] whitespace-normal align-top text-sm">
+                            {isProductArchiveSizeChartField(field) && recordValue(field.value_json).title
+                              ? "已生成表格"
+                              : field.value_text || "-"}
+                          </TableCell>
+                          <TableCell className="max-w-[240px] whitespace-normal align-top">
+                            <div className="flex flex-wrap items-center gap-2 text-sm text-[#d45656]">
+                              <Badge variant="outline" className={issueSeverityClass("blocker")}>
+                                {issueSeverityLabel("blocker")}
+                              </Badge>
+                              <span>{issueSummaryText(fieldIssues)}</span>
+                            </div>
+                          </TableCell>
+                          <TableCell className="min-w-[260px] align-top">
+                            <DraftFieldEditor
+                              field={field}
+                              value={value}
+                              canWrite={canWrite}
+                              onChange={(nextValue) => setQuickFieldValues((current) => ({ ...current, [field.id]: nextValue }))}
+                              onOpenDetail={() => window.open(`/product-archive-drafts/${fieldEditorDraft?.id}`, "_blank", "noopener,noreferrer")}
+                            />
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
+              ) : (
+                <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+                  当前没有必填且阻断的问题字段。若阻断来自“待确认类目”或 SKU 数据，请先处理对应入口。
+                </div>
+              )}
+            </ScrollArea>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setFieldEditorDraft(null)}>
+              关闭
+            </Button>
+            <Button
+              type="button"
+              disabled={!canWrite || quickChangedFields.length === 0 || saveQuickFields.isPending}
+              onClick={() => saveQuickFields.mutate()}
+            >
+              {saveQuickFields.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+              保存字段
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <CompactListCard>
         <CompactListCardHeader>
@@ -1772,7 +3166,7 @@ export default function ProductArchiveDraftsPage() {
             <QueryErrorState message={drafts.error instanceof Error ? drafts.error.message : undefined} onRetry={() => void drafts.refetch()} />
           ) : null}
           <CompactListTableFrame>
-            <Table>
+            <Table className="min-w-[1560px] table-fixed">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-10">
@@ -1782,18 +3176,18 @@ export default function ProductArchiveDraftsPage() {
                       onCheckedChange={toggleAllVisible}
                     />
                   </TableHead>
-                  <TableHead>图片</TableHead>
-                  <TableHead>款号</TableHead>
-                  <TableHead>标题</TableHead>
-                  <TableHead>租户/商户</TableHead>
-                  <TableHead>类目</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>问题</TableHead>
-                  <TableHead>SKU</TableHead>
-                  <TableHead>图包资料</TableHead>
-                  <TableHead>productId</TableHead>
-                  <TableHead>更新时间</TableHead>
-                  <TableHead className="w-[132px]">操作</TableHead>
+                  <TableHead className="w-20">图片</TableHead>
+                  <TableHead className="w-40">款号</TableHead>
+                  <TableHead className="w-48">标题</TableHead>
+                  <TableHead className="w-32">租户/商户</TableHead>
+                  <TableHead className="w-56">类目</TableHead>
+                  <TableHead className="w-24">状态</TableHead>
+                  <TableHead className="w-24">问题字段</TableHead>
+                  <TableHead className="w-32">图包资料</TableHead>
+                  <TableHead className="w-16">SKU</TableHead>
+                  <TableHead className="w-28">productId</TableHead>
+                  <TableHead className="w-36">更新时间</TableHead>
+                  <TableHead className="w-32">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -1810,8 +3204,8 @@ export default function ProductArchiveDraftsPage() {
                       </TableCell>
                       <TableCell>
                         <DraftThumbnail
-                          src={item.thumbnail_image_url}
-                          label={item.thumbnail_file_name ?? item.spu_code}
+                          item={item}
+                          onPreview={setImagePreviewTarget}
                         />
                       </TableCell>
                       <TableCell>
@@ -1820,37 +3214,62 @@ export default function ProductArchiveDraftsPage() {
                         </Link>
                         <div className="mt-1 font-mono text-[11px] text-muted-foreground">{item.draft_no}</div>
                       </TableCell>
-                      <TableCell className="max-w-[260px] truncate">{item.title || "未命名"}</TableCell>
+                      <TableCell className="whitespace-normal">
+                        <div className="line-clamp-2 break-words leading-5">
+                          {item.title || "未命名"}
+                        </div>
+                      </TableCell>
                       <TableCell>
                         <div>{item.tenant_name}</div>
                         <div className="text-xs text-muted-foreground">{item.merchant_id}</div>
                       </TableCell>
-                      <TableCell className="max-w-[220px] truncate">{item.trade_path || "待确认"}</TableCell>
+                      <TableCell>
+                        <button
+                          type="button"
+                          className={cn(
+                            "group inline-flex h-9 w-full min-w-0 cursor-pointer items-center gap-1 rounded-lg border bg-white px-2.5 py-1.5 text-left text-sm font-semibold shadow-[0_1px_6px_rgba(15,23,42,0.08)] transition-all hover:-translate-y-px hover:shadow-[0_4px_14px_rgba(15,23,42,0.12)] focus:outline-none focus:ring-2 focus:ring-ring active:translate-y-px disabled:cursor-not-allowed disabled:opacity-55",
+                            item.trade_path
+                              ? "border-[#9decc9] text-[#10231b] hover:border-[#18d892] hover:bg-[#f2fff8] hover:text-[#08794f]"
+                              : "border-[#ffd58a] text-[#9a6400] hover:border-[#f2a900] hover:bg-[#fff9e8]",
+                          )}
+                          disabled={!canWrite}
+                          onClick={() => openTradeEditor(item)}
+                          title={item.trade_path || "待确认"}
+                        >
+                          <span className="min-w-0 flex-1 truncate">{item.trade_path || "待确认"}</span>
+                          <ChevronRight className="size-3.5 shrink-0 text-[#0fa76e] transition-transform group-hover:translate-x-0.5" />
+                        </button>
+                      </TableCell>
                       <TableCell>
                         <Badge variant="outline" className={statusClass(item.status)}>
                           {statusLabels[item.status] ?? item.status}
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <span className="text-[#d45656]">{item.blocker_count}</span>
-                        <span className="mx-1 text-muted-foreground">/</span>
-                        <span className="text-[#c37d0d]">{item.warning_count}</span>
+                        {item.blocker_count > 0 ? (
+                          <button
+                            type="button"
+                            className="group inline-flex h-9 cursor-pointer items-center rounded-lg border border-[#ffcaca] bg-white px-2.5 py-1 text-sm font-semibold shadow-[0_1px_6px_rgba(212,86,86,0.12)] transition-all hover:-translate-y-px hover:border-[#ff9b9b] hover:bg-[#fff7f7] hover:shadow-[0_4px_14px_rgba(212,86,86,0.16)] focus:outline-none focus:ring-2 focus:ring-ring active:translate-y-px"
+                            onClick={() => openFieldEditor(item)}
+                            title="快速填充阻断必填字段"
+                          >
+                            <span className="text-[#d45656]">{item.blocker_count}</span>
+                            <span className="mx-1 text-muted-foreground">/</span>
+                            <span className="text-[#c37d0d]">{item.warning_count}</span>
+                            <ChevronRight className="ml-1 size-3.5 shrink-0 text-[#d45656] transition-transform group-hover:translate-x-0.5" />
+                          </button>
+                        ) : (
+                          <span className="inline-flex h-9 cursor-default items-center rounded-lg border border-[#f2e5cc] bg-white/70 px-2.5 py-1 text-sm font-semibold text-muted-foreground">
+                            <span>{item.blocker_count}</span>
+                            <span className="mx-1">/</span>
+                            <span className={item.warning_count > 0 ? "text-[#c37d0d]" : undefined}>{item.warning_count}</span>
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <AssetPackageCell item={item} onPreview={setImagePreviewTarget} />
                       </TableCell>
                       <TableCell>{formatNumber(item.sku_count)}</TableCell>
-                      <TableCell>
-                        <div>{formatNumber(item.image_count ?? 0)} 张</div>
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          <Badge variant={item.hangtag_upload_count > 0 ? "secondary" : "outline"} className="text-[11px] font-normal">
-                            吊牌{item.hangtag_upload_count > 0 ? "已传" : "未传"}
-                          </Badge>
-                          <Badge variant={item.washlabel_upload_count > 0 ? "secondary" : "outline"} className="text-[11px] font-normal">
-                            洗唛{item.washlabel_upload_count > 0 ? "已传" : "未传"}
-                          </Badge>
-                          <Badge variant={item.asset_package_image_count > 0 ? "secondary" : "outline"} className="text-[11px] font-normal">
-                            平铺图{item.asset_package_image_count > 0 ? "已传" : "未传"}
-                          </Badge>
-                        </div>
-                      </TableCell>
                       <TableCell>{item.created_product_id || "-"}</TableCell>
                       <TableCell>{formatDateTime(item.updated_at)}</TableCell>
                       <TableCell>

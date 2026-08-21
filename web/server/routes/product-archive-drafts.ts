@@ -2076,7 +2076,9 @@ function productArchiveDraftImageSourceType(value: unknown) {
 
 function imageFileVariant(value: unknown) {
   const variant = stringValue(value)
-  return variant === "thumbnail" || variant === "thumb" ? "thumbnail" : "original"
+  if (variant === "thumbnail" || variant === "thumb") return "thumbnail"
+  if (variant === "preview" || variant === "large") return "preview"
+  return "original"
 }
 
 function isIgnorableOcrFolderEntry(value: string) {
@@ -3732,11 +3734,25 @@ productArchiveDrafts.get("/images/:imageId/file", async (c) => {
       throw productArchiveDraftMutationException(repairError)
     }
   }
-  if (imageFileVariant(c.req.query("variant") ?? c.req.query("size")) === "thumbnail") {
+  const variant = imageFileVariant(c.req.query("variant") ?? c.req.query("size"))
+  if (variant === "thumbnail") {
     const buffer = await sharp(file.realPath)
       .rotate()
       .resize(160, 160, { fit: "cover", withoutEnlargement: true })
       .jpeg({ quality: 78, mozjpeg: true })
+      .toBuffer()
+    return new Response(buffer, {
+      headers: {
+        "Content-Type": "image/jpeg",
+        "Cache-Control": "private, max-age=3600",
+      },
+    })
+  }
+  if (variant === "preview") {
+    const buffer = await sharp(file.realPath)
+      .rotate()
+      .resize(960, 960, { fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 84, mozjpeg: true })
       .toBuffer()
     return new Response(buffer, {
       headers: {

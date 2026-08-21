@@ -531,6 +531,11 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /hangtagWashlabelOcrJobSummary/);
   assert.match(draftListPage, /已自动/);
   assert.match(draftListPage, /填充空字段/);
+  assert.match(draftListPage, /data-testid="quick-field-evidence-panel"/);
+  assert.match(draftListPage, /max-h-\[34vh\]/);
+  assert.match(draftListPage, /lg:max-h-full/);
+  assert.match(draftListPage, /data-testid="quick-field-evidence-scroll"/);
+  assert.match(draftListPage, /overflow-y-auto overscroll-contain/);
   assert.doesNotMatch(draftListPage, /SpuImageImportDialog/);
   assert.doesNotMatch(draftListPage, /导入 SPU 图片/);
   assert.match(draftListPage, /\/product-archive-drafts\/images\/import/);
@@ -546,9 +551,12 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /hangtag_upload_count/);
   assert.match(draftListPage, /washlabel_upload_count/);
   assert.match(draftListPage, /图包资料/);
-  assert.match(draftListPage, /吊牌\{item\.hangtag_upload_count > 0 \? "已传" : "未传"\}/);
-  assert.match(draftListPage, /洗唛\{item\.washlabel_upload_count > 0 \? "已传" : "未传"\}/);
-  assert.match(draftListPage, /平铺图\{item\.asset_package_image_count > 0 \? "已传" : "未传"\}/);
+  assert.match(draftListPage, /HoverImagePreview/);
+  assert.match(draftListPage, /ImagePreviewDialog/);
+  assert.match(draftListPage, /AssetPreviewBadge/);
+  assert.match(draftListPage, /label="吊牌"[\s\S]*uploaded=\{item\.hangtag_upload_count > 0\}/);
+  assert.match(draftListPage, /label="洗唛"[\s\S]*uploaded=\{item\.washlabel_upload_count > 0\}/);
+  assert.match(draftListPage, /label="平铺图"[\s\S]*uploaded=\{item\.asset_package_image_count > 0\}/);
   assert.match(draftListPage, /确认写入草稿/);
   assert.match(draftListPage, /api\.get<.*>\(`\/product-archive-drafts\/batch-jobs\/\$\{batchJobId\}`\)/s);
   assert.match(draftListPage, /开始商品建档/);
