@@ -3759,9 +3759,7 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
   const appliedTradeMismatch = Boolean(
     appliedTrade?.tradeId && appliedTrade.tradeId !== recommendedTrade.tradeId,
   )
-  const status = confidence === "high" && !sourceConflict && !appliedTradeMismatch
-    ? "auto_applied"
-    : "pending_confirmation"
+  const status = appliedTradeMismatch ? "pending_confirmation" : "auto_applied"
   const reasonCode = appliedTradeMismatch
     ? "applied_trade_mismatch"
     : sourceConflict
@@ -3772,10 +3770,10 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
   const baseReason = appliedTradeMismatch
     ? "当前已应用类目与系统推荐类目不一致，需要应用推荐类目并由人工确认。"
     : sourceConflict
-      ? "同一平台来源类目存在多个不同值，已自动应用最优推荐，需要人工确认。"
+      ? "同一平台来源类目存在多个不同值，已按最优推荐自动选中深绘类目，并保留来源冲突提示。"
     : confidence === "high"
       ? `已根据${best.category.field}唯一匹配并自动应用深绘类目，置信度高。`
-      : "已自动应用推荐类目，但当前为中置信度，需要人工确认。"
+      : "已根据当前上市计划类目证据自动选中深绘类目，置信度中，保留人工确认提示。"
   const reason = tier.label && best.candidate.policyRootName
     ? `${tier.label}「${best.candidate.policyRootName}」命中。${baseReason}`
     : baseReason

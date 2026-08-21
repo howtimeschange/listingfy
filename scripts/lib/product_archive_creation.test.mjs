@@ -589,7 +589,7 @@ test("Bala DeepDraw priority skips category candidates whose size template canno
   });
 
   assert.equal(decision.recommendedTrade?.tradeId, "7002");
-  assert.equal(decision.status, "pending_confirmation");
+  assert.equal(decision.status, "auto_applied");
   assert.match(decision.reason, /第一优先级.*童装婴幼儿服装/);
 });
 
@@ -1024,7 +1024,7 @@ test("trade selection decision requires confirmation when the applied category d
   assert.match(decision.reason, /当前已应用类目.*推荐类目.*人工确认/);
 });
 
-test("trade selection decision auto-applies a medium-confidence category pending confirmation", async () => {
+test("trade selection decision auto-applies a medium-confidence category", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
     {
@@ -1045,7 +1045,7 @@ test("trade selection decision auto-applies a medium-confidence category pending
     },
   ], { evaluatedAt: "2026-07-15T00:00:00.000Z" });
 
-  assert.equal(decision.status, "pending_confirmation");
+  assert.equal(decision.status, "auto_applied");
   assert.equal(decision.confidence, "medium");
   assert.equal(decision.reasonCode, "medium_confidence");
   assert.equal(decision.recommendedTrade?.tradeId, "68");
@@ -1057,10 +1057,10 @@ test("trade selection decision auto-applies a medium-confidence category pending
     "VIP",
     "DOUYIN|DOUYINXSG",
   ]);
-  assert.match(decision.reason, /中置信度|人工确认/);
+  assert.match(decision.reason, /置信度中|人工确认|自动选中/);
 });
 
-test("trade selection decision marks conflicting source categories pending confirmation", async () => {
+test("trade selection decision auto-applies conflicting source categories with traceable reason", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
     {
@@ -1080,11 +1080,11 @@ test("trade selection decision marks conflicting source categories pending confi
     },
   ], { evaluatedAt: "2026-07-15T00:00:00.000Z" });
 
-  assert.equal(decision.status, "pending_confirmation");
+  assert.equal(decision.status, "auto_applied");
   assert.equal(decision.reasonCode, "source_category_conflict");
   assert.equal(decision.sourceConflict, true);
   assert.equal(decision.recommendedTrade?.tradeId, "12390");
-  assert.match(decision.reason, /多个不同值|人工确认/);
+  assert.match(decision.reason, /多个不同值|冲突提示|自动选中/);
 });
 
 test("trade selection decision ignores older launch-plan batches for the same SPU", async () => {
@@ -1429,7 +1429,7 @@ test("trade selection decision records human confirmation or adjustment from the
 test("trade selection decision preserves human adjustment but resets stale confirmation", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const evaluated = {
-    status: "pending_confirmation",
+    status: "auto_applied",
     confidence: "medium",
     reasonCode: "medium_confidence",
     recommendedTrade: { tradeId: "2", tradePath: "童装 > 新推荐" },
@@ -1439,7 +1439,7 @@ test("trade selection decision preserves human adjustment but resets stale confi
     requiredPlatforms: ["ALIBABA"],
     coveredPlatforms: ["ALIBABA"],
     sourceConflict: false,
-    reason: "已自动应用推荐类目，但当前为中置信度，需要人工确认。",
+    reason: "已根据当前上市计划类目证据自动选中深绘类目，置信度中，保留人工确认提示。",
     evaluatedAt: "2026-07-15T02:00:00.000Z",
     confirmedAt: null,
   };
@@ -1462,7 +1462,7 @@ test("trade selection decision preserves human adjustment but resets stale confi
     reasonCode: "human_confirmed",
     appliedTrade: { tradeId: "1", tradePath: "童装 > 旧推荐" },
   });
-  assert.equal(staleConfirmation.status, "pending_confirmation");
+  assert.equal(staleConfirmation.status, "auto_applied");
   assert.equal(staleConfirmation.reasonCode, "medium_confidence");
   assert.equal(staleConfirmation.confirmedAt, null);
 });
