@@ -134,6 +134,42 @@ function sdkSizeValue(value) {
   return match ? `${Number(match[1])}cm` : text;
 }
 
+function sizeMatchKeys(value) {
+  const text = stringValue(value);
+  if (!text) return [];
+  const normalized = sdkSizeValue(text);
+  const numberText = normalized.match(/^(\d+)cm$/i)?.[1] ?? "";
+  return uniqueValues([
+    text,
+    normalized,
+    numberText,
+    numberText ? numberText.padStart(3, "0") : "",
+  ].map((item) => item.replace(/\s+/g, "").toLowerCase()));
+}
+
+function saleSizeValues(value) {
+  return stringValue(value).split(/[;；]/).map((part) => part.trim()).filter(Boolean);
+}
+
+function saleSizeLookup(sizeValues = []) {
+  const lookup = new Map();
+  for (const size of sizeValues) {
+    for (const key of sizeMatchKeys(size)) {
+      if (!lookup.has(key)) lookup.set(key, size);
+    }
+  }
+  return lookup;
+}
+
+function sdkPayloadSizeValue(value, sizeValues = []) {
+  const lookup = saleSizeLookup(sizeValues);
+  for (const key of sizeMatchKeys(value)) {
+    const matched = lookup.get(key);
+    if (matched) return matched;
+  }
+  return sdkSizeValue(value);
+}
+
 function normalizeSdkDateText(value) {
   const text = stringValue(value);
   if (!text) return "";
@@ -160,7 +196,7 @@ function normalizeSdkDateText(value) {
   return text;
 }
 
-function normalizeMerchantSkuField(value) {
+function normalizeMerchantSkuField(value, sizeValues = []) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const output = {};
   for (const [color, sizeRows] of Object.entries(value)) {
@@ -174,17 +210,17 @@ function normalizeMerchantSkuField(value) {
     }
     output[color] = {};
     for (const [size, rowValue] of Object.entries(sizeRows)) {
-      output[color][sdkSizeValue(size)] = rowValue;
+      output[color][sdkPayloadSizeValue(size, sizeValues)] = rowValue;
     }
   }
   return output;
 }
 
-function normalizeSizeTableField(value) {
+function normalizeSizeTableField(value, sizeValues = []) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const output = {};
   for (const [size, rowValue] of Object.entries(value)) {
-    output[size === "title" ? size : sdkSizeValue(size)] = rowValue;
+    output[size === "title" ? size : sdkPayloadSizeValue(size, sizeValues)] = rowValue;
   }
   return output;
 }
@@ -194,13 +230,13 @@ function fieldKey(fields, names) {
   return Object.keys(fields).find((key) => wanted.has(compactKey(key)));
 }
 
-function buildMerchantSkuField(payload, skus, dateText) {
+function buildMerchantSkuField(payload, skus, dateText, sizeValues = []) {
   const productCode = stringValue(payload.code);
   const retailPrice = asMoneyText(payload.retailPrice);
   const output = { title: SKU_TITLE };
   for (const sku of skus) {
     const color = stringValue(sku.color ?? sku.colorName ?? sku.color_name);
-    const size = sdkSizeValue(sku.size ?? sku.sizeName ?? sku.size_name);
+    const size = sdkPayloadSizeValue(sku.size ?? sku.sizeName ?? sku.size_name, sizeValues);
     if (!color || !size) continue;
     const price = asMoneyText(sku.price, retailPrice);
     const sellerCode = stringValue(sku.sellerCode ?? sku.seller_code ?? sku.skuCode ?? sku.sku_code);
@@ -238,6 +274,7 @@ function hostValue(baseUrl) {
 export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
   const fields = {};
   const payloadFields = Array.isArray(payload.fields) ? payload.fields : [];
+  const selectedSizeValues = saleSizeValues(findPayloadFieldValue(payloadFields, ["尺码", "尺寸", "规格", "size"]));
   for (const field of payloadFields) {
     const name = normalizeSdkFieldName(fieldName(field));
     const value = fieldValue(field);
@@ -246,9 +283,9 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
     if (isUnsupportedScalarSdkField(name, value, type)) continue;
     const key = compactKey(name);
     fields[name] = key === "商家sku"
-      ? normalizeMerchantSkuField(value)
+      ? normalizeMerchantSkuField(value, selectedSizeValues)
       : isStructuredSizePayloadField(name, type)
-        ? normalizeSizeTableField(value)
+        ? normalizeSizeTableField(value, selectedSizeValues)
         : value;
   }
 
@@ -273,7 +310,7 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
       fields["尺码"] = uniqueValues(skus.map((sku) => sdkSizeValue(sku.size ?? sku.sizeName ?? sku.size_name))).join(";");
     }
     if (!fieldKey(fields, ["商家 SKU", "商家SKU"])) {
-      fields["商家SKU"] = buildMerchantSkuField(payload, skus, dateText);
+      fields["商家SKU"] = buildMerchantSkuField(payload, skus, dateText, selectedSizeValues);
     }
   }
 

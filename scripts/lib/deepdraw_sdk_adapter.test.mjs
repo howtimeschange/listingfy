@@ -114,6 +114,90 @@ test("buildDeepdrawSdkProductInput keeps color aliases and SKU bucket keys align
   });
 });
 
+test("buildDeepdrawSdkProductInput aligns structured size rows to selected bare size values", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      code: "206426172201",
+      title: "儿童袜子",
+      tradeId: "336",
+      retailPrice: 39.9,
+      fields: [
+        { name: "尺码", value: "100;120;140;160;170" },
+        { name: "商家SKU", value: { title: "价格,货号", 蓝色调00388: { "100cm": "39.9,code", "120cm": "39.9,code" } } },
+        { name: "尺码表", fieldType: "MULTI_TEXT", value: { title: "身高", "100cm": "100", "120cm": "120" } },
+      ],
+      skus: [
+        {
+          skuCode: "20642617220100388100",
+          color: "蓝色调00388",
+          size: "100",
+          barcode: "6914678733341",
+          sellerCode: "6914678733341",
+          price: 39.9,
+        },
+      ],
+    },
+  });
+
+  assert.equal(input.product.fields["尺码"], "100;120;140;160;170");
+  assert.deepEqual(input.product.fields["商家SKU"], {
+    title: "价格,货号",
+    蓝色调00388: {
+      "100": "39.9,code",
+      "120": "39.9,code",
+    },
+  });
+  assert.deepEqual(input.product.fields["尺码表"], {
+    title: "身高",
+    "100": "100",
+    "120": "120",
+  });
+});
+
+test("buildDeepdrawSdkProductInput generated merchant SKUs follow selected size values", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      code: "206426172201",
+      title: "儿童袜子",
+      tradeId: "336",
+      retailPrice: 39.9,
+      fields: [
+        { name: "尺码", value: "100;120" },
+      ],
+      skus: [
+        {
+          skuCode: "20642617220100388100",
+          color: "蓝色调00388",
+          size: "100",
+          barcode: "6914678733341",
+          sellerCode: "6914678733341",
+          price: 39.9,
+        },
+      ],
+    },
+  });
+
+  assert.equal(
+    input.product.fields["商家SKU"]["蓝色调00388"]["100"],
+    "39.9,206426172201,,0,6914678733341,6914678733341,39.9,39.9,20642617220100388100,6914678733341",
+  );
+  assert.equal(Object.hasOwn(input.product.fields["商家SKU"]["蓝色调00388"], "100cm"), false);
+});
+
 test("buildDeepdrawSdkProductInput maps khaki business color names to DeepDraw standard color aliases", () => {
   const input = buildDeepdrawSdkProductInput({
     config: {

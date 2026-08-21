@@ -601,6 +601,82 @@ function isProductArchiveSkuSizeFieldName(fieldName: unknown) {
   return key === "尺码" || key === "尺寸" || key === "规格" || key === "size"
 }
 
+function isProductArchiveMerchantSkuFieldName(fieldName: unknown) {
+  return compactFieldKey(fieldName) === "商家sku"
+}
+
+function productArchiveSaleSizeValues(value: unknown) {
+  return stringValue(value).split(/[;；]/).map((item) => item.trim()).filter(Boolean)
+}
+
+function productArchiveSaleSizeLookup(saleSizeValueText: unknown) {
+  const lookup = new Map<string, string>()
+  for (const saleSize of productArchiveSaleSizeValues(saleSizeValueText)) {
+    for (const key of sizeMatchKeys(saleSize)) {
+      if (!lookup.has(key)) lookup.set(key, saleSize)
+    }
+  }
+  return lookup
+}
+
+function productArchiveSizeValueAlignedToSaleSize(value: unknown, saleSizeLookup: Map<string, string>) {
+  if (saleSizeLookup.size === 0) return stringValue(value)
+  for (const key of sizeMatchKeys(value)) {
+    const matched = saleSizeLookup.get(key)
+    if (matched) return matched
+  }
+  return stringValue(value)
+}
+
+function shouldAlignProductArchiveStructuredSizeKey(value: unknown) {
+  const text = stringValue(value)
+  if (!text || text === "title") return false
+  return !SIZE_CHART_METADATA_KEYS.has(compactFieldKey(text))
+}
+
+function alignProductArchiveFlatSizeRows(value: unknown, saleSizeLookup: Map<string, string>) {
+  const record = recordValue(value)
+  if (!hasValue(record) || saleSizeLookup.size === 0) return value
+  const output: JsonRecord = {}
+  for (const [rawKey, rawValue] of Object.entries(record)) {
+    const key = shouldAlignProductArchiveStructuredSizeKey(rawKey)
+      ? productArchiveSizeValueAlignedToSaleSize(rawKey, saleSizeLookup)
+      : rawKey
+    output[key] = rawValue
+  }
+  return output
+}
+
+function alignProductArchiveMerchantSkuSizeRows(value: unknown, saleSizeLookup: Map<string, string>) {
+  const record = recordValue(value)
+  if (!hasValue(record) || saleSizeLookup.size === 0) return value
+  const output: JsonRecord = {}
+  for (const [color, sizeRows] of Object.entries(record)) {
+    if (color === "title" || !sizeRows || typeof sizeRows !== "object" || Array.isArray(sizeRows)) {
+      output[color] = sizeRows
+      continue
+    }
+    const alignedRows: JsonRecord = {}
+    for (const [rawSize, rowValue] of Object.entries(recordValue(sizeRows))) {
+      alignedRows[productArchiveSizeValueAlignedToSaleSize(rawSize, saleSizeLookup)] = rowValue
+    }
+    output[color] = alignedRows
+  }
+  return output
+}
+
+export function alignProductArchivePayloadSizeFieldValue(fieldName: unknown, value: unknown, saleSizeValueText: unknown) {
+  const saleSizeLookup = productArchiveSaleSizeLookup(saleSizeValueText)
+  if (saleSizeLookup.size === 0) return value
+  if (isProductArchiveMerchantSkuFieldName(fieldName)) {
+    return alignProductArchiveMerchantSkuSizeRows(value, saleSizeLookup)
+  }
+  if (isProductArchiveStructuredSizeFieldName(fieldName)) {
+    return alignProductArchiveFlatSizeRows(value, saleSizeLookup)
+  }
+  return value
+}
+
 function baseColorName(value: unknown) {
   const text = stringValue(value)
   if (/卡其|贝壳卡|沙卡|卡色/.test(text)) return "卡其"
@@ -5430,6 +5506,19 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
   const fieldTemplateByName = primaryTemplateFieldsByName(tradeFields)
   const ruleByName = new Map(rules.map((rule) => [stringValue(rule.deepdraw_field), rule]))
   const existingByName = new Map(existingFields.map((field) => [stringValue(field.field_name), field]))
+  const saleSizeTemplate = Array.from(fieldTemplateByName.values())
+    .find((field) => isProductArchiveSkuSizeFieldName(field.field_name))
+  const saleSizeValueText = saleSizeTemplate
+    ? normalizeProductArchiveDeepdrawFieldValue(
+        stringValue(saleSizeTemplate.field_name),
+        buildProductArchiveMdmDerivedFieldValue(stringValue(saleSizeTemplate.field_name), {
+          spu,
+          skus: mdmSkus,
+          dateText,
+        }).valueText,
+        arrayValue(saleSizeTemplate.options_json),
+      )
+    : ""
   const persistedSandalClassification = stringValue(existingByName.get("25鞋子尺码表")?.value_text)
     || stringValue(recordValue(draft.source_snapshot_json).shoeSandalClassification)
   const shoeMatch = resolveShoeSizeChartMatch({
@@ -5514,7 +5603,10 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
         ? mergeProductArchiveColorFieldValues([sourceValueText, mdmDerived.valueText])
         : sourceValueText || mdmDerived.valueText
     const valueText = normalizeProductArchiveDeepdrawFieldValue(fieldName, rawValueText, arrayValue(template.options_json))
-    const valueJson = existingManual ? recordValue(existing.value_json) : mdmDerived.valueJson
+    const rawValueJson = existingManual ? recordValue(existing.value_json) : mdmDerived.valueJson
+    const valueJson = existingManual
+      ? rawValueJson
+      : alignProductArchivePayloadSizeFieldValue(fieldName, rawValueJson, saleSizeValueText)
     const fieldSourceType = existingManual
       ? (stringValue(existing.source_type) || "manual")
       : hasShoeDerivedValue
@@ -7585,13 +7677,23 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
       value: productArchivePayloadFieldValue(field),
     }))
     .filter((field) => hasValue(field.value))
+  const saleSizeValueText = stringValue(fields.find((field) => (
+    isProductArchiveSkuSizeFieldName(field.name)
+    && typeof field.value === "string"
+  ))?.value)
+  const alignedFields = saleSizeValueText
+    ? fields.map((field) => ({
+        ...field,
+        value: alignProductArchivePayloadSizeFieldValue(field.name, field.value, saleSizeValueText),
+      }))
+    : fields
   return {
     code: stringValue(draft.spu_code),
     title: stringValue(draft.title),
     tradeId: stringValue(draft.trade_id),
     retailPrice: numberValue(draft.retail_price),
     date: buildProductArchivePayloadDate(sourceRows),
-    fields,
+    fields: alignedFields,
     skus: (detail.skus as JsonRecord[]).map((sku) => ({
       skuCode: stringValue(sku.sku_code),
       skcCode: stringValue(sku.skc_code),

@@ -2630,6 +2630,61 @@ test("product archive create payload omits scalar size-chart fields", async () =
   }), "卡其,贝壳卡50230");
 });
 
+test("product archive payload aligns structured size rows with selected size field values", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(
+    service.normalizeProductArchiveDeepdrawFieldValue("尺码", "100cm;120cm", [
+      { value: "100" },
+      { value: "120" },
+    ]),
+    "100;120",
+  );
+  assert.equal(
+    service.normalizeProductArchiveDeepdrawFieldValue("尺码", "080;090", [
+      { value: "80cm" },
+      { value: "90cm" },
+    ]),
+    "80cm;90cm",
+  );
+  assert.deepEqual(
+    service.alignProductArchivePayloadSizeFieldValue(
+      "尺码表",
+      { title: "身高", "100cm": "100", "120cm": "120" },
+      "100;120",
+    ),
+    { title: "身高", "100": "100", "120": "120" },
+  );
+  assert.deepEqual(
+    service.alignProductArchivePayloadSizeFieldValue(
+      "商家SKU",
+      {
+        title: "价格,货号",
+        蓝色调00388: {
+          "100cm": "39.9,206426172201",
+          "120cm": "39.9,206426172201",
+        },
+      },
+      "100;120",
+    ),
+    {
+      title: "价格,货号",
+      蓝色调00388: {
+        "100": "39.9,206426172201",
+        "120": "39.9,206426172201",
+      },
+    },
+  );
+  assert.deepEqual(
+    service.alignProductArchivePayloadSizeFieldValue(
+      "尺码表",
+      { title: "身高", "080": "80" },
+      "80cm",
+    ),
+    { title: "身高", "80cm": "80" },
+  );
+});
+
 test("product archive field mapping applies product-line domains only to matching MDM goods", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
