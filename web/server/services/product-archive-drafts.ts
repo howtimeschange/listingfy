@@ -2868,10 +2868,38 @@ function addWeightedTradeContextTerm(
 function sourceGenderContextTerms(value: unknown) {
   const text = normalizeOfficialTradeSearchText(value)
   if (!text) return []
+  if (text.includes("女") && text.includes("男")) return []
   if (text.includes("女")) return ["女童", "女"]
   if (text.includes("男")) return ["男童", "男"]
   if (text.includes("中性")) return ["中性"]
   return [text]
+}
+
+function sourceGenderContextTermsForValues(values: unknown[]) {
+  const genderKeys = new Set<"female" | "male" | "neutral">()
+  const fallbackValues: unknown[] = []
+  for (const value of values) {
+    const text = normalizeOfficialTradeSearchText(value)
+    if (!text) continue
+    const hasFemale = text.includes("女")
+    const hasMale = text.includes("男")
+    if (hasFemale && hasMale) {
+      genderKeys.add("neutral")
+    } else if (hasFemale) {
+      genderKeys.add("female")
+    } else if (hasMale) {
+      genderKeys.add("male")
+    } else if (text.includes("中性")) {
+      genderKeys.add("neutral")
+    } else {
+      fallbackValues.push(value)
+    }
+  }
+  if (genderKeys.size > 1) return []
+  if (genderKeys.has("female")) return ["女童", "女"]
+  if (genderKeys.has("male")) return ["男童", "男"]
+  if (genderKeys.has("neutral")) return ["中性"]
+  return fallbackValues.flatMap(sourceGenderContextTerms)
 }
 
 function sourceAgeContextTerms(value: unknown) {
@@ -2886,6 +2914,7 @@ function sourceAgeContextTerms(value: unknown) {
 function launchPlanTradeContextTerms(sourceRows: JsonRecord[], categories: Array<{ field: string; value: string }>) {
   const terms: WeightedTradeContextTerm[] = []
   const seen = new Set<string>()
+  const genderValues: unknown[] = []
   for (const category of categories) {
     const weight = category.field.includes("官方") ? 90 : category.field.includes("唯品四级") ? 70 : 55
     for (const term of categoryPathContextTerms(category.value)) {
@@ -2901,15 +2930,16 @@ function launchPlanTradeContextTerms(sourceRows: JsonRecord[], categories: Array
       addWeightedTradeContextTerm(terms, seen, rowJson[field], 35)
     }
     for (const field of ["性别", "适用性别"]) {
-      for (const term of sourceGenderContextTerms(rowJson[field])) {
-        addWeightedTradeContextTerm(terms, seen, term, 35)
-      }
+      genderValues.push(rowJson[field])
     }
     for (const field of ["年龄段", "适用年龄", "年龄"]) {
       for (const term of sourceAgeContextTerms(rowJson[field])) {
         addWeightedTradeContextTerm(terms, seen, term, 30)
       }
     }
+  }
+  for (const term of sourceGenderContextTermsForValues(genderValues)) {
+    addWeightedTradeContextTerm(terms, seen, term, 35)
   }
   return terms
 }
@@ -3193,6 +3223,9 @@ function scoreOfficialCategoryLeafSearch(trade: JsonRecord, category: { field: s
   if (!leafText || !candidateText) return 0
   if (candidateNameText === leafText) return 1400
   if (candidatePathText.includes(leafText)) return 1360
+  if (candidateNameText.length >= 3 && leafText.includes(candidateNameText)) {
+    return 1260 + Math.min(candidateNameText.length * 10, 80)
+  }
   const leafTerms = officialCategoryLeafTerms(leaf)
   if (leafTerms.length > 0 && leafTerms.every((term) => candidateText.includes(term))) {
     return 1320 + leafTerms.length

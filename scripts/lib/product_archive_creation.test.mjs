@@ -717,6 +717,69 @@ test("Bala DeepDraw priority uses source context when same leaf candidates remai
   assert.notEqual(decision.reasonCode, "ambiguous_match");
 });
 
+test("Bala DeepDraw priority prefers the more specific leaf contained by an official category", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    {
+      source_type: "launch_plan",
+      row_json: {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>拖鞋>>儿童棉拖鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>棉鞋",
+        "主款式 （唯品四级品类）": "一脚蹬",
+      },
+    },
+  ], [
+    deepdrawRoot("531", "童鞋/亲子鞋"),
+    deepdrawChild("536", "531", "拖鞋", "童鞋/亲子鞋 / 拖鞋"),
+    deepdrawChild("16719", "531", "棉拖鞋", "童鞋/亲子鞋 / 棉拖鞋"),
+    deepdrawChild("535", "531", "棉鞋", "童鞋/亲子鞋 / 棉鞋"),
+  ].map((trade) => ({
+    ...trade,
+    third_platforms: BALA_TRADE_TEST_PLATFORMS,
+  })), {
+    tenantName: "电商巴拉巴拉",
+    evaluatedAt: "2026-08-21T10:36:49.153Z",
+  });
+
+  assert.equal(decision.recommendedTrade?.tradeId, "16719");
+  assert.equal(decision.status, "auto_applied");
+  assert.equal(decision.reasonCode, "unique_high_confidence");
+  assert.equal(decision.matchedField, "官方发布类目");
+});
+
+test("Bala DeepDraw priority falls back to the neutral shoe leaf when launch rows mix genders", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sourceRows = ["男", "女"].map((gender) => ({
+    source_type: "launch_plan",
+    source_batch_id: 14,
+    row_json: {
+      "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>婴幼童鞋>>学步鞋",
+      "发布类目 (唯品)": "学步鞋",
+      "主款式 （唯品四级品类）": "板鞋",
+      "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>儿童学步鞋",
+      "小类": "学步鞋",
+      "性别": gender,
+      "年龄段": "婴童",
+    },
+  }));
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows(sourceRows, [
+    deepdrawRoot("531", "童鞋/亲子鞋"),
+    deepdrawChild("538", "531", "学步鞋", "童鞋/亲子鞋 / 学步鞋"),
+    deepdrawChild("10167", "10159", "学步鞋", "童鞋/亲子鞋 / 男童鞋 / 学步鞋"),
+    deepdrawChild("10183", "10160", "学步鞋", "童鞋/亲子鞋 / 女童鞋 / 学步鞋"),
+  ].map((trade) => ({
+    ...trade,
+    third_platforms: BALA_TRADE_TEST_PLATFORMS,
+  })), {
+    tenantName: "电商巴拉巴拉",
+    evaluatedAt: "2026-08-21T10:37:11.971Z",
+  });
+
+  assert.equal(decision.recommendedTrade?.tradeId, "538");
+  assert.equal(decision.status, "auto_applied");
+  assert.notEqual(decision.reasonCode, "ambiguous_match");
+});
+
 test("Bala DeepDraw priority excludes exact matches outside the approved scopes", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const decision = evaluateBalaTrade(service, "女装 > 连衣裙", [
