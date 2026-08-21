@@ -2788,18 +2788,52 @@ const LAUNCH_PLAN_CATEGORY_REFERENCE_FIELDS = [
     label: "抖音发布类目",
     aliases: ["发布类目 (抖音)", "发布类目(抖音)", "发布类目（抖音）"],
   },
+  {
+    key: "planCategory",
+    label: "上市计划品类",
+    aliases: ["品类", "类目", "分类"],
+  },
+  {
+    key: "planSubCategory",
+    label: "上市计划小类",
+    aliases: ["小类", "子类", "细分类目"],
+  },
 ]
 
-const LAUNCH_PLAN_CATEGORY_FIELDS = LAUNCH_PLAN_CATEGORY_REFERENCE_FIELDS.flatMap((field) => field.aliases)
+function launchPlanSourceRows(sourceRows: JsonRecord[]) {
+  return sourceRows.filter((row) => stringValue(row.source_type) === "launch_plan")
+}
 
-function latestLaunchPlanCategoryRows(sourceRows: JsonRecord[]) {
-  const launchPlanRows = sourceRows.filter((row) => stringValue(row.source_type) === "launch_plan")
-  const batchIds = launchPlanRows
-    .map((row) => numberValue(row.source_batch_id ?? row.sourceBatchId))
+function launchPlanSourceBatchId(row: JsonRecord) {
+  return numberValue(row.source_batch_id ?? row.sourceBatchId)
+}
+
+function latestNonEmptyLaunchPlanValues(sourceRows: JsonRecord[], aliases: string[]) {
+  const launchPlanRows = launchPlanSourceRows(sourceRows)
+  const batchIds = uniqueTextValues(launchPlanRows
+    .map((row) => launchPlanSourceBatchId(row))
     .filter((value): value is number => value !== null && value > 0)
-  if (batchIds.length === 0) return launchPlanRows
-  const latestBatchId = Math.max(...batchIds)
-  return launchPlanRows.filter((row) => numberValue(row.source_batch_id ?? row.sourceBatchId) === latestBatchId)
+    .map(String))
+    .map(Number)
+    .sort((left, right) => right - left)
+  const groups = batchIds.map((batchId) => launchPlanRows.filter((row) => launchPlanSourceBatchId(row) === batchId))
+  const unbatchedRows = launchPlanRows.filter((row) => launchPlanSourceBatchId(row) === null)
+  if (unbatchedRows.length > 0) groups.push(unbatchedRows)
+  if (groups.length === 0) groups.push(launchPlanRows)
+  for (const rows of groups) {
+    const values = uniqueTextValues(rows.flatMap((row) => {
+      const rowJson = recordValue(row.row_json)
+      return aliases.map((alias) => rowJson[alias])
+    }).filter(isMeaningfulLaunchPlanValue))
+    if (values.length > 0) return values
+  }
+  return []
+}
+
+function isMeaningfulLaunchPlanValue(value: unknown) {
+  const text = stringValue(value)
+  const normalized = text.replace(/\s+/g, "")
+  return Boolean(text) && !["/", "-", "--", "—", "0", "无", "暂无", "null", "NULL"].includes(normalized)
 }
 
 function normalizeTradeText(value: unknown) {
@@ -2839,6 +2873,43 @@ function officialCategoryLeafTerms(value: string) {
   )
 }
 
+const LAUNCH_PLAN_CATEGORY_MATCH_ALIASES: Array<{ patterns: string[]; aliases: string[] }> = [
+  { patterns: ["毛衫"], aliases: ["毛衣", "针织衫"] },
+  { patterns: ["便服"], aliases: ["T恤"] },
+  { patterns: ["长袖T恤", "短袖T恤"], aliases: ["T恤"] },
+  { patterns: ["长袖衬衫", "短袖衬衫"], aliases: ["衬衫"] },
+  { patterns: ["大衣"], aliases: ["呢大衣"] },
+  { patterns: ["长袖套装"], aliases: ["套装"] },
+  { patterns: ["针织长裤"], aliases: ["长裤"] },
+  { patterns: ["运动裤卫裤", "休闲裤"], aliases: ["长裤"] },
+  { patterns: ["休闲鞋", "运动休闲鞋", "时尚生活鞋"], aliases: ["板鞋", "运动鞋"] },
+  { patterns: ["跑步鞋", "运动生活鞋"], aliases: ["运动鞋"] },
+  { patterns: ["鞋配饰"], aliases: ["鞋配件"] },
+  { patterns: ["杯子"], aliases: ["水杯"] },
+  { patterns: ["宝宝鞋"], aliases: ["学步鞋", "婴儿鞋"] },
+  { patterns: ["外出连体衣", "内着连体衣"], aliases: ["连身衣", "爬服", "哈衣"] },
+  { patterns: ["内着上衣"], aliases: ["婴儿内衣"] },
+  { patterns: ["内衣"], aliases: ["内衣套装"] },
+  { patterns: ["短裙"], aliases: ["半身裙"] },
+  { patterns: ["婴童寝具"], aliases: ["婴幼儿寝具", "家居床品"] },
+  { patterns: ["婴童礼盒"], aliases: ["婴儿礼盒"] },
+  { patterns: ["文胸"], aliases: ["运动文胸"] },
+  { patterns: ["包"], aliases: ["儿童包包", "包包"] },
+  { patterns: ["饰品"], aliases: ["女童发饰", "发饰"] },
+]
+
+function launchPlanCategorySearchValues(value: unknown) {
+  const text = stringValue(value)
+  const normalized = normalizeOfficialTradeSearchText(text)
+  const aliases: string[] = []
+  for (const rule of LAUNCH_PLAN_CATEGORY_MATCH_ALIASES) {
+    if (rule.patterns.some((pattern) => normalized.includes(normalizeOfficialTradeSearchText(pattern)))) {
+      aliases.push(...rule.aliases)
+    }
+  }
+  return uniqueTextValues([text, ...aliases])
+}
+
 interface WeightedTradeContextTerm {
   value: string
   weight: number
@@ -2871,7 +2942,7 @@ function sourceGenderContextTerms(value: unknown) {
   if (text.includes("女") && text.includes("男")) return []
   if (text.includes("女")) return ["女童", "女"]
   if (text.includes("男")) return ["男童", "男"]
-  if (text.includes("中性")) return ["中性"]
+  if (text === "中" || text.includes("中性")) return ["中性"]
   return [text]
 }
 
@@ -2889,7 +2960,7 @@ function sourceGenderContextTermsForValues(values: unknown[]) {
       genderKeys.add("female")
     } else if (hasMale) {
       genderKeys.add("male")
-    } else if (text.includes("中性")) {
+    } else if (text === "中" || text.includes("中性")) {
       genderKeys.add("neutral")
     } else {
       fallbackValues.push(value)
@@ -2921,21 +2992,19 @@ function launchPlanTradeContextTerms(sourceRows: JsonRecord[], categories: Array
       addWeightedTradeContextTerm(terms, seen, term, weight)
     }
   }
-  for (const row of latestLaunchPlanCategoryRows(sourceRows)) {
-    const rowJson = recordValue(row.row_json)
-    for (const field of ["小类", "子类", "细分类目", "主款式 （唯品四级品类）", "主款式（唯品四级品类）"]) {
-      addWeightedTradeContextTerm(terms, seen, rowJson[field], 65)
-    }
-    for (const field of ["品类", "类目", "分类"]) {
-      addWeightedTradeContextTerm(terms, seen, rowJson[field], 35)
-    }
-    for (const field of ["性别", "适用性别"]) {
-      genderValues.push(rowJson[field])
-    }
-    for (const field of ["年龄段", "适用年龄", "年龄"]) {
-      for (const term of sourceAgeContextTerms(rowJson[field])) {
-        addWeightedTradeContextTerm(terms, seen, term, 30)
-      }
+  for (const value of latestNonEmptyLaunchPlanValues(
+    sourceRows,
+    ["小类", "子类", "细分类目", "主款式 （唯品四级品类）", "主款式（唯品四级品类）"],
+  )) {
+    addWeightedTradeContextTerm(terms, seen, value, 65)
+  }
+  for (const value of latestNonEmptyLaunchPlanValues(sourceRows, ["品类", "类目", "分类"])) {
+    addWeightedTradeContextTerm(terms, seen, value, 35)
+  }
+  genderValues.push(...latestNonEmptyLaunchPlanValues(sourceRows, ["性别", "适用性别"]))
+  for (const value of latestNonEmptyLaunchPlanValues(sourceRows, ["年龄段", "适用年龄", "年龄"])) {
+    for (const term of sourceAgeContextTerms(value)) {
+      addWeightedTradeContextTerm(terms, seen, term, 30)
     }
   }
   for (const term of sourceGenderContextTermsForValues(genderValues)) {
@@ -2958,10 +3027,9 @@ function tradeContextMatchScore(trade: JsonRecord, terms: WeightedTradeContextTe
 function launchPlanCategoryValues(sourceRows: JsonRecord[]) {
   const values: Array<{ field: string; value: string }> = []
   const seen = new Set<string>()
-  for (const row of latestLaunchPlanCategoryRows(sourceRows)) {
-    const rowJson = recordValue(row.row_json)
-    for (const field of LAUNCH_PLAN_CATEGORY_FIELDS) {
-      const value = stringValue(rowJson[field])
+  for (const referenceField of LAUNCH_PLAN_CATEGORY_REFERENCE_FIELDS) {
+    for (const value of latestNonEmptyLaunchPlanValues(sourceRows, referenceField.aliases)) {
+      const field = referenceField.label
       const key = `${field}:${value}`
       if (!value || seen.has(key)) continue
       seen.add(key)
@@ -2973,17 +3041,8 @@ function launchPlanCategoryValues(sourceRows: JsonRecord[]) {
 
 export function buildLaunchPlanCategoryReference(sourceRows: JsonRecord[]) {
   const fields: Array<{ key: string; label: string; value: string }> = []
-  const launchPlanRows = latestLaunchPlanCategoryRows(sourceRows)
   for (const field of LAUNCH_PLAN_CATEGORY_REFERENCE_FIELDS) {
-    const values: string[] = []
-    for (const row of launchPlanRows) {
-      const rowJson = recordValue(row.row_json)
-      for (const alias of field.aliases) {
-        const value = stringValue(rowJson[alias])
-        if (value) values.push(value)
-      }
-    }
-    const uniqueValues = uniqueTextValues(values)
+    const uniqueValues = latestNonEmptyLaunchPlanValues(sourceRows, field.aliases)
     if (uniqueValues.length > 0) {
       fields.push({
         key: field.key,
@@ -2998,13 +3057,18 @@ export function buildLaunchPlanCategoryReference(sourceRows: JsonRecord[]) {
   }
 }
 
-function scoreTradeMatch(trade: JsonRecord, category: { field: string; value: string }) {
+function scoreTradeMatchValue(
+  trade: JsonRecord,
+  category: { field: string; value: string },
+  searchValue: string,
+  aliasPenalty: number,
+) {
   const candidatePath = stringValue(trade.trade_path) || stringValue(trade.trade_name)
   const candidateName = stringValue(trade.trade_name)
-  const categoryText = normalizeTradeText(category.value)
+  const categoryText = normalizeTradeText(searchValue)
   const candidatePathText = normalizeTradeText(candidatePath)
   const candidateNameText = normalizeTradeText(candidateName)
-  const categoryLeaf = tradeLeaf(category.value)
+  const categoryLeaf = tradeLeaf(searchValue)
   const candidateLeaf = tradeLeaf(candidatePath)
   if (!categoryText || (!candidatePathText && !candidateNameText)) return 0
   const fieldBoost = category.field.includes("官方") ? 400 : category.field.includes("唯品四级") ? 20 : 10
@@ -3013,7 +3077,7 @@ function scoreTradeMatch(trade: JsonRecord, category: { field: string; value: st
   const contextBoost = uniqueTextValues(categoryContext)
     .filter((segment) => segment.length >= 2 && candidatePathText.includes(segment))
     .length * 30
-  const boost = fieldBoost + pathBoost + contextBoost
+  const boost = fieldBoost + pathBoost + contextBoost - aliasPenalty
   if (candidatePathText === categoryText) return 1000 + boost
   if (candidateNameText === categoryText) return 850 + boost
   if (candidateNameText && candidateNameText === categoryLeaf) return 760 + boost
@@ -3022,6 +3086,12 @@ function scoreTradeMatch(trade: JsonRecord, category: { field: string; value: st
   if (categoryLeaf && candidateLeaf && categoryLeaf.includes(candidateLeaf)) return 500 + boost
   if (categoryLeaf && candidateNameText && categoryLeaf.includes(candidateNameText)) return 480 + boost
   return 0
+}
+
+function scoreTradeMatch(trade: JsonRecord, category: { field: string; value: string }) {
+  return launchPlanCategorySearchValues(category.value)
+    .map((searchValue, index) => scoreTradeMatchValue(trade, category, searchValue, index === 0 ? 0 : 90))
+    .reduce((best, score) => Math.max(best, score), 0)
 }
 
 function isBrandPrivateDeepdrawTrade(trade: JsonRecord) {
@@ -3148,7 +3218,7 @@ function requiredLaunchPlanPlatformGroups(categories: Array<{ field: string; val
   if (categories.some((category) => category.field.includes("官方"))) {
     groups.push(["ALIBABA"], ["PDD"], ["TAOBAO"], ["KUAISHOU"])
   }
-  if (categories.some((category) => category.field.includes("唯品"))) groups.push(["VIP"])
+  if (categories.some((category) => category.field.includes("唯品发布"))) groups.push(["VIP"])
   if (categories.some((category) => category.field.includes("抖音"))) groups.push(["DOUYIN", "DOUYINXSG"])
   return groups
 }
@@ -3160,6 +3230,130 @@ function tradeCoversPlatformGroups(trade: JsonRecord, groups: string[][]) {
 
 function tradePathDepth(trade: JsonRecord) {
   return normalizeTradeText(stringValue(trade.trade_path) || stringValue(trade.trade_name)).split(">").filter(Boolean).length
+}
+
+function shouldPreferTradeMatch(
+  current: { score: number; tieBreakScore: number; pathDepth: number },
+  best: { score: number; tieBreakScore: number; pathDepth: number },
+) {
+  if (current.score !== best.score) return current.score > best.score
+  if (current.tieBreakScore !== best.tieBreakScore) return current.tieBreakScore > best.tieBreakScore
+  return current.tieBreakScore > 0 && current.pathDepth < best.pathDepth
+}
+
+function isTradeMatchTie(
+  current: { score: number; tieBreakScore: number; pathDepth: number },
+  best: { score: number; tieBreakScore: number; pathDepth: number },
+) {
+  if (current.score !== best.score || current.tieBreakScore !== best.tieBreakScore) return false
+  return current.tieBreakScore <= 0 || current.pathDepth === best.pathDepth
+}
+
+function sourceContextHasTerm(contextTerms: WeightedTradeContextTerm[], pattern: string) {
+  const normalized = normalizeOfficialTradeSearchText(pattern)
+  return contextTerms.some((term) => term.value.includes(normalized))
+}
+
+function categorySearchTextIncludes(categories: Array<{ field: string; value: string }>, pattern: string) {
+  const normalized = normalizeOfficialTradeSearchText(pattern)
+  return categories.some((category) => (
+    launchPlanCategorySearchValues(category.value)
+      .some((value) => normalizeOfficialTradeSearchText(value).includes(normalized))
+  ))
+}
+
+function tradeTieBreakScore(
+  trade: JsonRecord,
+  categories: Array<{ field: string; value: string }>,
+  contextTerms: WeightedTradeContextTerm[],
+) {
+  const pathText = normalizeOfficialTradeSearchText(stringValue(trade.trade_path) || stringValue(trade.trade_name))
+  const maleSource = sourceContextHasTerm(contextTerms, "男童") || sourceContextHasTerm(contextTerms, "男")
+  const femaleSource = sourceContextHasTerm(contextTerms, "女童") || sourceContextHasTerm(contextTerms, "女")
+  const neutralSource = sourceContextHasTerm(contextTerms, "中性")
+  const infantSource = sourceContextHasTerm(contextTerms, "婴幼儿") || sourceContextHasTerm(contextTerms, "婴童") || sourceContextHasTerm(contextTerms, "幼童")
+  let score = 0
+  const pathIncludes = (pattern: string) => pathText.includes(normalizeOfficialTradeSearchText(pattern))
+  const hasCategory = (pattern: string) => categorySearchTextIncludes(categories, pattern)
+  const addChildApparelLeafScore = (patterns: string[], leaf: string) => {
+    if (!patterns.some(hasCategory)) return
+    if (maleSource && pathIncludes(`童装婴幼儿服装 / 男童 / ${leaf}`)) score += 200
+    if (femaleSource && pathIncludes(`童装婴幼儿服装 / 中大童 / ${leaf}`)) score += 170
+    if (neutralSource && pathIncludes(`童装婴幼儿服装 / 中性童装 / ${leaf}`)) score += 190
+    if ((neutralSource || infantSource) && pathIncludes(`童装婴幼儿服装 / ${leaf}`)) score += 160
+    if (pathIncludes(`童装婴幼儿服装 / ${leaf}`)) score += 130
+    if (pathIncludes(`童装婴幼儿服装 / 中大童 / ${leaf}`)) score += 80
+  }
+  if (maleSource && pathText.includes("男童")) score += 140
+  if (femaleSource && pathText.includes("女童")) score += 140
+  if (neutralSource && pathText.includes("中性")) score += 140
+
+  addChildApparelLeafScore(["羽绒服"], "羽绒服")
+  addChildApparelLeafScore(["马甲"], "马甲")
+  addChildApparelLeafScore(["羽绒马甲"], "羽绒马甲")
+  addChildApparelLeafScore(["卫衣"], "卫衣")
+  addChildApparelLeafScore(["T恤", "长袖T恤", "便服"], "T恤")
+  addChildApparelLeafScore(["衬衫", "长袖衬衫"], "衬衫")
+  addChildApparelLeafScore(["连衣裙"], "连衣裙")
+  addChildApparelLeafScore(["套装", "长袖套装"], "套装")
+  addChildApparelLeafScore(["大衣", "呢大衣"], "呢大衣")
+  addChildApparelLeafScore(["背心"], "背心")
+  addChildApparelLeafScore(["中裤"], "中裤")
+
+  if (hasCategory("家居服")) {
+    if (hasCategory("家居服套装") && pathIncludes("童装婴幼儿服装 / 儿童家居服 / 家居服套装")) score += 220
+    if (maleSource && pathIncludes("童装婴幼儿服装 / 男童 / 家居服套装")) score += 170
+    if (pathIncludes("童装婴幼儿服装 / 儿童家居服")) score += 180
+  }
+  if ((hasCategory("休闲鞋") || hasCategory("运动休闲鞋") || hasCategory("时尚生活鞋")) && pathIncludes("童鞋/亲子鞋 / 板鞋")) score += 190
+  if ((hasCategory("运动鞋") || hasCategory("跑步鞋") || hasCategory("运动生活鞋")) && pathIncludes("童鞋/亲子鞋 / 运动鞋")) score += 180
+  if (hasCategory("户外鞋") && pathIncludes("童鞋/亲子鞋 / 户外鞋")) score += 180
+  if (hasCategory("雪地靴") && pathIncludes("童鞋/亲子鞋 / 雪地靴")) score += 190
+  if (hasCategory("靴子") && pathIncludes("童鞋/亲子鞋 / 靴子")) score += 170
+  if (hasCategory("稳步鞋") && pathIncludes("童鞋/亲子鞋 / 稳步鞋")) score += 220
+  if ((hasCategory("鞋配饰") || hasCategory("鞋配件")) && pathIncludes("童鞋/亲子鞋 / 鞋配件")) score += 200
+  if ((hasCategory("杯子") || hasCategory("水杯")) && pathIncludes("尿片/洗护/喂哺/推车床 / 水杯/餐具/研磨 / 水杯")) score += 220
+  if ((hasCategory("婴童礼盒") || hasCategory("婴儿礼盒")) && pathIncludes("寝具服饰 / 婴儿礼盒")) score += 180
+  if (hasCategory("灯笼裤") && pathIncludes("童装婴幼儿服装 / 中大童 / 灯笼裤")) score += 220
+  if (categorySearchTextIncludes(categories, "内裤") && pathText.includes("儿童内衣裤/内裤")) score += 220
+  if (categorySearchTextIncludes(categories, "内衣") && pathText.includes("儿童内衣裤/内衣套装")) score += 220
+  if (categorySearchTextIncludes(categories, "长裤")) {
+    if (neutralSource && pathText.includes("中性童装/长裤")) score += 180
+    if (maleSource && pathText.includes("男童/长裤")) score += 180
+    if (femaleSource && pathText.includes("中大童/长裤")) score += 100
+    if (!neutralSource && pathText.includes("中大童/长裤")) score += 80
+    if (pathText.includes("童装婴幼儿服装/裤子")) score += 60
+  }
+  if (categorySearchTextIncludes(categories, "棉服")) {
+    if (maleSource && pathText.includes("男童/棉服")) score += 180
+    if (!maleSource && pathText.includes("中大童/棉服")) score += 100
+  }
+  if (categorySearchTextIncludes(categories, "毛衫") || categorySearchTextIncludes(categories, "毛衣")) {
+    if (maleSource && pathText.includes("男童/毛衣")) score += 180
+    if (!maleSource && pathText.includes("中大童/毛衣")) score += 100
+    if (pathText.includes("童装婴幼儿服装/毛衣")) score += 80
+    if (pathText.includes("童装婴幼儿服装/针织衫")) score += 70
+  }
+  if (categorySearchTextIncludes(categories, "外套") && pathText.includes("童装婴幼儿服装/外套")) score += 80
+  if (categorySearchTextIncludes(categories, "学步鞋") && !maleSource && !femaleSource && pathText.includes("童鞋/亲子鞋/学步鞋")) {
+    score += 160
+  }
+  if (categorySearchTextIncludes(categories, "宝宝鞋") && pathText.includes("童鞋/亲子鞋/学步鞋")) score += 180
+  if (
+    (categorySearchTextIncludes(categories, "外出连体衣") || categorySearchTextIncludes(categories, "内着连体衣"))
+    && pathText.includes("寝具服饰/连身衣")
+  ) {
+    score += 180
+  }
+  if (categorySearchTextIncludes(categories, "内着上衣") && pathText.includes("寝具服饰/婴儿内衣")) score += 180
+  if (categorySearchTextIncludes(categories, "短裙") && pathText.includes("童装婴幼儿服装/半身裙")) score += 160
+  if (categorySearchTextIncludes(categories, "包") && pathText.includes("童装婴幼儿服装/儿童配件/儿童包包")) score += 160
+  if (categorySearchTextIncludes(categories, "饰品") && pathText.includes("童装婴幼儿服装/儿童配饰")) score += 180
+  if (categorySearchTextIncludes(categories, "饰品") && pathText.includes("童装婴幼儿服装/儿童配件/女童发饰")) score += 240
+  if (categorySearchTextIncludes(categories, "围巾") && pathText.includes("童装婴幼儿服装/儿童配件/儿童围巾")) score += 160
+  if (categorySearchTextIncludes(categories, "手套") && pathText.includes("童装婴幼儿服装/儿童配件/儿童手套")) score += 160
+  if (categorySearchTextIncludes(categories, "帽子") && pathText.includes("童装婴幼儿服装/儿童配件")) score += 120
+  return score
 }
 
 function sizeMatchKeys(value: unknown) {
@@ -3233,6 +3427,31 @@ function scoreOfficialCategoryLeafSearch(trade: JsonRecord, category: { field: s
   return 0
 }
 
+function isGenericOfficialCategoryLeaf(category: { field: string; value: string }) {
+  if (!category.field.includes("官方")) return false
+  const leafText = normalizeOfficialTradeSearchText(officialCategoryLeaf(category.value))
+  return [
+    "裤子",
+    "套装",
+    "其他",
+    "其他童装",
+    "运动鞋",
+    "t恤",
+    "羽绒服",
+    "马甲",
+    "卫衣",
+    "衬衫",
+    "连衣裙",
+    "大衣",
+    "羽绒马甲",
+    "运动裤卫裤",
+    "学步鞋",
+    "雪地靴",
+    "靴子",
+    "鞋",
+  ].includes(leafText)
+}
+
 function bestOfficialCategoryLeafTradeMatch(
   tier: DeepdrawTradePriorityTier,
   categories: Array<{ field: string; value: string }>,
@@ -3264,10 +3483,15 @@ function bestOfficialCategoryLeafTradeMatch(
       continue
     }
     const pathDepth = tradePathDepth(candidate.trade)
-    if (!best || score > best.score || (score === best.score && pathDepth < best.pathDepth)) {
-      best = { candidate, category: matchedCategory, score, matchScore: score, pathDepth }
+    const tieBreakScore = tradeTieBreakScore(candidate.trade, categories, contextTerms)
+    const current = { score, tieBreakScore, pathDepth }
+    if (
+      !best
+      || shouldPreferTradeMatch(current, best)
+    ) {
+      best = { candidate, category: matchedCategory, score, matchScore: score, pathDepth, tieBreakScore }
       tied = false
-    } else if (score === best.score && pathDepth === best.pathDepth) {
+    } else if (best && isTradeMatchTie(current, best)) {
       tied = true
     }
   }
@@ -3285,6 +3509,7 @@ function bestDeepdrawTradeMatch(
     score: number
     matchScore: number
     pathDepth: number
+    tieBreakScore: number
   } | null = null
   let tied = false
   for (const candidate of candidates) {
@@ -3303,10 +3528,15 @@ function bestDeepdrawTradeMatch(
     }
     if (!matchedCategory) continue
     const pathDepth = tradePathDepth(candidate.trade)
-    if (!best || score > best.score || (score === best.score && pathDepth < best.pathDepth)) {
-      best = { candidate, category: matchedCategory, score, matchScore, pathDepth }
+    const tieBreakScore = tradeTieBreakScore(candidate.trade, categories, contextTerms)
+    const current = { score, tieBreakScore, pathDepth }
+    if (
+      !best
+      || shouldPreferTradeMatch(current, best)
+    ) {
+      best = { candidate, category: matchedCategory, score, matchScore, pathDepth, tieBreakScore }
       tied = false
-    } else if (score === best.score && pathDepth === best.pathDepth) {
+    } else if (best && isTradeMatchTie(current, best)) {
       tied = true
     }
   }
@@ -3314,17 +3544,8 @@ function bestDeepdrawTradeMatch(
 }
 
 function launchPlanCategorySourceConflict(sourceRows: JsonRecord[]) {
-  const launchPlanRows = latestLaunchPlanCategoryRows(sourceRows)
   return LAUNCH_PLAN_CATEGORY_REFERENCE_FIELDS.some((field) => {
-    const values: string[] = []
-    for (const row of launchPlanRows) {
-      const rowJson = recordValue(row.row_json)
-      for (const alias of field.aliases) {
-        const value = stringValue(rowJson[alias])
-        if (value) values.push(value)
-      }
-    }
-    return uniqueTextValues(values).length > 1
+    return latestNonEmptyLaunchPlanValues(sourceRows, field.aliases).length > 1
   })
 }
 
@@ -3400,22 +3621,6 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
   for (const tier of candidateTiers) {
     const officialLeafMatch = bestOfficialCategoryLeafTradeMatch(tier, categories, contextTerms, requiredSizes)
     if (officialLeafMatch.sizeIncompatible) foundSizeIncompatibleTrade = true
-    if (officialLeafMatch.tied) {
-      return manualTradeSelectionDecision({
-        reasonCode: "ambiguous_match",
-        reason: tier.label
-          ? `${tier.label}存在多个官方最末级类目搜索结果，无法自动确定，需要人工选择。`
-          : "存在多个官方最末级类目搜索结果，无法自动确定，需要人工选择。",
-        appliedTrade,
-        requiredPlatforms,
-        sourceConflict,
-        evaluatedAt,
-      })
-    }
-    if (officialLeafMatch.best) {
-      selected = { tier, best: officialLeafMatch.best }
-      break
-    }
 
     const platformEligibleCandidates = allowUnspecifiedPlatformMetadata
       ? tier.candidates
@@ -3430,11 +3635,89 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
       if (!compatible) foundSizeIncompatibleTrade = true
       return compatible
     })
-    if (eligibleCandidates.length === 0) continue
+    if (eligibleCandidates.length === 0) {
+      if (officialLeafMatch.tied) {
+        return manualTradeSelectionDecision({
+          reasonCode: "ambiguous_match",
+          reason: tier.label
+            ? `${tier.label}存在多个官方最末级类目搜索结果，无法自动确定，需要人工选择。`
+            : "存在多个官方最末级类目搜索结果，无法自动确定，需要人工选择。",
+          appliedTrade,
+          requiredPlatforms,
+          sourceConflict,
+          evaluatedAt,
+        })
+      }
+      if (officialLeafMatch.best) {
+        selected = { tier, best: officialLeafMatch.best }
+        break
+      }
+      continue
+    }
     foundPlatformEligibleTrade = true
     const match = bestDeepdrawTradeMatch(eligibleCandidates, categories, contextTerms)
-    if (!match.best) continue
-    if (match.tied) {
+    const specificContextCategories = officialLeafMatch.best && isGenericOfficialCategoryLeaf(officialLeafMatch.best.category)
+      ? categories.filter((category) => !isGenericOfficialCategoryLeaf(category))
+      : []
+    const specificContextMatch = specificContextCategories.length > 0
+      ? bestDeepdrawTradeMatch(eligibleCandidates, specificContextCategories, contextTerms)
+      : { best: null, tied: false }
+    const preferredMatch = specificContextMatch.best && !specificContextMatch.tied ? specificContextMatch : match
+    const preferSpecificContextMatch = Boolean(
+      officialLeafMatch.best
+      && specificContextMatch.best
+      && !specificContextMatch.tied
+      && isGenericOfficialCategoryLeaf(officialLeafMatch.best.category)
+      && specificContextMatch.best.score >= 700,
+    )
+    if (officialLeafMatch.tied && !preferSpecificContextMatch) {
+      return manualTradeSelectionDecision({
+        reasonCode: "ambiguous_match",
+        reason: tier.label
+          ? `${tier.label}存在多个官方最末级类目搜索结果，无法自动确定，需要人工选择。`
+          : "存在多个官方最末级类目搜索结果，无法自动确定，需要人工选择。",
+        appliedTrade,
+        requiredPlatforms,
+        sourceConflict,
+        evaluatedAt,
+      })
+    }
+    if (officialLeafMatch.best && !preferSpecificContextMatch) {
+      selected = { tier, best: officialLeafMatch.best }
+      break
+    }
+    if (!preferredMatch.best) {
+      if (officialLeafMatch.tied) {
+        return manualTradeSelectionDecision({
+          reasonCode: "ambiguous_match",
+          reason: tier.label
+            ? `${tier.label}存在多个官方最末级类目搜索结果，无法自动确定，需要人工选择。`
+            : "存在多个官方最末级类目搜索结果，无法自动确定，需要人工选择。",
+          appliedTrade,
+          requiredPlatforms,
+          sourceConflict,
+          evaluatedAt,
+        })
+      }
+      continue
+    }
+    if (preferredMatch.tied) {
+      if (officialLeafMatch.tied) {
+        return manualTradeSelectionDecision({
+          reasonCode: "ambiguous_match",
+          reason: tier.label
+            ? `${tier.label}存在多个官方最末级类目搜索结果，无法自动确定，需要人工选择。`
+            : "存在多个官方最末级类目搜索结果，无法自动确定，需要人工选择。",
+          appliedTrade,
+          requiredPlatforms,
+          sourceConflict,
+          evaluatedAt,
+        })
+      }
+      if (officialLeafMatch.best) {
+        selected = { tier, best: officialLeafMatch.best }
+        break
+      }
       return manualTradeSelectionDecision({
         reasonCode: "ambiguous_match",
         reason: tier.label
@@ -3446,7 +3729,7 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
         evaluatedAt,
       })
     }
-    selected = { tier, best: match.best }
+    selected = { tier, best: preferredMatch.best }
     break
   }
   if (!selected) {

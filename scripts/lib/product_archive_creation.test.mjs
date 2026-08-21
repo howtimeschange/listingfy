@@ -1115,6 +1115,215 @@ test("trade selection decision ignores older launch-plan batches for the same SP
   ]);
 });
 
+test("trade selection falls back to older non-empty platform categories when the latest launch batch is partial", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const platforms = "ALIBABA,PDD,TAOBAO,KUAISHOU";
+  const sourceRows = [
+    {
+      source_batch_id: 10,
+      source_type: "launch_plan",
+      row_json: {
+        "官方发布类目": "童装 > 外套",
+        "品类": "外套",
+      },
+    },
+    {
+      source_batch_id: 11,
+      source_type: "launch_plan",
+      row_json: {
+        "品类": "羽绒服",
+        "性别": "女",
+      },
+    },
+  ];
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows(sourceRows, [
+    { trade_id: "68", trade_name: "外套", trade_path: "童装 > 外套", third_platforms: platforms },
+    { trade_id: "88", trade_name: "裤子", trade_path: "童装 > 裤子", third_platforms: platforms },
+  ], { evaluatedAt: "2026-08-21T00:00:00.000Z" });
+
+  assert.equal(decision.status, "auto_applied");
+  assert.equal(decision.recommendedTrade?.tradeId, "68");
+  assert.equal(decision.matchedField, "官方发布类目");
+  assert.deepEqual(service.buildLaunchPlanCategoryReference(sourceRows).fields, [
+    { key: "officialCategory", label: "官方发布类目", value: "童装 > 外套" },
+    { key: "planCategory", label: "上市计划品类", value: "羽绒服" },
+  ]);
+});
+
+test("trade selection can recommend from generic launch-plan category and gender context", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sourceRows = [
+    {
+      source_batch_id: 16,
+      source_type: "launch_plan",
+      row_json: {
+        "品类": "运动鞋",
+        "性别": "女",
+      },
+    },
+  ];
+  const trades = [
+    deepdrawRoot("531", "童鞋/亲子鞋"),
+    deepdrawChild("10167", "531", "运动鞋", "童鞋/亲子鞋 / 男童鞋 / 运动鞋"),
+    deepdrawChild("10183", "531", "运动鞋", "童鞋/亲子鞋 / 女童鞋 / 运动鞋"),
+  ].map((trade) => ({
+    ...trade,
+    third_platforms: BALA_TRADE_TEST_PLATFORMS,
+  }));
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows(sourceRows, trades, {
+    tenantName: "电商巴拉巴拉",
+    evaluatedAt: "2026-08-21T00:00:00.000Z",
+  });
+
+  assert.equal(decision.recommendedTrade?.tradeId, "10183");
+  assert.equal(decision.reasonCode, "medium_confidence");
+  assert.equal(decision.matchedField, "上市计划品类");
+  assert.equal(decision.matchedValue, "运动鞋");
+});
+
+test("trade selection expands launch-plan category aliases used by production batches", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const platforms = BALA_TRADE_TEST_PLATFORMS;
+  const cases = [
+    {
+      category: "毛衫",
+      gender: "男",
+      expectedTradeId: "9673",
+      trades: [
+        deepdrawRoot("7", "童装婴幼儿服装"),
+        deepdrawChild("9669", "7", "男童", "童装婴幼儿服装 / 男童"),
+        deepdrawChild("58", "7", "毛衣", "童装婴幼儿服装 / 毛衣"),
+        deepdrawChild("9673", "9669", "毛衣", "童装婴幼儿服装 / 男童 / 毛衣"),
+      ],
+    },
+    {
+      category: "宝宝鞋",
+      gender: "中性",
+      expectedTradeId: "538",
+      trades: [
+        deepdrawRoot("531", "童鞋/亲子鞋"),
+        deepdrawChild("538", "531", "学步鞋", "童鞋/亲子鞋 / 学步鞋"),
+        deepdrawRoot("9483", "寝具服饰"),
+        deepdrawChild("9486", "9483", "婴儿鞋帽袜", "寝具服饰 / 婴儿鞋帽袜"),
+      ],
+    },
+    {
+      category: "外出连体衣",
+      gender: "中性",
+      expectedTradeId: "9490",
+      trades: [
+        deepdrawRoot("9483", "寝具服饰"),
+        deepdrawChild("9490", "9483", "连身衣/爬服/哈衣", "寝具服饰 / 连身衣/爬服/哈衣"),
+      ],
+    },
+  ];
+
+  for (const item of cases) {
+    const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+      {
+        source_batch_id: 16,
+        source_type: "launch_plan",
+        row_json: { "品类": item.category, "性别": item.gender },
+      },
+    ], item.trades.map((trade) => ({ ...trade, third_platforms: platforms })), {
+      tenantName: "电商巴拉巴拉",
+      evaluatedAt: "2026-08-21T00:00:00.000Z",
+    });
+    assert.equal(decision.recommendedTrade?.tradeId, item.expectedTradeId, item.category);
+    assert.equal(decision.matchedField, "上市计划品类", item.category);
+  }
+});
+
+test("trade selection breaks generic launch-plan ties with child-apparel context", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const platforms = BALA_TRADE_TEST_PLATFORMS;
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    {
+      source_batch_id: 16,
+      source_type: "launch_plan",
+      row_json: { "品类": "内裤", "性别": "女" },
+    },
+  ], [
+    deepdrawRoot("7", "童装婴幼儿服装"),
+    deepdrawChild("9641", "7", "中大童", "童装婴幼儿服装 / 中大童"),
+    deepdrawChild("10113", "7", "儿童内衣裤", "童装婴幼儿服装 / 儿童内衣裤"),
+    deepdrawChild("9669", "7", "男童", "童装婴幼儿服装 / 男童"),
+    deepdrawChild("9664", "9641", "内裤", "童装婴幼儿服装 / 中大童 / 内裤"),
+    deepdrawChild("331", "10113", "内裤", "童装婴幼儿服装 / 儿童内衣裤 / 内裤"),
+    deepdrawChild("9689", "9669", "内裤", "童装婴幼儿服装 / 男童 / 内裤"),
+  ].map((trade) => ({ ...trade, third_platforms: platforms })), {
+    tenantName: "电商巴拉巴拉",
+    evaluatedAt: "2026-08-21T00:00:00.000Z",
+  });
+
+  assert.equal(decision.recommendedTrade?.tradeId, "331");
+  assert.notEqual(decision.reasonCode, "ambiguous_match");
+});
+
+test("trade selection uses non-official category context to resolve a generic official leaf", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const platforms = BALA_TRADE_TEST_PLATFORMS;
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    {
+      source_batch_id: 14,
+      source_type: "launch_plan",
+      row_json: {
+        "官方发布类目": "童装/婴儿装/亲子装>>裤子",
+        "品类": "长裤",
+        "小类": "牛仔长裤",
+        "主款式 （唯品四级品类）": "牛仔裤",
+        "性别": "女",
+      },
+    },
+  ], [
+    deepdrawRoot("7", "童装婴幼儿服装"),
+    deepdrawChild("9641", "7", "中大童", "童装婴幼儿服装 / 中大童"),
+    deepdrawChild("72", "7", "裤子", "童装婴幼儿服装 / 裤子"),
+    deepdrawChild("11740", "9641", "牛仔裤", "童装婴幼儿服装 / 中大童 / 牛仔裤"),
+  ].map((trade) => ({ ...trade, third_platforms: platforms })), {
+    tenantName: "电商巴拉巴拉",
+    evaluatedAt: "2026-08-21T00:00:00.000Z",
+  });
+
+  assert.equal(decision.recommendedTrade?.tradeId, "11740");
+  assert.notEqual(decision.reasonCode, "ambiguous_match");
+});
+
+test("trade selection resolves long-pants ties from full production launch-plan context", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const platforms = `${BALA_TRADE_TEST_PLATFORMS},VIP,DOUYINXSG`;
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    {
+      source_batch_id: 14,
+      source_type: "launch_plan",
+      row_json: {
+        "官方发布类目": "童装/婴儿装/亲子装>裤子（新）>运动裤卫裤",
+        "发布类目 (唯品)": "婴幼裤子",
+        "主款式 （唯品四级品类）": "灯笼裤",
+        "发布类目 (抖音)": "服饰内衣>服饰>童装 >休闲裤",
+        "品类": "长裤",
+        "小类": "针织长裤",
+        "性别": "男",
+        "年龄段": "幼童",
+      },
+    },
+  ], [
+    deepdrawRoot("7", "童装婴幼儿服装"),
+    deepdrawChild("9641", "7", "中大童", "童装婴幼儿服装 / 中大童"),
+    deepdrawChild("9778", "7", "中性童装", "童装婴幼儿服装 / 中性童装"),
+    deepdrawChild("9659", "9641", "长裤", "童装婴幼儿服装 / 中大童 / 长裤"),
+    deepdrawChild("10962", "9778", "长裤", "童装婴幼儿服装 / 中性童装 / 长裤"),
+    deepdrawChild("11728", "9641", "灯笼裤", "童装婴幼儿服装 / 中大童 / 灯笼裤"),
+    deepdrawChild("11739", "9641", "休闲裤", "童装婴幼儿服装 / 中大童 / 休闲裤"),
+  ].map((trade) => ({ ...trade, third_platforms: platforms })), {
+    tenantName: "电商巴拉巴拉",
+    evaluatedAt: "2026-08-21T00:00:00.000Z",
+  });
+
+  assert.equal(decision.recommendedTrade?.tradeId, "9659");
+  assert.notEqual(decision.reasonCode, "ambiguous_match");
+});
+
 test("source-derived fields use the latest launch-plan batch for repeated SPU uploads", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const sourceRows = [
