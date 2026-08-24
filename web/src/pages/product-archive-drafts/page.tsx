@@ -132,6 +132,7 @@ interface Draft {
 interface DraftField {
   id: number
   field_name: string
+  updated_at: string
   source_type: string
   value_text: string | null
   value_json?: unknown
@@ -180,6 +181,17 @@ interface DraftDetail {
   fields: DraftField[]
   issues: DraftIssue[]
   images?: ProductArchiveDraftImagePreview[]
+}
+
+interface DraftFieldPatchRequest {
+  draftId: number
+  expectedDraftUpdatedAt: string
+  fields: Array<{
+    id: number
+    fieldName: string
+    expectedUpdatedAt: string
+    valueText: string
+  }>
 }
 
 interface TradeRow {
@@ -2067,6 +2079,7 @@ export default function ProductArchiveDraftsPage() {
   const refreshedAiFillJobIds = useRef<Set<string>>(new Set())
   const refreshedPrecheckJobIds = useRef<Set<string>>(new Set())
   const refreshedPublishJobIds = useRef<Set<string>>(new Set())
+  const fieldEditorDraftIdRef = useRef<number | null>(null)
   const [searchText, setSearchText] = useState("")
   const [multiLineSearchOpen, setMultiLineSearchOpen] = useState(false)
   const [multiLineSpuCodes, setMultiLineSpuCodes] = useState("")
@@ -2175,10 +2188,19 @@ export default function ProductArchiveDraftsPage() {
     ))
   }, [activeDraftDetail.data?.fields, quickFieldIssueMap])
   const quickChangedFields = useMemo(() => {
-    const currentFields = new Map((activeDraftDetail.data?.fields ?? []).map((field) => [field.id, field.value_text ?? ""]))
+    const currentFields = new Map((activeDraftDetail.data?.fields ?? []).map((field) => [field.id, field]))
     return Object.entries(quickFieldValues)
-      .filter(([id, value]) => value !== (currentFields.get(Number(id)) ?? ""))
-      .map(([id, valueText]) => ({ id: Number(id), valueText }))
+      .filter(([id, value]) => value !== (currentFields.get(Number(id))?.value_text ?? ""))
+      .flatMap(([id, valueText]) => {
+        const field = currentFields.get(Number(id))
+        if (!field) return []
+        return [{
+          id: field.id,
+          fieldName: field.field_name,
+          expectedUpdatedAt: field.updated_at,
+          valueText,
+        }]
+      })
   }, [activeDraftDetail.data?.fields, quickFieldValues])
 
   function handleGuideDialogOpenChange(open: boolean) {
@@ -2504,14 +2526,25 @@ export default function ProductArchiveDraftsPage() {
   })
 
   const saveQuickFields = useMutation({
-    mutationFn: () => {
-      if (!fieldEditorDraft?.id) throw new Error("请选择要编辑的草稿")
-      return api.patch<DraftDetail>(`/product-archive-drafts/${fieldEditorDraft.id}/fields`, { fields: quickChangedFields })
-    },
-    onSuccess: (result) => {
+    mutationFn: (request: DraftFieldPatchRequest) => api.patch<DraftDetail>(
+      `/product-archive-drafts/${request.draftId}/fields`,
+      {
+        expectedDraftUpdatedAt: request.expectedDraftUpdatedAt,
+        fields: request.fields,
+      },
+    ),
+    onSuccess: (result, request) => {
       toast.success("字段已保存并重新校验")
       queryClient.setQueryData(["product-archive-drafts", result.draft.id], result)
-      setQuickFieldValues({})
+      if (fieldEditorDraftIdRef.current === request.draftId) {
+        setQuickFieldValues((current) => {
+          const next = { ...current }
+          for (const field of request.fields) {
+            if (current[field.id] === field.valueText) delete next[field.id]
+          }
+          return next
+        })
+      }
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
     },
     onError: (error) => {
@@ -2588,6 +2621,7 @@ export default function ProductArchiveDraftsPage() {
   }
 
   function openTradeEditor(item: ProductArchiveDraftRow) {
+    fieldEditorDraftIdRef.current = null
     setFieldEditorDraft(null)
     setQuickFieldValues({})
     setTradeSearch("")
@@ -2600,7 +2634,25 @@ export default function ProductArchiveDraftsPage() {
     setTradeSearch("")
     setSelectedTradeId(null)
     setQuickFieldValues({})
+    fieldEditorDraftIdRef.current = item.id
     setFieldEditorDraft(item)
+  }
+
+  function closeFieldEditor() {
+    fieldEditorDraftIdRef.current = null
+    setFieldEditorDraft(null)
+  }
+
+  function saveQuickFieldChanges() {
+    if (!fieldEditorDraft?.id || !activeDraftDetail.data?.draft.updated_at) {
+      toast.error("草稿详情尚未加载完成，请稍后重试")
+      return
+    }
+    saveQuickFields.mutate({
+      draftId: fieldEditorDraft.id,
+      expectedDraftUpdatedAt: activeDraftDetail.data.draft.updated_at,
+      fields: quickChangedFields,
+    })
   }
 
   function refreshDraftList() {
@@ -2842,7 +2894,7 @@ export default function ProductArchiveDraftsPage() {
         open={Boolean(fieldEditorDraft)}
         onOpenChange={(open) => {
           if (open) return
-          setFieldEditorDraft(null)
+          closeFieldEditor()
           setQuickFieldValues({})
         }}
       >
@@ -2935,13 +2987,13 @@ export default function ProductArchiveDraftsPage() {
             </ScrollArea>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setFieldEditorDraft(null)}>
+            <Button type="button" variant="outline" onClick={closeFieldEditor}>
               关闭
             </Button>
             <Button
               type="button"
               disabled={!canWrite || quickChangedFields.length === 0 || saveQuickFields.isPending}
-              onClick={() => saveQuickFields.mutate()}
+              onClick={saveQuickFieldChanges}
             >
               {saveQuickFields.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
               保存字段

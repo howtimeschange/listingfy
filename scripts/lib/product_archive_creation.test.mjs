@@ -2116,7 +2116,7 @@ test("mutable draft writes keep the row lock and mutation in one transaction", a
     "export function patchProductArchiveDraftFields",
     "export async function fillProductArchiveDraftFieldsWithAi",
   );
-  assert.match(patchFields, /return db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*return validateProductArchiveDraft\(db, draftId\)/);
+  assert.match(patchFields, /return db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*return validateProductArchiveDraft\(db, draftId(?:, [^)]*)?\)/);
   assert.doesNotMatch(patchFields, /\}\)\(\)\s*return validateProductArchiveDraft\(db, draftId\)/);
 
   const sizeMappings = section(
@@ -3264,6 +3264,55 @@ test("product archive payload expands neutral gender when template has only boy 
     value_json: {},
     options_json: [{ value: "男童" }, { value: "女童" }],
   }), "男童;女童");
+});
+
+test("product archive field patch rejects stale field revisions instead of reporting success", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const draftUpdatedAt = "2026-08-24T04:00:00.000Z";
+  const fieldUpdatedAt = "2026-08-24T04:00:01.000Z";
+  const draft = {
+    id: 991,
+    status: "ready",
+    submit_claim_token: null,
+    updated_at: draftUpdatedAt,
+  };
+  let validationReached = false;
+  const db = {
+    transaction(fn) {
+      return () => fn();
+    },
+    prepare(sql) {
+      const normalized = sql.replace(/\s+/g, " ").trim();
+      return {
+        get() {
+          if (/from product_archive_draft/i.test(normalized)) return draft;
+          return undefined;
+        },
+        all() {
+          validationReached = true;
+          throw new Error("stale field update reached validation");
+        },
+        run() {
+          if (/update product_archive_draft_field/i.test(normalized)) return { changes: 0 };
+          return { changes: 1 };
+        },
+      };
+    },
+  };
+
+  assert.throws(
+    () => service.patchProductArchiveDraftFields(db, draft.id, {
+      expectedDraftUpdatedAt: draftUpdatedAt,
+      fields: [{
+        id: 123456,
+        fieldName: "吊牌价",
+        expectedUpdatedAt: fieldUpdatedAt,
+        valueText: "359",
+      }],
+    }),
+    /草稿数据已更新，请刷新后重试/,
+  );
+  assert.equal(validationReached, false);
 });
 
 test("product archive service derives remaining field values from launch plan and copywriting rows before AI", async () => {

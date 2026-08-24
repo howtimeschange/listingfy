@@ -52,10 +52,14 @@ interface CreateDraftInput {
 }
 
 interface PatchFieldInput {
+  expectedDraftUpdatedAt?: string | null
+  expected_draft_updated_at?: string | null
   fields: Array<{
     id?: number
     fieldName?: string
     field_name?: string
+    expectedUpdatedAt?: string | null
+    expected_updated_at?: string | null
     valueText?: string | null
     value_text?: string | null
     valueJson?: unknown
@@ -231,6 +235,22 @@ interface RefreshSourceBatchChunkOptions {
 
 function nowIso() {
   return new Date().toISOString()
+}
+
+function timestampIsoValue(value: unknown) {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? "" : value.toISOString()
+  const text = stringValue(value)
+  if (!text) return ""
+  const parsed = new Date(text)
+  return Number.isNaN(parsed.getTime()) ? text : parsed.toISOString()
+}
+
+function nextTimestampIso(values: unknown[]) {
+  const latest = Math.max(
+    0,
+    ...values.map((value) => new Date(timestampIsoValue(value)).getTime()).filter(Number.isFinite),
+  )
+  return new Date(Math.max(Date.now(), latest + 1)).toISOString()
 }
 
 function wait(ms = 0) {
@@ -5728,7 +5748,7 @@ export function assertProductArchiveDraftMutable(
   options: { claimToken?: string | null } = {},
 ) {
   const draft = db.prepare(`
-    select id, status, submit_claim_token
+    select id, status, submit_claim_token, updated_at
     from product_archive_draft
     where id = ?
     for update
@@ -7349,39 +7369,54 @@ export function confirmProductArchiveDraftRecommendedTrade(
 }
 
 export function patchProductArchiveDraftFields(db: SyncPostgresDatabase, draftId: number, input: PatchFieldInput) {
-  const now = nowIso()
+  const expectedDraftUpdatedAt = timestampIsoValue(input.expectedDraftUpdatedAt ?? input.expected_draft_updated_at)
+  const now = nextTimestampIso([
+    expectedDraftUpdatedAt,
+    ...(input.fields ?? []).map((field) => field.expectedUpdatedAt ?? field.expected_updated_at),
+  ])
   const shouldSyncDownFillWeightSizeCharts = (input.fields ?? []).some((field) => (
     ["充绒量", "充绒量文本"].includes(compactFieldKey(field.fieldName ?? field.field_name))
   ))
   return db.transaction(() => {
-    assertProductArchiveDraftMutable(db, draftId)
+    const draft = assertProductArchiveDraftMutable(db, draftId)
+    if (!expectedDraftUpdatedAt || timestampIsoValue(draft.updated_at) !== expectedDraftUpdatedAt) {
+      throw new Error("草稿数据已更新，请刷新后重试")
+    }
     for (const field of input.fields ?? []) {
+      const fieldId = Number(field.id)
       const fieldName = stringValue(field.fieldName ?? field.field_name)
+      const expectedUpdatedAt = timestampIsoValue(field.expectedUpdatedAt ?? field.expected_updated_at)
       const valueText = field.valueText ?? field.value_text ?? null
       const valueJson = field.valueJson ?? field.value_json ?? {}
-      if (field.id) {
-        db.prepare(`
-          update product_archive_draft_field
-          set value_text = ?,
-            value_json = ?::jsonb,
-            manual_override = true,
-            updated_at = ?::timestamptz
-          where draft_id = ? and id = ?
-        `).run(valueText, jsonText(valueJson), now, draftId, field.id)
-      } else if (fieldName) {
-        db.prepare(`
-          update product_archive_draft_field
-          set value_text = ?,
-            value_json = ?::jsonb,
-            manual_override = true,
-            updated_at = ?::timestamptz
-          where draft_id = ? and field_name = ?
-        `).run(valueText, jsonText(valueJson), now, draftId, fieldName)
+      if (!Number.isInteger(fieldId) || fieldId <= 0 || !fieldName || !expectedUpdatedAt) {
+        throw new Error("草稿数据已更新，请刷新后重试")
+      }
+      const update = db.prepare(`
+        update product_archive_draft_field
+        set value_text = ?,
+          value_json = ?::jsonb,
+          manual_override = true,
+          updated_at = ?::timestamptz
+        where draft_id = ?
+          and id = ?
+          and field_name is not distinct from ?
+          and updated_at is not distinct from ?::timestamptz
+      `).run(valueText, jsonText(valueJson), now, draftId, fieldId, fieldName, expectedUpdatedAt)
+      if (Number(update?.changes ?? 0) !== 1) {
+        throw new Error("草稿数据已更新，请刷新后重试")
       }
     }
     if (shouldSyncDownFillWeightSizeCharts) syncProductArchiveDownFillWeightSizeCharts(db, draftId)
-    db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(now, draftId)
-    return validateProductArchiveDraft(db, draftId)
+    const draftUpdate = db.prepare(`
+      update product_archive_draft
+      set updated_at = ?::timestamptz
+      where id = ?
+        and updated_at is not distinct from ?::timestamptz
+    `).run(now, draftId, expectedDraftUpdatedAt)
+    if (Number(draftUpdate?.changes ?? 0) !== 1) {
+      throw new Error("草稿数据已更新，请刷新后重试")
+    }
+    return validateProductArchiveDraft(db, draftId, { updatedAt: now })
   })()
 }
 
@@ -7895,7 +7930,7 @@ function sizeChartAllowedSizes(_fields: JsonRecord[], skus: JsonRecord[]) {
 export function validateProductArchiveDraft(
   db: SyncPostgresDatabase,
   draftId: number,
-  options: { claimToken?: string | null } = {},
+  options: { claimToken?: string | null; updatedAt?: string | null } = {},
 ) {
   return db.transaction(() => {
     assertProductArchiveDraftMutable(db, draftId, { claimToken: options.claimToken })
@@ -7904,7 +7939,7 @@ export function validateProductArchiveDraft(
   const skus = db.prepare("select * from product_archive_draft_sku where draft_id = ?").all(draftId) as JsonRecord[]
   const templateLookup = fieldOptionsLookup(db, draft)
   const issues: Array<{ severity: string; issueType: string; fieldName?: string | null; skuCode?: string | null; message: string }> = []
-  const now = nowIso()
+  const now = timestampIsoValue(options.updatedAt) || nowIso()
 
   if (!stringValue(draft.spu_code)) issues.push({ severity: "blocker", issueType: "missing_spu_code", message: "缺少款号" })
   if (!stringValue(draft.title)) issues.push({ severity: "blocker", issueType: "missing_title", message: "缺少商品标题" })

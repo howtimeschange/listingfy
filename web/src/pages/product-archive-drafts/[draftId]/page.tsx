@@ -77,6 +77,7 @@ interface Draft {
 interface DraftField {
   id: number
   field_name: string
+  updated_at: string
   source_type: string
   value_text: string | null
   value_json?: unknown
@@ -159,6 +160,23 @@ interface DraftDetail {
   logs: DraftLog[]
 }
 
+interface DraftFieldPatch {
+  id: number
+  fieldName: string
+  expectedUpdatedAt: string
+  valueText: string
+  valueJson?: Record<string, unknown>
+}
+
+interface DraftFieldPatchRequest {
+  expectedDraftUpdatedAt: string
+  fields: DraftFieldPatch[]
+}
+
+interface SizeChartFieldPatchRequest extends DraftFieldPatchRequest {
+  cellValues: Record<string, string>
+}
+
 interface TradeSelectionDecision {
   status: "auto_applied" | "pending_confirmation" | "manual_selection_required" | "human_confirmed" | "human_adjusted"
   confidence: "high" | "medium" | "none"
@@ -223,6 +241,7 @@ interface SizeChartMapping {
 interface SizeChartPreviewItem {
   fieldId: number
   fieldName: string
+  expectedUpdatedAt: string
   valueJson: Record<string, unknown>
   persistedValueJson: Record<string, unknown>
   rows: Array<{ size: string; values: string[] }>
@@ -1144,10 +1163,19 @@ export default function ProductArchiveDraftDetailPage() {
     return (trades.data?.items ?? []).find((trade) => trade.trade_id === selectedTradeId) ?? null
   }, [selectedTradeId, trades.data?.items])
   const changedFields = useMemo(() => {
-    const currentFields = new Map((detail.data?.fields ?? []).map((field) => [field.id, field.value_text ?? ""]))
+    const currentFields = new Map((detail.data?.fields ?? []).map((field) => [field.id, field]))
     return Object.entries(fieldValues)
-      .filter(([id, value]) => value !== (currentFields.get(Number(id)) ?? ""))
-      .map(([id, valueText]) => ({ id: Number(id), valueText }))
+      .filter(([id, value]) => value !== (currentFields.get(Number(id))?.value_text ?? ""))
+      .flatMap(([id, valueText]) => {
+        const field = currentFields.get(Number(id))
+        if (!field) return []
+        return [{
+          id: field.id,
+          fieldName: field.field_name,
+          expectedUpdatedAt: field.updated_at,
+          valueText,
+        }]
+      })
   }, [detail.data?.fields, fieldValues])
   const unresolvedIssues = useMemo(() => {
     return (detail.data?.issues ?? []).filter((issue) => !issue.resolved_at)
@@ -1202,6 +1230,7 @@ export default function ProductArchiveDraftDetailPage() {
         return {
           fieldId: field.id,
           fieldName: field.field_name,
+          expectedUpdatedAt: field.updated_at,
           valueJson,
           persistedValueJson,
           rows: parsed.rows,
@@ -1221,11 +1250,13 @@ export default function ProductArchiveDraftDetailPage() {
         if (JSON.stringify(nextValueJson) === JSON.stringify(currentValueJson)) return null
         return {
           id: preview.fieldId,
+          fieldName: preview.fieldName,
+          expectedUpdatedAt: preview.expectedUpdatedAt,
           valueText: "",
           valueJson: nextValueJson,
         }
       })
-      .filter(Boolean) as Array<{ id: number; valueText: string; valueJson: Record<string, string> }>
+      .filter(Boolean) as DraftFieldPatch[]
   }, [sizeChartCellValues, sizeChartPreview])
   const scrollToFieldIssue = (nextIndex: number) => {
     if (fieldIssueNames.length === 0) return
@@ -1252,21 +1283,42 @@ export default function ProductArchiveDraftDetailPage() {
   }
 
   const saveFields = useMutation({
-    mutationFn: () =>
-      api.patch<DraftDetail>(`/product-archive-drafts/${draftId}/fields`, { fields: changedFields }),
-    onSuccess: () => {
+    mutationFn: (request: DraftFieldPatchRequest) =>
+      api.patch<DraftDetail>(`/product-archive-drafts/${draftId}/fields`, request),
+    onSuccess: (result, request) => {
       toast.success("字段已保存")
-      setFieldValues({})
+      setFieldValues((current) => {
+        const next = { ...current }
+        for (const field of request.fields) {
+          if (current[field.id] === field.valueText) delete next[field.id]
+        }
+        return next
+      })
+      queryClient.setQueryData(["product-archive-drafts", draftId], result)
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "保存字段失败")
     },
   })
 
   const saveSizeChartValues = useMutation({
-    mutationFn: () =>
-      api.patch<DraftDetail>(`/product-archive-drafts/${draftId}/fields`, { fields: sizeChartChangedFields }),
-    onSuccess: (result) => {
+    mutationFn: (request: SizeChartFieldPatchRequest) => api.patch<DraftDetail>(
+      `/product-archive-drafts/${draftId}/fields`,
+      {
+        expectedDraftUpdatedAt: request.expectedDraftUpdatedAt,
+        fields: request.fields,
+      },
+    ),
+    onSuccess: (result, request) => {
       toast.success("尺码表数值已保存")
-      setSizeChartCellValues({})
+      setSizeChartCellValues((current) => {
+        const next = { ...current }
+        for (const [key, value] of Object.entries(request.cellValues)) {
+          if (current[key] === value) delete next[key]
+        }
+        return next
+      })
       queryClient.setQueryData(["product-archive-drafts", draftId], result)
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
     },
@@ -1306,7 +1358,11 @@ export default function ProductArchiveDraftDetailPage() {
   const validate = useMutation({
     mutationFn: async () => {
       if (changedFields.length > 0) {
-        await saveFields.mutateAsync()
+        if (!draft?.updated_at) throw new Error("草稿详情尚未加载完成，请稍后重试")
+        await saveFields.mutateAsync({
+          expectedDraftUpdatedAt: draft.updated_at,
+          fields: changedFields,
+        })
       }
       return api.post<unknown>(`/product-archive-drafts/${draftId}/validate`)
     },
@@ -1866,7 +1922,13 @@ export default function ProductArchiveDraftDetailPage() {
                       variant="outline"
                       size="sm"
                       disabled={!canWrite || changedFields.length === 0 || saveFields.isPending}
-                      onClick={() => saveFields.mutate()}
+                      onClick={() => {
+                        if (!draft?.updated_at) return
+                        saveFields.mutate({
+                          expectedDraftUpdatedAt: draft.updated_at,
+                          fields: changedFields,
+                        })
+                      }}
                     >
                       {saveFields.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
                       保存字段
@@ -2171,7 +2233,14 @@ export default function ProductArchiveDraftDetailPage() {
                     variant="outline"
                     size="sm"
                     disabled={!canWrite || sizeChartChangedFields.length === 0 || saveSizeChartValues.isPending}
-                    onClick={() => saveSizeChartValues.mutate()}
+                    onClick={() => {
+                      if (!draft?.updated_at) return
+                      saveSizeChartValues.mutate({
+                        expectedDraftUpdatedAt: draft.updated_at,
+                        fields: sizeChartChangedFields,
+                        cellValues: { ...sizeChartCellValues },
+                      })
+                    }}
                   >
                     {saveSizeChartValues.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
                     保存尺码表数值

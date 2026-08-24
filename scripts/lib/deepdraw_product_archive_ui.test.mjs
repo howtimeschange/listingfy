@@ -389,7 +389,7 @@ test("draft detail field fill tab highlights validation issues and can jump betw
   assert.doesNotMatch(draftDetailPage, /当前字段填充没有未解决字段问题/);
   assert.match(draftDetailPage, /hasValidationIssues \? \([\s\S]*阻断[\s\S]*警告[\s\S]*问题字段[\s\S]*\) : \([\s\S]*所有字段校验通过/);
   assert.match(draftDetailPage, /data-validation-locator-bar[\s\S]*保存字段[\s\S]*重新校验/);
-  assert.match(draftDetailPage, /changedFields\.length > 0[\s\S]*saveFields\.mutateAsync\(\)[\s\S]*api\.post<unknown>\(`\/product-archive-drafts\/\$\{draftId\}\/validate`/);
+  assert.match(draftDetailPage, /changedFields\.length > 0[\s\S]*saveFields\.mutateAsync\(\{[\s\S]*expectedDraftUpdatedAt: draft\.updated_at[\s\S]*fields: changedFields[\s\S]*api\.post<unknown>\(`\/product-archive-drafts\/\$\{draftId\}\/validate`/);
   assert.match(draftDetailPage, /disabled=\{!canWrite \|\| validate\.isPending \|\| saveFields\.isPending\}/);
   assert.match(draftDetailPage, /重新校验/);
   assert.match(draftDetailPage, /AI 推荐补齐空字段/);
@@ -402,6 +402,27 @@ test("draft detail field fill tab highlights validation issues and can jump betw
   assert.match(draftDetailPage, /overflow-x-auto whitespace-nowrap/);
   assert.match(draftDetailPage, /ring-\[#18e299\]\/80/);
   assert.match(draftDetailPage, /问题原因/);
+});
+
+test("product archive field editors fence stale saves", async () => {
+  const [draftListPage, draftDetailPage] = await Promise.all([
+    readFile(files.draftListPage, "utf8"),
+    readFile(files.draftDetailPage, "utf8"),
+  ]);
+
+  for (const page of [draftListPage, draftDetailPage]) {
+    assert.match(page, /expectedDraftUpdatedAt/);
+    assert.match(page, /expectedUpdatedAt/);
+  }
+
+  const quickSaveStart = draftListPage.indexOf("const saveQuickFields = useMutation");
+  const quickSaveEnd = draftListPage.indexOf("const deleteDraft = useMutation", quickSaveStart);
+  assert.ok(quickSaveStart >= 0 && quickSaveEnd > quickSaveStart, "expected quick field save mutation");
+  const quickSave = draftListPage.slice(quickSaveStart, quickSaveEnd);
+  assert.match(quickSave, /mutationFn:\s*\(request/);
+  assert.match(quickSave, /fieldEditorDraftIdRef\.current === request\.draftId/);
+  assert.match(quickSave, /current\[field\.id\] === field\.valueText/);
+  assert.doesNotMatch(quickSave, /setQuickFieldValues\(\{\}\)/);
 });
 
 test("frontend routes and navigation expose deepdraw archive draft workbench", async () => {
