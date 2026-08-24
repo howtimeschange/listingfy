@@ -1242,13 +1242,24 @@ function dateFromText(value: unknown) {
 }
 
 function launchDateValue(sourceRows: JsonRecord[]) {
-  return launchValue(sourceRows, "内容上市时间")
-    || launchValue(sourceRows, "搜索上市时间")
-    || launchValue(sourceRows, "上市时间")
+  for (const sourceField of ["内容上市时间", "搜索上市时间", "上市时间"]) {
+    const date = dateFromText(launchValue(sourceRows, sourceField))
+    if (dateLooksLikeDeepdrawPayloadDate(date)) return date
+  }
+  return ""
 }
 
-export function buildProductArchivePayloadDate(sourceRows: JsonRecord[]) {
-  return dateFromText(launchDateValue(sourceRows))
+function draftDateFieldValue(fields: JsonRecord[]) {
+  for (const fieldName of ["上市时间(文本)", "对应日期", "内容上市时间", "搜索上市时间"]) {
+    const field = fields.find((candidate) => stringValue(candidate.field_name) === fieldName)
+    const date = dateFromText(field?.value_text)
+    if (dateLooksLikeDeepdrawPayloadDate(date)) return date
+  }
+  return ""
+}
+
+export function buildProductArchivePayloadDate(sourceRows: JsonRecord[], fields: JsonRecord[] = []) {
+  return draftDateFieldValue(fields) || launchDateValue(sourceRows)
 }
 
 function copyTextBlock(sourceRows: JsonRecord[]) {
@@ -8184,7 +8195,7 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
     title: stringValue(draft.title),
     tradeId: stringValue(draft.trade_id),
     retailPrice: numberValue(draft.retail_price),
-    date: buildProductArchivePayloadDate(sourceRows),
+    date: buildProductArchivePayloadDate(sourceRows, detail.fields as JsonRecord[]),
     fields: alignedFields,
     skus: (detail.skus as JsonRecord[]).map((sku) => ({
       skuCode: stringValue(sku.sku_code),

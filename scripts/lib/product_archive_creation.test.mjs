@@ -4606,6 +4606,20 @@ test("product archive payload date keeps the launch-plan source date for SDK pro
       row_json: { "内容上市时间": "2026-07-08T00:00:00.000Z" },
     },
   ]), "2026-07-08");
+  assert.equal(service.buildProductArchivePayloadDate([
+    {
+      source_type: "launch_plan",
+      row_json: { "内容上市时间": "/", "搜索上市时间": "2026-08-28" },
+    },
+  ]), "2026-08-28");
+  assert.equal(service.buildProductArchivePayloadDate([
+    {
+      source_type: "launch_plan",
+      row_json: { "内容上市时间": "/", "搜索上市时间": "2026-08-28" },
+    },
+  ], [
+    { field_name: "上市时间(文本)", value_text: "2026-08-26" },
+  ]), "2026-08-26");
 });
 
 test("routes delegate to PG services and enforce the deepdraw archive permission boundary", async () => {
