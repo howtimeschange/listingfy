@@ -2366,7 +2366,7 @@ test("product archive AI fill prompt uses trusted draft MDM and source context o
   assert.match(service, /confidence 低于 \$\{AI_FILL_MIN_CONFIDENCE\} 的字段不要返回/);
   assert.match(service, /if \(!aiFill\) continue/);
   assert.match(service, /if \(!Number\.isFinite\(confidence\) \|\| confidence < AI_FILL_MIN_CONFIDENCE\) continue/);
-  assert.match(service, /if \(!fieldValue \|\| !productArchiveFieldValueMatchesOptions\(fieldValue, field\.options\)\) continue/);
+  assert.match(service, /if \(!fieldValue \|\| !productArchiveFieldValueMatchesOptions\(fieldValue, field\.options, field\.fieldName\)\) continue/);
   assert.match(service, /Array\.isArray\(json\?\.fills\)[\s\S]*json\.fills\.some/);
   assert.doesNotMatch(service, /Array\.isArray\(json\?\.fills\)[\s\S]*json\.fills\.every/);
   assert.match(service, /scenario:\s*"deepdraw_field_fill"/);
@@ -3244,6 +3244,26 @@ test("product archive field option validation supports multi-value strings and o
     ]),
     true,
   );
+  assert.equal(
+    service.productArchiveFieldValueMatchesOptions("中性", [{ value: "男童" }, { value: "女童" }], "性别(多选)"),
+    true,
+  );
+  assert.equal(
+    service.productArchiveFieldValueMatchesOptions("中性", [{ value: "男童" }], "性别(多选)"),
+    false,
+  );
+});
+
+test("product archive payload expands neutral gender when template has only boy and girl options", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(service.productArchivePayloadFieldValue({
+    field_name: "性别(多选)",
+    template_field_name: "性别(多选)",
+    value_text: "中性",
+    value_json: {},
+    options_json: [{ value: "男童" }, { value: "女童" }],
+  }), "男童;女童");
 });
 
 test("product archive service derives remaining field values from launch plan and copywriting rows before AI", async () => {
@@ -4481,6 +4501,14 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "男女通用" },
     { value: "中性/男女均可" },
   ]), "中性/男女均可");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("性别(多选)", "中性", [
+    { value: "男童" },
+    { value: "女童" },
+  ]), "男童;女童");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用性别(多选)", "男女", [
+    { value: "男童" },
+    { value: "女童" },
+  ]), "男童;女童");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("材质", "面料：100%聚酯纤维", [
     { value: "聚酯纤维（涤纶）" },
     { value: "棉" },

@@ -4325,7 +4325,7 @@ function fieldOptionsFromTemplate(optionsJson: unknown) {
     .filter((option): option is { value: string; label: string } => Boolean(option))
 }
 
-export function productArchiveFieldValueMatchesOptions(value: unknown, options: unknown[]) {
+export function productArchiveFieldValueMatchesOptions(value: unknown, options: unknown[], fieldName?: unknown) {
   if (!options.length || !hasValue(value)) return true
   if (value && typeof value === "object" && !Array.isArray(value)) return true
   const allowed = new Set(options.flatMap(optionTextCandidates).filter(Boolean))
@@ -4333,11 +4333,24 @@ export function productArchiveFieldValueMatchesOptions(value: unknown, options: 
   const text = stringValue(value)
   const groups = text.split(/[;；]/).map((part) => part.trim()).filter(Boolean)
   const values = groups.length ? groups : [text].filter(Boolean)
-  return values.every((item) => {
+  const matched = values.every((item) => {
     if (allowed.has(item)) return true
     const aliases = item.split(/[,，]/).map((part) => part.trim()).filter(Boolean)
     return (aliases.length ? aliases : [item]).some((alias) => allowed.has(alias))
   })
+  if (matched) return true
+  if (!isProductArchiveGenderFieldName(fieldName)) return false
+  const normalized = normalizeProductArchiveGenderOptionValue(value, options)
+  if (!normalized || normalized === text) return false
+  return productArchiveFieldValueMatchesOptions(normalized, options)
+}
+
+function productArchiveFieldOptionValidationMessage(value: unknown, options: unknown[]) {
+  const current = stringValue(value) || "空"
+  const optionSamples = optionValues(options).slice(0, 8).join("、")
+  return optionSamples
+    ? `字段值不在深绘模板选项中：当前值「${current}」，可选项示例「${optionSamples}」`
+    : `字段值不在深绘模板选项中：当前值「${current}」`
 }
 
 function optionValues(options: unknown[]) {
@@ -4469,6 +4482,72 @@ function normalizeMaterialOptionValue(value: unknown, options: unknown[]) {
     (option) => option === text,
     (option) => option.includes(text) || text.includes(option),
   ]) || text
+}
+
+function isProductArchiveGenderFieldName(fieldName: unknown) {
+  const key = compactFieldKey(fieldName)
+  return key.includes("适用性别") || key === "性别" || key === "性别多选"
+}
+
+function isNeutralGenderValue(value: unknown) {
+  const text = stringValue(value).replace(/\s+/g, "")
+  if (!text) return false
+  return text === "中"
+    || text.includes("中性")
+    || text.includes("男女")
+    || (text.includes("男") && text.includes("女"))
+}
+
+function normalizeProductArchiveGenderOptionValue(value: unknown, options: unknown[]) {
+  const text = stringValue(value)
+  if (!text) return ""
+  const exact = pickOption(options, [(option) => option === text])
+  if (exact) return exact
+
+  const values = semicolonTextValues(text)
+  if (values.length > 1) {
+    const normalizedValues = values.flatMap((item) => semicolonTextValues(normalizeProductArchiveGenderOptionValue(item, options)))
+    if (normalizedValues.length === values.length) return uniqueTextValues(normalizedValues).join(";")
+  }
+
+  if (isNeutralGenderValue(text)) {
+    const neutral = pickOption(options, [
+      (option) => option === "中性/男女均可",
+      (option) => option === "男女通用",
+      (option) => option === "中性",
+      (option) => option === "通用",
+      (option) => option.includes("中性") || option.includes("男女"),
+    ])
+    if (neutral) return neutral
+    const male = pickOption(options, [
+      (option) => option === "男童",
+      (option) => option === "男",
+      (option) => option.includes("男") && !option.includes("女"),
+    ])
+    const female = pickOption(options, [
+      (option) => option === "女童",
+      (option) => option === "女",
+      (option) => option.includes("女") && !option.includes("男"),
+    ])
+    if (male && female) return uniqueTextValues([male, female]).join(";")
+    return text
+  }
+
+  if (text.includes("男") && !text.includes("女")) {
+    return pickOption(options, [
+      (option) => option === "男童",
+      (option) => option === "男",
+      (option) => option.includes("男") && !option.includes("女"),
+    ]) || text
+  }
+  if (text.includes("女") && !text.includes("男")) {
+    return pickOption(options, [
+      (option) => option === "女童",
+      (option) => option === "女",
+      (option) => option.includes("女") && !option.includes("男"),
+    ]) || text
+  }
+  return text
 }
 
 function normalizeMaterialCompositionValue(value: unknown, options: unknown[]) {
@@ -4885,7 +4964,7 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
     if (normalized.length) return normalized.join(";")
   }
   if (key === "性别多选") {
-    if (["中", "中性", "男女"].some((needle) => text.includes(needle))) return pickOption(options, [(option) => option === "中性", (option) => option === "通用"]) || text
+    return normalizeProductArchiveGenderOptionValue(text, options) || text
   }
   if (key === "成分含量" && text.includes("100%")) {
     return pickOption(options, [(option) => option === "100%", (option) => option.includes("95%")]) || text
@@ -4926,16 +5005,8 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
   if (key === "上市时间") {
     return seasonOptionValue(text, options) || text
   }
-  if (key.includes("适用性别") || key === "性别") {
-    if (["中", "中性", "男女"].some((needle) => text.includes(needle))) {
-      return pickOption(options, [
-        (option) => option === "中性/男女均可",
-        (option) => option === "男女通用",
-        (option) => option === "通用",
-      ]) || text
-    }
-    if (text.includes("男")) return pickOption(options, [(option) => option.includes("男")]) || text
-    if (text.includes("女")) return pickOption(options, [(option) => option.includes("女")]) || text
+  if (isProductArchiveGenderFieldName(fieldName)) {
+    return normalizeProductArchiveGenderOptionValue(text, options) || text
   }
   if (key.includes("适用年龄") || key.includes("年龄")) {
     const ageOption = singleAgeOptionValue(text, options)
@@ -5024,7 +5095,7 @@ export function normalizeProductArchiveAiFillValue(
   const exact = optionValueForAiChoice(options, aiValue)
   if (exact) return exact
   const normalized = normalizeProductArchiveDeepdrawFieldValue(fieldName, aiValue, options)
-  return productArchiveFieldValueMatchesOptions(normalized, options) ? normalized : ""
+  return productArchiveFieldValueMatchesOptions(normalized, options, fieldName) ? normalized : ""
 }
 
 export function productArchiveSkuColorMatchesOptions(
@@ -5317,7 +5388,7 @@ export function buildProductArchiveMaterialEvidenceFills(
     if (!/材质|面料/.test(field.fieldName)) continue
     for (const evidenceText of evidenceTexts) {
       const fieldValue = normalizeProductArchiveDeepdrawFieldValue(field.fieldName, evidenceText, field.options)
-      if (!fieldValue || !productArchiveFieldValueMatchesOptions(fieldValue, field.options)) continue
+      if (!fieldValue || !productArchiveFieldValueMatchesOptions(fieldValue, field.options, field.fieldName)) continue
       fills.push({
         field_id: field.id,
         field_name: field.fieldName,
@@ -5494,7 +5565,7 @@ export function buildProductArchiveEvidenceRuleFills(input: {
     if (!rule?.value) continue
     const options = fieldOptionsFromTemplate(field.options_json)
     const fieldValue = normalizeProductArchiveDeepdrawFieldValue(fieldName, rule.value, options)
-    if (!fieldValue || !productArchiveFieldValueMatchesOptions(fieldValue, options)) continue
+    if (!fieldValue || !productArchiveFieldValueMatchesOptions(fieldValue, options, fieldName)) continue
     fills.push({
       field_id: fieldId,
       field_name: fieldName,
@@ -5614,7 +5685,7 @@ async function callDeepdrawAiFill(
         )
         return Boolean(
           normalized
-          && productArchiveFieldValueMatchesOptions(normalized, field.options),
+          && productArchiveFieldValueMatchesOptions(normalized, field.options, field.fieldName),
         )
       })
     ),
@@ -7531,7 +7602,7 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
       const fieldValue = materialFill
         ? aiValue
         : normalizeProductArchiveAiFillValue(field.fieldName, field.currentValue, aiValue, field.options)
-      if (!fieldValue || !productArchiveFieldValueMatchesOptions(fieldValue, field.options)) continue
+      if (!fieldValue || !productArchiveFieldValueMatchesOptions(fieldValue, field.options, field.fieldName)) continue
       applyFieldFill({
         fieldId: field.id,
         fieldName: field.fieldName,
@@ -7876,9 +7947,9 @@ export function validateProductArchiveDraft(
       message = "必填字段缺失"
       issues.push({ severity: "blocker", issueType: "required_field_missing", fieldName, message })
     } else if (options.length && hasValue(value)) {
-      if (!productArchiveFieldValueMatchesOptions(value, options)) {
+      if (!productArchiveFieldValueMatchesOptions(value, options, fieldName)) {
         status = "invalid"
-        message = "字段值不在深绘模板选项中"
+        message = productArchiveFieldOptionValidationMessage(value, options)
         issues.push({ severity: blocking ? "blocker" : "warning", issueType: "field_option_invalid", fieldName, message })
       } else {
         status = "valid"
@@ -8072,7 +8143,13 @@ export function productArchivePayloadFieldValue(field: JsonRecord) {
     if (!fieldType || fieldType === "MULTI_TEXT") return null
   }
   const text = stringValue(field.value_text)
-  if (text) return text
+  if (text) {
+    return normalizeProductArchiveDeepdrawFieldValue(
+      stringValue(field.template_field_name) || stringValue(field.field_name),
+      text,
+      arrayValue(field.options_json),
+    ) || text
+  }
   return hasValue(jsonValue) ? jsonValue : null
 }
 
