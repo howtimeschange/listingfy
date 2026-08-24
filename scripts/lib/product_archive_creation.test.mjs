@@ -13,6 +13,7 @@ const files = {
   metadataService: path.join(PROJECT_ROOT, "web/server/services/deepdraw-metadata.ts"),
   draftService: path.join(PROJECT_ROOT, "web/server/services/product-archive-drafts.ts"),
   draftRoute: path.join(PROJECT_ROOT, "web/server/routes/product-archive-drafts.ts"),
+  draftDetailPage: path.join(PROJECT_ROOT, "web/src/pages/product-archive-drafts/[draftId]/page.tsx"),
   metadataRoute: path.join(PROJECT_ROOT, "web/server/routes/deepdraw-metadata.ts"),
   deepdrawClient: path.join(PROJECT_ROOT, "scripts/lib/deepdraw_client.mjs"),
   tradeBackfillScript: path.join(PROJECT_ROOT, "scripts/product_archive_trade_backfill.mjs"),
@@ -3004,19 +3005,71 @@ test("product archive fixed counter-price defaults remain literal fallback value
 });
 
 test("product archive submit routes surface DeepDraw service failures instead of generic 500 errors", async () => {
-  const [service, route] = await Promise.all([
+  const [service, route, draftDetailPage] = await Promise.all([
     readFile(files.draftService, "utf8"),
     readFile(files.draftRoute, "utf8"),
+    readFile(files.draftDetailPage, "utf8"),
   ]);
 
-  assert.match(service, /assertDeepdrawProductArchiveSuccess\(result,\s*"create"\)/);
+  assert.match(service, /assertDeepdrawProductArchiveSuccess\(result,\s*"create",\s*submitDiagnostics\)/);
   assert.match(service, /if \(createError\) throw createError/);
   assert.doesNotMatch(service, /if \(!result\.ok\) return \{ ok: false, result \}/);
+  assert.match(service, /productArchiveFailureReasonWithDiagnostics/);
+  assert.match(service, /omittedTemplateFieldCount/);
+  assert.match(service, /payloadIssues/);
   assert.match(route, /function submitOperationException/);
   assert.match(route, /new HTTPException\(status,\s*\{ message: `\$\{prefix\}：/);
   assert.match(route, /发布到深绘失败/);
   assert.match(route, /深绘查重失败/);
   assert.match(route, /深绘回读失败/);
+  assert.match(draftDetailPage, /<TableHead>原因<\/TableHead>/);
+  assert.match(draftDetailPage, /log\.response_reason \|\| "-"/);
+});
+
+test("product archive create payload keeps only current DeepDraw template fields and explains generic failures", async () => {
+  const [service, serviceSource] = await Promise.all([
+    import("../../web/server/services/product-archive-drafts.ts"),
+    readFile(files.draftService, "utf8"),
+  ]);
+  const payloadStart = serviceSource.indexOf("function productPayload");
+  const payloadEnd = serviceSource.indexOf("function deepdrawBusinessResult", payloadStart);
+  const payloadImplementation = serviceSource.slice(payloadStart, payloadEnd);
+
+  assert.equal(service.productArchivePayloadTemplateFieldId({ template_field_id: "2399" }), "2399");
+  assert.equal(service.productArchivePayloadTemplateFieldId({ field_id: "old-field" }), "");
+  assert.match(payloadImplementation, /productArchivePayloadTemplateFieldId\(field\)/);
+  assert.match(payloadImplementation, /omittedTemplateFieldNames\.push/);
+  assert.match(payloadImplementation, /id:\s*templateFieldId/);
+  assert.match(payloadImplementation, /attachProductArchiveSubmitDiagnostics/);
+
+  const issues = service.productArchivePayloadValidationIssues({
+    date: "/",
+    fields: [
+      { name: "尺码", value: "21;22" },
+      { name: "尺码表", value: { title: "适合脚长,鞋内长", "21": "12,13", "021": "12,13" } },
+      { name: "商家SKU", value: { title: "价格,货号", 红色: { "22": "99,SPU", "022": "99,SPU" } } },
+    ],
+  });
+  assert.ok(issues.some((issue) => issue.includes("上市日期格式异常：/")));
+  assert.ok(issues.some((issue) => issue.includes("尺码表 尺码键与销售尺码不一致：021")));
+  assert.ok(issues.some((issue) => issue.includes("商家SKU 尺码键与销售尺码不一致：022")));
+
+  const reason = service.productArchiveFailureReasonWithDiagnostics("访问接口的时候发生未知异常：数据格式错误或校验失败", {
+    omittedTemplateFieldCount: 3,
+    omittedTemplateFieldNames: ["是否开裆", "腰型"],
+    issues: ["上市日期格式异常：/，请检查上市计划的内容上市时间/搜索上市时间"],
+  });
+  assert.match(reason, /数据格式错误或校验失败/);
+  assert.match(reason, /上市日期格式异常/);
+  assert.match(reason, /已在提交前忽略 3 个不属于当前深绘类目的字段：是否开裆、腰型 等/);
+
+  const fallbackReason = service.productArchiveFailureReasonWithDiagnostics("", {
+    omittedTemplateFieldCount: 1,
+    omittedTemplateFieldNames: ["裤长"],
+    issues: [],
+  });
+  assert.match(fallbackReason, /深绘返回失败/);
+  assert.match(fallbackReason, /不属于当前深绘类目的字段：裤长/);
 });
 
 test("product archive routes fence prechecks, owned image files, and mutation conflicts", async () => {

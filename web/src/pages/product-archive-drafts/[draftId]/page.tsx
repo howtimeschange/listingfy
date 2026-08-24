@@ -2411,6 +2411,7 @@ export default function ProductArchiveDraftDetailPage() {
                     <TableHead>操作</TableHead>
                     <TableHead>HTTP</TableHead>
                     <TableHead>业务码</TableHead>
+                    <TableHead>原因</TableHead>
                     <TableHead>request id</TableHead>
                     <TableHead>productId</TableHead>
                     <TableHead>时间</TableHead>
@@ -2421,7 +2422,10 @@ export default function ProductArchiveDraftDetailPage() {
                     <TableRow key={log.id}>
                       <TableCell>{log.operation}</TableCell>
                       <TableCell>{log.http_status ?? "-"}</TableCell>
-                      <TableCell>{log.response_code || log.response_reason || "-"}</TableCell>
+                      <TableCell>{log.response_code || "-"}</TableCell>
+                      <TableCell className="max-w-[420px] whitespace-normal break-words">
+                        {log.response_reason || "-"}
+                      </TableCell>
                       <TableCell>{log.request_id || "-"}</TableCell>
                       <TableCell>{log.product_id || "-"}</TableCell>
                       <TableCell>{formatDateTime(log.created_at)}</TableCell>

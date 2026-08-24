@@ -6259,10 +6259,14 @@ function serializeDraftDetail(db: SyncPostgresDatabase, draftId: number) {
     sizeChartMappings,
     sizeChartSourceRows,
     fields: db.prepare(`
-      select field.*, template.options_json, template.field_type
+      select field.*,
+        template.field_id as template_field_id,
+        template.field_name as template_field_name,
+        template.options_json,
+        template.field_type
       from product_archive_draft_field field
       left join lateral (
-        select options_json, field_type
+        select field_id, field_name, options_json, field_type
         from deepdraw_trade_field_cache template
         where template.tenant_name = ?
           and template.merchant_id = ?
@@ -8069,18 +8073,101 @@ export function shouldIncludeProductArchivePayloadField(field: JsonRecord) {
   return true
 }
 
+export function productArchivePayloadTemplateFieldId(field: JsonRecord) {
+  return stringValue(field.template_field_id)
+}
+
+export type ProductArchiveSubmitDiagnostics = {
+  omittedTemplateFieldCount: number
+  omittedTemplateFieldNames: string[]
+  issues: string[]
+}
+
+const PRODUCT_ARCHIVE_SUBMIT_DIAGNOSTICS_KEY = "__productArchiveSubmitDiagnostics"
+
+function uniqueLimitedText(values: unknown[], limit: number) {
+  return uniqueTextValues(values).slice(0, limit)
+}
+
+function attachProductArchiveSubmitDiagnostics(payload: JsonRecord, diagnostics: ProductArchiveSubmitDiagnostics) {
+  Object.defineProperty(payload, PRODUCT_ARCHIVE_SUBMIT_DIAGNOSTICS_KEY, {
+    configurable: true,
+    enumerable: false,
+    value: diagnostics,
+  })
+  return payload
+}
+
+function productArchiveSubmitDiagnostics(payload: unknown): ProductArchiveSubmitDiagnostics {
+  const record = recordValue(payload)
+  return recordValue(record[PRODUCT_ARCHIVE_SUBMIT_DIAGNOSTICS_KEY]) as ProductArchiveSubmitDiagnostics
+}
+
+function dateLooksLikeDeepdrawPayloadDate(value: unknown) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(stringValue(value))
+}
+
+export function productArchivePayloadValidationIssues(payload: JsonRecord) {
+  const issues: string[] = []
+  const date = stringValue(payload.date)
+  if (!dateLooksLikeDeepdrawPayloadDate(date)) {
+    issues.push(`上市日期格式异常：${date || "空"}，请检查上市计划的内容上市时间/搜索上市时间`)
+  }
+  const fields = arrayValue(payload.fields).map((field) => recordValue(field))
+  const saleSizeValue = stringValue(fields.find((field) => isProductArchiveSkuSizeFieldName(field.name) && typeof field.value === "string")?.value)
+  const saleSizes = new Set(saleSizeValue.split(/[;；]/).map((size) => size.trim()).filter(Boolean))
+  if (saleSizes.size > 0) {
+    for (const field of fields) {
+      const fieldName = stringValue(field.name)
+      if (!compactFieldKey(fieldName).includes("尺码表") && compactFieldKey(fieldName) !== compactFieldKey("商家SKU")) continue
+      const value = recordValue(field.value)
+      const keys = compactFieldKey(fieldName) === compactFieldKey("商家SKU")
+        ? Object.values(value).flatMap((sizeRows) => Object.keys(recordValue(sizeRows)))
+        : Object.keys(value).filter((key) => key !== "title")
+      const unexpected = keys.filter((key) => !saleSizes.has(key)).slice(0, 5)
+      if (unexpected.length > 0) {
+        issues.push(`${fieldName} 尺码键与销售尺码不一致：${unexpected.join("、")}`)
+      }
+    }
+  }
+  return issues
+}
+
+export function productArchiveFailureReasonWithDiagnostics(reason: string, diagnostics: ProductArchiveSubmitDiagnostics) {
+  const omittedNames = diagnostics.omittedTemplateFieldNames.join("、")
+  const omittedSuffix = diagnostics.omittedTemplateFieldCount > diagnostics.omittedTemplateFieldNames.length ? " 等" : ""
+  const details = [
+    ...diagnostics.issues,
+    diagnostics.omittedTemplateFieldCount > 0
+      ? `已在提交前忽略 ${diagnostics.omittedTemplateFieldCount} 个不属于当前深绘类目的字段：${omittedNames}${omittedSuffix}`
+      : "",
+  ].filter(Boolean)
+  if (details.length === 0) return reason
+  return `${reason || "深绘返回失败"}；${details.join("；")}`
+}
+
 function productPayload(db: SyncPostgresDatabase, draftId: number) {
   const detail = serializeDraftDetail(db, draftId)
   const draft = detail.draft as JsonRecord
   const sourceRows = sourceRowsForDraft(db, draft)
+  const omittedTemplateFieldNames: string[] = []
   const fields = (detail.fields as JsonRecord[])
     .filter(shouldIncludeProductArchivePayloadField)
-    .map((field) => ({
-      id: stringValue(field.field_id) || undefined,
-      name: stringValue(field.field_name),
-      fieldType: stringValue(field.field_type) || undefined,
-      value: productArchivePayloadFieldValue(field),
-    }))
+    .flatMap((field) => {
+      const value = productArchivePayloadFieldValue(field)
+      if (!hasValue(value)) return []
+      const templateFieldId = productArchivePayloadTemplateFieldId(field)
+      if (!templateFieldId) {
+        omittedTemplateFieldNames.push(stringValue(field.field_name))
+        return []
+      }
+      return [{
+        id: templateFieldId,
+        name: stringValue(field.template_field_name) || stringValue(field.field_name),
+        fieldType: stringValue(field.field_type) || undefined,
+        value,
+      }]
+    })
     .filter((field) => hasValue(field.value))
   const saleSizeValueText = stringValue(fields.find((field) => (
     isProductArchiveSkuSizeFieldName(field.name)
@@ -8092,7 +8179,7 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
         value: alignProductArchivePayloadSizeFieldValue(field.name, field.value, saleSizeValueText),
       }))
     : fields
-  return {
+  const payload = {
     code: stringValue(draft.spu_code),
     title: stringValue(draft.title),
     tradeId: stringValue(draft.trade_id),
@@ -8109,6 +8196,11 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
       price: numberValue(sku.price),
     })),
   }
+  return attachProductArchiveSubmitDiagnostics(payload, {
+    omittedTemplateFieldCount: omittedTemplateFieldNames.length,
+    omittedTemplateFieldNames: uniqueLimitedText(omittedTemplateFieldNames, 12),
+    issues: productArchivePayloadValidationIssues(payload),
+  })
 }
 
 function deepdrawBusinessResult(payload: unknown) {
@@ -8132,10 +8224,19 @@ function writeSubmitLog(
   db: SyncPostgresDatabase,
   draftId: number,
   operation: "search" | "create" | "resource" | "dry_run",
-  result: Partial<DeepdrawResult> & { requestSummary?: unknown; productId?: string | null; responseReason?: string | null } = {},
+  result: Partial<DeepdrawResult> & {
+    requestSummary?: unknown
+    productId?: string | null
+    responseReason?: string | null
+    submitDiagnostics?: ProductArchiveSubmitDiagnostics
+  } = {},
 ) {
   const payload = recordValue(result.payload)
   const business = deepdrawBusinessResult(payload)
+  const baseReason = (result.responseReason ?? business.reason) || null
+  const responseReason = result.submitDiagnostics
+    ? productArchiveFailureReasonWithDiagnostics(baseReason, result.submitDiagnostics)
+    : baseReason
   db.prepare(`
     insert into product_archive_submit_log (
       draft_id,
@@ -8155,7 +8256,7 @@ function writeSubmitLog(
     jsonText(result.requestSummary ?? {}),
     result.status ?? null,
     stringValue(business.code) || null,
-    (result.responseReason ?? business.reason) || null,
+    responseReason,
     (result.requestId ?? business.requestId) || null,
     result.productId ?? (stringValue(business.body.productId) || null),
     jsonText(sanitizeDeepdrawLogPayload(payload)),
@@ -8186,7 +8287,11 @@ export function recordProductArchiveSubmitTransportUnknown(
   })()
 }
 
-function assertDeepdrawProductArchiveSuccess(result: DeepdrawResult, type: string) {
+function assertDeepdrawProductArchiveSuccess(
+  result: DeepdrawResult,
+  type: string,
+  submitDiagnostics?: ProductArchiveSubmitDiagnostics,
+) {
   const payload = recordValue(result.payload)
   const business = deepdrawBusinessResult(payload)
   const outerStatus = business.status ?? numberValue(result.status)
@@ -8198,7 +8303,11 @@ function assertDeepdrawProductArchiveSuccess(result: DeepdrawResult, type: strin
     || (responseCode !== null && responseCode !== 10200)
     || (responseState && responseState !== "success")
   ) {
-    throw new Error(`DeepDraw ${type} failed: ${business.reason || result.status}`)
+    const reason = productArchiveFailureReasonWithDiagnostics(
+      business.reason || stringValue(result.status),
+      submitDiagnostics ?? { omittedTemplateFieldCount: 0, omittedTemplateFieldNames: [], issues: [] },
+    )
+    throw new Error(`DeepDraw ${type} failed: ${reason}`)
   }
 }
 
@@ -8377,7 +8486,14 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
     const currentDraft = draftById(db, draftId)
     if (currentDraft.submit_claim_token) throw new Error("草稿正在提交，暂不能生成新预览")
     const payload = prepareProductArchiveDraftDryRun(db, draftId)
-    const summary = { fieldCount: payload.fields.length, skuCount: payload.skus.length }
+    const submitDiagnostics = productArchiveSubmitDiagnostics(payload)
+    const summary = {
+      fieldCount: payload.fields.length,
+      skuCount: payload.skus.length,
+      omittedTemplateFieldCount: submitDiagnostics.omittedTemplateFieldCount,
+      omittedTemplateFields: submitDiagnostics.omittedTemplateFieldNames,
+      payloadIssues: submitDiagnostics.issues,
+    }
     writeSubmitLog(db, draftId, "dry_run", { requestSummary: summary, status: 200, payload: { dryRun: true } })
     return { dryRun: true, payload, summary }
   }
@@ -8418,7 +8534,14 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
     )
     throw error
   }
-  const summary = { fieldCount: payload.fields.length, skuCount: payload.skus.length }
+  const submitDiagnostics = productArchiveSubmitDiagnostics(payload)
+  const summary = {
+    fieldCount: payload.fields.length,
+    skuCount: payload.skus.length,
+    omittedTemplateFieldCount: submitDiagnostics.omittedTemplateFieldCount,
+    omittedTemplateFields: submitDiagnostics.omittedTemplateFieldNames,
+    payloadIssues: submitDiagnostics.issues,
+  }
   if (validation.summary.blocker_count > 0) {
     db.prepare(`
       update product_archive_draft
@@ -8475,12 +8598,12 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
   const productId = stringValue(body.productId ?? body.id)
   let createError: Error | null = null
   try {
-    assertDeepdrawProductArchiveSuccess(result, "create")
+    assertDeepdrawProductArchiveSuccess(result, "create", submitDiagnostics)
   } catch (error) {
     createError = error instanceof Error ? error : new Error(String(error))
   }
   db.transaction(() => {
-    writeSubmitLog(db, draftId, "create", { ...result, requestSummary: summary, productId })
+    writeSubmitLog(db, draftId, "create", { ...result, requestSummary: summary, productId, submitDiagnostics })
     db.prepare(`
       update product_archive_draft
       set status = ?,
