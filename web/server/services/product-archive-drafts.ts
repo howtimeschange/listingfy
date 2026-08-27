@@ -19,6 +19,7 @@ import {
   getDefaultAiScenarioRouter,
   withAiRoutingHashes,
 } from "../../../scripts/lib/ai_routing_context.mjs"
+import { extractDeepdrawTradeFieldRows } from "./deepdraw-metadata"
 import {
   buildShoeSizeChartFieldValues,
   isShoeProductContext,
@@ -284,6 +285,10 @@ function optionText(value: unknown) {
     record.value
       ?? record.optionValue
       ?? record.option_value
+      ?? record.attrValueName
+      ?? record.attr_value_name
+      ?? record.attrValueId
+      ?? record.attr_value_id
       ?? record.code
       ?? record.key
       ?? record.name
@@ -303,6 +308,10 @@ function optionTextCandidates(value: unknown) {
     record.value,
     record.optionValue,
     record.option_value,
+    record.attrValueName,
+    record.attr_value_name,
+    record.attrValueId,
+    record.attr_value_id,
     record.code,
     record.key,
     record.name,
@@ -4337,8 +4346,32 @@ function fieldOptionsFromTemplate(optionsJson: unknown) {
   const rawOptions = arrayValue(optionsJson)
   return rawOptions
     .map((option) => {
-      const value = fieldOptionText(option, ["value", "code", "id", "optionValue", "option_value", "key", "name", "label"])
-      const label = fieldOptionText(option, ["label", "name", "text", "optionName", "option_name", "title", "value", "code"])
+      const value = fieldOptionText(option, [
+        "value",
+        "code",
+        "id",
+        "optionValue",
+        "option_value",
+        "attrValueId",
+        "attr_value_id",
+        "attrValueName",
+        "attr_value_name",
+        "key",
+        "name",
+        "label",
+      ])
+      const label = fieldOptionText(option, [
+        "label",
+        "name",
+        "text",
+        "optionName",
+        "option_name",
+        "attrValueName",
+        "attr_value_name",
+        "title",
+        "value",
+        "code",
+      ])
       if (!value && !label) return null
       return { value: value || label, label: label || value }
     })
@@ -4933,17 +4966,23 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
       const rawBase = parts[0] || item
       const rawAlias = parts[1] || ""
       const base = baseColorName(rawBase)
-      const option = pickOption(options, [
-        (option) => option === base,
+      const aliasOption = rawAlias
+        ? pickOption(options, [
+            (option) => option === rawAlias,
+            (option) => rawAlias.includes(option) || option.includes(rawAlias),
+          ])
+        : ""
+      const option = aliasOption || pickOption(options, [
         (option) => option === rawBase,
         (option) => option === item,
         (option) => item.includes(option) || option.includes(item),
+        (option) => option === base,
       ]) || nearestProductArchiveColorOption(rawBase, options)
       if (!option) return ""
       const alias = rawAlias || (item !== option ? item : "")
-      return alias && alias !== option ? `${option},${alias}` : option
-    }).filter(Boolean)
-    if (normalized.length) return uniqueTextValues(normalized).join(";")
+      return { option, alias: alias && alias !== option ? alias : "" }
+    }).filter((entry): entry is ProductArchiveColorEntry => Boolean(entry))
+    if (normalized.length) return uniqueProductArchiveColorEntries(normalized).join(";")
   }
   if (key === "品牌单选" || key === "品牌") {
     if (/巴拉巴拉|balabala/i.test(text)) {
@@ -5070,6 +5109,47 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
 
 function semicolonTextValues(value: unknown) {
   return stringValue(value).split(/[;；]/).map((part) => part.trim()).filter(Boolean)
+}
+
+type ProductArchiveColorEntry = {
+  option: string
+  alias: string
+}
+
+function productArchiveColorEntryValue(entry: ProductArchiveColorEntry) {
+  return entry.alias && entry.alias !== entry.option ? `${entry.option},${entry.alias}` : entry.option
+}
+
+function compactProductArchiveColorAlias(value: unknown) {
+  return stringValue(value).replace(/\s+/g, "").replace(/[，,;；]/g, "")
+}
+
+function productArchiveColorEntriesOverlap(left: ProductArchiveColorEntry, right: ProductArchiveColorEntry) {
+  if (left.option !== right.option) return false
+  const leftAlias = compactProductArchiveColorAlias(left.alias)
+  const rightAlias = compactProductArchiveColorAlias(right.alias)
+  if (!leftAlias || !rightAlias) return true
+  return leftAlias === rightAlias || leftAlias.includes(rightAlias) || rightAlias.includes(leftAlias)
+}
+
+function productArchiveColorEntrySpecificity(entry: ProductArchiveColorEntry) {
+  return compactProductArchiveColorAlias(entry.alias).length
+}
+
+function uniqueProductArchiveColorEntries(entries: ProductArchiveColorEntry[]) {
+  const selected: ProductArchiveColorEntry[] = []
+  for (const entry of entries) {
+    const existingIndex = selected.findIndex((item) => productArchiveColorEntriesOverlap(item, entry))
+    if (existingIndex < 0) {
+      selected.push(entry)
+      continue
+    }
+    const existing = selected[existingIndex]
+    if (productArchiveColorEntrySpecificity(entry) > productArchiveColorEntrySpecificity(existing)) {
+      selected[existingIndex] = entry
+    }
+  }
+  return uniqueTextValues(selected.map(productArchiveColorEntryValue))
 }
 
 export function mergeProductArchiveColorFieldValues(values: unknown[]) {
@@ -5803,6 +5883,63 @@ function primaryTemplateFieldsByName(tradeFields: JsonRecord[]) {
   return lookup
 }
 
+const DEEPDRAW_TEMPLATE_FIELD_FALLBACK_THRESHOLD = 30
+
+function tradeFieldTemplateFromExtractedRow(row: JsonRecord, draft: JsonRecord, tradeId: string) {
+  const fieldId = stringValue(row.fieldId ?? row.field_id)
+  const fieldName = stringValue(row.fieldName ?? row.field_name)
+  if (!fieldName) return null
+  return {
+    tenant_name: draft.tenant_name,
+    merchant_id: draft.merchant_id,
+    trade_id: tradeId,
+    field_id: fieldId || fieldName,
+    field_name: fieldName,
+    field_type: stringValue(row.fieldType ?? row.field_type) || null,
+    required: Boolean(row.required),
+    sale_prop: Boolean(row.saleProp ?? row.sale_prop),
+    options_json: arrayValue(row.options),
+    raw_payload_json: recordValue(row.raw),
+  }
+}
+
+function fallbackTradeFieldsFromRawPayload(db: SyncPostgresDatabase, draft: JsonRecord, tradeId: string) {
+  try {
+    const trade = db.prepare(`
+      select raw_payload_json
+      from deepdraw_trade_cache
+      where tenant_name = ?
+        and merchant_id = ?
+        and trade_id = ?
+      limit 1
+    `).get(draft.tenant_name, draft.merchant_id, tradeId) as JsonRecord | undefined
+    return extractDeepdrawTradeFieldRows(trade?.raw_payload_json)
+      .map((row) => tradeFieldTemplateFromExtractedRow(row, draft, tradeId))
+      .filter((row): row is JsonRecord => Boolean(row))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/deepdraw_trade_cache|unexpected sql|does not exist|no such table/i.test(message)) return []
+    throw error
+  }
+}
+
+function mergeDeepdrawTemplateFields(rows: JsonRecord[], fallbackRows: JsonRecord[]) {
+  const seenFieldIds = new Set(rows.map((row) => stringValue(row.field_id)).filter(Boolean))
+  const seenFieldNames = new Set(rows.map((row) => stringValue(row.field_name)).filter(Boolean))
+  const merged = [...rows]
+  for (const row of fallbackRows) {
+    const fieldId = stringValue(row.field_id)
+    const fieldName = stringValue(row.field_name)
+    if (!fieldName) continue
+    if (fieldId && seenFieldIds.has(fieldId)) continue
+    if (seenFieldNames.has(fieldName)) continue
+    merged.push(row)
+    if (fieldId) seenFieldIds.add(fieldId)
+    seenFieldNames.add(fieldName)
+  }
+  return merged
+}
+
 function childFieldRequirement(input: { rawPayload?: unknown }) {
   const attributes = recordValue(recordValue(input.rawPayload).attributes)
   const isChildAttr = attributes.isChildAttr === true || stringValue(attributes.isChildAttr).toLowerCase() === "true"
@@ -5825,7 +5962,7 @@ function templateChildRequirementActive(template: JsonRecord, fields: JsonRecord
 
 function tradeFieldsForDraft(db: SyncPostgresDatabase, draft: JsonRecord, tradeId = stringValue(draft.trade_id)) {
   if (!tradeId) return []
-  return db.prepare(`
+  const rows = db.prepare(`
     select *
     from deepdraw_trade_field_cache
     where tenant_name = ?
@@ -5833,6 +5970,8 @@ function tradeFieldsForDraft(db: SyncPostgresDatabase, draft: JsonRecord, tradeI
       and trade_id = ?
     order by required desc, sale_prop desc, field_name
   `).all(draft.tenant_name, draft.merchant_id, tradeId) as JsonRecord[]
+  if (rows.length >= DEEPDRAW_TEMPLATE_FIELD_FALLBACK_THRESHOLD) return rows
+  return mergeDeepdrawTemplateFields(rows, fallbackTradeFieldsFromRawPayload(db, draft, tradeId))
 }
 
 function productLineDomainTarget(value: unknown) {
@@ -6016,7 +6155,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
       : skuSizeField
         ? mdmDerived.valueText || sourceValueText
       : colorField
-        ? mergeProductArchiveColorFieldValues([sourceValueText, mdmDerived.valueText])
+        ? mdmDerived.valueText || sourceValueText
         : sourceValueText || mdmDerived.valueText
     const valueText = normalizeProductArchiveDeepdrawFieldValue(fieldName, rawValueText, arrayValue(template.options_json))
     const rawValueJson = existingManual ? recordValue(existing.value_json) : mdmDerived.valueJson

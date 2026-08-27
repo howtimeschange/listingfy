@@ -164,6 +164,32 @@ function nestedArray(value: unknown, keys: string[]) {
   return []
 }
 
+const DEEPDRAW_TRADE_FIELD_ARRAY_KEYS = [
+  "fields",
+  "fieldList",
+  "field_list",
+  "records",
+  "items",
+  "rows",
+  "attrs",
+  "attrList",
+  "attr_list",
+  "attributes",
+  "attributeList",
+  "attribute_list",
+  "categoryAttrs",
+  "category_attrs",
+  "categoryAttributes",
+  "category_attributes",
+  "leafAttrs",
+  "leaf_attrs",
+  "leafAttrList",
+  "leaf_attr_list",
+  "leafAttributes",
+  "leaf_attributes",
+  "list",
+]
+
 function jsonText(value: unknown) {
   return JSON.stringify(value ?? {})
 }
@@ -408,17 +434,83 @@ function flattenTrades(rows: JsonRecord[], parentTradeId?: string | null, path: 
 function normalizeField(row: JsonRecord) {
   const fieldRecord = recordValue(row.field)
   const attributes = recordValue(row.attributes ?? fieldRecord.attributes)
-  const fieldId = stringValue(row.fieldId ?? row.field_id ?? row.id ?? fieldRecord.id ?? fieldRecord.fieldId)
-  const options = row.options ?? row.values ?? row.optionList ?? row.option_list ?? row.items ?? []
+  const fieldId = stringValue(
+    row.fieldId
+      ?? row.field_id
+      ?? row.attrId
+      ?? row.attr_id
+      ?? row.attributeId
+      ?? row.attribute_id
+      ?? row.code
+      ?? row.id
+      ?? fieldRecord.id
+      ?? fieldRecord.fieldId
+      ?? fieldRecord.attrId
+      ?? fieldRecord.attributeId,
+  )
+  const options = row.options
+    ?? row.values
+    ?? row.optionList
+    ?? row.option_list
+    ?? row.attrValues
+    ?? row.attr_values
+    ?? row.attributeValues
+    ?? row.attribute_values
+    ?? row.valueList
+    ?? row.value_list
+    ?? row.items
+    ?? []
   return {
     fieldId,
-    fieldName: stringValue(row.fieldName ?? row.field_name ?? row.name ?? fieldRecord.name ?? fieldRecord.fieldName) || fieldId,
-    fieldType: stringValue(row.fieldType ?? row.field_type ?? row.type ?? fieldRecord.type ?? fieldRecord.fieldType) || null,
-    required: booleanValue(row.required ?? row.isRequired ?? row.must ?? row.requiredFlag ?? attributes.isRequired),
+    fieldName: stringValue(
+      row.fieldName
+        ?? row.field_name
+        ?? row.attrName
+        ?? row.attr_name
+        ?? row.attributeName
+        ?? row.attribute_name
+        ?? row.name
+        ?? fieldRecord.name
+        ?? fieldRecord.fieldName
+        ?? fieldRecord.attrName
+        ?? fieldRecord.attributeName,
+    ) || fieldId,
+    fieldType: stringValue(
+      row.fieldType
+        ?? row.field_type
+        ?? row.type
+        ?? row.attrType
+        ?? row.attr_type
+        ?? row.valueType
+        ?? row.value_type
+        ?? row.formType
+        ?? row.form_type
+        ?? fieldRecord.type
+        ?? fieldRecord.fieldType,
+    ) || null,
+    required: booleanValue(
+      row.required
+        ?? row.isRequired
+        ?? row.is_required
+        ?? row.must
+        ?? row.requiredFlag
+        ?? row.required_flag
+        ?? row.isNecessary
+        ?? row.is_necessary
+        ?? attributes.isRequired
+        ?? attributes.is_required,
+    ),
     saleProp: booleanValue(row.saleProp ?? row.sale_prop ?? row.isSaleProp ?? row.is_sale_prop),
     options: Array.isArray(options) ? options : [],
     raw: row,
   }
+}
+
+export function extractDeepdrawTradeFieldRows(payload: unknown) {
+  const body = payloadBody(payload)
+  return nestedArray(body, DEEPDRAW_TRADE_FIELD_ARRAY_KEYS)
+    .map(normalizeField)
+    .filter((row) => row.fieldId || row.fieldName)
 }
 
 export function syncDeepdrawTradesCache(db: SyncPostgresDatabase, input: CacheInput) {
@@ -467,10 +559,7 @@ export function syncDeepdrawTradesCache(db: SyncPostgresDatabase, input: CacheIn
 }
 
 export function syncDeepdrawTradeFieldsCache(db: SyncPostgresDatabase, input: TradeFieldsCacheInput) {
-  const body = payloadBody(input.payload)
-  const rows = nestedArray(body, ["fields", "fieldList", "list", "records", "items"])
-    .map(normalizeField)
-    .filter((row) => row.fieldId || row.fieldName)
+  const rows = extractDeepdrawTradeFieldRows(input.payload)
   const syncedAt = input.syncedAt ?? nowIso()
   const statement = db.prepare(`
     insert into deepdraw_trade_field_cache (

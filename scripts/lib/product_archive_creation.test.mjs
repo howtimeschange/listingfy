@@ -78,6 +78,45 @@ test("deepdraw metadata service uses SyncPostgresDatabase and reuses the shared 
   assert.match(service, /raw_payload_json/);
 });
 
+test("deepdraw metadata parser accepts category leaf attribute payloads", async () => {
+  const metadata = await import("../../web/server/services/deepdraw-metadata.ts");
+
+  const rows = metadata.extractDeepdrawTradeFieldRows({
+    response: {
+      code: 10200,
+      response: "success",
+      body: {
+        leafAttrs: [
+          {
+            id: 25,
+            attrName: "产品标题",
+            valueType: "input_text",
+            isRequired: true,
+          },
+          {
+            attrId: 10076,
+            attrName: "色系",
+            valueType: "checkbox",
+            attrValues: [
+              { attrValueId: 40601, attrValueName: "军绿" },
+              { attrValueId: 60001, attrValueName: "粉红" },
+            ],
+          },
+        ],
+      },
+    },
+  });
+
+  assert.deepEqual(rows.map((row) => [row.fieldId, row.fieldName, row.fieldType, row.required]), [
+    ["25", "产品标题", "input_text", true],
+    ["10076", "色系", "checkbox", false],
+  ]);
+  assert.deepEqual(rows[1].options, [
+    { attrValueId: 40601, attrValueName: "军绿" },
+    { attrValueId: 60001, attrValueName: "粉红" },
+  ]);
+});
+
 test("product archive draft service is PG-first and covers build validate patch duplicate dry-run submit contracts", async () => {
   const service = await readFile(files.draftService, "utf8");
 
@@ -2251,6 +2290,26 @@ test("product archive draft detail picks one matching template per field", async
   assert.match(service, /template\.field_id = field\.field_id or template\.field_name = field\.field_name/);
   assert.match(service, /order by case when template\.field_id = field\.field_id then 0 else 1 end/);
   assert.match(service, /limit 1/);
+});
+
+test("product archive template fields fall back to cached DeepDraw leaf attributes", async () => {
+  const [serviceSource, service] = await Promise.all([
+    readFile(files.draftService, "utf8"),
+    import("../../web/server/services/product-archive-drafts.ts"),
+  ]);
+
+  assert.match(serviceSource, /extractDeepdrawTradeFieldRows/);
+  assert.match(serviceSource, /fallbackTradeFieldsFromRawPayload/);
+  assert.match(serviceSource, /DEEPDRAW_TEMPLATE_FIELD_FALLBACK_THRESHOLD/);
+  assert.match(serviceSource, /mergeDeepdrawTemplateFields\(rows,\s*fallbackTradeFieldsFromRawPayload/);
+  assert.equal(
+    service.productArchiveFieldValueMatchesOptions(
+      "粉红",
+      [{ attrValueId: 60001, attrValueName: "粉红" }],
+      "颜色",
+    ),
+    true,
+  );
 });
 
 test("product archive AI fill skips fields that already have JSON values", async () => {
@@ -4435,7 +4494,7 @@ test("product archive color normalization selects a safe template fallback for u
   ]);
 });
 
-test("product archive color field rebuild can merge launch colors with every MDM SKU color", async () => {
+test("product archive color field rebuild prefers concrete MDM SKU colors over stale launch aliases", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
   const merged = service.mergeProductArchiveColorFieldValues([
@@ -4458,6 +4517,20 @@ test("product archive color field rebuild can merge launch colors with every MDM
     { value: "红色" },
     { value: "卡其" },
   ]), "卡其,沙卡50403");
+
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("颜色", [
+    "黑色调",
+    "军绿",
+    "粉红",
+    "黑色,黑色调00399",
+    "绿色,军绿40601",
+    "粉红,粉红60001",
+  ].join(";"), [
+    { value: "黑色" },
+    { value: "军绿" },
+    { value: "绿色" },
+    { value: "粉红" },
+  ]), "黑色,黑色调00399;军绿,军绿40601;粉红,粉红60001");
 });
 
 test("product archive draft reference image upload extracts style codes from folder paths", async () => {
