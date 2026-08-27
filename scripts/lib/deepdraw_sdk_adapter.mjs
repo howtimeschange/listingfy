@@ -196,9 +196,27 @@ function normalizeSdkDateText(value) {
   return text;
 }
 
+function skuLaunchMonthText(value) {
+  const text = stringValue(value);
+  const match = text.match(/^(\d{4})-(\d{2})(?:-\d{2})?$/);
+  return match ? `${match[1]}-${match[2]}` : text;
+}
+
+function normalizeMerchantSkuRowValue(value, title) {
+  const text = stringValue(value);
+  const titles = stringValue(title).split(",").map((part) => part.trim());
+  const launchDateIndex = titles.findIndex((item) => compactKey(item) === "上市时间");
+  if (!text || launchDateIndex < 0) return value;
+  const parts = text.split(",");
+  if (launchDateIndex >= parts.length) return value;
+  parts[launchDateIndex] = skuLaunchMonthText(parts[launchDateIndex]);
+  return parts.join(",");
+}
+
 function normalizeMerchantSkuField(value, sizeValues = []) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const output = {};
+  const title = stringValue(value.title);
   for (const [color, sizeRows] of Object.entries(value)) {
     if (color === "title") {
       output[color] = sizeRows;
@@ -210,7 +228,7 @@ function normalizeMerchantSkuField(value, sizeValues = []) {
     }
     output[color] = {};
     for (const [size, rowValue] of Object.entries(sizeRows)) {
-      output[color][sdkPayloadSizeValue(size, sizeValues)] = rowValue;
+      output[color][sdkPayloadSizeValue(size, sizeValues)] = normalizeMerchantSkuRowValue(rowValue, title);
     }
   }
   return output;
@@ -233,6 +251,7 @@ function fieldKey(fields, names) {
 function buildMerchantSkuField(payload, skus, dateText, sizeValues = []) {
   const productCode = stringValue(payload.code);
   const retailPrice = asMoneyText(payload.retailPrice);
+  const skuDateText = skuLaunchMonthText(dateText);
   const output = { title: SKU_TITLE };
   for (const sku of skus) {
     const color = stringValue(sku.color ?? sku.colorName ?? sku.color_name);
@@ -246,7 +265,7 @@ function buildMerchantSkuField(payload, skus, dateText, sizeValues = []) {
     output[color][size] = [
       price,
       productCode,
-      dateText,
+      skuDateText,
       "0",
       sellerCode || skuCode,
       barcode,

@@ -68,7 +68,7 @@ test("buildDeepdrawSdkProductInput maps Listingify payload into SDK product and 
   );
   assert.equal(
     input.product.fields["商家SKU"]["藏青"]["110cm"],
-    "199,208326105214,2026-03-01,0,208326105214110,690001,199,199,208326105214110,690001",
+    "199,208326105214,2026-03,0,208326105214110,690001,199,199,208326105214110,690001",
   );
   assert.equal(Object.hasOwn(input.product.fields, "商家 SKU"), false);
 });
@@ -112,6 +112,51 @@ test("buildDeepdrawSdkProductInput keeps color aliases and SKU bucket keys align
       "80cm": "359,code",
     },
   });
+});
+
+test("buildDeepdrawSdkProductInput normalizes existing merchant SKU launch dates to month text", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      code: "208426140203",
+      title: "儿童户外鞋",
+      tradeId: "16608",
+      retailPrice: 359,
+      fields: [
+        { name: "尺码", value: "26" },
+        {
+          name: "商家SKU",
+          value: {
+            title: "价格,货号,上市时间,数量,商家编码,条形码,零售价,供货价",
+            黑色调00399: {
+              "26": "359,208426140203,2026-09-02,0,6914678080209,6914678080209,359,359",
+            },
+          },
+        },
+      ],
+      skus: [
+        {
+          skuCode: "2084261402030039926",
+          color: "黑色调00399",
+          size: "26",
+          barcode: "6914678080209",
+          sellerCode: "6914678080209",
+          price: 359,
+        },
+      ],
+    },
+  });
+
+  assert.equal(
+    input.product.fields["商家SKU"]["黑色调00399"]["26"],
+    "359,208426140203,2026-09,0,6914678080209,6914678080209,359,359",
+  );
 });
 
 test("buildDeepdrawSdkProductInput aligns structured size rows to selected bare size values", () => {
@@ -228,7 +273,7 @@ test("buildDeepdrawSdkProductInput maps khaki business color names to DeepDraw s
   });
 
   assert.equal(input.product.fields["颜色"], "卡其,贝壳卡50230");
-  assert.equal(input.product.fields["商家SKU"]["贝壳卡50230"]["80cm"], "299,208326105206,2026-07-15,0,6942749195392,6942749195392,299,299,20832610520650230080,6942749195392");
+  assert.equal(input.product.fields["商家SKU"]["贝壳卡50230"]["80cm"], "299,208326105206,2026-07,0,6942749195392,6942749195392,299,299,20832610520650230080,6942749195392");
 });
 
 test("buildDeepdrawSdkProductInput merges SKU color aliases into existing draft color fields", () => {

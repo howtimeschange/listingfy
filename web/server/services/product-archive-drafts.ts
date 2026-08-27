@@ -471,6 +471,7 @@ const LIST_PRICE_REFERENCE_KEYS = new Set([
   "挂牌单价",
   "京东市场价",
   "市场价",
+  "商品市场价",
 ])
 
 const LAUNCH_PLAN_REFERENCE_FIELDS = new Set([
@@ -791,8 +792,8 @@ function sourceAliases(sourceField: string) {
     填充物: ["填充物", "填充物种类"],
     填充物种类: ["填充物种类", "填充物"],
     文案表: ["搜索标题", "唯品标题", "内容平台标题", "内容标题", "导购标题"],
-    鞋品生产企业名称: ["鞋品生产企业名称", "生产企业名称", "生产企业", "生产厂家", "厂家", "工厂", "制造商"],
-    生产企业名称: ["生产企业名称", "鞋品生产企业名称", "生产企业", "生产厂家", "厂家", "工厂", "制造商"],
+    鞋品生产企业名称: ["鞋品生产企业名称", "鞋品企业名称", "生产企业名称", "生产企业", "生产厂家", "厂家", "工厂", "制造商"],
+    生产企业名称: ["生产企业名称", "鞋品生产企业名称", "鞋品企业名称", "生产企业", "生产厂家", "厂家", "工厂", "制造商"],
     里料材质: ["里料材质", "里料", "衬里", "鞋垫材质"],
   }
   return uniqueTextValues([field, ...(aliases[field] ?? [])])
@@ -1491,6 +1492,18 @@ function productionEnterpriseName(spu: JsonRecord) {
   return ""
 }
 
+function productionEnterpriseAddress(spu: JsonRecord) {
+  const rawPayload = recordValue(spu.raw_payload_json)
+  const explicit = stringValue(rawPayload.productionEnterpriseAddress)
+    || stringValue(rawPayload.manufacturerAddress)
+    || stringValue(rawPayload.producerAddress)
+    || stringValue(rawPayload.factoryAddress)
+  if (explicit) return explicit
+  const brandText = `${stringValue(spu.brand_name)} ${stringValue(spu.brand_code)}`
+  if (/巴拉巴拉|森马|balabala|semir/i.test(brandText)) return "温州市瓯海区娄桥工业园南汇路98号"
+  return ""
+}
+
 function primaryMaterialComponents(sourceRows: JsonRecord[]) {
   return materialComponentsFromText(materialCompositionSourceText(sourceRows))
 }
@@ -1658,7 +1671,7 @@ function shoeProductionOriginValue(sourceRows: JsonRecord[]) {
     [/中山/, "广东广州"],
     [/成都/, "四川成都"],
   ]
-  return mappings.find(([pattern]) => pattern.test(enterprise))?.[1] ?? "中国"
+  return mappings.find(([pattern]) => pattern.test(enterprise))?.[1] ?? ""
 }
 
 function shoeMaterial1688Evidence(sourceRows: JsonRecord[]) {
@@ -1759,7 +1772,10 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (key === "分类" || key === "类型") return "外套"
   if (key === "品牌单选") return stringValue(input.spu.brand_name) || "巴拉巴拉"
   if (key === "品牌" || key === "品牌文本") return stringValue(input.spu.brand_name) || copywritingValue(sourceRows, "品牌") || "巴拉巴拉"
-  if (key === "生产企业名称" || key === "生产经销厂家" || key === "生产经销企业") return productionEnterpriseName(input.spu)
+  if (key === "生产企业名称" || key === "生产经销厂家" || key === "生产/经销厂家" || key === "生产经销企业") {
+    return productionEnterpriseName(input.spu)
+  }
+  if (key === "厂家地址") return productionEnterpriseAddress(input.spu)
   if (isProductArchiveDownContentFieldKey(key)) return downContentEvidenceValue(input.spu, sourceRows)
   if (key === "里料成分含量") return liningCompositionText(sourceRows)
   if (key === "里料材质成分含量多选") return normalizeMaterialName(liningCompositionText(sourceRows).replace(/^\d+(?:\.\d+)?\s*%/, ""))
@@ -1792,6 +1808,12 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (key === "是否可定制") return "不可定制"
   if (key === "售后服务承诺") return "不设置"
   if (key === "balaone仅专供新品") return launchValue(sourceRows, "属性").includes("专供新品") ? "是" : ""
+  if (key === "货源类别") {
+    const sourceText = launchValue(sourceRows, "属性") || launchValue(sourceRows, "属性-销")
+    if (/现货/.test(sourceText)) return "现货"
+    if (/专供新品|订货|新品/.test(sourceText)) return "订货"
+    return ""
+  }
   if (isProductArchiveFillerFieldKey(key)) {
     const sourceText = `${stringValue(input.spu.filler)}\n${materialCompositionSourceText(sourceRows)}`
     const sourceValue = hasExplicitNoFiller(sourceText) ? "无" : copywritingFillerMaterialValue(sourceRows)
@@ -4443,7 +4465,7 @@ function seasonOptionValue(value: string, options: unknown[]) {
 }
 
 function ageYearRange(value: string) {
-  const match = value.match(/(\d{1,2})\s*-\s*(\d{1,2})\s*岁/)
+  const match = value.match(/(\d{1,2})\s*岁?\s*[-~～至—－]\s*(\d{1,2})\s*岁/)
   if (!match) return null
   const start = Number(match[1])
   const end = Number(match[2])
@@ -4454,6 +4476,13 @@ function ageYearRange(value: string) {
 function singleAgeOptionValue(text: string, options: unknown[]) {
   const range = ageYearRange(text)
   if (!range) return ""
+  const exactRangeText = `${range.start}-${range.end}岁`
+  const exactChineseRangeText = `${range.start}岁-${range.end}岁`
+  const exact = pickOption(options, [
+    (option) => option === exactRangeText,
+    (option) => option === exactChineseRangeText,
+  ])
+  if (exact) return exact
   if (range.end <= 3) {
     return pickOption(options, [
       (option) => option.includes("婴幼童"),
@@ -5044,6 +5073,10 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
     return pickOption(options, [(option) => option === "秋季", (option) => option === "秋"]) || text
   }
   if (key === "适用年龄多选") {
+    const values = semicolonTextValues(text)
+    if (values.length > 1 && productArchiveFieldValueMatchesOptions(values.join(";"), options, fieldName)) {
+      return uniqueTextValues(values).join(";")
+    }
     return multiAgeOptionValue(text, options)
       || pickOption(options, [(option) => option === "1-3岁", (option) => option.includes("3岁（含）")])
       || text
@@ -5949,12 +5982,12 @@ function childFieldRequirement(input: { rawPayload?: unknown }) {
   return { parentAttrs, parentValue }
 }
 
-function templateChildRequirementActive(template: JsonRecord, fields: JsonRecord[]) {
+export function templateChildRequirementActive(template: JsonRecord, fields: JsonRecord[]) {
   const requirement = childFieldRequirement({ rawPayload: template.raw_payload_json ?? template.rawPayload })
   if (!requirement) return true
   for (const parentName of requirement.parentAttrs) {
-    const parent = fields.find((field) => stringValue(field.field_name) === parentName)
-    const value = stringValue(parent?.value_text)
+    const parent = fields.find((field) => stringValue(field.field_name ?? field.fieldName) === parentName)
+    const value = stringValue(parent?.value_text ?? parent?.valueText)
     if (value === requirement.parentValue) return true
   }
   return false
@@ -6099,7 +6132,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
       })
     : {}
 
-  return Array.from(fieldNames).filter(Boolean).map((fieldName) => {
+  const rows = Array.from(fieldNames).filter(Boolean).map((fieldName) => {
     const rule = ruleByName.get(fieldName) ?? {}
     const template = fieldTemplateByName.get(fieldName) ?? {}
     const existing = existingByName.get(fieldName) ?? {}
@@ -6107,19 +6140,20 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     const skuSizeField = isProductArchiveSkuSizeFieldName(fieldName)
     const colorField = compactFieldKey(fieldName).includes("颜色")
     const ruleSourceType = stringValue(rule.source_type) || (originCountryField ? "fixed" : "manual")
+    const sourceValueText = readSourceValue(spu, rule, sourceRows, fieldName)
     const existingManual = Boolean(existing.manual_override)
       && !isStaleUnsupportedAiFillField(fieldName, existing)
       && !isStaleMaterialAiRuleFallbackField(fieldName, existing)
       && !isStaleSizeChartScalarOverride(fieldName, existing)
+      && !isStaleSourceDerivedAgeAiFillField(fieldName, existing, sourceValueText, arrayValue(template.options_json))
       && !isStaleNonSandalAi25ShoeSizeTable({
         fieldName,
         sourceType: existing.source_type,
         tradeId: draft.trade_id,
         tradePath: draft.trade_path,
-      })
+    })
     const shoeDerived = !existingManual ? shoeFieldValues[fieldName] : undefined
     const hasShoeDerivedValue = Boolean(shoeDerived)
-    const sourceValueText = readSourceValue(spu, rule, sourceRows, fieldName)
     const sizeChartDerived = !existingManual && !hasShoeDerivedValue && compactFieldKey(fieldName).includes("尺码表") && isStructuredProductPayloadField({
       field_name: fieldName,
       field_type: template.field_type,
@@ -6171,8 +6205,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
         : skuSizeField && mdmDerived.valueText
           ? "mdm"
           : ruleSourceType
-    const childRequirementActive = templateChildRequirementActive(template, existingFields)
-    const required = childRequirementActive && isProductArchiveFieldLocallyRequired(fieldName, {
+    const required = isProductArchiveFieldLocallyRequired(fieldName, {
       templateRequired: template.required,
       templatePresent: hasValue(template.field_name) || hasValue(template.field_id),
       ruleBlocking: rule.blocking,
@@ -6198,6 +6231,22 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
       manualOverride: existingManual,
       validationStatus: fieldSourceType === "skip" && !required ? "skipped" : missing ? "missing" : "valid",
       validationMessage: missing ? "必填字段缺失" : null,
+    }
+  })
+  return rows.map((row) => {
+    const template = fieldTemplateByName.get(row.fieldName) ?? {}
+    if (templateChildRequirementActive(template, rows)) return row
+    return {
+      ...row,
+      sourceType: "skip",
+      sourceRef: null,
+      valueText: null,
+      valueJson: {},
+      required: false,
+      blocking: false,
+      manualOverride: false,
+      validationStatus: "skipped",
+      validationMessage: null,
     }
   })
 }
@@ -8283,6 +8332,29 @@ function isStaleSizeChartScalarOverride(fieldName: unknown, field: JsonRecord) {
     && hasValue(stringValue(field.value_text))
 }
 
+function isProductArchiveAgeFieldName(fieldName: unknown) {
+  const key = compactFieldKey(fieldName)
+  return key === "年龄"
+    || key === "年龄段"
+    || key.includes("适用年龄")
+    || key.includes("适合年龄段")
+}
+
+function isStaleSourceDerivedAgeAiFillField(
+  fieldName: unknown,
+  field: JsonRecord,
+  sourceValueText: string,
+  options: unknown[],
+) {
+  if (!isProductArchiveAgeFieldName(fieldName)) return false
+  const sourceType = stringValue(field.source_type)
+  if (sourceType !== "ai" && sourceType !== "ai_rule_fallback") return false
+  const sourceValue = normalizeProductArchiveDeepdrawFieldValue(fieldName, sourceValueText, options)
+  if (!sourceValue) return false
+  const existingValue = normalizeProductArchiveDeepdrawFieldValue(fieldName, stringValue(field.value_text), options)
+  return sourceValue !== existingValue
+}
+
 function aiFillFieldSnapshot(field: JsonRecord) {
   const updatedAt = field.updated_at == null
     ? null
@@ -8309,6 +8381,7 @@ export function productArchivePayloadFieldValue(field: JsonRecord) {
   const jsonValue = recordValue(field.value_json)
   if (isProductArchiveStructuredSizeFieldName(field.field_name)) {
     const fieldType = stringValue(field.field_type).toUpperCase()
+    if (fieldType === "MULTI_TEXT" && !field.required && !field.blocking) return null
     if (hasProductArchiveSizeChartTableValue(jsonValue)) {
       if (!isStructuredProductPayloadField(field)) return null
       const cleanedValue = cleanProductArchiveSizeChartTableValue(jsonValue)

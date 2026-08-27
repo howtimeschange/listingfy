@@ -231,6 +231,8 @@ test("shoe structured chart is emitted in the create payload", async () => {
   const value = service.productArchivePayloadFieldValue({
     field_name: "尺码表",
     field_type: "MULTI_TEXT",
+    required: true,
+    blocking: true,
     value_text: "",
     value_json: { title: "适合脚长,鞋内长", "26": "15.8-16.2,17" },
   });

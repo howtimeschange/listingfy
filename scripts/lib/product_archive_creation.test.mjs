@@ -2928,6 +2928,8 @@ test("product archive create payload omits scalar size-chart fields", async () =
   assert.deepEqual(service.productArchivePayloadFieldValue({
     field_name: "尺码表",
     field_type: "MULTI_TEXT",
+    required: true,
+    blocking: true,
     value_text: "",
     value_json: { title: "腰围,直裆,裤长", "80cm": "41,0,43", "90cm": "42,0,48" },
   }), { title: "腰围,裤长", "80cm": "41,43", "90cm": "42,48" });
@@ -2940,6 +2942,8 @@ test("product archive create payload omits scalar size-chart fields", async () =
   assert.deepEqual(service.productArchivePayloadFieldValue({
     field_name: "尺码表",
     field_type: "MULTI_TEXT",
+    required: true,
+    blocking: true,
     value_text: "只需要填身高体重",
     value_json: { title: "身高,衣长", "80cm": "80,38" },
   }), { title: "身高,衣长", "80cm": "80,38" });
@@ -2949,17 +2953,63 @@ test("product archive create payload omits scalar size-chart fields", async () =
     value_text: "篮球鞋",
     value_json: {},
   }), "篮球鞋");
-  assert.deepEqual(service.productArchivePayloadFieldValue({
+  assert.equal(service.productArchivePayloadFieldValue({
     field_name: "多平台尺码",
     field_type: "MULTI_TEXT",
     value_text: "得物",
     value_json: { title: "平台,尺码", "80cm": "得物,80" },
-  }), { title: "平台,尺码", "80cm": "得物,80" });
+  }), null);
   assert.equal(service.productArchivePayloadFieldValue({
     field_name: "颜色",
     value_text: "卡其,贝壳卡50230",
     value_json: {},
   }), "卡其,贝壳卡50230");
+});
+
+test("product archive child fields are skipped unless the parent value activates them", async () => {
+  const [service, serviceSource] = await Promise.all([
+    import("../../web/server/services/product-archive-drafts.ts"),
+    readText(files.draftService),
+  ]);
+  const inventoryTemplate = {
+    raw_payload_json: {
+      attributes: {
+        isChildAttr: true,
+        parentAttr: ["货源类别"],
+        parentAttrValue: "现货",
+      },
+    },
+  };
+  const xhsTemplate = {
+    rawPayload: {
+      attributes: {
+        isChildAttr: true,
+        parentAttr: ["小红书发货时间"],
+        parentAttrValue: "相对发货时间",
+      },
+    },
+  };
+
+  assert.equal(
+    service.templateChildRequirementActive(inventoryTemplate, [
+      { field_name: "货源类别", value_text: "订货" },
+      { field_name: "是否库存", value_text: "否" },
+    ]),
+    false,
+  );
+  assert.equal(
+    service.templateChildRequirementActive(inventoryTemplate, [
+      { field_name: "货源类别", value_text: "现货" },
+    ]),
+    true,
+  );
+  assert.equal(
+    service.templateChildRequirementActive(xhsTemplate, [
+      { fieldName: "小红书发货时间", valueText: "相对发货时间" },
+    ]),
+    true,
+  );
+  assert.match(serviceSource, /templateChildRequirementActive\(template, rows\)/);
 });
 
 test("product archive payload aligns structured size rows with selected size field values", async () => {
@@ -4023,6 +4073,53 @@ test("product archive service follows DeepDraw field adjustment doc for optional
   ), false);
 });
 
+test("product archive shoe required fields derive from trusted launch and brand evidence", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const spu = {
+    spu_code: "208426140203",
+    spu_name: "儿童户外鞋",
+    price_tag: 359,
+    brand_code: "20",
+    brand_name: "巴拉巴拉",
+    product_line_name: "鞋品",
+    middle_class_name: "运动鞋",
+    subclass_name: "户外鞋",
+  };
+  const sourceRows = [
+    {
+      source_type: "launch_plan",
+      row_json: {
+        "大货款号": "208426140203",
+        "属性": "专供新品",
+        "尺码段": "26-40",
+        "吊牌价": "359",
+        "鞋品企业名称": "杭州测试鞋业有限公司",
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>运动鞋（新）>>儿童户外鞋",
+      },
+    },
+  ];
+  const derive = (fieldName, rows = sourceRows) => service.buildProductArchiveSourceDerivedFieldValue(fieldName, {
+    spu,
+    sourceRows: rows,
+  });
+
+  assert.equal(derive("商品市场价"), "359");
+  assert.equal(derive("生产/经销厂家"), "浙江森马服饰股份有限公司");
+  assert.equal(derive("厂家地址"), "温州市瓯海区娄桥工业园南汇路98号");
+  assert.equal(derive("货源类别"), "订货");
+  assert.equal(derive("产地"), "浙江杭州");
+  assert.equal(derive("产地", [
+    {
+      source_type: "launch_plan",
+      row_json: {
+        "大货款号": "208426140203",
+        "尺码段": "26-40",
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>运动鞋（新）>>儿童户外鞋",
+      },
+    },
+  ]), "");
+});
+
 test("product archive service maps launch-plan size segments to Balabala age ranges", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const deriveAge = (sizeSegment, spu = {}, fieldName = "适用年龄") => service.buildProductArchiveSourceDerivedFieldValue(fieldName, {
@@ -4045,6 +4142,7 @@ test("product archive service maps launch-plan size segments to Balabala age ran
   assert.equal(deriveAge("19-24", { product_line_name: "鞋品" }), "4-24个月");
   assert.equal(deriveAge("25-33", { product_line_name: "鞋品" }), "3-7岁");
   assert.equal(deriveAge("34-39", { product_line_name: "鞋品" }), "8-14岁");
+  assert.equal(deriveAge("26-40", { product_line_name: "鞋品" }), "7岁-14岁");
   assert.equal(deriveAge("90-130", {}, "淘宝天猫适用年龄"), "2-7岁");
   assert.equal(deriveAge("130-175", {}, "适合年龄段(多选)"), "7-16岁");
 });
@@ -4692,6 +4790,11 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "婴幼童(1~3岁，80~100cm)" },
     { value: "中小童(3~8岁，100~140cm)" },
   ]), "中小童(3~8岁，100~140cm)");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄", "7岁-14岁", [
+    { value: "3-14岁" },
+    { value: "7岁-14岁" },
+    { value: "8岁（含）—14岁（不含）" },
+  ]), "7岁-14岁");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄(多选)", "2-7岁", [
     { value: "1-3岁" },
     { value: "2岁" },
@@ -4702,6 +4805,30 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "7岁" },
     { value: "6-9岁" },
   ]), "2岁;3岁;4岁;5岁;6岁;7岁");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄(多选)", "7岁-14岁", [
+    { value: "1-3岁" },
+    { value: "7岁" },
+    { value: "8岁" },
+    { value: "9岁" },
+    { value: "10岁" },
+    { value: "11岁" },
+    { value: "12岁" },
+    { value: "13岁" },
+    { value: "14岁" },
+    { value: "14岁以上" },
+  ]), "7岁;8岁;9岁;10岁;11岁;12岁;13岁;14岁");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄(多选)", "7岁;8岁;9岁;10岁;11岁;12岁;13岁;14岁", [
+    { value: "1-3岁" },
+    { value: "7岁" },
+    { value: "8岁" },
+    { value: "9岁" },
+    { value: "10岁" },
+    { value: "11岁" },
+    { value: "12岁" },
+    { value: "13岁" },
+    { value: "14岁" },
+    { value: "14岁以上" },
+  ]), "7岁;8岁;9岁;10岁;11岁;12岁;13岁;14岁");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄(多选)", "7-16岁", [
     { value: "7岁" },
     { value: "8岁" },
