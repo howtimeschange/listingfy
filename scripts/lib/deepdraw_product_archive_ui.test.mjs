@@ -578,8 +578,12 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /thumbnail_image_url/);
   assert.match(draftListPage, /thumbnail_file_name/);
   assert.match(draftListPage, /function DraftThumbnail/);
+  assert.match(draftListPage, /function draftListDisplayImage/);
+  assert.match(draftListPage, /referenceImages\.find\(isFlatReferenceImage\)/);
+  assert.match(draftListPage, /function isFlatReferenceImage/);
+  assert.match(draftListPage, /asset_kind/);
   assert.match(draftListPage, /loading="eager"/);
-  assert.match(draftListPage, /onError=\{\(\) => setFailed\(true\)\}/);
+  assert.match(draftListPage, /onError=\{\(\) => setFailedImageId\(image\.id\)\}/);
   assert.match(draftListPage, /asset_package_image_count/);
   assert.match(draftListPage, /hangtag_upload_count/);
   assert.match(draftListPage, /washlabel_upload_count/);

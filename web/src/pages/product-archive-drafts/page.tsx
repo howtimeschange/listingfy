@@ -102,6 +102,7 @@ interface ProductArchiveDraftImagePreview {
   id: number | string
   draft_id?: number
   kind?: DraftAssetKind
+  asset_kind?: string | null
   label: string
   file_name?: string | null
   original_file_name?: string | null
@@ -760,6 +761,17 @@ function previewableImages(images: ProductArchiveDraftImagePreview[]) {
   return images.filter((image) => Boolean(image.preview_url))
 }
 
+function previewImageIdentityText(image: ProductArchiveDraftImagePreview) {
+  return `${textValue(image.label)} ${textValue(image.original_file_name)} ${textValue(image.file_name)}`.toLowerCase()
+}
+
+function isFlatReferenceImage(image: ProductArchiveDraftImagePreview) {
+  const assetKind = textValue(image.asset_kind).toLowerCase()
+  if (assetKind === "flat_image") return true
+  if (assetKind === "model_image") return false
+  return !/(有模拍|模拍|model)/i.test(previewImageIdentityText(image))
+}
+
 function HoverImagePreview({
   images,
   children,
@@ -985,17 +997,10 @@ function DraftThumbnail({
   item: ProductArchiveDraftRow
   onPreview: (target: ImagePreviewDialogTarget) => void
 }) {
-  const [failed, setFailed] = useState(false)
-  const label = item.thumbnail_file_name ?? item.spu_code
-  const image: ProductArchiveDraftImagePreview | null = item.thumbnail_full_url || item.thumbnail_image_url
-    ? {
-        id: `thumbnail-${item.id}`,
-        label,
-        preview_url: item.thumbnail_preview_url ?? item.thumbnail_full_url ?? item.thumbnail_image_url,
-        full_url: item.thumbnail_full_url,
-        thumbnail_url: item.thumbnail_image_url,
-      }
-    : null
+  const [failedImageId, setFailedImageId] = useState<number | string | null>(null)
+  const image = draftListDisplayImage(item)
+  const label = image ? previewImageLabel(image) : item.spu_code
+  const failed = image ? failedImageId === image.id : false
   const thumbnailUrl = image?.thumbnail_url
   if (!image || !thumbnailUrl || failed) {
     return (
@@ -1025,7 +1030,7 @@ function DraftThumbnail({
             alt={label}
             className="h-full w-full object-cover"
             loading="eager"
-            onError={() => setFailed(true)}
+            onError={() => setFailedImageId(image.id)}
           />
           <span className="absolute right-1 top-1 rounded-full bg-background/90 p-1 text-muted-foreground opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
             <Maximize2 className="size-3" />
@@ -1038,6 +1043,25 @@ function DraftThumbnail({
 
 function draftImageGroups(item: ProductArchiveDraftRow): ProductArchiveDraftImagePreviewGroups {
   return item.image_previews ?? { reference: [], hangtag: [], washlabel: [] }
+}
+
+function draftThumbnailImage(item: ProductArchiveDraftRow): ProductArchiveDraftImagePreview | null {
+  const label = item.thumbnail_file_name ?? item.spu_code
+  return item.thumbnail_full_url || item.thumbnail_image_url
+    ? {
+        id: `thumbnail-${item.id}`,
+        label,
+        preview_url: item.thumbnail_preview_url ?? item.thumbnail_full_url ?? item.thumbnail_image_url,
+        full_url: item.thumbnail_full_url,
+        thumbnail_url: item.thumbnail_image_url,
+      }
+    : null
+}
+
+function draftListDisplayImage(item: ProductArchiveDraftRow | null): ProductArchiveDraftImagePreview | null {
+  if (!item) return null
+  const referenceImages = previewableImages(draftImageGroups(item).reference)
+  return referenceImages.find(isFlatReferenceImage) ?? referenceImages[0] ?? draftThumbnailImage(item)
 }
 
 function previewImageKind(image: ProductArchiveDraftImagePreview): DraftAssetKind {
@@ -1145,15 +1169,7 @@ function AssetPackageCell({
 }
 
 function draftMainPreviewImage(item: ProductArchiveDraftRow | null): ProductArchiveDraftImagePreview | null {
-  if (!item || (!item.thumbnail_full_url && !item.thumbnail_image_url)) return null
-  const label = item.thumbnail_file_name ?? item.spu_code
-  return {
-    id: `thumbnail-${item.id}`,
-    label,
-    preview_url: item.thumbnail_preview_url ?? item.thumbnail_full_url ?? item.thumbnail_image_url,
-    full_url: item.thumbnail_full_url,
-    thumbnail_url: item.thumbnail_image_url,
-  }
+  return draftListDisplayImage(item)
 }
 
 function EvidenceImageTile({

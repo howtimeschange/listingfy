@@ -7350,10 +7350,12 @@ function serializeProductArchiveDraftListImagePreview(image: JsonRecord) {
     || stringValue(image.file_name)
     || `图片 ${image.id}`
   const isPdf = isProductArchiveDraftPdfAsset(image)
+  const payload = recordValue(image.raw_payload_json)
   return {
     id: image.id,
     draft_id: image.draft_id,
     kind: productArchiveDraftListImageKind(image),
+    asset_kind: stringValue(payload.asset_kind) || null,
     label,
     file_name: image.file_name,
     original_file_name: image.original_file_name,
@@ -7377,7 +7379,14 @@ function listProductArchiveDraftImagePreviews(db: SyncPostgresDatabase, draftIds
     select id, draft_id, source_type, source_ref, file_name, original_file_name, mime_type, width, height, raw_payload_json, sort_no
     from product_archive_draft_image
     where draft_id in (${ids.map(() => "?").join(",")})
-    order by draft_id, sort_no, id
+    order by draft_id,
+      case
+        when raw_payload_json #>> '{asset_kind}' = 'flat_image' then 0
+        when raw_payload_json #>> '{asset_kind}' = 'model_image' then 1
+        else 2
+      end,
+      sort_no,
+      id
   `).all(...ids) as JsonRecord[]
   for (const row of rows) {
     const draftId = Number(row.draft_id)
@@ -7631,7 +7640,12 @@ export function listProductArchiveDrafts(db: SyncPostgresDatabase, input: ListDr
         select image.id
         from product_archive_draft_image image
         where image.draft_id = draft.id
-        order by case when image.source_type = 'crawshrimp_asset_package' then 0 else 1 end,
+        order by case
+            when image.source_type = 'crawshrimp_asset_package' and image.raw_payload_json #>> '{asset_kind}' = 'flat_image' then 0
+            when image.source_type = 'crawshrimp_asset_package' and image.raw_payload_json #>> '{asset_kind}' = 'model_image' then 1
+            when image.source_type = 'crawshrimp_asset_package' then 2
+            else 3
+          end,
           image.sort_no,
           image.id
         limit 1
@@ -7640,7 +7654,12 @@ export function listProductArchiveDrafts(db: SyncPostgresDatabase, input: ListDr
         select coalesce(image.original_file_name, image.file_name)
         from product_archive_draft_image image
         where image.draft_id = draft.id
-        order by case when image.source_type = 'crawshrimp_asset_package' then 0 else 1 end,
+        order by case
+            when image.source_type = 'crawshrimp_asset_package' and image.raw_payload_json #>> '{asset_kind}' = 'flat_image' then 0
+            when image.source_type = 'crawshrimp_asset_package' and image.raw_payload_json #>> '{asset_kind}' = 'model_image' then 1
+            when image.source_type = 'crawshrimp_asset_package' then 2
+            else 3
+          end,
           image.sort_no,
           image.id
         limit 1

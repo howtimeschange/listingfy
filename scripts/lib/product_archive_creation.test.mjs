@@ -130,6 +130,9 @@ test("product archive draft service is PG-first and covers build validate patch 
   assert.match(service, /正在提交的草稿不能删除/);
   assert.match(service, /delete from product_archive_draft[\s\S]*where id = \?[\s\S]*and submit_claim_token is null[\s\S]*returning/i);
   assert.match(service, /thumbnail_image_url/);
+  assert.match(service, /asset_kind/);
+  assert.match(service, /raw_payload_json #>> '\{asset_kind\}' = 'flat_image'/);
+  assert.match(service, /raw_payload_json #>> '\{asset_kind\}' = 'model_image'/);
   assert.match(service, /asset_package_image_count/);
   assert.match(service, /hangtag_upload_count/);
   assert.match(service, /washlabel_upload_count/);
@@ -4361,6 +4364,7 @@ test("product archive asset package helpers classify reference images and model 
   assert.match(route, /source_type\) !== "crawshrimp_asset_package"/);
   assert.match(route, /assertLocalImageFile\(\{ rootDir: DRAFT_IMAGE_DIR, filePath: localPath \}\)/);
   assert.match(route, /assertLocalProductArchiveAssetFile\(\{ rootDir: DRAFT_IMAGE_DIR, filePath: localPath \}\)/);
+  assert.match(serviceSource, /asset_kind: stringValue\(payload\.asset_kind\) \|\| null/);
   assert.match(serviceSource, /thumbnail_image_url: draftImagePreviewUrl\(row\.thumbnail_image_id, \{ thumbnail: true \}\)/);
 });
 
