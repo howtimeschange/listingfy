@@ -136,9 +136,9 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
   assert.deepEqual(result["尺码类型"], { valueText: "欧码(童鞋)", valueJson: {} });
   assert.deepEqual(result["尺码表"].valueJson, {
     title: "适合脚长,鞋内长",
-    "26": "16,17",
-    "27": "16.5,17.7",
-    "38": "24,25",
+    "26码": "16,17",
+    "27码": "16.5,17.7",
+    "38码": "24,25",
   });
   assert.deepEqual(result["唯品会尺码表"].valueJson, {
     title: "中国码,脚长,鞋内长",
@@ -161,7 +161,7 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
   assert.deepEqual(result["25鞋子模板类型"], { valueText: "运动", valueJson: {} });
   assert.deepEqual(result["22Q4-童鞋尺码表"], { valueText: "轻跑鞋", valueJson: {} });
   assert.equal(result["25鞋子尺码表"], undefined);
-  assert.deepEqual(Object.keys(result["尺码表"].valueJson), ["26", "27", "38", "title"].sort((a, b) => a === "title" ? 1 : b === "title" ? -1 : Number(a) - Number(b)));
+  assert.deepEqual(Object.keys(result["尺码表"].valueJson), ["26码", "27码", "38码", "title"]);
 });
 
 test("shoe chart builder refuses clothing placeholders and unsupported live columns", async () => {
@@ -176,7 +176,7 @@ test("shoe chart builder refuses clothing placeholders and unsupported live colu
   });
 
   assert.equal(result["尺码表"].valueJson.title, "适合脚长,鞋内长");
-  assert.equal(result["尺码表"].valueJson["26"], "16,17");
+  assert.equal(result["尺码表"].valueJson["26码"], "16,17");
   assert.doesNotMatch(JSON.stringify(result), /身高|衣长|胸围|袖长/);
 });
 
@@ -295,9 +295,9 @@ test("shoe launch-plan evidence fills required free-text and platform marker fie
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("商品详情", input), "轻弹止滑大底，鞋面防泼水，旋钮扣易穿脱。");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("最快出货时间", input), "48小时");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("材质(AKC)", input), "织物");
-  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("单色平台AI标", input), "坑位1");
-  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("多色平台AI", input), "坑位1");
-  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("详情页AI标注", input), "展示");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("单色平台AI标", input), "");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("多色平台AI", input), "");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("详情页AI标注", input), "");
 });
 
 test("shoe launch-plan evidence deterministically fills required material, age, origin and channel enums", async () => {
@@ -326,7 +326,7 @@ test("shoe launch-plan evidence deterministically fills required material, age, 
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("帮面材质(多选)", input), "织物");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("材质(1688)", input), "织物");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("材质功能", input), "防渗水");
-  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("鞋垫材质", input), "防渗水羊巴革料，内里短毛绒，保温更安心。");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("鞋垫材质", input), "");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("产地", input), "浙江杭州");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("原产国(AKC)", input), "中国");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("适用年龄", input), "7岁-14岁");
@@ -366,7 +366,7 @@ test("shoe static facts fall back to older launch-plan rows without reviving dyn
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("鞋垫材质", {
     spu: { product_line_name: "鞋品", subclass_name: "雪地靴" },
     sourceRows: rows,
-  }), "最新面料");
+  }), "");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("鞋垫材质", "15mm长毛绒", [
     "纺织品类", "人造长毛绒", "其他",
   ]), "人造长毛绒");

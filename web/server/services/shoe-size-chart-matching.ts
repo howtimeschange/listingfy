@@ -294,6 +294,7 @@ export function buildShoeSizeChartFieldValues(input: {
       rows,
       columns,
       (row, column) => column === "适合脚长" || column === "脚长" ? baselineFoot(row) : innerLength(row),
+      (row) => `${normalizeShoeSkuSize(row.size_value)}码`,
     )
     if (value && columns.length === 2) output["尺码表"] = value
   }

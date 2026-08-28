@@ -2,11 +2,46 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  BALABALA_APPAREL_SIZE_REFERENCE,
+  balabalaApparelAgeTextForSizeRange,
+  balabalaApparelRecommendedSize,
   buildSizeChartForTemplate,
   normalizeDeepdrawSize,
   normalizePlmSizeChartRows,
   readPlmSizeChartWorkbook,
 } from "./product_archive_size_chart.mjs";
+
+test("internalizes Balabala age, weight and sex-by-garment size references", () => {
+  assert.equal(BALABALA_APPAREL_SIZE_REFERENCE.length, 17);
+  assert.equal(balabalaApparelAgeTextForSizeRange("130-170"), "6-16岁");
+  assert.equal(balabalaApparelAgeTextForSizeRange("140cm-175cm"), "8-17岁");
+  assert.equal(balabalaApparelRecommendedSize({ size: "130cm", gender: "男童", garmentType: "卫衣" }), "130/64");
+  assert.equal(balabalaApparelRecommendedSize({ size: 130, gender: "男", garmentType: "下装" }), "130/59");
+  assert.equal(balabalaApparelRecommendedSize({ size: 140, gender: "女童", garmentType: "上装" }), "140/64");
+  assert.equal(balabalaApparelRecommendedSize({ size: 170, gender: "女", garmentType: "裤装" }), "170/72A");
+  assert.equal(balabalaApparelRecommendedSize({ size: 170, gender: "中性", garmentType: "上衣" }), "170/88A");
+  assert.equal(balabalaApparelRecommendedSize({ size: 170, gender: "男女", garmentType: "下装" }), "170/74A");
+  assert.equal(balabalaApparelRecommendedSize({ size: 170, gender: "", garmentType: "下装" }), "");
+});
+
+test("uses the Balabala reference as a fallback for similar apparel size-table fields", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [
+      { "款号": "208426121101", "测量点": "衣长", "尺码": "130", "尺码值": "50.5" },
+      { "款号": "208426121101", "测量点": "衣长", "尺码": "170", "尺码值": "68" },
+    ],
+    spuCode: "208426121101",
+    template: { fieldName: "平台尺码表", options: ["号型", "适合年龄", "体重(kg)", "体重(斤)"] },
+    gender: "女童",
+    garmentType: "下装",
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "号型,适合年龄,体重(kg),体重(斤)",
+    "130cm": "130/53,6-8岁,25,50",
+    "170cm": "170/72A,15-16岁,57.5,115",
+  });
+});
 
 test("normalizes PLM long-table rows and builds a high-confidence top size chart", () => {
   const rows = [
@@ -80,20 +115,57 @@ test("normalizes platform size-chart unit suffixes and pants aliases", () => {
   });
 
   assert.deepEqual(douyin.valueJson, {
-    title: "身高(cm),腰围(cm),臀围(cm),裤长(cm)",
-    "80cm": "80,41,74,43",
+    title: "身高(cm),体重(斤),腰围(cm),臀围(cm),裤长(cm)",
+    "80cm": "80,19,41,74,43",
   });
   assert.deepEqual(haoyiku.valueJson, {
-    title: "身高(cm),腰围(cm),臀围(cm),裤长(cm)",
-    "80cm": "80,41,74,43",
+    title: "身高(cm),体重(kg),腰围(cm),臀围(cm),裤长(cm)",
+    "80cm": "80,9.5,41,74,43",
   });
   assert.deepEqual(vip.valueJson, {
-    title: "身高,腰围,臀围,裤长,前浪,后浪,大腿围",
-    "80cm": "80,41,74,43,21.8,27.1,22",
+    title: "适合年龄,身高,腰围,臀围,裤长,前浪,后浪,大腿围",
+    "80cm": "12-18月,80,41,74,43,21.8,27.1,22",
   });
-  assert.deepEqual(douyin.unmatchedTargets, ["体重(斤)", "备注"]);
-  assert.deepEqual(haoyiku.unmatchedTargets, ["体重(kg)"]);
-  assert.deepEqual(vip.unmatchedTargets, ["号型", "适合年龄"]);
+  assert.deepEqual(douyin.unmatchedTargets, ["备注"]);
+  assert.deepEqual(haoyiku.unmatchedTargets, []);
+  assert.deepEqual(vip.unmatchedTargets, ["号型"]);
+});
+
+test("fills apparel multi-platform sizes while keeping JD values bare", () => {
+  const rows = [
+    { "款号": "208426121101", "测量点": "衣长", "尺码": "130", "尺码值": "50.5" },
+    { "款号": "208426121101", "测量点": "衣长", "尺码": "140", "尺码值": "54" },
+  ];
+
+  const result = buildSizeChartForTemplate({
+    rows,
+    spuCode: "208426121101",
+    template: { fieldName: "多平台尺码", options: ["京东", "天猫", "快手", "微信视频小店", "拼多多"] },
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "京东,天猫,快手,微信视频小店,拼多多",
+    "130cm": "130,130cm,130cm,130cm,130cm",
+    "140cm": "140,140cm,140cm,140cm,140cm",
+  });
+});
+
+test("maps collar sleeve and weight when the PLM source provides them", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [
+      { "款号": "208426121101", "测量点": "领围", "尺码": "130", "尺码值": "34" },
+      { "款号": "208426121101", "测量点": "袖长肩点量", "尺码": "130", "尺码值": "45" },
+      { "款号": "208426121101", "测量点": "建议体重", "尺码": "130", "尺码值": "50" },
+    ],
+    spuCode: "208426121101",
+    template: { fieldName: "尺码表", options: ["领口", "袖长", "体重"] },
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "领口,袖长,体重",
+    "130cm": "34,45,50",
+  });
+  assert.equal(result.mappings.find((item) => item.targetField === "袖长")?.sourcePoint, "袖长肩点量");
 });
 
 test("doubles half-width waist hip and leg-opening measurements only", () => {

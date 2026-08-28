@@ -2436,6 +2436,7 @@ test("product archive AI fill prompt uses trusted draft MDM and source context o
   assert.match(service, /忽略 source_type 为 ai_rule_fallback 的历史值/);
   assert.match(service, /不要因为 options 的顺序选择第一个选项/);
   assert.match(service, /鞋品图案字段在参考图清晰时必须选择最接近的现有枚举/);
+  assert.match(service, /服饰图案字段必须依据参考图/);
   assert.match(service, /confidence 低于 \$\{AI_FILL_MIN_CONFIDENCE\} 的字段不要返回/);
   assert.match(service, /if \(!aiFill\) continue/);
   assert.match(service, /if \(!Number\.isFinite\(confidence\) \|\| confidence < AI_FILL_MIN_CONFIDENCE\) continue/);
@@ -2914,6 +2915,22 @@ test("product archive service derives DeepDraw size-chart fields from PLM source
     "80cm": "80,33,64,26",
   });
   assert.equal(genericValue.sourceType, "size_chart");
+
+  const multiPlatform = service.buildProductArchiveSizeChartFieldValue({
+    fieldName: "多平台尺码",
+    spuCode: "208426121101",
+    sourceRows: [
+      { source_type: "size_chart", row_json: { 款号: "208426121101", 测量点: "衣长", 尺码: "130", 尺码值: "50.5" } },
+      { source_type: "size_chart", row_json: { 款号: "208426121101", 测量点: "衣长", 尺码: "170", 尺码值: "68" } },
+    ],
+    templateOptions: [],
+  });
+  assert.deepEqual(multiPlatform.valueJson, {
+    title: "京东,拼多多,小红书,微信视频小店",
+    "130cm": "130,130cm,130cm,130cm",
+    "170cm": "170,170cm,170cm,170cm",
+  });
+  assert.equal(service.isStructuredProductPayloadField({ field_name: "多平台尺码", field_type: "" }), true);
 });
 
 test("product archive size-chart validation checks size keys and column counts", async () => {
@@ -3238,7 +3255,7 @@ test("product archive fixed counter-price defaults stay scoped outside shoe rule
     spu: { product_line_name: "童装服饰", price_tag: 359 },
     sourceRows: [],
     sourceField: "10000",
-  }), "");
+  }), "359");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("专柜价", {
     spu: { product_line_name: "鞋品", price_tag: 359 },
     sourceRows: [
@@ -3605,13 +3622,14 @@ test("product archive service derives remaining field values from launch plan an
         "内容标题": "【balaOne】巴拉巴拉儿童外套男女2026新秋卡通萌趣满印防护上衣",
         "导购标题": "巴拉巴拉balaOne外套防护连帽衣",
         "推荐理由": "潮流满印外套，防风防泼水透湿",
+        "品类": "外套",
         "FAB": "精选高弹春亚纺贴膜面料，糯弹亲肤，抗皱性强。",
         "面料成分": "成分\n面料：100%聚酯纤维\n薄膜除外\n里料：100%聚酯纤维",
         "面料名称": "春亚纺贴膜",
         "面料文案": "防风防泼水透湿，多方面防护，户外出行无忧",
         "面料三个关键词": "防泼水 防风 透湿",
-        "设计师说——主图4": "春亚纺贴膜面料\n表层防风防泼水透湿\n内里柔软抗静电",
-        "细节文案（不限定8个字，细节数量3-4个）": "1.立体连帽，挡风护脖\n2.小动物痛包，萌趣可爱",
+        "主图4": "春亚纺贴膜面料\n表层防风防泼水透湿\n内里柔软抗静电",
+        "细节文案（不限定8个字，细节数量3-4个，字数尽量不超过12字）": "1.立体连帽，挡风护脖\n2.小动物痛包，萌趣可爱",
         "弹性": "无弹",
       },
     },
@@ -3646,7 +3664,7 @@ test("product archive service derives remaining field values from launch plan an
   assert.equal(derive("商家编码", "款号"), "208326105214");
   assert.equal(derive("奥莱店折扣价", "吊牌价格"), "359");
   assert.equal(derive("专柜价"), "");
-  assert.equal(derive("天猫特卖专柜价", "10000"), "");
+  assert.equal(derive("天猫特卖专柜价", "10000"), "359");
   assert.equal(derive("京东市场价"), "359");
   assert.equal(derive("京东市场价", "固定吊牌价"), "359");
   assert.equal(derive("产品标题", "固定搜索标题"), "巴拉巴拉儿童外套男童女童衣服2026新款秋装卡通萌趣满印防护上衣");
@@ -3658,12 +3676,46 @@ test("product archive service derives remaining field values from launch plan an
   assert.equal(derive("选择期数"), "326");
   assert.equal(derive("主图4文案1", "主图4第1句"), "春亚纺贴膜面料");
   assert.equal(derive("主图4文案2", "主图4第2-3句"), "表层防风防泼水透湿\n内里柔软抗静电");
+  assert.equal(derive("小红书标题", "去掉巴拉巴拉"), "【balaOne】巴拉巴拉儿童外套男女2026新秋卡通萌趣满印防护上衣");
+  assert.equal(derive("主面料成分含量"), "面料：100%聚酯纤维\n薄膜除外\n里料：100%聚酯纤维");
+  const longComposition = `面料：${Array.from({ length: 30 }, (_, index) => `完整材质${index + 1}号1%`).join("、")}`;
+  const trimmedComposition = service.buildProductArchiveSourceDerivedFieldValue("主面料成分含量", {
+    spu: { ...spu, product_line_name: "童装服饰" },
+    sourceRows: [{ source_type: "copywriting", row_json: { "面料成分": longComposition } }],
+  });
+  assert.ok(trimmedComposition.length <= 200);
+  assert.match(trimmedComposition, /1%$/);
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("主面料成分含量", {
+    spu: { ...spu, product_line_name: "童装服饰" },
+    sourceRows: [{ source_type: "copywriting", row_json: { "面料成分": `面料：${"不可拆分材质".repeat(40)}` } }],
+  }), "");
   assert.equal(
     derive("25服装面料文案", "面料名称-面料文案*面料三个关键词"),
-    "春亚纺贴膜\n防风防泼水透湿，多方面防护，户外出行无忧\n防泼水 防风 透湿",
+    "春亚纺贴膜-防风防泼水透湿，多方面防护，户外出行无忧*防泼水-防风-透湿",
   );
-  assert.equal(derive("小红书标题", "去掉巴拉巴拉"), "儿童外套男童女童衣服2026新款秋装卡通萌趣满印防护上衣");
-  assert.equal(derive("主面料成分含量"), "100%");
+  assert.equal(
+    derive("25服饰细节文案"),
+    "立体连帽，挡风护脖*小动物痛包，萌趣可爱",
+  );
+  assert.equal(derive("25面料成分"), "成分\n面料：100%聚酯纤维\n薄膜除外\n里料：100%聚酯纤维");
+  assert.equal(derive("25版型指数"), "");
+  assert.equal(derive("主图4文案1"), "春亚纺贴膜面料");
+  assert.equal(derive("主图4文案2"), "表层防风防泼水透湿\n内里柔软抗静电");
+  assert.equal(derive("快手标题"), "【balaOne】巴拉巴拉儿童外套男女2026新秋卡通萌趣满印防护上衣");
+  assert.equal(derive("天猫导购标题"), "巴拉巴拉balaOne外套防护连帽衣");
+  assert.equal(derive("天猫推荐理由"), "潮流满印外套");
+  assert.equal(derive("商品展示标题"), "巴拉巴拉男女外套");
+  assert.equal(derive("报价方式"), "按产品数量报价");
+  assert.equal(derive("件重尺"), "按规格设置");
+  assert.equal(derive("1688供货方式"), "现货");
+  assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("价格区间", {
+    spu: { ...spu, product_line_name: "童装服饰" },
+    sourceRows,
+    skus: [],
+  }), {
+    valueText: "",
+    valueJson: { title: "产品单价（元）", 1: "359" },
+  });
   assert.equal(derive("微信视频小店标题", "内容平台标题"), "【balaOne】巴拉巴拉儿童外套男女2026新秋卡通萌趣满印防护上衣");
   assert.equal(derive("商品详情"), "潮流满印外套，防风防泼水透湿");
 });
@@ -3725,8 +3777,9 @@ test("product archive service derives down and platform text fields before AI fi
   assert.equal(derive("含绒量(文本)"), "85%");
   assert.equal(derive("绒子含量(文本)"), "85%");
   assert.equal(derive("里料成分含量"), "100%锦纶");
-  assert.equal(derive("里料材质成分含量(多选)"), "聚酰胺纤维");
-  assert.equal(derive("快手标题"), "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖 208426120216");
+  assert.equal(derive("里料材质成分含量(多选)"), "100%聚酰胺纤维");
+  assert.equal(derive("羽绒服洗涤说明"), "羽绒服洗涤说明");
+  assert.equal(derive("快手标题"), "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖");
   assert.equal(derive("拼多多标题"), "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖");
 });
 
@@ -3780,7 +3833,7 @@ test("apparel mapping rules cover the 202426107205 copywriting and Merchant SKU 
   ].join("\n"));
   assert.equal(derive("里料"), "100%锦纶");
   assert.equal(derive("里料成分"), "100%锦纶");
-  assert.equal(derive("适用年龄"), "全阶段");
+  assert.equal(derive("适用年龄"), "1-18岁");
   assert.equal(derive("填充物(文本)"), "灰鸭绒");
   assert.equal(derive("填充物含量"), "90%");
   assert.equal(derive("充绒量(文本)"), "");
@@ -3789,6 +3842,7 @@ test("apparel mapping rules cover the 202426107205 copywriting and Merchant SKU 
   assert.equal(derive("会员打折"), "不参与会员打折");
   assert.equal(derive("拼多多单买价"), "268.9");
   assert.equal(derive("拼多多团购价"), "267.9");
+  assert.equal(derive("拼多多拼团价"), "267.9");
   assert.equal(
     derive("试穿报告表兼容平台"),
     "1688;天猫;京东;唯品会;有赞;拼多多;小红书;抖音;快手;微信视频小店",
@@ -3807,6 +3861,8 @@ test("apparel mapping rules cover the 202426107205 copywriting and Merchant SKU 
     "唯品会条形码",
     "拼多多单买价",
     "拼多多团购价",
+    "天猫特卖折扣价",
+    "天猫特卖专柜价",
     "单品货号",
     "小红书商家编码",
     "天猫SKU搜索标题",
@@ -3835,13 +3891,15 @@ test("apparel mapping rules cover the 202426107205 copywriting and Merchant SKU 
       "2026-08",
       "0",
       "INNER-80821-090",
-      "6900000000090",
+      "",
       "269.9",
       "269.9",
       "20242610720580821",
       "6900000000090",
       "268.9",
       "267.9",
+      "269.9",
+      "269.9",
       "6900000000090",
       "20242610720580821090",
       "巴拉巴拉儿童羽绒服男女童外套潮",
@@ -4264,6 +4322,45 @@ test("product archive service maps every main-fabric component for 208326105206-
   ]), "棉;聚酯纤维");
 });
 
+test("product archive service separates flattened apparel composition sections", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const composition = "成分主面料复合面布:94.1%聚酯纤维5.9%氨纶复合底布:100%聚酯纤维梭织面料:100%锦纶帽里料:63.7%聚酯纤维36.3%棉填充物:100%聚酯纤维";
+  const sourceRows = [{
+    source_type: "copywriting",
+    row_json: { "款号": "208426121101", "面料成分": composition },
+  }];
+  const derive = (fieldName) => service.buildProductArchiveSourceDerivedFieldValue(fieldName, {
+    spu: { spu_code: "208426121101", product_line_name: "中童服装" },
+    sourceRows,
+  });
+
+  assert.equal(derive("材质成分"), "聚酯纤维,94.1;氨纶,5.9");
+  assert.equal(derive("面料(多选)"), "聚酯纤维;氨纶;聚酰胺纤维;棉");
+  assert.equal(derive("里料材质成分含量(多选)"), "63.7%聚酯纤维;36.3%棉");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("里料材质成分含量(多选)", derive("里料材质成分含量(多选)"), [
+    { value: "95%及以上" },
+    { value: "51%(含)-70%(含)" },
+    { value: "30%(含)-50%(含)" },
+    { value: "29%及以下" },
+  ]), "51%(含)-70%(含);30%(含)-50%(含)");
+  assert.equal(service.resolveProductArchiveSourceRuleValue("里料材质成分含量(多选)", {
+    spu: { spu_code: "208426121101", product_line_name: "中童服装" },
+    sourceRows,
+    rule: { source_type: "copywriting", source_field: "面料成分" },
+  }), "63.7%聚酯纤维;36.3%棉");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("面料(多选)", derive("面料(多选)"), [
+    { value: "锦纶" },
+    { value: "聚酯纤维" },
+    { value: "精梳棉" },
+    { value: "棉布" },
+    { value: "其他" },
+  ]), "聚酯纤维;其他;锦纶;棉布");
+  assert.equal(
+    derive("主面料成分含量"),
+    "主面料复合面布：94.1%聚酯纤维5.9%氨纶\n复合底布：100%聚酯纤维\n梭织面料：100%锦纶\n帽里料：63.7%聚酯纤维36.3%棉\n填充物：100%聚酯纤维",
+  );
+});
+
 test("product archive material mapping does not fall back to launch-plan composition", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const sourceRows = [{
@@ -4324,11 +4421,11 @@ test("product archive service follows DeepDraw field adjustment doc for optional
   assert.equal(derive("微信视频小店副标题"), "");
   assert.equal(derive("快手商品卖点"), "");
   assert.equal(derive("成分含量"), "100%");
-  assert.equal(derive("主面料成分含量"), "100%");
+  assert.equal(derive("主面料成分含量"), "面料：100%聚酯纤维");
   assert.equal(derive("商品详情"), "潮流满印外套，防风防泼水透湿");
   assert.equal(derive("安全等级"), "");
-  assert.equal(derive("适用年龄多选"), "2-7岁");
-  assert.equal(derive("适用年龄文本"), "2-7岁");
+  assert.equal(derive("适用年龄多选"), "1-8岁");
+  assert.equal(derive("适用年龄文本"), "1-8岁");
   assert.equal(derive("22Q4-童鞋卖点", "公主鞋"), "");
   assert.equal(derive("25鞋子模板类型", "运动"), "");
   assert.equal(derive("文胸图标", "文胸二阶段"), "");
@@ -4416,6 +4513,7 @@ test("product archive shoe required fields derive from trusted launch and brand 
   assert.equal(derive("货源类别"), "现货");
   assert.equal(derive("单买价"), "358");
   assert.equal(derive("团购价"), "357");
+  assert.equal(derive("拼团价"), "357");
   assert.equal(derive("抖音参考价"), "359");
   assert.equal(derive("奥莱店折扣价"), "359");
   assert.equal(derive("产品单价"), "359");
@@ -4447,7 +4545,7 @@ test("product archive shoe required fields derive from trusted launch and brand 
   assert.equal(derive("天猫导购标题"), "儿童户外鞋防滑耐磨");
   assert.equal(derive("天猫推荐理由"), "防滑耐磨，校园日常都好穿");
   assert.equal(derive("商品展示标题"), "巴拉巴拉男 and 女中童户外鞋");
-  assert.equal(derive("25实拍文案"), "鞋头防撞-行走更安心\n鞋底防滑-雨天稳抓地");
+  assert.equal(derive("25实拍文案"), "鞋头防撞-行走更安心*鞋底防滑-雨天稳抓地");
   assert.equal(derive("25产品名称"), "儿童户外鞋");
   assert.equal(derive("25鞋子模板类型"), "");
   assert.equal(derive("尺码类型"), "欧码（童鞋）");
@@ -4458,7 +4556,27 @@ test("product archive shoe required fields derive from trusted launch and brand 
   assert.equal(derive("唯品会材质"), "帮面材料：合成革/织物\n里料材质：网布\n鞋底材质：EVA+橡胶");
   assert.equal(derive("25面料成分"), "帮面材料：合成革/织物\n里料材质：网布\n鞋底材质：EVA+橡胶");
   assert.equal(derive("材质(1688)"), "合成革/织物");
-  assert.equal(derive("鞋垫材质"), "加厚鞋垫，舒适保暖");
+  assert.equal(derive("鞋垫材质"), "");
+  assert.equal(derive("25柔软指数"), "");
+  assert.equal(derive("25厚薄指数"), "");
+  assert.equal(derive("25弹力指数"), "");
+  assert.equal(derive("25版型指数"), "");
+  assert.equal(derive("商品包装重量"), "");
+  assert.equal(derive("商品包装长"), "");
+  assert.equal(derive("商品包装宽"), "");
+  assert.equal(derive("商品包装高"), "");
+  assert.equal(service.isProductArchiveBusinessBlankField("商品重量", spu, sourceRows), false);
+  assert.equal(service.isProductArchiveBusinessBlankField("京东商品包装重量", spu, sourceRows), false);
+  assert.equal(derive("25服饰细节文案"), "");
+  assert.equal(derive("25服饰品牌样式"), "");
+  assert.equal(derive("羽绒服洗涤说明"), "");
+  assert.equal(derive("详情页AI标注"), "");
+  assert.equal(derive("单色平台AI标"), "");
+  assert.equal(derive("多色平台AI"), "");
+  assert.equal(derive("试穿报告表"), "");
+  assert.equal(derive("质检报告"), "");
+  assert.equal(service.isProductArchiveBusinessBlankField("试穿报告表", spu, sourceRows), true);
+  assert.equal(service.isProductArchiveBusinessBlankField("质检报告", spu, sourceRows), true);
   assert.equal(derive("适用季节"), "2026年秋季");
   assert.equal(derive("上市时间(文本)"), "2026年秋季");
   assert.equal(
@@ -4512,13 +4630,13 @@ test("product archive shoe required fields derive from trusted launch and brand 
     merchantSku.valueJson["黑色001"]["36"],
     [
       "359", "208426140203", "2026-08", "0", "INNER-SHOE-36", "", "359", "359",
-      "208426140203001", "6900000000036", "358", "357", "20842614020300136",
+      "208426140203001", "6900000000036", "358", "357", "6900000000036",
       "208426140203001", "儿童户外鞋防滑耐磨",
     ].join(","),
   );
 });
 
-test("shoe display title ignores stale mapping placeholders and combines per-color genders", async () => {
+test("shoe and apparel display titles ignore stale mapping placeholders", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const spu = {
     spu_code: "208426140204",
@@ -4555,6 +4673,26 @@ test("shoe display title ignores stale mapping placeholders and combines per-col
     }),
     "巴拉巴拉男 and 女中幼童运动鞋",
   );
+  assert.equal(
+    service.resolveProductArchiveSourceRuleValue("商品展示标题", {
+      spu: {
+        spu_code: "208426121101",
+        brand_name: "巴拉巴拉",
+        product_line_name: "中童服装",
+        gender_name: "男",
+        subclass_name: "连帽卫衣",
+      },
+      sourceRows: [{
+        source_type: "copywriting",
+        row_json: { "性别": "男", "品类": "卫衣", "尺码": "130-170" },
+      }],
+      rule: {
+        source_type: "fixed",
+        default_value: "品牌+性别+品类",
+      },
+    }),
+    "巴拉巴拉男卫衣",
+  );
 });
 
 test("product archive service maps launch-plan size segments to Balabala age ranges", async () => {
@@ -4572,17 +4710,26 @@ test("product archive service maps launch-plan size segments to Balabala age ran
   assert.equal(deriveAge("52-66"), "新生儿, 3个月");
   assert.equal(deriveAge("66-90"), "3-18个月");
   assert.equal(deriveAge("73-100"), "6个月-2岁");
-  assert.equal(deriveAge("90-130"), "2-7岁");
-  assert.equal(deriveAge("90-140"), "2-8岁");
-  assert.equal(deriveAge("90-180"), "全阶段");
-  assert.equal(deriveAge("130-175"), "7-16岁");
-  assert.equal(deriveAge("140-175"), "8-16岁");
+  assert.equal(deriveAge("90-130"), "1-8岁");
+  assert.equal(deriveAge("90-140"), "1-11岁");
+  assert.equal(deriveAge("90-180"), "1-18岁");
+  assert.equal(deriveAge("130-170"), "6-16岁");
+  assert.equal(deriveAge("130-175"), "6-17岁");
+  assert.equal(deriveAge("140-175"), "8-17岁");
   assert.equal(deriveAge("19-24", { product_line_name: "鞋品" }), "4-24个月");
   assert.equal(deriveAge("25-33", { product_line_name: "鞋品" }), "3-7岁");
   assert.equal(deriveAge("34-39", { product_line_name: "鞋品" }), "8-14岁");
   assert.equal(deriveAge("26-40", { product_line_name: "鞋品" }), "7岁-14岁");
-  assert.equal(deriveAge("90-130", {}, "淘宝天猫适用年龄"), "2-7岁");
-  assert.equal(deriveAge("130-175", {}, "适合年龄段(多选)"), "7-16岁");
+  assert.equal(deriveAge("90-130", {}, "淘宝天猫适用年龄"), "1-8岁");
+  assert.equal(deriveAge("130-175", {}, "适合年龄段(多选)"), "6-17岁");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用人群(多选)", "6-16岁", [
+    { value: "青少年" },
+    { value: "幼童" },
+    { value: "小童" },
+    { value: "婴童" },
+    { value: "亲子" },
+    { value: "中大童" },
+  ]), "中大童");
 });
 
 test("product archive local requirement follows the DeepDraw template when present", async () => {
@@ -4701,6 +4848,7 @@ test("product archive AI field strategies productize P0 P1 P2 field coverage", a
   assert.deepEqual(strategies.map((strategy) => strategy.priority), ["P0", "P1", "P1", "P2"]);
   assert.equal(service.productArchiveAiFieldStrategyForField("是否有腰带")?.priority, "P0");
   assert.equal(service.productArchiveAiFieldStrategyForField("淘宝天猫适用年龄")?.priority, "P1");
+  assert.equal(service.productArchiveAiFieldStrategyForField("穿着方式")?.priority, "P0");
   assert.equal(service.productArchiveAiFieldStrategyForField("面料(多选)")?.priority, "P1");
   assert.equal(service.productArchiveAiFieldStrategyForField("里料成分")?.priority, "P1");
   assert.equal(service.productArchiveAiFieldStrategyForField("详情页AI标注")?.priority, "P2");
@@ -5184,6 +5332,11 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "肩开扣" },
     { value: "纽扣" },
   ]), "纽扣");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("是否带帽", "连帽", [
+    { value: "无帽" },
+    { value: "有帽不可拆" },
+    { value: "有帽可拆" },
+  ]), "有帽可拆");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("面料(多选)", "面料：100%聚酯纤维", [
     { value: "聚酯纤维" },
     { value: "梭织布" },
@@ -5281,7 +5434,7 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "13岁" },
     { value: "14岁" },
     { value: "14岁以上" },
-  ]), "7岁;8岁;9岁;10岁;11岁;12岁;13岁;14岁以上");
+  ]), "7岁;8岁;9岁;10岁;11岁;12岁;13岁;14岁");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄(多选)", "8-14岁", [
     { value: "8岁" },
     { value: "9岁" },
