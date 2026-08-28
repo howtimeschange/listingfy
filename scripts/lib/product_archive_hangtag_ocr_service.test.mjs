@@ -200,6 +200,109 @@ test("washlabel OCR down fill weight maps onto down fill text field", async () =
   ]);
 });
 
+test("202426107205 OCR maps C-class safety and takes the lower fill weight across colors", async () => {
+  const service = await import("../../web/server/services/product-archive-hangtag-ocr.ts");
+  const db = {
+    prepare(sql) {
+      return {
+        all(...params) {
+          if (/from product_archive_draft\s+where spu_code in/i.test(sql)) {
+            assert.deepEqual(params, ["202426107205"]);
+            return [{
+              id: 960,
+              spu_code: "202426107205",
+              tenant_name: "电商巴拉巴拉",
+              merchant_id: "739",
+              trade_id: "629",
+              title: "羽绒服",
+              status: "manual_review",
+              updated_at: "2026-08-28T01:00:00Z",
+            }];
+          }
+          if (/from product_archive_draft_field/i.test(sql)) {
+            return [
+              {
+                id: 9601,
+                field_name: "安全等级",
+                field_type: "SINGLE_SELECT",
+                value_text: "",
+                value_json: {},
+                source_type: "manual",
+                required: true,
+                blocking: true,
+                options_json: [{ value: "A类" }, { value: "B类" }, { value: "C类" }],
+              },
+              {
+                id: 9602,
+                field_name: "充绒量(文本)",
+                field_type: "TEXT",
+                value_text: "",
+                value_json: {},
+                source_type: "manual",
+                required: true,
+                blocking: true,
+                options_json: [],
+              },
+            ];
+          }
+          return [];
+        },
+      };
+    },
+  };
+  const baseWeights = "90 | 100 | 110 | 120 | 130 | 140 | 150 | 160 | 165 | 170 | 175 | 180\n13 | 15 | 17 | 19 | 21 | 24 | 27 | 30 | 33 | 35 | 37 | 39";
+  const largerWeights = "90 | 100 | 110 | 120 | 130 | 140 | 150 | 160 | 165 | 170 | 175 | 180\n14 | 16 | 18 | 20 | 22 | 25 | 28 | 31 | 34 | 36 | 38 | 40";
+  const preview = service.previewProductArchiveHangtagWashlabelOcr(db, {
+    documents: [
+      {
+        fileName: "202426107205吊牌.pdf",
+        fileType: "pdf",
+        sourceKind: "hangtag",
+        detectedSpuCode: "202426107205",
+        status: "recognized",
+        pageCount: 4,
+        fields: [{ key: "safetyCategory", label: "安全等级", value: "符合GB 31701 C类", confidence: "high", sourceKind: "hangtag" }],
+      },
+      {
+        fileName: "202426107205-80821-洗唛.jpg",
+        fileType: "image",
+        sourceKind: "washlabel",
+        detectedSpuCode: "202426107205",
+        status: "recognized",
+        pageCount: 1,
+        fields: [{ key: "downFillWeight", label: "充绒量", value: largerWeights, confidence: "high", sourceKind: "washlabel" }],
+      },
+      {
+        fileName: "202426107205-90001-洗唛.jpg",
+        fileType: "image",
+        sourceKind: "washlabel",
+        detectedSpuCode: "202426107205",
+        status: "recognized",
+        pageCount: 1,
+        fields: [{ key: "downFillWeight", label: "充绒量", value: baseWeights, confidence: "high", sourceKind: "washlabel" }],
+      },
+    ],
+  });
+
+  assert.equal(preview.summary.writableFieldCount, 2);
+  assert.deepEqual(
+    preview.items[0].targetFields.map((field) => [field.fieldName, field.valueText, field.willApply]),
+    [["安全等级", "C类", true]],
+  );
+  const fillWeightTargets = preview.items
+    .flatMap((item) => item.targetFields)
+    .filter((field) => field.fieldName === "充绒量(文本)");
+  assert.equal(fillWeightTargets.filter((field) => field.willApply).length, 1);
+  assert.equal(
+    fillWeightTargets.find((field) => field.willApply)?.valueText,
+    "90码13克；100码15克；110码17克；120码19克；130码21克；140码24克；150码27克；160码30克；165码33克；170码35克；175码37克；180码39克",
+  );
+  assert.match(
+    fillWeightTargets.find((field) => !field.willApply)?.skippedReason ?? "",
+    /同款多色充绒量已合并/,
+  );
+});
+
 test("SCM composition normalizes into DeepDraw enum fields instead of writing free text", async () => {
   const service = await import("../../web/server/services/product-archive-hangtag-ocr.ts");
   const db = {

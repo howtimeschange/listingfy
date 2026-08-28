@@ -1,6 +1,6 @@
 import cn.deepdraw.api.rest.entity.Product;
 import cn.deepdraw.api.rest.request.BaseRequest;
-import cn.deepdraw.api.rest.request.ProductPostCreateProductRequest;
+import cn.deepdraw.api.rest.request.ProductPostUpdateProductByIdRequest;
 import cn.deepdraw.api.rest.response.DopResponse;
 import cn.deepdraw.api.rest.response.Reply;
 import com.alibaba.cloudapi.sdk.model.ApiRequest;
@@ -14,7 +14,7 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
-public class DeepdrawProductCreateCli {
+public class DeepdrawProductUpdateCli {
   private static String readStdin() throws Exception {
     ByteArrayOutputStream buffer = new ByteArrayOutputStream();
     byte[] chunk = new byte[8192];
@@ -67,13 +67,12 @@ public class DeepdrawProductCreateCli {
       }
     }
 
-    ProductPostCreateProductRequest request = new ProductPostCreateProductRequest(
+    ProductPostUpdateProductByIdRequest request = new ProductPostUpdateProductByIdRequest(
       text(config, "appKey"),
       text(config, "appSecret"),
       text(config, "dopKey"),
       text(config, "host")
-    ).setMerchantId(longValue(config, "merchantId"))
-      .setTradeId(longValue(config, "tradeId"))
+    ).setProductId(longValue(input, "productId"))
       .setProduct(product);
 
     if ("1".equals(System.getenv("DEEPDRAW_SDK_DUMP_REQUEST"))) {
@@ -91,6 +90,7 @@ public class DeepdrawProductCreateCli {
       dump.put("checkSizes", product.checkSizes());
       dump.put("checkSizeTable", product.checkSizeTable());
       dump.put("checkSkus", product.checkSkus());
+      dump.put("checkProduct", product.check());
       System.out.println(JSON.toJSONString(dump));
       return;
     }

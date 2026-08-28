@@ -9,6 +9,7 @@ const files = {
   sizeChartMigration: path.join(PROJECT_ROOT, "db/migrations/036_product_archive_size_chart_source.sql"),
   draftImageMigration: path.join(PROJECT_ROOT, "db/migrations/044_product_archive_draft_images.sql"),
   draftImageAssetPackageMigration: path.join(PROJECT_ROOT, "db/migrations/045_product_archive_draft_image_asset_package_source.sql"),
+  submitLogUpdateMigration: path.join(PROJECT_ROOT, "db/migrations/053_product_archive_submit_log_update.sql"),
   sqliteDb: path.join(PROJECT_ROOT, "scripts/lib/sqlite_db.mjs"),
   metadataService: path.join(PROJECT_ROOT, "web/server/services/deepdraw-metadata.ts"),
   draftService: path.join(PROJECT_ROOT, "web/server/services/product-archive-drafts.ts"),
@@ -30,10 +31,11 @@ async function readText(file) {
 }
 
 test("new deepdraw archive schema is a PostgreSQL-only schema revision, not a SQLite compatibility layer", async () => {
-  const [migration, draftImageMigration, draftImageAssetPackageMigration, sqliteDb] = await Promise.all([
+  const [migration, draftImageMigration, draftImageAssetPackageMigration, submitLogUpdateMigration, sqliteDb] = await Promise.all([
     readFile(files.migration, "utf8"),
     readFile(files.draftImageMigration, "utf8"),
     readFile(files.draftImageAssetPackageMigration, "utf8"),
+    readFile(files.submitLogUpdateMigration, "utf8"),
     readFile(files.sqliteDb, "utf8"),
   ]);
 
@@ -46,6 +48,8 @@ test("new deepdraw archive schema is a PostgreSQL-only schema revision, not a SQ
   assert.match(draftImageMigration, /idx_product_archive_draft_image_draft/);
   assert.match(draftImageAssetPackageMigration, /crawshrimp_asset_package/);
   assert.match(draftImageAssetPackageMigration, /product_archive_draft_image_source_type_check/);
+  assert.match(submitLogUpdateMigration, /product_archive_submit_log_operation_check/);
+  assert.match(submitLogUpdateMigration, /'search', 'create', 'update', 'resource', 'dry_run'/);
   assert.match(migration, /bigserial primary key/i);
   assert.match(migration, /timestamptz not null default now\(\)/i);
   assert.match(migration, /jsonb not null default '\{\}'::jsonb/i);
@@ -2140,7 +2144,12 @@ test("mutable draft writes keep the row lock and mutation in one transaction", a
     "function sizeChartTemplateFieldsForDraft",
   );
   const aiPreparation = aiFill.slice(0, aiFill.indexOf("let aiFills"));
-  assert.match(aiPreparation, /const prepared = db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*syncProductArchiveDownFillWeightSizeCharts\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)/);
+  assert.match(aiPreparation, /const prepared = db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*syncProductArchiveDownFillWeightSizeCharts\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)/);
+  assert.ok(
+    aiPreparation.indexOf("refreshDraftTradeSelectionFromLaunchPlan(db, draftId)")
+      < aiPreparation.indexOf("rebuildProductArchiveDraftFields(db, draftId)"),
+    "AI fill must resolve the current launch-plan trade before rebuilding candidate fields",
+  );
   assert.doesNotMatch(aiPreparation, /db\.transaction\(\(\) => assertProductArchiveDraftMutable\(db, draftId\)\)\(\)[\s\S]*rebuildProductArchiveDraftFields/);
   assert.match(aiFill, /await callDeepdrawAiFill/);
   assert.match(aiFill, /const validated = db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)/);
@@ -2251,7 +2260,7 @@ test("trade refresh and submit preparation keep validation behind the submit fen
     "export async function submitProductArchiveDraft",
     "export async function readbackProductArchiveDraft",
   );
-  assert.match(submit, /const prepared = db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId, \{ claimToken \}\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId, \{ claimToken \}\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId, \{ claimToken \}\)[\s\S]*productPayload\(db, draftId\)/);
+  assert.match(submit, /const prepared = db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId, \{ claimToken \}\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId, \{ claimToken \}\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId, \{[\s\S]*claimToken,[\s\S]*allowExistingProduct:[\s\S]*\}\)[\s\S]*productPayload\(db, draftId\)/);
 });
 
 test("ordinary validation and trade refresh reject an active submit claim before writes", async () => {
@@ -2287,6 +2296,10 @@ test("product archive draft detail picks one matching template per field", async
   const service = await readFile(files.draftService, "utf8");
 
   assert.match(service, /left join lateral/);
+  assert.match(service, /raw_payload_json #>> '\{attributes,thirdPlatform\}' as third_platform/);
+  assert.match(service, /template_third_platform/);
+  assert.match(service, /deepdrawPlatformDisplayName/);
+  assert.match(service, /tradePlatforms:\s*deepdrawTradePlatformsForDraft/);
   assert.match(service, /template\.field_id = field\.field_id or template\.field_name = field\.field_name/);
   assert.match(service, /order by case when template\.field_id = field\.field_id then 0 else 1 end/);
   assert.match(service, /limit 1/);
@@ -2422,6 +2435,7 @@ test("product archive AI fill prompt uses trusted draft MDM and source context o
   assert.match(service, /data:\$\{mimeType\};base64/);
   assert.match(service, /忽略 source_type 为 ai_rule_fallback 的历史值/);
   assert.match(service, /不要因为 options 的顺序选择第一个选项/);
+  assert.match(service, /鞋品图案字段在参考图清晰时必须选择最接近的现有枚举/);
   assert.match(service, /confidence 低于 \$\{AI_FILL_MIN_CONFIDENCE\} 的字段不要返回/);
   assert.match(service, /if \(!aiFill\) continue/);
   assert.match(service, /if \(!Number\.isFinite\(confidence\) \|\| confidence < AI_FILL_MIN_CONFIDENCE\) continue/);
@@ -2633,6 +2647,112 @@ test("product archive duplicate check rejects top-level DeepDraw business failur
   );
 });
 
+test("product archive duplicate check reuses a recent exact cache only for a claimed rate-limited submit", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const writes = [];
+  const draft = {
+    id: 104,
+    spu_code: "SPU004",
+    tenant_name: "电商巴拉巴拉",
+    merchant_id: "1162",
+    trade_id: "100",
+    submit_claim_token: "claim-104",
+    duplicate_result_json: {
+      duplicateFound: false,
+      records: [],
+      checkedAt: new Date(Date.now() - (10 * 60 * 1000)).toISOString(),
+      requestId: "cached-request",
+    },
+  };
+  const fakeDb = {
+    prepare(sql) {
+      return {
+        get(...args) {
+          if (/update product_archive_draft/i.test(sql)) {
+            writes.push({ kind: "update", args });
+            return { id: draft.id };
+          }
+          return draft;
+        },
+        run(...args) {
+          writes.push({ kind: "log", args });
+          return { changes: 1 };
+        },
+      };
+    },
+    transaction(fn) {
+      return fn;
+    },
+  };
+
+  const result = await service.checkDuplicateProductArchiveDraft(fakeDb, draft.id, {
+    claimToken: draft.submit_claim_token,
+    search: async () => ({
+      status: 200,
+      ok: true,
+      requestId: "rate-limited-request",
+      payload: {
+        code: 10494,
+        reason: "访问频率过高，请稍后重试",
+        response: "fail",
+      },
+    }),
+  });
+
+  assert.equal(result.duplicateFound, false);
+  assert.equal(result.checkedAt, draft.duplicate_result_json.checkedAt);
+  assert.equal(result.cacheFallback.responseCode, 10494);
+  assert.equal(writes.filter((write) => write.kind === "update").length, 1);
+  assert.equal(writes.filter((write) => write.kind === "log").length, 1);
+});
+
+test("DeepDraw duplicate rate-limit cache rejects stale and non-exact evidence", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const now = Date.now();
+  const rateLimitedPayload = {
+    code: 10494,
+    reason: "访问频率过高，请稍后重试",
+    response: "fail",
+  };
+  const baseDraft = {
+    spu_code: "SPU005",
+    duplicate_result_json: {
+      duplicateFound: true,
+      records: [{ code: "SPU005", id: "internal-5" }],
+      checkedAt: new Date(now - 1000).toISOString(),
+    },
+  };
+
+  assert.equal(
+    service.resolveDeepdrawDuplicateRateLimitCache({
+      ...baseDraft,
+      duplicate_result_json: {
+        ...baseDraft.duplicate_result_json,
+        checkedAt: new Date(now - service.DEEPDRAW_DUPLICATE_RATE_LIMIT_CACHE_MAX_AGE_MS - 1).toISOString(),
+      },
+    }, rateLimitedPayload, now),
+    null,
+  );
+  assert.equal(
+    service.resolveDeepdrawDuplicateRateLimitCache({
+      ...baseDraft,
+      duplicate_result_json: {
+        ...baseDraft.duplicate_result_json,
+        records: [{ code: "OTHER", id: "internal-other" }],
+      },
+    }, rateLimitedPayload, now),
+    null,
+  );
+  assert.equal(
+    service.resolveDeepdrawDuplicateRateLimitCache(baseDraft, {
+      code: 50001,
+      reason: "signature invalid",
+      response: "fail",
+    }, now),
+    null,
+  );
+});
+
 test("product archive duplicate check treats DeepDraw product-not-found as no duplicate", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const writes = [];
@@ -2733,19 +2853,12 @@ test("product archive service derives core sales fields from MDM master data", a
   });
   const sizeTable = service.buildProductArchiveMdmDerivedFieldValue("尺码表", { spu, skus });
   assert.equal(sizeTable.valueText, "");
-  assert.deepEqual(sizeTable.valueJson, {
-    title: "身高,衣长,胸围,袖长",
-    "80cm": "80,0,0,0",
-    "90cm": "90,0,0,0",
-  });
+  assert.deepEqual(sizeTable.valueJson, {});
   const codeOnlySizeTable = service.buildProductArchiveMdmDerivedFieldValue("尺码表", {
     spu,
     skus: [{ size_name: "", size_code: "066" }],
   });
-  assert.deepEqual(codeOnlySizeTable.valueJson, {
-    title: "身高,衣长,胸围,袖长",
-    "66cm": "66,0,0,0",
-  });
+  assert.deepEqual(codeOnlySizeTable.valueJson, {});
   assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("上市时间", { spu, skus, dateText: "2026-07-08" }), {
     valueText: "2026-07-08",
     valueJson: {},
@@ -2758,7 +2871,7 @@ test("product archive service derives core sales fields from MDM master data", a
   assert.equal(merchantSku.valueText, "");
   assert.equal(
     merchantSku.valueJson["蓝色调00388"]["80cm"],
-    "359,208326105214,2026-07-08,0,6942749195637,6942749195637,359,359,20832610521400388080,6942749195637",
+    "359,208326105214,2026-07,0,6942749195637,6942749195637,359,359,208326105214,6942749195637",
   );
 });
 
@@ -2959,6 +3072,15 @@ test("product archive create payload omits scalar size-chart fields", async () =
     value_text: "得物",
     value_json: { title: "平台,尺码", "80cm": "得物,80" },
   }), null);
+  assert.deepEqual(service.productArchivePayloadFieldValue({
+    field_name: "多平台尺码",
+    field_type: "MULTI_TEXT",
+    value_text: "",
+    value_json: { title: "拼多多,微信视频小店", "26": "26码脚长15.8-16.2/内长17,26码(脚长15.8-16.2/内长17)" },
+  }, { includeOptionalStructuredSizeFields: true }), {
+    title: "拼多多,微信视频小店",
+    "26": "26码脚长15.8-16.2/内长17,26码(脚长15.8-16.2/内长17)",
+  });
   assert.equal(service.productArchivePayloadFieldValue({
     field_name: "颜色",
     value_text: "卡其,贝壳卡50230",
@@ -3102,13 +3224,29 @@ test("product archive field mapping applies product-line domains only to matchin
   );
 });
 
-test("product archive fixed counter-price defaults remain literal fallback values", async () => {
-  const service = await readFile(files.draftService, "utf8");
+test("product archive fixed counter-price defaults stay scoped outside shoe rules", async () => {
+  const [serviceSource, service] = await Promise.all([
+    readFile(files.draftService, "utf8"),
+    import("../../web/server/services/product-archive-drafts.ts"),
+  ]);
 
-  assert.doesNotMatch(service, /"专柜价"/);
-  assert.doesNotMatch(service, /"天猫特卖专柜价"/);
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("专柜价", {
+    spu: { product_line_name: "童装服饰", price_tag: 359 },
+    sourceRows: [],
+  }), "");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("天猫特卖专柜价", {
+    spu: { product_line_name: "童装服饰", price_tag: 359 },
+    sourceRows: [],
+    sourceField: "10000",
+  }), "");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("专柜价", {
+    spu: { product_line_name: "鞋品", price_tag: 359 },
+    sourceRows: [
+      { source_type: "launch_plan", row_json: { "官方发布类目": "童鞋/运动鞋" } },
+    ],
+  }), "10000");
   assert.doesNotMatch(
-    service,
+    serviceSource,
     /if \(sourceType === "fixed"\) \{[\s\S]*?if \(isProductArchiveListPriceReference\(fieldName\)\) return derived \|\| defaultValue[\s\S]*?return defaultValue \|\| derived/,
   );
 });
@@ -3126,6 +3264,10 @@ test("product archive submit routes surface DeepDraw service failures instead of
   assert.match(service, /productArchiveFailureReasonWithDiagnostics/);
   assert.match(service, /omittedTemplateFieldCount/);
   assert.match(service, /payloadIssues/);
+  assert.match(service, /compareDeepdrawLegacyShoePayloadToResource/);
+  assert.match(service, /runAndRecordLegacyUpdate/);
+  assert.match(service, /"post_create"/);
+  assert.doesNotMatch(service, /deepdrawLegacyShoePublishCapabilityBlockers/);
   assert.match(route, /function submitOperationException/);
   assert.match(route, /new HTTPException\(status,\s*\{ message: `\$\{prefix\}：/);
   assert.match(route, /发布到深绘失败/);
@@ -3133,6 +3275,7 @@ test("product archive submit routes surface DeepDraw service failures instead of
   assert.match(route, /深绘回读失败/);
   assert.match(draftDetailPage, /<TableHead>原因<\/TableHead>/);
   assert.match(draftDetailPage, /log\.response_reason \|\| "-"/);
+  assert.doesNotMatch(draftDetailPage, /深绘接口能力阻断.*真实发布已停用/);
 });
 
 test("product archive create payload keeps only current DeepDraw template fields and explains generic failures", async () => {
@@ -3149,19 +3292,39 @@ test("product archive create payload keeps only current DeepDraw template fields
   assert.match(payloadImplementation, /productArchivePayloadTemplateFieldId\(field\)/);
   assert.match(payloadImplementation, /omittedTemplateFieldNames\.push/);
   assert.match(payloadImplementation, /id:\s*templateFieldId/);
+  assert.match(payloadImplementation, /payloadFieldsFromDetail\(true\)/);
+  assert.match(payloadImplementation, /selectDeepdrawLegacyShoeCreateFields\(alignedAllFields\)/);
+  assert.match(payloadImplementation, /selectDeepdrawLegacyShoeUpdateFields\(alignedAllFields\)/);
+  assert.match(payloadImplementation, /legacyUpdateFields/);
+  assert.match(payloadImplementation, /fields:\s*createFields/);
+  assert.doesNotMatch(payloadImplementation, /gpusProduct/);
   assert.match(payloadImplementation, /attachProductArchiveSubmitDiagnostics/);
 
   const issues = service.productArchivePayloadValidationIssues({
     date: "/",
     fields: [
       { name: "尺码", value: "21;22" },
-      { name: "尺码表", value: { title: "适合脚长,鞋内长", "21": "12,13", "021": "12,13" } },
-      { name: "商家SKU", value: { title: "价格,货号", 红色: { "22": "99,SPU", "022": "99,SPU" } } },
+      { name: "尺码表", value: { title: "适合脚长,鞋内长", "21": "12,13", "021": "12,13", "23码": "14,15" } },
+      { name: "多平台尺码", value: { title: "拼多多", "23码": "23码脚长14-15" } },
+      { name: "商家SKU", value: { title: "价格,货号", 红色: { "22": "99,SPU", "022": "99,SPU", "23码": "99,SPU" } } },
     ],
   });
   assert.ok(issues.some((issue) => issue.includes("上市日期格式异常：/")));
-  assert.ok(issues.some((issue) => issue.includes("尺码表 尺码键与销售尺码不一致：021")));
-  assert.ok(issues.some((issue) => issue.includes("商家SKU 尺码键与销售尺码不一致：022")));
+  assert.equal(issues.some((issue) => issue.includes("021")), false);
+  assert.equal(issues.some((issue) => issue.includes("022")), false);
+  assert.ok(issues.some((issue) => issue.includes("尺码表 尺码键与销售尺码不一致：23码")));
+  assert.ok(issues.some((issue) => issue.includes("多平台尺码 尺码键与销售尺码不一致：23码")));
+  assert.ok(issues.some((issue) => issue.includes("商家SKU 尺码键与销售尺码不一致：23码")));
+  assert.deepEqual(service.alignProductArchivePayloadSizeFieldValue(
+    "尺码表",
+    { title: "适合脚长,鞋内长", "21码": "12,13", "22码": "13,14" },
+    "21;22",
+  ), { title: "适合脚长,鞋内长", "21": "12,13", "22": "13,14" });
+  assert.deepEqual(service.alignProductArchivePayloadSizeFieldValue(
+    "商家SKU",
+    { title: "价格,货号", 红色: { "21码": "99,SPU" } },
+    "21",
+  ), { title: "价格,货号", 红色: { "21": "99,SPU" } });
 
   const reason = service.productArchiveFailureReasonWithDiagnostics("访问接口的时候发生未知异常：数据格式错误或校验失败", {
     omittedTemplateFieldCount: 3,
@@ -3488,10 +3651,10 @@ test("product archive service derives remaining field values from launch plan an
   assert.equal(derive("京东市场价", "固定吊牌价"), "359");
   assert.equal(derive("产品标题", "固定搜索标题"), "巴拉巴拉儿童外套男童女童衣服2026新款秋装卡通萌趣满印防护上衣");
   assert.equal(derive("微信视频小店标题", "固定内容平台标题"), "【balaOne】巴拉巴拉儿童外套男女2026新秋卡通萌趣满印防护上衣");
-  assert.equal(derive("上市时间", "固定上市时间"), "2026-07-08");
+  assert.equal(derive("上市时间", "固定上市时间"), "2026年秋季");
   assert.equal(derive("颜色", "固定颜色"), "蓝色调00388;粉色调01315");
   assert.equal(derive("颜色(文本)", "颜色"), "蓝色调00388;粉色调01315");
-  assert.equal(derive("上市时间(文本)"), "2026-07-08");
+  assert.equal(derive("上市时间(文本)"), "2026年秋季");
   assert.equal(derive("选择期数"), "326");
   assert.equal(derive("主图4文案1", "主图4第1句"), "春亚纺贴膜面料");
   assert.equal(derive("主图4文案2", "主图4第2-3句"), "表层防风防泼水透湿\n内里柔软抗静电");
@@ -3558,13 +3721,132 @@ test("product archive service derives down and platform text fields before AI fi
 
   assert.equal(derive("品牌"), "巴拉巴拉");
   assert.equal(derive("生产企业名称"), "浙江森马服饰股份有限公司");
-  assert.equal(derive("充绒量(文本)"), "85%");
+  assert.equal(derive("充绒量(文本)"), "");
   assert.equal(derive("含绒量(文本)"), "85%");
   assert.equal(derive("绒子含量(文本)"), "85%");
   assert.equal(derive("里料成分含量"), "100%锦纶");
   assert.equal(derive("里料材质成分含量(多选)"), "聚酰胺纤维");
-  assert.equal(derive("快手标题"), "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖");
+  assert.equal(derive("快手标题"), "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖 208426120216");
   assert.equal(derive("拼多多标题"), "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖");
+});
+
+test("apparel mapping rules cover the 202426107205 copywriting and Merchant SKU contract", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const spu = {
+    spu_code: "202426107205",
+    spu_name: "儿童羽绒服",
+    brand_name: "巴拉巴拉",
+    product_line_name: "童装服饰",
+    subclass_name: "羽绒服",
+    price_tag: 269.9,
+    year: 2026,
+    season_name: "Q4",
+    filler: "90绒子 鸭绒 70",
+  };
+  const sourceRows = [
+    {
+      source_type: "copywriting",
+      row_json: {
+        "款号": "202426107205",
+        "导购标题": "巴拉巴拉儿童羽绒服男女童外套潮",
+        "面料成分": [
+          "成分",
+          "大身/领子：100%锦纶",
+          "袖子/侧缝：61.3%聚酯纤维 38.7%棉",
+          "里料：100%锦纶",
+          "填充物",
+          "灰鸭绒",
+          "绒子含量：90%",
+        ].join("\n"),
+      },
+    },
+    {
+      source_type: "launch_plan",
+      row_json: { "尺码段": "090-180" },
+    },
+  ];
+  const derive = (fieldName) => service.buildProductArchiveSourceDerivedFieldValue(fieldName, {
+    spu,
+    sourceRows,
+  });
+
+  assert.equal(derive("商品短标题"), "巴拉巴拉儿童羽绒服男女童外套潮");
+  assert.equal(derive("上市时间"), "2026年冬季");
+  assert.equal(derive("适用季节"), "2026年冬季");
+  assert.equal(derive("详情页面料"), [
+    "大身/领子：100%锦纶",
+    "袖子/侧缝：61.3%聚酯纤维 38.7%棉",
+    "里料：100%锦纶",
+  ].join("\n"));
+  assert.equal(derive("里料"), "100%锦纶");
+  assert.equal(derive("里料成分"), "100%锦纶");
+  assert.equal(derive("适用年龄"), "全阶段");
+  assert.equal(derive("填充物(文本)"), "灰鸭绒");
+  assert.equal(derive("填充物含量"), "90%");
+  assert.equal(derive("充绒量(文本)"), "");
+  assert.equal(derive("安全等级"), "");
+  assert.equal(derive("库存计数"), "买家拍下减库存");
+  assert.equal(derive("会员打折"), "不参与会员打折");
+  assert.equal(derive("拼多多单买价"), "268.9");
+  assert.equal(derive("拼多多团购价"), "267.9");
+  assert.equal(
+    derive("试穿报告表兼容平台"),
+    "1688;天猫;京东;唯品会;有赞;拼多多;小红书;抖音;快手;微信视频小店",
+  );
+
+  const merchantSkuColumns = [
+    "价格",
+    "货号",
+    "上市时间",
+    "数量",
+    "商家编码",
+    "条形码",
+    "零售价",
+    "供货价",
+    "唯品会货号",
+    "唯品会条形码",
+    "拼多多单买价",
+    "拼多多团购价",
+    "单品货号",
+    "小红书商家编码",
+    "天猫SKU搜索标题",
+  ];
+  const merchantSku = service.buildProductArchiveMdmDerivedFieldValue("商家SKU", {
+    spu,
+    sourceRows,
+    dateText: "2026-08-28",
+    templateOptions: merchantSkuColumns,
+    skus: [{
+      sku_code: "20242610720580821090",
+      skc_code: "20242610720580821",
+      inner_code: "INNER-80821-090",
+      ean_code: "6900000000090",
+      color_name: "黑色调80821",
+      size_name: "090",
+      price_tag: 269.9,
+    }],
+  });
+  assert.equal(merchantSku.valueJson.title, merchantSkuColumns.join(","));
+  assert.equal(
+    merchantSku.valueJson["黑色调80821"]["90cm"],
+    [
+      "269.9",
+      "202426107205",
+      "2026-08",
+      "0",
+      "INNER-80821-090",
+      "6900000000090",
+      "269.9",
+      "269.9",
+      "20242610720580821",
+      "6900000000090",
+      "268.9",
+      "267.9",
+      "6900000000090",
+      "20242610720580821090",
+      "巴拉巴拉儿童羽绒服男女童外套潮",
+    ].join(","),
+  );
 });
 
 test("product archive evidence rules backfill filler text and equivalent down-content fields", async () => {
@@ -3620,12 +3902,11 @@ test("product archive evidence rules backfill filler text and equivalent down-co
 
   assert.deepEqual(fills.map((fill) => [fill.field_name, fill.field_value, fill.source_type]), [
     ["填充物(文本)", "聚酯纤维", "field_backup_rule"],
-    ["充绒量(文本)", "绒子含量90%", "field_backup_rule"],
     ["充绒量", "绒子含量90%", "field_backup_rule"],
   ]);
 });
 
-test("product archive evidence rules backfill filler content and down-fill text from equivalent fields", async () => {
+test("product archive evidence rules do not treat size-specific fill weight text as down-content evidence", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const fills = service.buildProductArchiveEvidenceRuleFills({
     draft: { spu_code: "201426107202" },
@@ -3649,9 +3930,7 @@ test("product archive evidence rules backfill filler content and down-fill text 
     ],
   });
 
-  assert.deepEqual(fills.map((fill) => [fill.field_name, fill.field_value, fill.source_type]), [
-    ["填充物含量", "绒子含量90%", "field_backup_rule"],
-  ]);
+  assert.deepEqual(fills.map((fill) => [fill.field_name, fill.field_value, fill.source_type]), []);
 });
 
 test("product archive evidence rules use explicit no-filler source evidence for every related required field", async () => {
@@ -3680,7 +3959,6 @@ test("product archive evidence rules use explicit no-filler source evidence for 
     ["绒子含量(文本)", "无"],
     ["含绒量(多选)", "其他"],
     ["填充物含量", "其他"],
-    ["充绒量(文本)", "无"],
   ]);
 });
 
@@ -3744,6 +4022,10 @@ test("product archive source rules map product-style and popular-element evidenc
     }],
   });
   assert.deepEqual(plainFills.map((fill) => [fill.field_name, fill.field_value]), [["流行元素(多选)", "光版"]]);
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("流行元素(多选)", "旋钮扣", [
+    { value: "搭扣" },
+    { value: "拼色" },
+  ]), "搭扣");
 });
 
 test("product archive filler text uses source material evidence when no peer field has been filled", async () => {
@@ -3873,6 +4155,8 @@ test("product archive asset package helpers classify reference images and model 
   ]);
 
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_洗唛_1.jpg"), "washlabel");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("202426107205/yq2.jpg"), "washlabel");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("202426107205/yq (3).png"), "washlabel");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_吊牌_yq1.jpg"), "hangtag");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_洗唛.pdf"), "washlabel");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_吊牌.pdf"), "hangtag");
@@ -4035,14 +4319,14 @@ test("product archive service follows DeepDraw field adjustment doc for optional
   });
 
   assert.equal(derive("商品描述"), "");
-  assert.equal(derive("商品短标题"), "");
+  assert.equal(derive("商品短标题"), "巴拉巴拉balaOne外套防护连帽衣");
   assert.equal(derive("图案(多选)"), "");
   assert.equal(derive("微信视频小店副标题"), "");
   assert.equal(derive("快手商品卖点"), "");
   assert.equal(derive("成分含量"), "100%");
   assert.equal(derive("主面料成分含量"), "100%");
   assert.equal(derive("商品详情"), "潮流满印外套，防风防泼水透湿");
-  assert.equal(derive("安全等级"), "A类");
+  assert.equal(derive("安全等级"), "");
   assert.equal(derive("适用年龄多选"), "2-7岁");
   assert.equal(derive("适用年龄文本"), "2-7岁");
   assert.equal(derive("22Q4-童鞋卖点", "公主鞋"), "");
@@ -4087,12 +4371,35 @@ test("product archive shoe required fields derive from trusted launch and brand 
   };
   const sourceRows = [
     {
+      source_type: "copywriting",
+      row_json: {
+        "款号": "208426140203",
+        "内容平台标题": "巴拉巴拉儿童户外运动鞋防滑耐磨",
+        "导购标题": "儿童户外鞋防滑耐磨",
+        "唯品标题": "巴拉巴拉儿童户外鞋",
+        "推荐理由": "防滑耐磨，校园日常都好穿",
+        "FAB": "加厚鞋垫，舒适保暖",
+        "面料成分": "帮面材料：合成革/织物",
+        "帮面材料": "合成革/织物",
+        "里料材质": "网布",
+        "鞋底材质": "EVA+橡胶",
+        "名称": "儿童户外鞋",
+        "品类": "户外鞋",
+        "细节文案": "1.鞋头防撞：行走更安心\n2.鞋底防滑：雨天稳抓地",
+      },
+    },
+    {
       source_type: "launch_plan",
       row_json: {
         "大货款号": "208426140203",
         "属性": "专供新品",
         "尺码段": "26-40",
         "吊牌价": "359",
+        "产品季类": "2026年秋季",
+        "年龄段": "中童",
+        "性别": "男 and 女",
+        "主款式（唯品四级品类）": "运动鞋",
+        "执行标准": "GB/T 15107",
         "鞋品企业名称": "杭州测试鞋业有限公司",
         "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>运动鞋（新）>>儿童户外鞋",
       },
@@ -4106,7 +4413,70 @@ test("product archive shoe required fields derive from trusted launch and brand 
   assert.equal(derive("商品市场价"), "359");
   assert.equal(derive("生产/经销厂家"), "浙江森马服饰股份有限公司");
   assert.equal(derive("厂家地址"), "温州市瓯海区娄桥工业园南汇路98号");
-  assert.equal(derive("货源类别"), "订货");
+  assert.equal(derive("货源类别"), "现货");
+  assert.equal(derive("单买价"), "358");
+  assert.equal(derive("团购价"), "357");
+  assert.equal(derive("抖音参考价"), "359");
+  assert.equal(derive("奥莱店折扣价"), "359");
+  assert.equal(derive("产品单价"), "359");
+  assert.equal(derive("专柜价"), "10000");
+  assert.equal(derive("是否商场同款"), "否");
+  assert.equal(derive("是否商场同款", [
+    { source_type: "launch_plan", row_json: { "属性": "全域", "官方发布类目": "童鞋/运动鞋" } },
+  ]), "是");
+  assert.equal(derive("是否新品"), "是");
+  assert.equal(derive("是否库存"), "否");
+  assert.equal(derive("是否外贸"), "否");
+  assert.equal(derive("发货方式"), "快递发货");
+  assert.equal(derive("最快出货时间"), "48小时");
+  assert.equal(derive("最晚发货时间"), "2天");
+  assert.equal(derive("单用户累计限购(件)"), "5");
+  assert.equal(derive("每次限购(件)"), "5");
+  assert.equal(derive("拼多多标题"), "");
+  assert.equal(derive("微信视频小店标题"), "巴拉巴拉儿童户外运动鞋防滑耐磨");
+  assert.equal(derive("快手标题"), "巴拉巴拉儿童户外运动鞋防滑耐磨");
+  assert.equal(derive("小红书标题"), "巴拉巴拉儿童户外运动鞋防滑耐磨");
+  assert.equal(derive("抖音标题"), "巴拉巴拉儿童户外运动鞋防滑耐磨");
+  assert.equal(derive("微信视频小店副标题"), "儿童户外鞋防滑耐磨");
+  assert.equal(derive("微信视频小店商品编码"), "208426140203");
+  assert.equal(derive("唯品会款号"), "208426140203");
+  assert.equal(derive("唯品会标题"), "巴拉巴拉儿童户外鞋");
+  assert.equal(derive("唯品会副标题"), "防滑耐磨");
+  assert.equal(derive("商品详情"), "防滑耐磨，校园日常都好穿");
+  assert.equal(derive("天猫商品卖点"), "防滑耐磨，校园日常都好穿");
+  assert.equal(derive("天猫导购标题"), "儿童户外鞋防滑耐磨");
+  assert.equal(derive("天猫推荐理由"), "防滑耐磨，校园日常都好穿");
+  assert.equal(derive("商品展示标题"), "巴拉巴拉男 and 女中童户外鞋");
+  assert.equal(derive("25实拍文案"), "鞋头防撞-行走更安心\n鞋底防滑-雨天稳抓地");
+  assert.equal(derive("25产品名称"), "儿童户外鞋");
+  assert.equal(derive("25鞋子模板类型"), "");
+  assert.equal(derive("尺码类型"), "欧码（童鞋）");
+  assert.equal(derive("帮面材质"), "合成革/织物");
+  assert.equal(derive("配皮材质(多选)"), "合成革/织物");
+  assert.equal(derive("鞋底材质(多选)"), "EVA+橡胶");
+  assert.equal(derive("详情页面料"), "帮面材料：合成革/织物\n里料材质：网布\n鞋底材质：EVA+橡胶");
+  assert.equal(derive("唯品会材质"), "帮面材料：合成革/织物\n里料材质：网布\n鞋底材质：EVA+橡胶");
+  assert.equal(derive("25面料成分"), "帮面材料：合成革/织物\n里料材质：网布\n鞋底材质：EVA+橡胶");
+  assert.equal(derive("材质(1688)"), "合成革/织物");
+  assert.equal(derive("鞋垫材质"), "加厚鞋垫，舒适保暖");
+  assert.equal(derive("适用季节"), "2026年秋季");
+  assert.equal(derive("上市时间(文本)"), "2026年秋季");
+  assert.equal(
+    derive("尺码推荐表兼容平台"),
+    "1688;天猫;京东;唯品会;有赞;拼多多;小红书;抖音;快手;微信视频小店",
+  );
+  assert.equal(derive("适用人群(多选)"), "中童");
+  assert.equal(derive("适用场合(多选)"), "日常;校园;公路");
+  assert.equal(derive("适用场景"), "休闲");
+  assert.equal(derive("功能(多选)"), "防滑;耐磨;保暖");
+  assert.equal(derive("执行标准"), "GB/T 15107");
+  assert.equal(derive("京东[包装]宽"), "100");
+  assert.equal(derive("京东[包装]长"), "100");
+  assert.equal(derive("京东[包装]高"), "100");
+  assert.equal(derive("京东发货地"), "杭州");
+  assert.equal(derive("京东商品重量"), "1");
+  assert.equal(derive("售后服务承诺"), "延保90天");
+  assert.equal(derive("balaone仅专供新品勾选"), "balaone仅专供新品勾选");
   assert.equal(derive("产地"), "浙江杭州");
   assert.equal(derive("产地", [
     {
@@ -4117,7 +4487,74 @@ test("product archive shoe required fields derive from trusted launch and brand 
         "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>运动鞋（新）>>儿童户外鞋",
       },
     },
-  ]), "");
+  ]), "浙江杭州");
+
+  const merchantSku = service.buildProductArchiveMdmDerivedFieldValue("商家SKU", {
+    spu,
+    sourceRows,
+    dateText: "2026-08-27",
+    templateOptions: [
+      "价格", "货号", "上市时间", "数量", "商家编码", "条形码", "零售价", "供货价",
+      "唯品会货号", "唯品会条形码", "拼多多单买价", "拼多多团购价", "单品货号",
+      "小红书商家编码", "天猫SKU搜索标题",
+    ],
+    skus: [{
+      sku_code: "20842614020300136",
+      skc_code: "208426140203001",
+      inner_code: "INNER-SHOE-36",
+      ean_code: "6900000000036",
+      color_name: "黑色001",
+      size_name: "036",
+      price_tag: 359,
+    }],
+  });
+  assert.equal(
+    merchantSku.valueJson["黑色001"]["36"],
+    [
+      "359", "208426140203", "2026-08", "0", "INNER-SHOE-36", "", "359", "359",
+      "208426140203001", "6900000000036", "358", "357", "20842614020300136",
+      "208426140203001", "儿童户外鞋防滑耐磨",
+    ].join(","),
+  );
+});
+
+test("shoe display title ignores stale mapping placeholders and combines per-color genders", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const spu = {
+    spu_code: "208426140204",
+    brand_name: "巴拉巴拉",
+    product_line_name: "鞋品",
+  };
+  const sourceRows = [
+    {
+      source_type: "copywriting",
+      row_json: { "性别": "男", "年龄段": "中幼童", "品类": "运动鞋" },
+    },
+    {
+      source_type: "launch_plan",
+      row_json: { "性别": "男", "年龄段": "中幼童", "品类": "运动鞋" },
+    },
+    {
+      source_type: "launch_plan",
+      row_json: { "性别": "女", "年龄段": "中幼童", "品类": "运动鞋" },
+    },
+  ];
+
+  assert.equal(
+    service.buildProductArchiveSourceDerivedFieldValue("商品展示标题", { spu, sourceRows }),
+    "巴拉巴拉男 and 女中幼童运动鞋",
+  );
+  assert.equal(
+    service.resolveProductArchiveSourceRuleValue("商品展示标题", {
+      spu,
+      sourceRows,
+      rule: {
+        source_type: "fixed",
+        default_value: "巴拉巴拉+性别+品类",
+      },
+    }),
+    "巴拉巴拉男 and 女中幼童运动鞋",
+  );
 });
 
 test("product archive service maps launch-plan size segments to Balabala age ranges", async () => {
@@ -4137,6 +4574,7 @@ test("product archive service maps launch-plan size segments to Balabala age ran
   assert.equal(deriveAge("73-100"), "6个月-2岁");
   assert.equal(deriveAge("90-130"), "2-7岁");
   assert.equal(deriveAge("90-140"), "2-8岁");
+  assert.equal(deriveAge("90-180"), "全阶段");
   assert.equal(deriveAge("130-175"), "7-16岁");
   assert.equal(deriveAge("140-175"), "8-16岁");
   assert.equal(deriveAge("19-24", { product_line_name: "鞋品" }), "4-24个月");
@@ -4737,6 +5175,10 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "聚酰胺纤维" },
     { value: "聚酯纤维" },
   ]), "聚酰胺纤维");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("里料", "100%锦纶；(配料除外）", [
+    { value: "锦纶/尼龙" },
+    { value: "聚酯纤维（涤纶）" },
+  ]), "锦纶/尼龙");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("衣门襟", "系扣", [
     { value: "魔术贴" },
     { value: "肩开扣" },
@@ -4870,8 +5312,9 @@ test("product archive origin-country fields default to a fixed China source", as
   const service = await readFile(files.draftService, "utf8");
 
   assert.match(service, /const originCountryField = isProductArchiveOriginCountryField\(fieldName\)/);
-  assert.match(service, /const ruleSourceType = stringValue\(rule\.source_type\) \|\| \(originCountryField \? "fixed" : "manual"\)/);
-  assert.match(service, /ruleSourceRef \|\| \(originCountryField \? "中国" : null\)/);
+  assert.match(service, /const shoe1688OriginField = shoeProduct && compactFieldKey\(fieldName\) === "产地"/);
+  assert.match(service, /const ruleSourceType = stringValue\(rule\.source_type\) \|\| \(originCountryField \|\| shoe1688OriginField \? "fixed" : "manual"\)/);
+  assert.match(service, /ruleSourceRef \|\| \(shoe1688OriginField \? shoe1688OriginValue\(\) : originCountryField \? "中国" : null\)/);
 });
 
 test("product archive payload date keeps the launch-plan source date for SDK product date", async () => {
@@ -4934,10 +5377,41 @@ test("product archive submit route allows real DeepDraw creates through the SDK 
 
   assert.doesNotMatch(draftRoute, /HTTPException\(501/);
   assert.doesNotMatch(draftRoute, /真实创建需要 SDK Product entity\/body adapter/);
-  assert.match(draftRoute, /submitProductArchiveDraft\(db, draftId, \{ dryRun: Boolean\(body\.dryRun\) \}\)/);
+  assert.match(draftRoute, /submitProductArchiveDraft\(db, draftId, \{ dryRun, updateExisting \}\)/);
   assert.match(deepdrawClient, /deepdraw_sdk_adapter\.mjs/);
   assert.match(deepdrawClient, /createDeepdrawProductWithSdk/);
+  assert.match(deepdrawClient, /updateDeepdrawFullProductWithSdk/);
   assert.doesNotMatch(deepdrawClient, /product create adapter is not configured/);
+});
+
+test("DeepDraw duplicate update resolves exactly one numeric product id for v1 full update", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const resolved = service.resolveDeepdrawDuplicateProductForUpdate({
+    records: [{
+      id: "db1abf79dbad4c5b854585712efe1448",
+      productId: 6509967,
+      code: "208426140203",
+    }],
+  }, "208426140203");
+
+  assert.equal(resolved.updateProductId, "6509967");
+  assert.equal(resolved.internalProductId, "db1abf79dbad4c5b854585712efe1448");
+  assert.equal(resolved.displayProductId, "6509967");
+  assert.throws(
+    () => service.resolveDeepdrawDuplicateProductForUpdate({ records: [] }, "208426140203"),
+    /无法唯一定位/,
+  );
+  const displayOnly = service.resolveDeepdrawDuplicateProductForUpdate({
+    records: [{ productId: 6509967, code: "208426140203" }],
+  }, "208426140203");
+  assert.equal(displayOnly.updateProductId, "6509967");
+  assert.equal(displayOnly.internalProductId, null);
+  assert.throws(
+    () => service.resolveDeepdrawDuplicateProductForUpdate({
+      records: [{ id: "internal-only", code: "208426140203" }],
+    }, "208426140203"),
+    /缺少.*数值产品 ID/,
+  );
 });
 
 test("DeepDraw create transport uncertainty keeps the submit claim and does not mark an ordinary failure", async () => {
@@ -5070,6 +5544,75 @@ test("DeepDraw submit resumes readback for a created draft that kept its claim",
   assert.equal(claimCalls, 1);
   assert.equal(createCalls, 0);
   assert.equal(readbackCalls, 1);
+  assert.equal(submitLogs, 1);
+});
+
+test("DeepDraw business-level readback failure preserves the submit claim for reconciliation", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const state = {
+    id: 80,
+    status: "updated",
+    submit_claim_token: "claim-80",
+    duplicate_result_json: {},
+    title: "儿童户外鞋",
+    spu_code: "208426140203",
+    created_product_id: "6509967",
+    trade_id: "100",
+    trade_path: "服饰/外套",
+    readback_unknown: null,
+  };
+  let submitLogs = 0;
+  const db = {
+    transaction(fn) {
+      return () => fn();
+    },
+    prepare(sql) {
+      const normalized = sql.replace(/\s+/g, " ").trim();
+      return {
+        get() {
+          if (/select \* from product_archive_draft where id = \?/i.test(normalized)) return { ...state };
+          throw new Error(`Unexpected SQL get: ${normalized}`);
+        },
+        run(...args) {
+          if (/insert into product_archive_submit_log/i.test(normalized)) {
+            submitLogs += 1;
+            return { changes: 1 };
+          }
+          if (/submit_readback_unknown/i.test(normalized)) {
+            const [message, _updatedAt, draftId, claimToken] = args;
+            assert.equal(draftId, state.id);
+            assert.equal(claimToken, state.submit_claim_token);
+            state.readback_unknown = message;
+            return { changes: 1 };
+          }
+          throw new Error(`Unexpected SQL run: ${normalized}`);
+        },
+      };
+    },
+  };
+
+  await assert.rejects(
+    () => service.readbackProductArchiveDraft(db, state.id, {
+      readback: async () => ({
+        status: 200,
+        ok: false,
+        requestId: "request-80",
+        payload: {
+          status: 200,
+          response: {
+            code: 10494,
+            reason: "访问频率过高，请稍后重试",
+            response: "fail",
+          },
+        },
+      }),
+    }),
+    /访问频率过高/,
+  );
+
+  assert.equal(state.status, "updated");
+  assert.equal(state.submit_claim_token, "claim-80");
+  assert.match(state.readback_unknown, /访问频率过高/);
   assert.equal(submitLogs, 1);
 });
 

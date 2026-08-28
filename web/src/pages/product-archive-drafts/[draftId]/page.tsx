@@ -79,9 +79,12 @@ interface DraftField {
   field_name: string
   updated_at: string
   source_type: string
+  source_ref?: string | null
   value_text: string | null
   value_json?: unknown
   field_type?: string | null
+  template_third_platform?: string | null
+  template_platform_name?: string | null
   required: boolean
   blocking: boolean
   manual_override: boolean
@@ -150,6 +153,7 @@ type DraftAssetPreviewTarget = {
 interface DraftDetail {
   draft: Draft
   tradeSelectionDecision: TradeSelectionDecision
+  tradePlatforms?: string[]
   launchPlanReference?: LaunchPlanReference
   sizeChartMappings?: SizeChartMapping[]
   sizeChartSourceRows?: SizeChartSourceRow[]
@@ -460,6 +464,71 @@ function recordValue(value: unknown): Record<string, unknown> {
 
 function compactFieldKey(value: string) {
   return value.replace(/\s+/g, "").replace(/[()（）]/g, "").toLowerCase()
+}
+
+const FIELD_GROUP_DEFAULT_LABEL = "通用字段"
+const FIELD_GROUP_ORDER = [
+  FIELD_GROUP_DEFAULT_LABEL,
+  "1688",
+  "天猫/淘宝",
+  "天猫",
+  "京东",
+  "唯品会",
+  "拼多多",
+  "抖音",
+  "抖音小时达",
+  "快手",
+  "微信视频小店",
+  "小红书",
+  "有赞",
+  "多平台",
+]
+
+interface DraftFieldGroup {
+  key: string
+  label: string
+  fields: DraftField[]
+}
+
+function fallbackFieldPlatformName(fieldName: string) {
+  const text = String(fieldName ?? "")
+  if (/多平台尺码/.test(text)) return "多平台"
+  if (/微信视频小店|视频号/.test(text)) return "微信视频小店"
+  if (/抖音小时达/.test(text)) return "抖音小时达"
+  if (/小红书/.test(text)) return "小红书"
+  if (/唯品会|唯品/.test(text)) return "唯品会"
+  if (/拼多多/.test(text)) return "拼多多"
+  if (/天猫|淘宝/.test(text)) return /淘宝天猫|淘宝/.test(text) ? "天猫/淘宝" : "天猫"
+  if (/京东/.test(text)) return "京东"
+  if (/快手/.test(text)) return "快手"
+  if (/1688/.test(text)) return "1688"
+  if (/有赞/.test(text)) return "有赞"
+  return ""
+}
+
+function draftFieldPlatformName(field: DraftField) {
+  return field.template_platform_name || fallbackFieldPlatformName(field.field_name) || FIELD_GROUP_DEFAULT_LABEL
+}
+
+function fieldGroupSortIndex(label: string) {
+  const index = FIELD_GROUP_ORDER.indexOf(label)
+  return index >= 0 ? index : FIELD_GROUP_ORDER.length
+}
+
+function groupDraftFieldsByPlatform(fields: DraftField[]) {
+  const groups = new Map<string, DraftFieldGroup>()
+  for (const field of fields) {
+    const label = draftFieldPlatformName(field)
+    const key = label
+    const group = groups.get(key) ?? { key, label, fields: [] }
+    group.fields.push(field)
+    groups.set(key, group)
+  }
+  return Array.from(groups.values()).sort((left, right) => {
+    const orderDelta = fieldGroupSortIndex(left.label) - fieldGroupSortIndex(right.label)
+    if (orderDelta) return orderDelta
+    return left.label.localeCompare(right.label, "zh-Hans-CN")
+  })
 }
 
 function isProductArchiveSizeChartField(field: DraftField) {
@@ -1126,6 +1195,7 @@ export default function ProductArchiveDraftDetailPage() {
   const pageScrollRef = useRef<HTMLDivElement | null>(null)
   const validationLocatorRef = useRef<HTMLDivElement | null>(null)
   const fieldRowRefs = useRef<Record<string, HTMLTableRowElement | null>>({})
+  const fieldGroupRefs = useRef<Record<string, HTMLElement | null>>({})
   const [fieldValues, setFieldValues] = useState<Record<number, string>>({})
   const [tradeDialogOpen, setTradeDialogOpen] = useState(false)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
@@ -1203,6 +1273,7 @@ export default function ProductArchiveDraftDetailPage() {
     }
     return orderedNames
   }, [detail.data?.fields, fieldIssueMap])
+  const fieldGroups = useMemo(() => groupDraftFieldsByPlatform(detail.data?.fields ?? []), [detail.data?.fields])
   const normalizedActiveIssueIndex = fieldIssueNames.length > 0
     ? Math.min(activeIssueIndex, fieldIssueNames.length - 1)
     : 0
@@ -1277,6 +1348,25 @@ export default function ProductArchiveDraftDetailPage() {
       const containerRect = scrollContainer.getBoundingClientRect()
       scrollContainer.scrollTo({
         top: scrollContainer.scrollTop + rowRect.top - containerRect.top - rowOffset,
+        behavior: "smooth",
+      })
+    })
+  }
+  const scrollToFieldGroup = (groupKey: string) => {
+    const group = fieldGroupRefs.current[groupKey]
+    if (!group) return
+    window.requestAnimationFrame(() => {
+      const scrollContainer = pageScrollRef.current
+      const locatorHeight = validationLocatorRef.current?.offsetHeight ?? 96
+      const rowOffset = locatorHeight + 20
+      if (!scrollContainer) {
+        group.scrollIntoView({ behavior: "smooth", block: "start" })
+        return
+      }
+      const groupRect = group.getBoundingClientRect()
+      const containerRect = scrollContainer.getBoundingClientRect()
+      scrollContainer.scrollTo({
+        top: scrollContainer.scrollTop + groupRect.top - containerRect.top - rowOffset,
         behavior: "smooth",
       })
     })
@@ -1477,7 +1567,10 @@ export default function ProductArchiveDraftDetailPage() {
   })
 
   const dryRunSubmit = useMutation({
-    mutationFn: () => api.post<unknown>(`/product-archive-drafts/${draftId}/submit`, { dryRun: true }),
+    mutationFn: () => api.post(
+      `/product-archive-drafts/${draftId}/submit`,
+      { dryRun: true },
+    ),
     onSuccess: () => {
       toast.success("已生成提交预览")
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
@@ -1485,14 +1578,14 @@ export default function ProductArchiveDraftDetailPage() {
   })
 
   const publishSubmit = useMutation({
-    mutationFn: () => api.post<{
+    mutationFn: ({ updateExisting }: { updateExisting: boolean }) => api.post<{
       status?: string
       duplicateFound?: boolean
       alreadySubmitting?: boolean
-    }>(`/product-archive-drafts/${draftId}/submit`, { dryRun: false }),
+    }>(`/product-archive-drafts/${draftId}/submit`, { dryRun: false, updateExisting }),
     onSuccess: (result) => {
       if (result.status === "readback_verified") {
-        toast.success("已发布到深绘并完成回读校验")
+        toast.success("深绘商品已提交并完成字段回读校验")
         setPublishDialogOpen(false)
       } else if (result.duplicateFound) {
         toast.warning("深绘已存在同货号商品，本次未重复创建")
@@ -1516,11 +1609,15 @@ export default function ProductArchiveDraftDetailPage() {
     )
   }
 
+  const updateExistingProduct = draft.status === "duplicate_found"
+  const publishActionLabel = updateExistingProduct ? "更新深绘已有商品" : "确认发布到深绘"
+
   const draftSummaryItems = [
     { label: "状态", value: draft.status, detail: draft.trade_path || "待确认类目" },
     { label: "阻断问题", value: formatNumber(summary.blocker_count ?? 0) },
     { label: "警告", value: formatNumber(summary.warning_count ?? 0) },
     { label: "深绘 productId", value: draft.created_product_id || "-" },
+    { label: "字段平台", value: (detail.data?.tradePlatforms ?? []).join("、") || "-" },
     { label: "草稿编号", value: draft.draft_no },
     { label: "商户 ID", value: draft.merchant_id },
     { label: "吊牌价", value: draft.retail_price ?? "-" },
@@ -1690,23 +1787,29 @@ export default function ProductArchiveDraftDetailPage() {
           <DialogTrigger asChild>
             <Button type="button" size="sm" disabled={!canWrite || publishSubmit.isPending}>
               {publishSubmit.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-              确认发布到深绘
+              {publishActionLabel}
             </Button>
           </DialogTrigger>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
-              <DialogTitle>确认发布到深绘</DialogTitle>
+              <DialogTitle>{publishActionLabel}</DialogTitle>
               <DialogDescription>
-                将对款号 {draft.spu_code} 执行真实深绘建档。系统会先查重，再提交并回读校验。
+                {updateExistingProduct
+                  ? `将用当前草稿字段完整更新深绘中款号 ${draft.spu_code} 的已有商品，并回读核对尺码、平台尺码表和 SKU。`
+                  : `将对款号 ${draft.spu_code} 执行真实深绘建档。系统会先查重，再提交并回读校验。`}
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setPublishDialogOpen(false)}>
                 取消
               </Button>
-              <Button type="button" disabled={!canWrite || publishSubmit.isPending} onClick={() => publishSubmit.mutate()}>
+              <Button
+                type="button"
+                disabled={!canWrite || publishSubmit.isPending}
+                onClick={() => publishSubmit.mutate({ updateExisting: updateExistingProduct })}
+              >
                 {publishSubmit.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-                确认发布到深绘
+                {publishActionLabel}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -1880,100 +1983,140 @@ export default function ProductArchiveDraftDetailPage() {
                 <p className="mt-1 text-xs text-muted-foreground">
                   {draft.trade_path || "待确认类目"}，字段来自深绘类目模板和字段规则。
                 </p>
+                {(detail.data?.tradePlatforms ?? []).length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {(detail.data?.tradePlatforms ?? []).map((platform) => (
+                      <Badge key={platform} variant="outline" className="rounded-md">
+                        {platform}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             </CardHeader>
             <CardContent className="px-0">
               <div
                 ref={validationLocatorRef}
                 data-validation-locator-bar="true"
-                className="sticky top-[-1.5rem] z-30 border-y bg-card/95 px-6 py-3 shadow-[0_8px_18px_rgba(15,23,42,0.06)] backdrop-blur md:top-[-2rem]"
+                className="sticky top-[-1.5rem] z-30 border-y bg-card/95 shadow-[0_8px_18px_rgba(15,23,42,0.06)] backdrop-blur md:top-[-2rem]"
               >
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="flex items-center gap-2 text-sm font-medium">
+                <div className="px-6 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="flex items-center gap-2 text-sm font-medium">
+                        {hasValidationIssues ? (
+                          <AlertTriangle className="size-4 text-[#d45656]" />
+                        ) : (
+                          <CheckCircle2 className="size-4 text-[#0fa76e]" />
+                        )}
+                        字段校验定位
+                      </span>
                       {hasValidationIssues ? (
-                        <AlertTriangle className="size-4 text-[#d45656]" />
+                        <>
+                          <Badge variant="outline" className={issueSeverityClass("blocker")}>
+                            阻断 {formatNumber(blockerIssueCount)}
+                          </Badge>
+                          <Badge variant="outline" className={issueSeverityClass("warning")}>
+                            警告 {formatNumber(warningIssueCount)}
+                          </Badge>
+                          <Badge variant="outline">
+                            问题字段 {formatNumber(fieldIssueNames.length)}
+                          </Badge>
+                        </>
                       ) : (
-                        <CheckCircle2 className="size-4 text-[#0fa76e]" />
+                        <Badge variant="outline" className="border-[#b9f4d8] bg-[#d4fae8] text-[#0fa76e]">
+                          所有字段校验通过
+                        </Badge>
                       )}
-                      字段校验定位
-                    </span>
-                    {hasValidationIssues ? (
-                      <>
-                        <Badge variant="outline" className={issueSeverityClass("blocker")}>
-                          阻断 {formatNumber(blockerIssueCount)}
-                        </Badge>
-                        <Badge variant="outline" className={issueSeverityClass("warning")}>
-                          警告 {formatNumber(warningIssueCount)}
-                        </Badge>
-                        <Badge variant="outline">
-                          问题字段 {formatNumber(fieldIssueNames.length)}
-                        </Badge>
-                      </>
-                    ) : (
-                      <Badge variant="outline" className="border-[#b9f4d8] bg-[#d4fae8] text-[#0fa76e]">
-                        所有字段校验通过
-                      </Badge>
-                    )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={!canWrite || changedFields.length === 0 || saveFields.isPending}
+                        onClick={() => {
+                          if (!draft?.updated_at) return
+                          saveFields.mutate({
+                            expectedDraftUpdatedAt: draft.updated_at,
+                            fields: changedFields,
+                          })
+                        }}
+                      >
+                        {saveFields.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+                        保存字段
+                      </Button>
+                      <Button type="button" variant="outline" size="sm" onClick={() => validate.mutate()} disabled={!canWrite || validate.isPending || saveFields.isPending}>
+                        {validate.isPending ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />}
+                        重新校验
+                      </Button>
+                      <Button type="button" variant="outline" size="sm" onClick={() => aiFill.mutate()} disabled={!canWrite || aiFill.isPending}>
+                        {aiFill.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+                        AI 推荐补齐空字段
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={fieldIssueNames.length === 0}
+                        onClick={() => scrollToFieldIssue(normalizedActiveIssueIndex - 1)}
+                      >
+                        <ChevronUp className="size-4" />
+                        查找上一个
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={fieldIssueNames.length === 0}
+                        onClick={() => scrollToFieldIssue(normalizedActiveIssueIndex + 1)}
+                      >
+                        <ChevronDown className="size-4" />
+                        查找下一个
+                      </Button>
+                    </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={!canWrite || changedFields.length === 0 || saveFields.isPending}
-                      onClick={() => {
-                        if (!draft?.updated_at) return
-                        saveFields.mutate({
-                          expectedDraftUpdatedAt: draft.updated_at,
-                          fields: changedFields,
-                        })
-                      }}
-                    >
-                      {saveFields.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
-                      保存字段
-                    </Button>
-                    <Button type="button" variant="outline" size="sm" onClick={() => validate.mutate()} disabled={!canWrite || validate.isPending || saveFields.isPending}>
-                      {validate.isPending ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />}
-                      重新校验
-                    </Button>
-                    <Button type="button" variant="outline" size="sm" onClick={() => aiFill.mutate()} disabled={!canWrite || aiFill.isPending}>
-                      {aiFill.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-                      AI 推荐补齐空字段
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={fieldIssueNames.length === 0}
-                      onClick={() => scrollToFieldIssue(normalizedActiveIssueIndex - 1)}
-                    >
-                      <ChevronUp className="size-4" />
-                      查找上一个
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={fieldIssueNames.length === 0}
-                      onClick={() => scrollToFieldIssue(normalizedActiveIssueIndex + 1)}
-                    >
-                      <ChevronDown className="size-4" />
-                      查找下一个
-                    </Button>
-                  </div>
+                  {activeIssueFieldName ? (
+                    <div className="mt-2 text-sm text-muted-foreground">
+                      <span className="font-medium text-foreground">
+                        当前 {formatNumber(normalizedActiveIssueIndex + 1)} / {formatNumber(fieldIssueNames.length)}：{activeIssueFieldName}
+                      </span>
+                      <span className="mx-2 text-border">|</span>
+                      {issueSummaryText(activeFieldIssues)}
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-sm font-medium text-[#0fa76e]">所有字段校验通过</div>
+                  )}
                 </div>
-                {activeIssueFieldName ? (
-                  <div className="mt-2 text-sm text-muted-foreground">
-                    <span className="font-medium text-foreground">
-                      当前 {formatNumber(normalizedActiveIssueIndex + 1)} / {formatNumber(fieldIssueNames.length)}：{activeIssueFieldName}
-                    </span>
-                    <span className="mx-2 text-border">|</span>
-                    {issueSummaryText(activeFieldIssues)}
+                {fieldGroups.length > 0 ? (
+                  <div data-field-platform-elevator="true" className="border-t px-6 py-2">
+                    <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                      {fieldGroups.map((group) => {
+                        const issueCount = group.fields.filter((field) => fieldIssueMap.has(field.field_name)).length
+                        return (
+                          <Button
+                            key={group.key}
+                            type="button"
+                            variant={group.label === FIELD_GROUP_DEFAULT_LABEL ? "secondary" : "outline"}
+                            size="sm"
+                            className="h-8 shrink-0 gap-1.5 rounded-md"
+                            onClick={() => scrollToFieldGroup(group.key)}
+                          >
+                            {group.label}
+                            <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
+                              {formatNumber(group.fields.length)}
+                            </Badge>
+                            {issueCount > 0 ? (
+                              <span className="rounded-full bg-[#d45656] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                                {formatNumber(issueCount)}
+                              </span>
+                            ) : null}
+                          </Button>
+                        )
+                      })}
+                    </div>
                   </div>
-                ) : (
-                  <div className="mt-2 text-sm font-medium text-[#0fa76e]">所有字段校验通过</div>
-                )}
+                ) : null}
               </div>
               {(detail.data?.fields.length ?? 0) === 0 ? (
                 <div className="mx-6 mt-4 rounded-lg border border-dashed p-8 text-center">
@@ -1987,149 +2130,187 @@ export default function ProductArchiveDraftDetailPage() {
                   </Button>
                 </div>
               ) : (
-                <Table className="w-max min-w-full" containerClassName="px-6 pt-4">
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>字段名</TableHead>
-                      <TableHead>来源</TableHead>
-                      <TableHead>目标值</TableHead>
-                      <TableHead>必填</TableHead>
-                      <TableHead>状态</TableHead>
-                      <TableHead>操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {detail.data?.fields.map((field) => {
-                      const options = fieldOptions(field)
-                      const value = fieldValues[field.id] ?? field.value_text ?? ""
-                      const isSizeChartField = isProductArchiveSizeChartField(field)
-                      const hasPersistedSizeChart = hasStructuredSizeChartValue(field.value_json)
-                      const isChoiceField = isChoiceFieldType(field)
-                      const isMultiChoiceField = isMultiChoiceFieldType(field, value)
-                      const fieldIssues = fieldIssueMap.get(field.field_name) ?? []
-                      const hasFieldIssue = fieldIssues.length > 0
-                      const isActiveIssueField = activeIssueFieldName === field.field_name
-                      const topSeverity = fieldIssues.some((issue) => issue.severity === "blocker")
-                        ? "blocker"
-                        : fieldIssues[0]?.severity ?? ""
-                      const issueToneClass = topSeverity === "blocker" ? "text-[#d45656]" : "text-[#c37d0d]"
-                      const issueBackgroundClass = topSeverity === "blocker" ? "bg-[#fff1f1] hover:bg-[#fff1f1]" : "bg-[#fff8e8] hover:bg-[#fff8e8]"
-                      const issueBorderClass = topSeverity === "blocker" ? "border-l-[#d45656]" : "border-l-[#c37d0d]"
-                      return (
-                        <Fragment key={field.id}>
-                          <TableRow
-                            ref={(node) => {
-                              if (hasFieldIssue) {
-                                fieldRowRefs.current[field.field_name] = node
-                              } else {
-                                delete fieldRowRefs.current[field.field_name]
-                              }
-                            }}
-                            data-field-issue={hasFieldIssue ? field.field_name : undefined}
-                            data-active-field-issue={isActiveIssueField ? "true" : undefined}
-                            className={cn(
-                              "scroll-mt-40",
-                              hasFieldIssue && "border-l-4",
-                              hasFieldIssue && issueBorderClass,
-                              hasFieldIssue && issueBackgroundClass,
-                              isActiveIssueField && "ring-2 ring-inset ring-[#18e299]/80",
-                            )}
-                          >
-                            <TableCell className="whitespace-normal align-top">
-                              <span className={cn(hasFieldIssue && `font-medium ${issueToneClass}`)}>
-                                {field.field_name}
-                              </span>
-                            </TableCell>
-                            <TableCell>{field.source_type}</TableCell>
-                            <TableCell className={cn("max-w-[280px] truncate", hasFieldIssue && issueToneClass)}>
-                              {isSizeChartField ? (hasPersistedSizeChart ? "已生成表格" : "待配置") : field.value_text || "-"}
-                            </TableCell>
-                            <TableCell>{field.required ? "必填" : "可选"}</TableCell>
-                            <TableCell>
-                              <Badge variant="outline" className={hasFieldIssue ? issueSeverityClass(topSeverity) : field.validation_status === "valid" ? statusClass("ready") : statusClass("manual_review")}>
-                                {field.validation_status}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="min-w-[220px]">
-                              {isSizeChartField ? (
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => setActiveTab("size-chart")}
-                                >
-                                  <ClipboardCheck className="size-4" />
-                                  配置尺码表
-                                </Button>
-                              ) : isChoiceField && isMultiChoiceField && options.length > 0 ? (
-                                <MultiChoiceFieldEditor
-                                  field={field}
-                                  value={value}
-                                  options={options}
-                                  disabled={!canWrite}
-                                  onChange={(nextValue) => setFieldValues((current) => ({ ...current, [field.id]: nextValue }))}
-                                />
-                              ) : isChoiceField && options.length > 0 ? (
-                                <Select
-                                  value={options.some((option) => option.value === value) ? value : ""}
-                                  onValueChange={(nextValue) => setFieldValues((current) => ({ ...current, [field.id]: nextValue }))}
-                                >
-                                  <SelectTrigger className="h-8" disabled={!canWrite}>
-                                    <SelectValue placeholder="选择字段值" />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    {options.map((option) => (
-                                      <SelectItem key={option.value} value={option.value}>
-                                        {option.label}
-                                      </SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
-                              ) : isLongTextFieldType(field) ? (
-                                <Textarea
-                                  value={value}
-                                  disabled={!canWrite}
-                                  onChange={(event) => setFieldValues((current) => ({ ...current, [field.id]: event.target.value }))}
-                                  placeholder="填写目标值"
-                                  className="min-h-20 min-w-[260px]"
-                                />
-                              ) : (
-                                <Input
-                                  value={value}
-                                  disabled={!canWrite}
-                                  onChange={(event) => setFieldValues((current) => ({ ...current, [field.id]: event.target.value }))}
-                                  placeholder="填写目标值"
-                                  className="h-8"
-                                />
-                              )}
-                            </TableCell>
-                          </TableRow>
-                          {hasFieldIssue ? (
-                            <TableRow
-                              data-field-issue-reason={field.field_name}
-                              className={cn(
-                                "border-l-4",
-                                issueBorderClass,
-                                issueBackgroundClass,
-                                isActiveIssueField && "ring-2 ring-inset ring-[#18e299]/80",
-                              )}
-                            >
-                              <TableCell colSpan={6} className="py-2 pl-5 pr-4 align-top">
-                                <div className={cn("flex min-w-0 items-center gap-3 overflow-x-auto whitespace-nowrap text-sm leading-6", issueToneClass)}>
-                                  <Badge variant="outline" className={issueSeverityClass(topSeverity)}>
-                                    {issueSeverityLabel(topSeverity)}
-                                  </Badge>
-                                  <span className="font-medium">问题原因：</span>
-                                  <span>{issueSummaryText(fieldIssues)}</span>
-                                </div>
-                              </TableCell>
+                <div className="grid gap-5 px-6 pt-4">
+                  {fieldGroups.map((group) => {
+                    const groupIssueCount = group.fields.filter((field) => fieldIssueMap.has(field.field_name)).length
+                    return (
+                      <section
+                        key={group.key}
+                        ref={(node) => {
+                          if (node) fieldGroupRefs.current[group.key] = node
+                          else delete fieldGroupRefs.current[group.key]
+                        }}
+                        className="scroll-mt-48 overflow-hidden rounded-md border bg-card"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+                          <div>
+                            <h3 className="text-sm font-semibold">{group.label}</h3>
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              深绘类目：{draft.trade_path || "待确认类目"}
+                              {draft.trade_id ? ` · tradeId ${draft.trade_id}` : ""}
+                              <span className="mx-1 text-border">|</span>
+                              字段 {formatNumber(group.fields.length)} 个
+                              {groupIssueCount > 0 ? `，问题 ${formatNumber(groupIssueCount)} 个` : ""}
+                            </div>
+                          </div>
+                          <Badge variant="outline" className="rounded-md">
+                            {group.label === FIELD_GROUP_DEFAULT_LABEL ? "通用" : "平台字段"}
+                          </Badge>
+                        </div>
+                        <Table className="w-max min-w-full">
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>字段名</TableHead>
+                              <TableHead>平台</TableHead>
+                              <TableHead>来源</TableHead>
+                              <TableHead>目标值</TableHead>
+                              <TableHead>必填</TableHead>
+                              <TableHead>状态</TableHead>
+                              <TableHead>操作</TableHead>
                             </TableRow>
-                          ) : null}
-                        </Fragment>
-                      )
-                    })}
-                  </TableBody>
-                </Table>
+                          </TableHeader>
+                          <TableBody>
+                            {group.fields.map((field) => {
+                              const options = fieldOptions(field)
+                              const value = fieldValues[field.id] ?? field.value_text ?? ""
+                              const isSizeChartField = isProductArchiveSizeChartField(field)
+                              const hasPersistedSizeChart = hasStructuredSizeChartValue(field.value_json)
+                              const isChoiceField = isChoiceFieldType(field)
+                              const isMultiChoiceField = isMultiChoiceFieldType(field, value)
+                              const fieldIssues = fieldIssueMap.get(field.field_name) ?? []
+                              const hasFieldIssue = fieldIssues.length > 0
+                              const isActiveIssueField = activeIssueFieldName === field.field_name
+                              const topSeverity = fieldIssues.some((issue) => issue.severity === "blocker")
+                                ? "blocker"
+                                : fieldIssues[0]?.severity ?? ""
+                              const issueToneClass = topSeverity === "blocker" ? "text-[#d45656]" : "text-[#c37d0d]"
+                              const issueBackgroundClass = topSeverity === "blocker" ? "bg-[#fff1f1] hover:bg-[#fff1f1]" : "bg-[#fff8e8] hover:bg-[#fff8e8]"
+                              const issueBorderClass = topSeverity === "blocker" ? "border-l-[#d45656]" : "border-l-[#c37d0d]"
+                              return (
+                                <Fragment key={field.id}>
+                                  <TableRow
+                                    ref={(node) => {
+                                      if (hasFieldIssue) {
+                                        fieldRowRefs.current[field.field_name] = node
+                                      } else {
+                                        delete fieldRowRefs.current[field.field_name]
+                                      }
+                                    }}
+                                    data-field-platform={group.label}
+                                    data-field-issue={hasFieldIssue ? field.field_name : undefined}
+                                    data-active-field-issue={isActiveIssueField ? "true" : undefined}
+                                    className={cn(
+                                      "scroll-mt-40",
+                                      hasFieldIssue && "border-l-4",
+                                      hasFieldIssue && issueBorderClass,
+                                      hasFieldIssue && issueBackgroundClass,
+                                      isActiveIssueField && "ring-2 ring-inset ring-[#18e299]/80",
+                                    )}
+                                  >
+                                    <TableCell className="whitespace-normal align-top">
+                                      <span className={cn(hasFieldIssue && `font-medium ${issueToneClass}`)}>
+                                        {field.field_name}
+                                      </span>
+                                    </TableCell>
+                                    <TableCell>
+                                      <Badge variant="outline" className="rounded-md">
+                                        {draftFieldPlatformName(field)}
+                                      </Badge>
+                                    </TableCell>
+                                    <TableCell>{field.source_type}</TableCell>
+                                    <TableCell className={cn("max-w-[280px] truncate", hasFieldIssue && issueToneClass)}>
+                                      {isSizeChartField ? (hasPersistedSizeChart ? "已生成表格" : "待配置") : field.value_text || "-"}
+                                    </TableCell>
+                                    <TableCell>{field.required ? "必填" : "可选"}</TableCell>
+                                    <TableCell>
+                                      <Badge variant="outline" className={hasFieldIssue ? issueSeverityClass(topSeverity) : field.validation_status === "valid" ? statusClass("ready") : statusClass("manual_review")}>
+                                        {field.validation_status}
+                                      </Badge>
+                                    </TableCell>
+                                    <TableCell className="min-w-[220px]">
+                                      {isSizeChartField ? (
+                                        <Button
+                                          type="button"
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={() => setActiveTab("size-chart")}
+                                        >
+                                          <ClipboardCheck className="size-4" />
+                                          配置尺码表
+                                        </Button>
+                                      ) : isChoiceField && isMultiChoiceField && options.length > 0 ? (
+                                        <MultiChoiceFieldEditor
+                                          field={field}
+                                          value={value}
+                                          options={options}
+                                          disabled={!canWrite}
+                                          onChange={(nextValue) => setFieldValues((current) => ({ ...current, [field.id]: nextValue }))}
+                                        />
+                                      ) : isChoiceField && options.length > 0 ? (
+                                        <Select
+                                          value={options.some((option) => option.value === value) ? value : ""}
+                                          onValueChange={(nextValue) => setFieldValues((current) => ({ ...current, [field.id]: nextValue }))}
+                                        >
+                                          <SelectTrigger className="h-8" disabled={!canWrite}>
+                                            <SelectValue placeholder="选择字段值" />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                            {options.map((option) => (
+                                              <SelectItem key={option.value} value={option.value}>
+                                                {option.label}
+                                              </SelectItem>
+                                            ))}
+                                          </SelectContent>
+                                        </Select>
+                                      ) : isLongTextFieldType(field) ? (
+                                        <Textarea
+                                          value={value}
+                                          disabled={!canWrite}
+                                          onChange={(event) => setFieldValues((current) => ({ ...current, [field.id]: event.target.value }))}
+                                          placeholder="填写目标值"
+                                          className="min-h-20 min-w-[260px]"
+                                        />
+                                      ) : (
+                                        <Input
+                                          value={value}
+                                          disabled={!canWrite}
+                                          onChange={(event) => setFieldValues((current) => ({ ...current, [field.id]: event.target.value }))}
+                                          placeholder="填写目标值"
+                                          className="h-8"
+                                        />
+                                      )}
+                                    </TableCell>
+                                  </TableRow>
+                                  {hasFieldIssue ? (
+                                    <TableRow
+                                      data-field-issue-reason={field.field_name}
+                                      className={cn(
+                                        "border-l-4",
+                                        issueBorderClass,
+                                        issueBackgroundClass,
+                                        isActiveIssueField && "ring-2 ring-inset ring-[#18e299]/80",
+                                      )}
+                                    >
+                                      <TableCell colSpan={7} className="py-2 pl-5 pr-4 align-top">
+                                        <div className={cn("flex min-w-0 items-center gap-3 overflow-x-auto whitespace-nowrap text-sm leading-6", issueToneClass)}>
+                                          <Badge variant="outline" className={issueSeverityClass(topSeverity)}>
+                                            {issueSeverityLabel(topSeverity)}
+                                          </Badge>
+                                          <span className="font-medium">问题原因：</span>
+                                          <span>{issueSummaryText(fieldIssues)}</span>
+                                        </div>
+                                      </TableCell>
+                                    </TableRow>
+                                  ) : null}
+                                </Fragment>
+                              )
+                            })}
+                          </TableBody>
+                        </Table>
+                      </section>
+                    )
+                  })}
+                </div>
               )}
             </CardContent>
           </Card>

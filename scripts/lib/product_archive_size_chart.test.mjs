@@ -96,6 +96,24 @@ test("normalizes platform size-chart unit suffixes and pants aliases", () => {
   assert.deepEqual(vip.unmatchedTargets, ["号型", "适合年龄"]);
 });
 
+test("doubles half-width waist hip and leg-opening measurements only", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [
+      { "款号": "202426107205", "测量点": "1/2腰围（平量）", "尺码": "090", "尺码值": "21" },
+      { "款号": "202426107205", "测量点": "1/2臀围（平量）", "尺码": "090", "尺码值": "37" },
+      { "款号": "202426107205", "测量点": "1/2脚口（平量）", "尺码": "090", "尺码值": "8" },
+      { "款号": "202426107205", "测量点": "1/2袖口（平量）", "尺码": "090", "尺码值": "7" },
+    ],
+    spuCode: "202426107205",
+    template: { fieldName: "尺码表", options: ["腰围", "臀围", "脚口", "袖口"] },
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "腰围,臀围,脚口,袖口",
+    "90cm": "42,74,16,7",
+  });
+});
+
 test("derives height from the size label while filling PLM mapped size-chart values", () => {
   const rows = [
     { "款号": "208326104204", "测量点": "衣长", "尺码": "80/", "尺码值": "33" },

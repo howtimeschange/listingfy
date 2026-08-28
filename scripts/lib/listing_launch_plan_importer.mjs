@@ -113,11 +113,30 @@ async function readCsvRows(filePath) {
   return [{ name: "Sheet1", rows }];
 }
 
-export async function readSpreadsheetSheetsFromFile(filePath, options = {}) {
-  const fileName = options.fileName || filePath;
-  assertSupportedFile(fileName);
-  if (extensionFor(fileName) === ".csv") return readCsvRows(filePath);
+function hasUnresolvedSharedString(values = []) {
+  return values.some((value) => value
+    && typeof value === "object"
+    && Number.isInteger(value.sharedString));
+}
 
+async function readXlsxSheetsInMemory(filePath) {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(filePath);
+  const sheets = [];
+  for (const worksheet of workbook.worksheets) {
+    const rows = [];
+    worksheet.eachRow({ includeEmpty: false }, (row) => {
+      const item = rowValuesToObject(row.values);
+      if (Object.keys(item).length > 0) rows.push(item);
+    });
+    if (rows.length > 0) {
+      sheets.push({ name: worksheet.name || `Sheet${sheets.length + 1}`, rows });
+    }
+  }
+  return sheets;
+}
+
+async function readXlsxSheetsStreaming(filePath) {
   const workbookReader = new ExcelJS.stream.xlsx.WorkbookReader(filePath, {
     entries: "emit",
     sharedStrings: "cache",
@@ -126,9 +145,11 @@ export async function readSpreadsheetSheetsFromFile(filePath, options = {}) {
     worksheets: "emit",
   });
   const sheets = [];
+  let unresolvedSharedStrings = false;
   for await (const worksheetReader of workbookReader) {
     const rows = [];
     for await (const row of worksheetReader) {
+      unresolvedSharedStrings ||= hasUnresolvedSharedString(row.values);
       const item = rowValuesToObject(row.values);
       if (Object.keys(item).length > 0) rows.push(item);
     }
@@ -136,7 +157,20 @@ export async function readSpreadsheetSheetsFromFile(filePath, options = {}) {
       sheets.push({ name: worksheetReader.name || `Sheet${sheets.length + 1}`, rows });
     }
   }
-  return sheets;
+  return unresolvedSharedStrings ? null : sheets;
+}
+
+export async function readSpreadsheetSheetsFromFile(filePath, options = {}) {
+  const fileName = options.fileName || filePath;
+  assertSupportedFile(fileName);
+  if (extensionFor(fileName) === ".csv") return readCsvRows(filePath);
+  try {
+    const streamed = await readXlsxSheetsStreaming(filePath);
+    if (streamed) return streamed;
+  } catch {
+    // ExcelJS streaming can race workbook/shared-string ZIP entries; retry with the stable reader.
+  }
+  return readXlsxSheetsInMemory(filePath);
 }
 
 const HEADER_HINTS = new Set([

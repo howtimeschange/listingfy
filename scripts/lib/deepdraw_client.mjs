@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   createDeepdrawProductWithSdk,
   getDeepdrawProductWithSdk,
+  updateDeepdrawFullProductWithSdk,
 } from "./deepdraw_sdk_adapter.mjs";
 
 export const DEFAULT_DEEPDRAW_BASE_URL = "http://open.deepdraw.cn";
@@ -420,6 +421,14 @@ export async function createDeepdrawProduct({ config, payload = {}, timeoutMs = 
     throw new Error("DeepDraw product create adapter must be a function.");
   }
   return createAdapter({ config, payload, timeoutMs });
+}
+
+export async function updateDeepdrawProduct({ config, payload = {}, productId, timeoutMs = 30000, adapter } = {}) {
+  const updateAdapter = adapter ?? updateDeepdrawFullProductWithSdk;
+  if (typeof updateAdapter !== "function") {
+    throw new Error("DeepDraw product update adapter must be a function.");
+  }
+  return updateAdapter({ config, payload, productId, timeoutMs });
 }
 
 export async function getDeepdrawTrades({ config, timeoutMs = 30000 }) {

@@ -326,7 +326,7 @@ test("draft detail field fill tab highlights validation issues and can jump betw
   assert.doesNotMatch(draftDetailPage, /StatCard/);
   assert.match(draftDetailPage, /data-draft-summary-table="true"/);
   assert.match(draftDetailPage, /草稿摘要/);
-  for (const label of ["状态", "阻断问题", "警告", "深绘 productId", "草稿编号", "商户 ID", "吊牌价", "字段数", "最近校验", "更新时间", "深绘类目", "款号"]) {
+  for (const label of ["状态", "阻断问题", "警告", "深绘 productId", "字段平台", "草稿编号", "商户 ID", "吊牌价", "字段数", "最近校验", "更新时间", "深绘类目", "款号"]) {
     assert.match(draftDetailPage, new RegExp(label));
   }
   assert.match(draftDetailPage, /const \[activeTab, setActiveTab\] = useState\("fields"\)/);
@@ -345,6 +345,15 @@ test("draft detail field fill tab highlights validation issues and can jump betw
 
   assert.match(draftDetailPage, /fieldIssueMap/);
   assert.match(draftDetailPage, /fieldRowRefs/);
+  assert.match(draftDetailPage, /fieldGroupRefs/);
+  assert.match(draftDetailPage, /groupDraftFieldsByPlatform/);
+  assert.match(draftDetailPage, /scrollToFieldGroup/);
+  assert.match(draftDetailPage, /FIELD_GROUP_ORDER/);
+  assert.match(draftDetailPage, /data-field-platform/);
+  assert.match(draftDetailPage, /<TableHead>平台<\/TableHead>/);
+  assert.match(draftDetailPage, /平台字段/);
+  assert.match(draftDetailPage, /深绘类目：/);
+  assert.match(draftDetailPage, /tradeId/);
   assert.match(draftDetailPage, /pageScrollRef/);
   assert.match(draftDetailPage, /isProductArchiveSizeChartField/);
   assert.match(draftDetailPage, /setActiveTab\("size-chart"\)/);
@@ -375,6 +384,8 @@ test("draft detail field fill tab highlights validation issues and can jump betw
   assert.match(draftDetailPage, /\{formatNumber\(fieldIssueNames\.length\)\}/);
   assert.match(draftDetailPage, /bg-\[#d45656\]/);
   assert.match(draftDetailPage, /data-validation-locator-bar/);
+  assert.match(draftDetailPage, /data-field-platform-elevator="true"/);
+  assert.doesNotMatch(draftDetailPage, /sticky top-\[4rem\]/);
   assert.match(
     draftDetailPage,
     /<TabsContent value="fields" className="min-w-0">\s*<Card className="min-w-0 overflow-visible">/,
@@ -524,6 +535,7 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /form\.append\("assetPackage", "true"\)/);
   assert.match(draftListPage, /function uploadBaseName\(file: File\)/);
   assert.match(draftListPage, /const name = uploadBaseName\(file\)/);
+  assert.match(draftListPage, /\^yq\(\?:\[-_ \]\?\\d\+\|\\s\*\\\(\\d\+\\\)\)\?\$/);
   assert.match(draftListPage, /crawshrimp_asset_package/);
   assert.match(draftRoute, /const shouldImportReferenceImage = field === "referenceImages" \|\| packageKind === "reference_image"/);
   assert.match(draftListPage, /form\.append\("scmSupplementFile"/);
@@ -710,8 +722,10 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftDetailPage, /AI 推荐补齐空字段/);
   assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/submit`/s);
   assert.match(draftDetailPage, /确认发布到深绘/);
+  assert.match(draftDetailPage, /更新深绘已有商品/);
+  assert.match(draftDetailPage, /updateExistingProduct/);
   assert.match(draftDetailPage, /publishSubmit/);
-  assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/submit`, \{ dryRun: false \}\)/s);
+  assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/submit`, \{ dryRun: false, updateExisting \}\)/s);
 
   assert.match(metadataPage, /深绘类目字段/);
   assert.match(metadataPage, /api\.get<.*>\(`\/deepdraw-metadata\/trades\?/s);

@@ -6,6 +6,8 @@ import path from "node:path";
 const DEFAULT_JAVA_HOME = "/Users/xingyicheng/.local/toolchains/jdk8u492-b09/Contents/Home";
 const SDK_CREATE_SOURCE = path.resolve(import.meta.dirname, "../java/DeepdrawProductCreateCli.java");
 const SDK_CREATE_CLASS_NAME = "DeepdrawProductCreateCli";
+const SDK_UPDATE_SOURCE = path.resolve(import.meta.dirname, "../java/DeepdrawProductUpdateCli.java");
+const SDK_UPDATE_CLASS_NAME = "DeepdrawProductUpdateCli";
 const SDK_RESOURCE_SOURCE = path.resolve(import.meta.dirname, "../java/DeepdrawProductResourceCli.java");
 const SDK_RESOURCE_CLASS_NAME = "DeepdrawProductResourceCli";
 const SKU_TITLE = "价格,货号,上市时间,数量,商家编码,条形码,零售价,供货价,唯品会货号,唯品会条形码";
@@ -48,6 +50,14 @@ function hasValue(value) {
   if (Array.isArray(value)) return value.length > 0;
   if (typeof value === "object") return Object.keys(value).length > 0;
   return true;
+}
+
+function arrayValue(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function recordValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
 function uniqueValues(values) {
@@ -134,16 +144,23 @@ function sdkSizeValue(value) {
   return match ? `${Number(match[1])}cm` : text;
 }
 
+function bareShoeSizeValue(value) {
+  return stringValue(value).replace(/\s*码$/, "");
+}
+
 function sizeMatchKeys(value) {
   const text = stringValue(value);
   if (!text) return [];
   const normalized = sdkSizeValue(text);
   const numberText = normalized.match(/^(\d+)cm$/i)?.[1] ?? "";
+  const shoeCodeText = text.match(/^0*(\d+(?:\.5)?)\s*码$/)?.[1] ?? "";
   return uniqueValues([
     text,
     normalized,
     numberText,
     numberText ? numberText.padStart(3, "0") : "",
+    shoeCodeText,
+    shoeCodeText ? shoeCodeText.padStart(3, "0") : "",
   ].map((item) => item.replace(/\s+/g, "").toLowerCase()));
 }
 
@@ -234,11 +251,82 @@ function normalizeMerchantSkuField(value, sizeValues = []) {
   return output;
 }
 
-function normalizeSizeTableField(value, sizeValues = []) {
+const DEEPDRAW_MULTI_PLATFORM_SIZE_CODES = new Map([
+  ["京东", "JD"],
+  ["拼多多", "PDD"],
+  ["小红书", "XIAOHONGSHU"],
+  ["微信视频小店", "WEIXINXIAODIAN"],
+]);
+
+const DEEPDRAW_SITE_CODES = new Map([
+  ["1688", "ALIBABA"],
+  ["天猫", "TMALL"],
+  ["京东", "JD"],
+  ["唯品会", "VIP"],
+  ["有赞", "YOUZAN"],
+  ["拼多多", "PDD"],
+  ["小红书", "XIAOHONGSHU"],
+  ["抖音", "DOUYIN"],
+  ["快手", "KUAISHOU"],
+  ["微信视频小店", "WEIXINXIAODIAN"],
+]);
+
+function normalizeDeepdrawSites(value) {
+  const values = Array.isArray(value)
+    ? value
+    : stringValue(value).split(/[;,，；、]/);
+  return uniqueValues(values
+    .map((site) => stringValue(site))
+    .filter(Boolean)
+    .map((site) => DEEPDRAW_SITE_CODES.get(site) ?? site.toUpperCase()));
+}
+
+function isUnsupportedLegacyShoeSizeField(name) {
+  const key = compactKey(name);
+  return key === compactKey("多平台尺码") || key === compactKey("淘宝尺码表");
+}
+
+export function selectDeepdrawLegacyShoeCreateFields(fields = []) {
+  return arrayValue(fields).filter((field) => {
+    const name = normalizeSdkFieldName(fieldName(field));
+    const value = fieldValue(field);
+    const type = fieldType(field);
+    if (!name || !hasValue(value)) return false;
+    if (!isStructuredSizePayloadField(name, type)) return true;
+    return compactKey(name) === compactKey("尺码表");
+  });
+}
+
+export function selectDeepdrawLegacyShoeUpdateFields(fields = []) {
+  return arrayValue(fields).filter((field) => {
+    const name = normalizeSdkFieldName(fieldName(field));
+    const value = fieldValue(field);
+    const type = fieldType(field);
+    if (!name || !hasValue(value)) return false;
+    return !isStructuredSizePayloadField(name, type) || !isUnsupportedLegacyShoeSizeField(name);
+  });
+}
+
+function normalizeMultiPlatformSizeTitle(value) {
+  return stringValue(value)
+    .split(/[,，]/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => DEEPDRAW_MULTI_PLATFORM_SIZE_CODES.get(part) ?? part)
+    .join(",");
+}
+
+function normalizeSizeTableField(value, sizeValues = [], name = "") {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const output = {};
   for (const [size, rowValue] of Object.entries(value)) {
-    output[size === "title" ? size : sdkPayloadSizeValue(size, sizeValues)] = rowValue;
+    if (size === "title") {
+      output[size] = compactKey(name) === compactKey("多平台尺码")
+        ? normalizeMultiPlatformSizeTitle(rowValue)
+        : rowValue;
+      continue;
+    }
+    output[sdkPayloadSizeValue(size, sizeValues)] = rowValue;
   }
   return output;
 }
@@ -290,25 +378,240 @@ function hostValue(baseUrl) {
   return stringValue(baseUrl) || "http://open.deepdraw.cn";
 }
 
+function unwrapDeepdrawResourceBody(value) {
+  const source = recordValue(value);
+  const responseBody = recordValue(recordValue(source.response).body);
+  if (hasValue(responseBody)) return responseBody;
+  const body = recordValue(source.body);
+  if (hasValue(body) && (source.code != null || source.response != null || source.requestId != null)) return body;
+  return source;
+}
+
+export function buildDeepdrawProductFullUpdateInput({ config, productId, payload = {} } = {}) {
+  const input = buildDeepdrawSdkProductInput({
+    config,
+    payload: {
+      ...payload,
+      fields: Array.isArray(payload.legacyUpdateFields)
+        ? payload.legacyUpdateFields
+        : payload.fields,
+    },
+  });
+  return {
+    config: input.config,
+    productId: stringValue(productId),
+    product: input.product,
+  };
+}
+
+function legacyShoeSizeValues(payload) {
+  const fields = arrayValue(payload.fields).map(recordValue);
+  const declared = saleSizeValues(findPayloadFieldValue(fields, ["尺码", "尺寸", "规格", "size"]));
+  const source = declared.length > 0
+    ? declared
+    : arrayValue(payload.skus).map((sku) => {
+        const row = recordValue(sku);
+        return row.size ?? row.sizeName ?? row.size_name;
+      });
+  return uniqueValues(source.map(bareShoeSizeValue).filter(Boolean));
+}
+
+function sortedLegacyIdentityValues(values) {
+  return uniqueValues(values.map(stringValue).filter(Boolean)).sort((left, right) => (
+    left.localeCompare(right, "zh-Hans-CN", { numeric: true })
+  ));
+}
+
+function legacyColorAliases(resource) {
+  const aliases = recordValue(recordValue(resource.colors).optionAliases ?? recordValue(resource.colors).option_aliases);
+  const lookup = new Map();
+  for (const [standard, alias] of Object.entries(aliases)) {
+    const standardText = stringValue(standard);
+    const aliasText = stringValue(alias);
+    if (standardText) lookup.set(compactKey(standardText), standardText);
+    if (standardText && aliasText) lookup.set(compactKey(aliasText), standardText);
+  }
+  return lookup;
+}
+
+function legacyShoeSkuIdentity(color, size, colorAliases = new Map()) {
+  const colorParts = stringValue(color).split(/[,，]/).map((part) => part.trim()).filter(Boolean);
+  const standardColor = colorParts
+    .map((part) => colorAliases.get(compactKey(part)))
+    .find(Boolean)
+    ?? stringValue(sdkColorValue(color)).split(/[,，]/)[0];
+  const standardSize = bareShoeSizeValue(size);
+  return standardColor && standardSize ? JSON.stringify([standardColor, standardSize]) : "";
+}
+
+function legacyExpectedSizeTable(field, selectedSizes) {
+  const name = normalizeSdkFieldName(fieldName(field));
+  const normalized = recordValue(normalizeSizeTableField(fieldValue(field), selectedSizes, name));
+  const columns = stringValue(normalized.title).split(",").map((column) => column.trim()).filter(Boolean);
+  const rows = Object.fromEntries(Object.entries(normalized)
+    .filter(([size]) => size !== "title")
+    .map(([size, value]) => {
+      const cells = stringValue(value).split(",");
+      return [bareShoeSizeValue(size), Object.fromEntries(columns.flatMap((column, index) => {
+        const cell = stringValue(cells[index]);
+        return cell ? [[column, cell]] : [];
+      }))];
+    })
+    .filter(([size, values]) => size && hasValue(values)));
+  return { name, rows };
+}
+
+function legacyActualSizeTables(resource) {
+  const source = unwrapDeepdrawResourceBody(resource);
+  const candidates = [
+    source.sizeTable,
+    source.size_table,
+    source.vipSizeTable,
+    source.vip_size_table,
+    ...arrayValue(source.sizeTables ?? source.size_tables),
+  ].map(recordValue).filter(hasValue);
+  const tables = new Map();
+  for (const table of candidates) {
+    const name = normalizeSdkFieldName(recordValue(table.field).name ?? table.name);
+    if (!name || tables.has(compactKey(name))) continue;
+    const rows = Object.fromEntries(arrayValue(table.sizeTableItems ?? table.size_table_items)
+      .map(recordValue)
+      .map((row) => [bareShoeSizeValue(row.size), recordValue(row.values)])
+      .filter(([size, values]) => size && hasValue(values)));
+    tables.set(compactKey(name), { name, rows });
+  }
+  return tables;
+}
+
+function compareLegacySizeTable(expected, actual) {
+  const expectedSizes = sortedLegacyIdentityValues(Object.keys(expected.rows));
+  const actualSizes = sortedLegacyIdentityValues(Object.keys(actual?.rows ?? {}));
+  const missingSizes = expectedSizes.filter((size) => !Object.prototype.hasOwnProperty.call(actual?.rows ?? {}, size));
+  const unexpectedSizes = actualSizes.filter((size) => !Object.prototype.hasOwnProperty.call(expected.rows, size));
+  const mismatchedCells = [];
+  for (const size of expectedSizes) {
+    const expectedValues = recordValue(expected.rows[size]);
+    const actualValues = recordValue(actual?.rows?.[size]);
+    for (const [column, expectedValue] of Object.entries(expectedValues)) {
+      if (stringValue(actualValues[column]) !== stringValue(expectedValue)) {
+        mismatchedCells.push({
+          size,
+          column,
+          expected: stringValue(expectedValue),
+          actual: stringValue(actualValues[column]),
+        });
+      }
+    }
+  }
+  return {
+    name: expected.name,
+    ok: Boolean(actual)
+      && missingSizes.length === 0
+      && unexpectedSizes.length === 0
+      && mismatchedCells.length === 0,
+    expectedCount: expectedSizes.length,
+    actualCount: actualSizes.length,
+    missingSizes,
+    unexpectedSizes,
+    mismatchedCells: mismatchedCells.slice(0, 20),
+  };
+}
+
+export function compareDeepdrawLegacyShoePayloadToResource({ payload = {}, resourceBody } = {}) {
+  const source = unwrapDeepdrawResourceBody(resourceBody);
+  const colorAliases = legacyColorAliases(source);
+  const selectedSizes = legacyShoeSizeValues(payload);
+  const expectedSizes = sortedLegacyIdentityValues(selectedSizes);
+  const actualSizes = sortedLegacyIdentityValues(
+    arrayValue(recordValue(source.sizes).options).map(bareShoeSizeValue),
+  );
+  const missingSizes = expectedSizes.filter((size) => !actualSizes.includes(size));
+  const unexpectedSizes = actualSizes.filter((size) => !expectedSizes.includes(size));
+  const sizeSection = {
+    name: "尺码",
+    ok: missingSizes.length === 0 && unexpectedSizes.length === 0,
+    expectedCount: expectedSizes.length,
+    actualCount: actualSizes.length,
+    missingSizes,
+    unexpectedSizes,
+  };
+
+  const expectedSkuIdentities = sortedLegacyIdentityValues(arrayValue(payload.skus).map((sku) => {
+    const row = recordValue(sku);
+    return legacyShoeSkuIdentity(
+      row.color ?? row.colorName ?? row.color_name,
+      row.size ?? row.sizeName ?? row.size_name,
+      colorAliases,
+    );
+  }));
+  const actualSkuIdentities = sortedLegacyIdentityValues(arrayValue(recordValue(source.skus).skuItems).map((sku) => {
+    const row = recordValue(sku);
+    return legacyShoeSkuIdentity(row.color, row.size, colorAliases);
+  }));
+  const missingSkus = expectedSkuIdentities.filter((identity) => !actualSkuIdentities.includes(identity));
+  const unexpectedSkus = actualSkuIdentities.filter((identity) => !expectedSkuIdentities.includes(identity));
+  const skuSection = {
+    name: "商家SKU",
+    ok: missingSkus.length === 0 && unexpectedSkus.length === 0,
+    expectedCount: expectedSkuIdentities.length,
+    actualCount: actualSkuIdentities.length,
+    missingSkus,
+    unexpectedSkus,
+  };
+
+  const updateFields = selectDeepdrawLegacyShoeUpdateFields(
+    Array.isArray(payload.legacyUpdateFields) ? payload.legacyUpdateFields : payload.fields,
+  );
+  const expectedTables = updateFields
+    .filter((field) => isStructuredSizePayloadField(fieldName(field), fieldType(field)))
+    .map((field) => legacyExpectedSizeTable(field, selectedSizes))
+    .filter((table) => table.name && hasValue(table.rows));
+  const actualTables = legacyActualSizeTables(source);
+  const tableSections = expectedTables.map((table) => (
+    compareLegacySizeTable(table, actualTables.get(compactKey(table.name)))
+  ));
+  const sections = [sizeSection, skuSection, ...tableSections];
+  return {
+    ok: sections.length > 0 && sections.every((section) => section.ok),
+    sections,
+    supportedSizeTables: tableSections.map((section) => section.name),
+    omittedUnsupportedSizeTables: ["多平台尺码", "淘宝尺码表"],
+  };
+}
+
 export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
   const fields = {};
   const payloadFields = Array.isArray(payload.fields) ? payload.fields : [];
-  const selectedSizeValues = saleSizeValues(findPayloadFieldValue(payloadFields, ["尺码", "尺寸", "规格", "size"]));
+  const skus = Array.isArray(payload.skus) ? payload.skus : [];
+  const shoeSizes = Boolean(payload.shoeSizes);
+  const declaredSizeValues = saleSizeValues(findPayloadFieldValue(payloadFields, ["尺码", "尺寸", "规格", "size"]));
+  const selectedSizeValues = declaredSizeValues.length > 0
+    ? declaredSizeValues.map((size) => shoeSizes ? bareShoeSizeValue(size) : size)
+    : uniqueValues(skus.map((sku) => (
+        shoeSizes
+          ? bareShoeSizeValue(sku.size ?? sku.sizeName ?? sku.size_name)
+          : sdkSizeValue(sku.size ?? sku.sizeName ?? sku.size_name)
+      )).filter(Boolean));
+  // The authorized v1 Product API treats aliases and remarks as new enum
+  // values, so preserve the provider's bare size identity here.
+  const publishedSizeValue = selectedSizeValues.join(";");
   for (const field of payloadFields) {
     const name = normalizeSdkFieldName(fieldName(field));
     const value = fieldValue(field);
     const type = fieldType(field);
     if (!name || !hasValue(value)) continue;
+    if (shoeSizes && isUnsupportedLegacyShoeSizeField(name)) continue;
     if (isUnsupportedScalarSdkField(name, value, type)) continue;
     const key = compactKey(name);
-    fields[name] = key === "商家sku"
+    fields[name] = shoeSizes && ["尺码", "尺寸", "规格", "size"].includes(key)
+      ? publishedSizeValue
+      : key === "商家sku"
       ? normalizeMerchantSkuField(value, selectedSizeValues)
       : isStructuredSizePayloadField(name, type)
-        ? normalizeSizeTableField(value, selectedSizeValues)
+        ? normalizeSizeTableField(value, selectedSizeValues, name)
         : value;
   }
 
-  const skus = Array.isArray(payload.skus) ? payload.skus : [];
   const dateText = normalizeSdkDateText(
     stringValue(payload.date)
       || stringValue(findPayloadFieldValue(payloadFields, ["内容上市时间", "搜索上市时间", "上市时间"])),
@@ -326,7 +629,7 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
       fields["颜色"] = skuColorValues.join(";");
     }
     if (!fieldKey(fields, ["尺码", "尺寸"])) {
-      fields["尺码"] = uniqueValues(skus.map((sku) => sdkSizeValue(sku.size ?? sku.sizeName ?? sku.size_name))).join(";");
+      fields["尺码"] = publishedSizeValue;
     }
     if (!fieldKey(fields, ["商家 SKU", "商家SKU"])) {
       fields["商家SKU"] = buildMerchantSkuField(payload, skus, dateText, selectedSizeValues);
@@ -347,6 +650,7 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
       title: stringValue(payload.title),
       retailPrice: asMoneyText(payload.retailPrice),
       date: dateText,
+      places: normalizeDeepdrawSites(payload.places ?? payload.sites ?? payload.compatiblePlatforms),
       fields,
     },
   };
@@ -530,6 +834,14 @@ export async function runDeepdrawSdkResourceCli(input, options = {}) {
   });
 }
 
+export async function runDeepdrawProductUpdateCli(input, options = {}) {
+  return runDeepdrawSdkCli(input, {
+    ...options,
+    sourceFile: SDK_UPDATE_SOURCE,
+    className: SDK_UPDATE_CLASS_NAME,
+  });
+}
+
 function extractJsonObject(text) {
   const lines = stringValue(text).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -562,6 +874,22 @@ export async function createDeepdrawProductWithSdk({
   runner = runDeepdrawSdkCli,
 } = {}) {
   const input = buildDeepdrawSdkProductInput({ config, payload });
+  const output = await runner(input, { timeoutMs, projectRoot });
+  return parseDeepdrawSdkOutput(output);
+}
+
+export async function updateDeepdrawFullProductWithSdk({
+  config,
+  payload = {},
+  productId,
+  timeoutMs = 30000,
+  projectRoot,
+  runner = runDeepdrawProductUpdateCli,
+} = {}) {
+  if (!/^\d+$/.test(stringValue(productId))) {
+    throw new Error("DeepDraw numeric productId is required for full product update.");
+  }
+  const input = buildDeepdrawProductFullUpdateInput({ config, productId, payload });
   const output = await runner(input, { timeoutMs, projectRoot });
   return parseDeepdrawSdkOutput(output);
 }

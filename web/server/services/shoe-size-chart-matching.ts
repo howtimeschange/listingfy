@@ -185,11 +185,16 @@ function supportedColumns(template: ShoeFieldTemplate, desired: string[], fallba
   }).filter(Boolean)
 }
 
-function tableValue(rows: ShoeSizeChartRow[], columns: string[], valueForColumn: (row: ShoeSizeChartRow, column: string) => string): ShoeFieldValue | null {
+function tableValue(
+  rows: ShoeSizeChartRow[],
+  columns: string[],
+  valueForColumn: (row: ShoeSizeChartRow, column: string) => string,
+  sizeForRow: (row: ShoeSizeChartRow) => string = (row) => normalizeShoeSkuSize(row.size_value),
+): ShoeFieldValue | null {
   if (columns.length === 0 || rows.length === 0) return null
   const valueJson: JsonRecord = {}
   for (const row of rows) {
-    const size = normalizeShoeSkuSize(row.size_value)
+    const size = sizeForRow(row)
     if (!size) continue
     valueJson[size] = columns.map((column) => valueForColumn(row, column)).join(",")
   }
@@ -219,8 +224,12 @@ function templateMap(templates: ShoeFieldTemplate[]) {
 }
 
 function scalarValue(value: string, template: ShoeFieldTemplate | undefined) {
-  if (!value || !template || !templateOptions(template).has(value)) return null
-  return { valueText: value, valueJson: {} }
+  if (!value || !template) return null
+  const supported = templateOptions(template)
+  if (supported.has(value)) return { valueText: value, valueJson: {} }
+  const normalizedValue = compact(value)
+  const matched = [...supported].find((option) => compact(option) === normalizedValue)
+  return matched ? { valueText: matched, valueJson: {} } : null
 }
 
 export function buildShoeSizeChartFieldValues(input: {
@@ -275,13 +284,17 @@ export function buildShoeSizeChartFieldValues(input: {
     const value = scalarValue(range, videoSizeTemplate)
     if (value) output["尺码."] = value
   }
-  const sizeType = scalarValue("中国码", templates.get("尺码类型"))
+  const sizeType = scalarValue("欧码（童鞋）", templates.get("尺码类型"))
   if (sizeType) output["尺码类型"] = sizeType
 
   const generic = templates.get("尺码表")
   if (generic) {
     const columns = supportedColumns(generic, ["适合脚长", "鞋内长"], { 鞋内长: ["内长", "鞋长"] })
-    const value = tableValue(rows, columns, (row, column) => column === "适合脚长" ? footRange(row) : innerLength(row))
+    const value = tableValue(
+      rows,
+      columns,
+      (row, column) => column === "适合脚长" || column === "脚长" ? baselineFoot(row) : innerLength(row),
+    )
     if (value && columns.length === 2) output["尺码表"] = value
   }
 
@@ -315,13 +328,14 @@ export function buildShoeSizeChartFieldValues(input: {
 
   const multi = templates.get("多平台尺码")
   if (multi) {
-    const columns = supportedColumns(multi, ["拼多多", "微信视频小店"])
-    const value = tableValue(rows, columns, (row, column) => column === "拼多多"
-      ? stringValue(row.pinduoduo_mapping_text)
-        || stringValue(row.video_pdd_vip_mapping_text)
+    const columns = supportedColumns(multi, ["京东", "拼多多", "小红书", "微信视频小店"])
+    const value = tableValue(rows, columns, (row, column) => {
+      if (column === "京东") return normalizeShoeSkuSize(row.size_value)
+      return stringValue(row.video_pdd_vip_mapping_text)
+        || stringValue(row.pinduoduo_mapping_text)
         || stringValue(row.vip_mapping_text)
-      : stringValue(row.video_pdd_vip_mapping_text) || stringValue(row.vip_mapping_text))
-    if (value && columns.length === 2) output["多平台尺码"] = value
+    })
+    if (value && columns.length > 0) output["多平台尺码"] = value
   }
 
   const templateType = scalarValue(input.match.templateType, templates.get("25鞋子模板类型"))

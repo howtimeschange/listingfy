@@ -13,8 +13,8 @@ export const HIGH_CONFIDENCE_SIZE_CHART_RULES = [
   ["肩宽", ["肩宽"]],
   ["胸围", ["胸围", "1/2胸围"]],
   ["裤长", ["裤长"]],
-  ["腰围", ["全腰围（平量）", "腰围"]],
-  ["臀围", ["臀围", "臀围（平量）"]],
+  ["腰围", ["全腰围（平量）", "腰围", "1/2腰围（平量）", "1/2腰围"]],
+  ["臀围", ["臀围", "臀围（平量）", "1/2臀围（平量）", "1/2臀围"]],
   ["脚口", ["1/2脚口（平量）"]],
   ["裤口围", ["1/2脚口（平量）"]],
   ["下摆围", ["下摆围（平量）", "下摆围（弧量）", "裙摆围"]],
@@ -350,6 +350,18 @@ function derivedValueForMapping(mapping, size) {
   return null;
 }
 
+function mappedSizeChartValue(mapping, value) {
+  const text = stringValue(value);
+  if (!text) return text;
+  const target = compactKey(mapping?.targetField);
+  const source = stringValue(mapping?.sourcePoint).replace(/\s+/g, "");
+  const doublesHalfWidth = ["腰围", "臀围", "脚口", "裤口围"].some((field) => target === compactKey(field))
+    && /1\/2/.test(source);
+  if (!doublesHalfWidth) return text;
+  const number = Number(text);
+  return Number.isFinite(number) ? numberText(number * 2) : text;
+}
+
 function isBlankSizeChartValue(value) {
   const text = stringValue(value);
   if (!text) return true;
@@ -387,7 +399,7 @@ export function buildSizeChartForTemplate({ rows = [], spuCode, template = {}, m
       const derivedValue = derivedValueForMapping(mapping, size);
       if (derivedValue != null) return derivedValue;
       return mapping.sourcePoint
-        ? valueByPointAndSize.get(`${compactKey(mapping.sourcePoint)}\u0000${size}`) ?? "0"
+        ? mappedSizeChartValue(mapping, valueByPointAndSize.get(`${compactKey(mapping.sourcePoint)}\u0000${size}`) ?? "0")
         : "0";
     });
     valuesBySize.set(size, values);

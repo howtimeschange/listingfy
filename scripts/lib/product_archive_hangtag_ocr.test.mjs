@@ -263,6 +263,8 @@ test("hangtag OCR helpers classify batch file names", () => {
   assert.equal(classifyProductArchiveOcrFile("PRC-208426103215-吊牌.pdf"), "hangtag");
   assert.equal(classifyProductArchiveOcrFile("幼童测试洗唛吊牌/201426108203/201426108203_吊牌_yq1.jpg"), "hangtag");
   assert.equal(classifyProductArchiveOcrFile("幼童测试洗唛吊牌/201426108203/201426108203_洗唛_yq2.jpg"), "washlabel");
+  assert.equal(classifyProductArchiveOcrFile("202426107205/yq2.jpg"), "washlabel");
+  assert.equal(classifyProductArchiveOcrFile("202426107205/yq (3).png"), "washlabel");
   assert.equal(classifyProductArchiveOcrFile("幼童测试洗唛吊牌/201426108203/201426108203-90001_有模拍.jpg"), "unknown");
   assert.equal(productArchiveOcrFileType("hangtag.pdf"), "pdf");
   assert.equal(productArchiveOcrFileType("washlabel.jpeg"), "image");
@@ -336,6 +338,76 @@ test("OCR file recognizer falls back to multimodal vision when OCR extracts no f
       result.fields.find((field) => field.key === "downFillWeight")?.value,
       "80 90 100 110 120 130\n73 83 94 108 123 138",
     );
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
+test("washlabel OCR uses vision when fill-weight evidence was left unstructured", async () => {
+  const workDir = await mkdtemp(path.join(os.tmpdir(), "listingify-ocr-washlabel-incomplete-"));
+  try {
+    const filePath = path.join(workDir, "yq2.jpg");
+    await writeFile(filePath, await simpleJpegBuffer());
+    const visionCalls = [];
+    const result = await recognizeProductArchiveOcrFile(
+      { filePath, fileName: "202426107205/yq2.jpg", fileType: "image" },
+      {
+        provider: async () => ({
+          text: [
+            "成分 大身/领子面料: 100%锦纶",
+            "兰 61 pir CN",
+            "38.7%18",
+            "里料: 10096锦纶",
+            "塔充物 大身: 灰鹄绒 绒子含量90",
+            "充绒量 (单位: 克)",
+            "团达盂要区团团团达区区西",
+            "国因因因团回团回国畜团团",
+            "绒子含量: 900%",
+            "洗涤说明",
+            "不可干洗",
+            "202426107205",
+          ].join("\n"),
+          providerKind: "tesseract_js",
+        }),
+        preprocessWashlabel: false,
+        ocrQualityProvider: async () => {
+          throw new Error("quality gate should not accept an incomplete washlabel before vision fallback");
+        },
+        visionProvider: async () => {
+          visionCalls.push(true);
+          return {
+            providerKind: "ai_vision",
+            json: {
+              style_code: "202426107205",
+              fields: [
+                {
+                  key: "materialComposition",
+                  label: "面料成分",
+                  value: "填充物: 灰鸭绒\n绒子含量: 90%",
+                  confidence: "high",
+                },
+                {
+                  key: "downFillWeight",
+                  label: "充绒量",
+                  value: "尺码：90 | 100 | 110\n克数：13 | 15 | 17",
+                  confidence: "high",
+                },
+              ],
+            },
+          };
+        },
+      },
+    );
+
+    assert.equal(result.sourceKind, "washlabel");
+    assert.equal(visionCalls.length, 1);
+    assert.deepEqual(result.providerKinds, ["tesseract_js", "ai_vision"]);
+    assert.match(result.warnings.join("\n"), /洗唛包含充绒量证据.*已使用多模态模型兜底识别/);
+    assert.equal(
+      result.fields.find((field) => field.key === "materialComposition")?.value,
+      "填充物: 灰鸭绒\n绒子含量: 90%",
+    );
+    assert.equal(result.fields.find((field) => field.key === "downFillWeight")?.value, "尺码：90 | 100 | 110\n克数：13 | 15 | 17");
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }

@@ -364,8 +364,10 @@ function ocrFileBaseName(fileName) {
 export function classifyProductArchiveOcrFile(fileName) {
   const name = ocrFileBaseName(fileName);
   const ext = fileExtension(name);
+  const stem = ext ? name.slice(0, -ext.length) : name;
   if (/(洗唛|洗标|水洗|wash)/i.test(name)) return "washlabel";
   if (/(吊牌|合格证|hangtag|tag)/i.test(name)) return "hangtag";
+  if (/^yq(?:[-_ ]?\d+|\s*\(\d+\))?$/i.test(stem)) return "washlabel";
   if (ext === ".pdf") return "hangtag";
   return "unknown";
 }
@@ -684,6 +686,16 @@ function ocrTextLooksUnusable(text) {
 function visionFallbackReason(document = {}) {
   if (stringValue(document.status) === "ocr_failed") return "OCR 识别失败";
   if (!Array.isArray(document.fields) || document.fields.length === 0) return "OCR 未提取到结构化字段";
+  if (stringValue(document.sourceKind) === "washlabel") {
+    const rawText = normalizeOcrText(document.rawText);
+    const fieldKeys = new Set(document.fields.map((field) => stringValue(field?.key)));
+    if (/充绒量/.test(rawText) && !fieldKeys.has("downFillWeight")) {
+      return "洗唛包含充绒量证据，但 OCR 未提取尺码克重表";
+    }
+    if (/(?:绒子含量|填充物)/.test(rawText) && !fieldKeys.has("materialComposition")) {
+      return "洗唛包含填充物成分证据，但 OCR 未提取面料成分";
+    }
+  }
   if (ocrTextLooksUnusable(document.rawText)) return "OCR 文本质量较差";
   return "";
 }
@@ -1298,10 +1310,14 @@ async function callVisionOcrProvider({
 
 function mergeDocumentFields(leftFields = [], rightFields = []) {
   const fieldsByKey = new Map();
-  for (const field of [...leftFields, ...rightFields]) {
+  for (const field of leftFields) {
     if (!field?.key || !stringValue(field.value)) continue;
     const existing = fieldsByKey.get(field.key);
     fieldsByKey.set(field.key, existing ? betterField(existing, field) : field);
+  }
+  for (const field of rightFields) {
+    if (!field?.key || !stringValue(field.value)) continue;
+    fieldsByKey.set(field.key, field);
   }
   return Array.from(fieldsByKey.values());
 }

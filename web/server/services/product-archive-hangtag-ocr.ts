@@ -182,6 +182,10 @@ function downFillPairsFromFlatTokens(tokens: string[]) {
 
 function downFillPairsFromText(value: unknown) {
   const text = stringValue(value)
+  const normalizedPairs = Array.from(text.matchAll(/(\d+(?:\.\d+)?)\s*(?:cm|CM|厘米|码)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(?:g|G|克)/g))
+    .map((match) => [match[1], match[2]])
+    .filter(([size, weight]) => plausibleDownFillSize(size) && plausibleDownFillWeight(weight))
+  if (normalizedPairs.length >= 2) return normalizedPairs
   const explicitPairs = Array.from(text.matchAll(/(\d+(?:\.\d+)?)\s*(?:cm|CM|厘米|码)?\s*[:：]\s*(\d+(?:\.\d+)?)\s*(?:g|G|克)?/g))
     .map((match) => [match[1], match[2]])
     .filter(([size, weight]) => plausibleDownFillSize(size) && plausibleDownFillWeight(weight))
@@ -224,12 +228,35 @@ function normalizeDownFillWeightText(value: unknown) {
     .join("；")
 }
 
+export function minimumProductArchiveDownFillWeightText(values: unknown[]) {
+  const weightsBySize = new Map<string, number>()
+  for (const value of values) {
+    for (const [rawSize, rawWeight] of downFillPairsFromText(value)) {
+      const size = cleanNumberText(rawSize)
+      const weight = Number(rawWeight)
+      if (!size || !Number.isFinite(weight)) continue
+      const current = weightsBySize.get(size)
+      if (current === undefined || weight < current) weightsBySize.set(size, weight)
+    }
+  }
+  return Array.from(weightsBySize.entries())
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .map(([size, weight]) => `${size}码${cleanNumberText(String(weight))}克`)
+    .join("；")
+}
+
 function ocrFieldMatchesDraftField(field: OcrField, draftFieldName: unknown, draftField: JsonRecord = {}) {
   const key = stringValue(field.key)
   const name = compactFieldKey(draftFieldName)
   if (!key || !name) return false
   if (key === "executionStandard") return name.includes("执行标准") || name.includes("执行规范")
-  if (key === "safetyCategory") return name.includes("安全技术类别") || name.includes("安全类别") || name.includes("安全技术要求")
+  if (key === "safetyCategory") {
+    return name === "安全等级"
+      || name === "安全等级多选"
+      || name.includes("安全技术类别")
+      || name.includes("安全类别")
+      || name.includes("安全技术要求")
+  }
   if (key === "productGrade") return name.includes("产品等级") || name.includes("质量等级")
   if (key === "productName") return name === "产品名称" || name === "商品名称" || name === "品名"
   if (key === "articleNo") return name === "产品货号" || name === "商品货号" || name === "货号" || name === "款号"
@@ -465,6 +492,44 @@ function buildPreviewItem(db: SyncPostgresDatabase, document: OcrDocument, draft
   }
 }
 
+function applyMinimumDownFillWeightRule(items: ReturnType<typeof buildPreviewItem>[]) {
+  const targetsByDraftField = new Map<string, Array<{
+    item: ReturnType<typeof buildPreviewItem>
+    target: ReturnType<typeof buildPreviewItem>["targetFields"][number]
+  }>>()
+  for (const item of items) {
+    const draftId = Number(item.matchedDraft?.id)
+    if (!Number.isInteger(draftId) || draftId <= 0) continue
+    for (const target of item.targetFields) {
+      if (target.fieldKey !== "downFillWeight" || !target.willApply) continue
+      const key = `${draftId}:${target.fieldId}`
+      const entries = targetsByDraftField.get(key) ?? []
+      entries.push({ item, target })
+      targetsByDraftField.set(key, entries)
+    }
+  }
+  for (const entries of targetsByDraftField.values()) {
+    if (entries.length < 2) continue
+    const minimumValue = minimumProductArchiveDownFillWeightText(entries.map(({ target }) => target.valueText))
+    if (!minimumValue) continue
+    const fileNames = Array.from(new Set(entries.map(({ item }) => item.fileName).filter(Boolean)))
+    const [selected, ...duplicates] = entries
+    selected.target.valueText = minimumValue
+    selected.target.rawValueText = minimumValue
+    selected.target.sourceRef = `同款多色洗唛OCR取小值:${fileNames.join("、")}`
+    selected.target.evidenceText = `同款不同色充绒量按尺码取较小值：${minimumValue}`
+    for (const duplicate of duplicates) {
+      duplicate.target.willApply = false
+      duplicate.target.skippedReason = "同款多色充绒量已合并，并按各尺码取较小值"
+    }
+  }
+  for (const item of items) {
+    if (item.status === "ready" && !item.targetFields.some((field) => Boolean(field.willApply))) {
+      item.status = "all_skipped"
+    }
+  }
+}
+
 export function previewProductArchiveHangtagWashlabelOcr(db: SyncPostgresDatabase, input: PreviewInput = {}) {
   const documents = Array.isArray(input.documents) ? input.documents : []
   const spuCodes = documents.map((document) => stringValue(document.detectedSpuCode)).filter(Boolean)
@@ -472,6 +537,7 @@ export function previewProductArchiveHangtagWashlabelOcr(db: SyncPostgresDatabas
   const items = documents.map((document) => buildPreviewItem(db, document, draftLookup, {
     overwriteExisting: input.overwriteExisting,
   }))
+  applyMinimumDownFillWeightRule(items)
   const summary = {
     fileCount: items.length,
     matchedCount: items.filter((item) => Boolean(item.matchedDraft)).length,
@@ -512,6 +578,7 @@ export function applyProductArchiveHangtagWashlabelOcr(db: SyncPostgresDatabase,
     const items = documents.map((document) => buildPreviewItem(db, document, draftLookup, {
       overwriteExisting: input.overwriteExisting,
     }))
+    applyMinimumDownFillWeightRule(items)
     const now = nowIso()
     const updateField = db.prepare(`
       update product_archive_draft_field

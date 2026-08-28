@@ -560,7 +560,9 @@ function isHangtagWashlabelEvidenceUploadFile(file: File) {
   const extension = uploadExtension(file)
   if (extension === "pdf") return true
   if (!["jpg", "jpeg", "png"].includes(extension)) return false
+  const stem = name.replace(/\.[^.]+$/, "")
   return /(吊牌|合格证|hangtag|tag|洗唛|洗标|水洗|wash)/i.test(name)
+    || /^yq(?:[-_ ]?\d+|\s*\(\d+\))?$/i.test(stem)
 }
 
 function splitHangtagWashlabelUploads(files: File[]) {

@@ -4043,18 +4043,20 @@ productArchiveDrafts.post("/:draftId/submit", async (c) => {
   const db = getDb()
   const draftId = readId(c.req.param("draftId"))
   const body = await readJson(c)
+  const dryRun = body.dryRun === true
+  const updateExisting = body.updateExisting === true
   let result: unknown
   try {
-    result = await submitProductArchiveDraft(db, draftId, { dryRun: Boolean(body.dryRun) })
+    result = await submitProductArchiveDraft(db, draftId, { dryRun, updateExisting })
   } catch (error) {
-    throw submitOperationException(error, body.dryRun ? "生成深绘提交预览失败" : "发布到深绘失败")
+    throw submitOperationException(error, dryRun ? "生成深绘提交预览失败" : updateExisting ? "更新深绘已有商品失败" : "发布到深绘失败")
   }
   auditFromContext(c, {
-    action: body.dryRun ? "draft.submit.dry_run" : "draft.submit.create",
+    action: dryRun ? "draft.submit.dry_run" : updateExisting ? "draft.submit.update" : "draft.submit.create",
     module: "PRODUCT_ARCHIVE_DRAFT",
     entityType: "product_archive_draft",
     entityId: draftId,
-    summary: `${body.dryRun ? "预览" : "提交"}深绘建档草稿 ${draftId}`,
+    summary: `${dryRun ? "预览" : updateExisting ? "更新" : "提交"}深绘建档草稿 ${draftId}`,
   })
   return c.json(result)
 })

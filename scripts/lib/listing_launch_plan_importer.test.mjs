@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   normalizeListingLaunchPlanRows,
+  readSpreadsheetSheetsFromFile,
 } from "./listing_launch_plan_importer.mjs";
+
+const requireFromWeb = createRequire(new URL("../../web/package.json", import.meta.url));
 
 test("normalizeListingLaunchPlanRows extracts key fields from the 326 launch plan template", () => {
   const rows = normalizeListingLaunchPlanRows([
@@ -124,4 +131,28 @@ test("normalizeListingLaunchPlanRows extracts key fields from the 326 launch pla
       "发布类目 (抖音)": "服饰内衣>童装>外套",
     },
   });
+});
+
+test("readSpreadsheetSheetsFromFile never drops XLSX shared strings when streaming ZIP entries race", async () => {
+  const ExcelJS = requireFromWeb("exceljs");
+  const workDir = await mkdtemp(path.join(os.tmpdir(), "listingify-xlsx-shared-strings-"));
+  try {
+    const filePath = path.join(workDir, "copywriting.xlsx");
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("Sheet1");
+    worksheet.addRow(["款号", "导购标题"]);
+    worksheet.addRow(["202426107205", "巴拉巴拉儿童羽绒服男女童外套潮"]);
+    await workbook.xlsx.writeFile(filePath);
+
+    for (let iteration = 0; iteration < 20; iteration += 1) {
+      const sheets = await readSpreadsheetSheetsFromFile(filePath, { fileName: "copywriting.xlsx" });
+      assert.equal(sheets.length, 1);
+      assert.equal(sheets[0].rows.length, 2);
+      assert.equal(sheets[0].rows[0]["Column 1"], "款号");
+      assert.equal(sheets[0].rows[1]["Column 1"], "202426107205");
+      assert.equal(sheets[0].rows[1]["Column 2"], "巴拉巴拉儿童羽绒服男女童外套潮");
+    }
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
 });
