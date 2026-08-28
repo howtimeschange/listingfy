@@ -263,6 +263,8 @@ test("hangtag OCR helpers classify batch file names", () => {
   assert.equal(classifyProductArchiveOcrFile("PRC-208426103215-吊牌.pdf"), "hangtag");
   assert.equal(classifyProductArchiveOcrFile("幼童测试洗唛吊牌/201426108203/201426108203_吊牌_yq1.jpg"), "hangtag");
   assert.equal(classifyProductArchiveOcrFile("幼童测试洗唛吊牌/201426108203/201426108203_洗唛_yq2.jpg"), "washlabel");
+  assert.equal(classifyProductArchiveOcrFile("鞋品资料/208426140204_鞋盒.jpg"), "hangtag");
+  assert.equal(classifyProductArchiveOcrFile("shoe-box/208426140204_shoebox.png"), "hangtag");
   assert.equal(classifyProductArchiveOcrFile("202426107205/yq2.jpg"), "washlabel");
   assert.equal(classifyProductArchiveOcrFile("202426107205/yq (3).png"), "washlabel");
   assert.equal(classifyProductArchiveOcrFile("幼童测试洗唛吊牌/201426108203/201426108203-90001_有模拍.jpg"), "unknown");

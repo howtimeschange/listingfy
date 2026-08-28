@@ -283,7 +283,7 @@ function normalizeDeepdrawSites(value) {
 
 function isUnsupportedLegacyShoeSizeField(name) {
   const key = compactKey(name);
-  return key === compactKey("多平台尺码") || key === compactKey("淘宝尺码表");
+  return key === compactKey("淘宝尺码表");
 }
 
 export function selectDeepdrawLegacyShoeCreateFields(fields = []) {
@@ -575,7 +575,7 @@ export function compareDeepdrawLegacyShoePayloadToResource({ payload = {}, resou
     ok: sections.length > 0 && sections.every((section) => section.ok),
     sections,
     supportedSizeTables: tableSections.map((section) => section.name),
-    omittedUnsupportedSizeTables: ["多平台尺码", "淘宝尺码表"],
+    omittedUnsupportedSizeTables: ["淘宝尺码表"],
   };
 }
 

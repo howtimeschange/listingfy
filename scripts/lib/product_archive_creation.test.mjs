@@ -4216,6 +4216,8 @@ test("product archive asset package helpers classify reference images and model 
   assert.equal(service.classifyProductArchiveAssetPackageFileName("202426107205/yq2.jpg"), "washlabel");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("202426107205/yq (3).png"), "washlabel");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_吊牌_yq1.jpg"), "hangtag");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("208426140204/208426140204_鞋盒.jpg"), "hangtag");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("208426140204/shoebox.png"), "hangtag");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_洗唛.pdf"), "washlabel");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_吊牌.pdf"), "hangtag");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013-00455_有模拍.jpg"), "reference_image");
@@ -4565,6 +4567,10 @@ test("product archive shoe required fields derive from trusted launch and brand 
   assert.equal(derive("商品包装长"), "");
   assert.equal(derive("商品包装宽"), "");
   assert.equal(derive("商品包装高"), "");
+  assert.equal(derive("唯品重量"), "");
+  assert.equal(derive("唯品【包装】长"), "");
+  assert.equal(derive("唯品【包装】宽"), "");
+  assert.equal(derive("唯品【包装】高"), "");
   assert.equal(service.isProductArchiveBusinessBlankField("商品重量", spu, sourceRows), false);
   assert.equal(service.isProductArchiveBusinessBlankField("京东商品包装重量", spu, sourceRows), false);
   assert.equal(derive("25服饰细节文案"), "");
@@ -4574,9 +4580,10 @@ test("product archive shoe required fields derive from trusted launch and brand 
   assert.equal(derive("单色平台AI标"), "");
   assert.equal(derive("多色平台AI"), "");
   assert.equal(derive("试穿报告表"), "");
-  assert.equal(derive("质检报告"), "");
+  assert.equal(derive("质检报告"), "否");
+  assert.equal(derive("质检报告表"), "否");
   assert.equal(service.isProductArchiveBusinessBlankField("试穿报告表", spu, sourceRows), true);
-  assert.equal(service.isProductArchiveBusinessBlankField("质检报告", spu, sourceRows), true);
+  assert.equal(service.isProductArchiveBusinessBlankField("质检报告", spu, sourceRows), false);
   assert.equal(derive("适用季节"), "2026年秋季");
   assert.equal(derive("上市时间(文本)"), "2026年秋季");
   assert.equal(
@@ -4587,6 +4594,16 @@ test("product archive shoe required fields derive from trusted launch and brand 
   assert.equal(derive("适用场合(多选)"), "日常;校园;公路");
   assert.equal(derive("适用场景"), "休闲");
   assert.equal(derive("功能(多选)"), "防滑;耐磨;保暖");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("功能", derive("功能"), [
+    { value: "耐磨" },
+    { value: "防滑" },
+    { value: "保暖" },
+  ]), "防滑");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("功能(多选)", derive("功能(多选)"), [
+    { value: "耐磨" },
+    { value: "防滑" },
+    { value: "保暖" },
+  ]), "防滑;耐磨;保暖");
   assert.equal(derive("执行标准"), "GB/T 15107");
   assert.equal(derive("京东[包装]宽"), "100");
   assert.equal(derive("京东[包装]长"), "100");
@@ -4594,7 +4611,7 @@ test("product archive shoe required fields derive from trusted launch and brand 
   assert.equal(derive("京东发货地"), "杭州");
   assert.equal(derive("京东商品重量"), "1");
   assert.equal(derive("售后服务承诺"), "延保90天");
-  assert.equal(derive("balaone仅专供新品勾选"), "balaone仅专供新品勾选");
+  assert.equal(derive("balaone仅专供新品勾选"), "");
   assert.equal(derive("产地"), "浙江杭州");
   assert.equal(derive("产地", [
     {
@@ -4730,6 +4747,51 @@ test("product archive service maps launch-plan size segments to Balabala age ran
     { value: "亲子" },
     { value: "中大童" },
   ]), "中大童");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用人群(多选)", "儿童;中大童;青少年", [
+    { value: "儿童" },
+    { value: "中大童" },
+    { value: "青少年" },
+    { value: "不限" },
+  ]), "儿童;中大童;青少年");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用人群(多选)", "7岁-14岁", [
+    { value: "不限" },
+    { value: "中大童" },
+    { value: "中学生" },
+    { value: "亲子" },
+    { value: "儿童" },
+    { value: "婴童" },
+    { value: "小学生" },
+    { value: "小童" },
+    { value: "幼童" },
+    { value: "青少年" },
+  ]), "中大童;中学生;儿童;小学生;小童;青少年");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("性别", "男童", [
+    { value: "男童" },
+    { value: "男" },
+  ]), "男");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用季节", "冬季", [
+    { value: "冬季" },
+    { value: "冬" },
+  ]), "冬");
+});
+
+test("shoe platform subtitles preserve complete words at their field limits", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const spu = { spu_code: "208426140204", product_line_name: "鞋品" };
+  const sourceRows = [{
+    source_type: "copywriting",
+    row_json: {
+      "推荐理由": "轻盈缓震 舒适贴合 日常好穿，第二条推荐理由",
+      "导购标题": "巴拉巴拉 儿童 户外运动鞋 防滑耐磨 舒适保暖 校园日常 通勤百搭",
+      "官方发布类目": "童鞋/运动鞋",
+    },
+  }];
+  const derive = (fieldName) => service.buildProductArchiveSourceDerivedFieldValue(fieldName, { spu, sourceRows });
+
+  assert.equal(derive("唯品会副标题"), "轻盈缓震 舒适贴合");
+  assert.equal(derive("导购短标题"), "巴拉巴拉 儿童 户外运动鞋 防滑耐磨 舒适保暖 校园日常");
+  assert.ok(derive("导购短标题").length <= 30);
+  assert.equal(derive("导购短标题").endsWith("校园日"), false);
 });
 
 test("product archive local requirement follows the DeepDraw template when present", async () => {

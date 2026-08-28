@@ -366,7 +366,7 @@ export function classifyProductArchiveOcrFile(fileName) {
   const ext = fileExtension(name);
   const stem = ext ? name.slice(0, -ext.length) : name;
   if (/(洗唛|洗标|水洗|wash)/i.test(name)) return "washlabel";
-  if (/(吊牌|合格证|hangtag|tag)/i.test(name)) return "hangtag";
+  if (/(吊牌|合格证|鞋盒|hangtag|tag|shoe[-_ ]?box)/i.test(name)) return "hangtag";
   if (/^yq(?:[-_ ]?\d+|\s*\(\d+\))?$/i.test(stem)) return "washlabel";
   if (ext === ".pdf") return "hangtag";
   return "unknown";

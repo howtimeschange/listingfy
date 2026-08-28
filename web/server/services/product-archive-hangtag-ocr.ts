@@ -406,7 +406,9 @@ function buildTargetFieldsForDocument(
       const currentValueText = stringValue(draftField.value_text)
       const currentHasValue = hasFieldValue(draftField)
       const normalized = normalizeOcrValueForDraftField(draftField, ocrField)
-      const canOverwrite = !currentHasValue || Boolean(options.overwriteExisting)
+      const executionStandardFromDocument = stringValue(ocrField.key) === "executionStandard"
+        && stringValue(ocrField.sourceKind || document.sourceKind) === "hangtag"
+      const canOverwrite = !currentHasValue || Boolean(options.overwriteExisting) || executionStandardFromDocument
       const willApply = canOverwrite && normalized.optionCompatible
       const target = {
         fieldId,

@@ -74,6 +74,65 @@ test("product archive hangtag OCR preview maps recognized compliance fields onto
   assert.ok(queries.some((sql) => /product_archive_draft_field/.test(sql)));
 });
 
+test("shoe-box OCR execution standard overrides lower-priority source values without the global overwrite option", async () => {
+  const service = await import("../../web/server/services/product-archive-hangtag-ocr.ts");
+  const db = {
+    prepare(sql) {
+      return {
+        all() {
+          if (/from product_archive_draft\s+where spu_code in/i.test(sql)) {
+            return [{
+              id: 17,
+              spu_code: "208426140204",
+              tenant_name: "电商巴拉巴拉",
+              merchant_id: "739",
+              trade_id: "16608",
+              title: "儿童户外鞋",
+              status: "manual_review",
+              updated_at: "2026-08-28T10:00:00Z",
+            }];
+          }
+          if (/from product_archive_draft_field/i.test(sql)) {
+            return [{
+              id: 301,
+              field_name: "执行标准",
+              value_text: "GB/T 15107",
+              value_json: {},
+              source_type: "copywriting",
+              required: true,
+              blocking: true,
+            }];
+          }
+          return [];
+        },
+      };
+    },
+  };
+
+  const preview = service.previewProductArchiveHangtagWashlabelOcr(db, {
+    documents: [{
+      fileName: "208426140204_鞋盒.jpg",
+      fileType: "image",
+      sourceKind: "hangtag",
+      detectedSpuCode: "208426140204",
+      status: "recognized",
+      pageCount: 1,
+      fields: [{
+        key: "executionStandard",
+        label: "执行标准",
+        value: "QB/T 4331-2021",
+        confidence: "high",
+        sourceKind: "hangtag",
+      }],
+    }],
+  });
+
+  assert.equal(preview.summary.writableFieldCount, 1);
+  assert.deepEqual(preview.items[0].targetFields.map((field) => [field.fieldName, field.currentValueText, field.valueText, field.willApply]), [
+    ["执行标准", "GB/T 15107", "QB/T 4331-2021", true],
+  ]);
+});
+
 test("SCM list composition is previewed as a supplement without writing raw text captures", async () => {
   const service = await import("../../web/server/services/product-archive-hangtag-ocr.ts");
   const db = {

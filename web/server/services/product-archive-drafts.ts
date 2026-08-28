@@ -481,7 +481,7 @@ export function classifyProductArchiveAssetPackageFileName(value: unknown): Prod
   }
   if ([".jpg", ".jpeg", ".png"].includes(ext)) {
     if (/(洗唛|洗标|水洗|wash)/i.test(base)) return "washlabel"
-    if (/(吊牌|合格证|hangtag|tag)/i.test(base)) return "hangtag"
+    if (/(吊牌|合格证|鞋盒|hangtag|tag|shoe[-_ ]?box)/i.test(base)) return "hangtag"
     if (productArchiveLegacyWashlabelName(base)) return "washlabel"
     return "reference_image"
   }
@@ -1256,8 +1256,8 @@ const PRODUCT_ARCHIVE_ALWAYS_BLANK_FIELDS = new Set([
 const PRODUCT_ARCHIVE_SHOE_BLANK_FIELDS = new Set([
   "鞋垫材质",
   "试穿报告表",
-  "质检报告",
-  "质检报告表",
+  "balaone仅专供新品",
+  "balaone仅专供新品勾选",
   "25柔软指数",
   "25厚薄指数",
   "25弹力指数",
@@ -1397,6 +1397,8 @@ export function isProductArchiveBusinessBlankField(fieldName: string, spu: JsonR
   if (shoeProduct && (key === "拼多多标题" || key === "拼多多短标题")) return true
   if (shoeProduct && PRODUCT_ARCHIVE_SHOE_BLANK_FIELDS.has(key)) return true
   if (shoeProduct && !key.includes("京东") && /^(?:商品)?(?:包裹|包装)(?:重量|长度|宽度|高度|长|宽|高)$/.test(key)) return true
+  if (shoeProduct && /^唯品(?:会)?重量$/.test(key)) return true
+  if (shoeProduct && /^唯品(?:会)?(?:商品)?【?包装】?(?:重量|长度|宽度|高度|长|宽|高)$/.test(key)) return true
   if (shoeProduct && ["微信视频小店副标题", "快手商品卖点"].includes(key)) return false
   if (PRODUCT_ARCHIVE_ALWAYS_BLANK_FIELDS.has(key)) return true
   const categoryText = productCategoryText(spu, sourceRows)
@@ -1571,8 +1573,21 @@ function shoeSellingPointValue(sourceRows: JsonRecord[]) {
   return copyOrLaunchValue(sourceRows, "推荐理由") || copyOrLaunchValue(sourceRows, "FAB")
 }
 
+function truncateCompleteWords(value: unknown, maxLength: number) {
+  const text = stringValue(value)
+  if (!text || text.length <= maxLength) return text
+  const segments = Array.from(new Intl.Segmenter("zh-CN", { granularity: "word" }).segment(text))
+  let output = ""
+  for (const { segment } of segments) {
+    if (`${output}${segment}`.length > maxLength) break
+    output += segment
+  }
+  return output.replace(/[\s,，、。；;：:|/]+$/g, "").trim()
+}
+
 function firstClause(value: unknown, maxLength = 10) {
-  return stringValue(value).split(/[，,。；;\n]/).map((part) => part.trim()).find(Boolean)?.slice(0, maxLength) ?? ""
+  const clause = stringValue(value).split(/[，,。；;\n]/).map((part) => part.trim()).find(Boolean) ?? ""
+  return truncateCompleteWords(clause, maxLength)
 }
 
 function detailCopyLinesValue(sourceRows: JsonRecord[]) {
@@ -2227,9 +2242,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
     const text = productCategoryText(input.spu, sourceRows)
     return /板鞋|运动鞋/.test(text) ? "延保90天" : "不设置"
   }
-  if (shoeProduct && (key === "balaone仅专供新品" || key === "balaone仅专供新品勾选")) {
-    return /专供新品/.test(sourceAttributeText(sourceRows)) ? "balaone仅专供新品勾选" : ""
-  }
+  if (shoeProduct && (key === "质检报告" || key === "质检报告表")) return "否"
   if (shoeProduct && ["帮面材质", "帮面材质多选", "鞋面材质", "鞋面材质多选", "配皮材质", "配皮材质多选"].includes(key)) {
     return shoeSurfaceMaterialText(sourceRows)
   }
@@ -2375,6 +2388,9 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (key === "唯品会副标题") return copywritingValue(sourceRows, "唯品标题") || copywritingValue(sourceRows, "搜索标题")
   if (key === "弹力") return copywritingValue(sourceRows, "弹性")
   if (key === "商品短标题") return copywritingValue(sourceRows, "导购标题") || copywritingValue(sourceRows, "搜索标题")
+  if (key === "导购短标题" || key === "抖音导购短标题") {
+    return truncateCompleteWords(copywritingValue(sourceRows, "导购标题"), 30)
+  }
   if (key === "商品详情") return copywritingValue(sourceRows, "推荐理由") || launchValue(sourceRows, "FAB") || copyTextBlock(sourceRows)
   if (key === "最快出货时间") {
     return dateFromText(launchValue(sourceRows, "首批sap到货时间") || launchValue(sourceRows, "上市时间"))
@@ -5165,6 +5181,28 @@ function multiAgeOptionValue(text: string, options: unknown[]) {
   return values.length ? values.join(";") : singleAgeOptionValue(text, options)
 }
 
+function multiPopulationOptionValue(text: string, options: unknown[]) {
+  const range = ageYearRange(text)
+  if (!range) return ""
+  const values = optionValues(options)
+  if (!values.some((option) => ["儿童", "小学生", "中学生"].includes(option))) return ""
+  const populationRanges = new Map<string, { start: number; end: number }>([
+    ["婴童", { start: 0, end: 3 }],
+    ["幼童", { start: 1, end: 6 }],
+    ["小童", { start: 3, end: 8 }],
+    ["儿童", { start: 3, end: 14 }],
+    ["小学生", { start: 6, end: 12 }],
+    ["中童", { start: 6, end: 12 }],
+    ["中大童", { start: 8, end: 14 }],
+    ["中学生", { start: 12, end: 18 }],
+    ["青少年", { start: 12, end: 18 }],
+  ])
+  return values.filter((option) => {
+    const optionRange = populationRanges.get(option)
+    return optionRange && range.start <= optionRange.end && range.end >= optionRange.start
+  }).join(";")
+}
+
 function normalizeMaterialOptionValue(value: unknown, options: unknown[]) {
   const text = normalizeMaterialName(stringValue(value).replace(/^\d+(?:\.\d+)?\s*%/, ""))
   if (!text) return ""
@@ -5435,6 +5473,36 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
   const key = compactFieldKey(fieldName)
   if (key === "材质成分文本" || key === "面料成分文本" || key === "成分含量文本") return text
   if (!text || !options.length) return text
+  if (isProductArchiveGenderFieldName(fieldName) && text.includes("男") && !text.includes("女")) {
+    return pickOption(options, [
+      (option) => option === "男",
+      (option) => option === "男童",
+      (option) => option.includes("男") && !option.includes("女"),
+    ]) || text
+  }
+  if (key === "适用季节" || key === "适用季节多选") {
+    const season = productArchiveSeasonText(text).match(/[春夏秋冬]/)?.[0] ?? ""
+    const shortSeason = pickOption(options, [(option) => Boolean(season) && option === season])
+    if (shortSeason) return shortSeason
+  }
+  if (key === "功能" || key === "功能多选") {
+    const normalized = semicolonTextValues(text)
+      .map((item) => pickOption(options, [
+        (option) => option === item,
+        (option) => option.includes(item) || item.includes(option),
+      ]))
+      .filter(Boolean)
+    if (normalized.length > 0) {
+      const values = uniqueTextValues(normalized)
+      return key === "功能" ? values[0] : values.join(";")
+    }
+  }
+  if (key === "适用人群多选") {
+    const normalized = semicolonTextValues(text)
+      .map((item) => pickOption(options, [(option) => option === item]))
+      .filter(Boolean)
+    if (normalized.length > 1) return uniqueTextValues(normalized).join(";")
+  }
   const exact = pickOption(options, [(option) => option === text])
   if (exact) return exact
   if (isProductArchiveSkuSizeFieldName(fieldName)) {
@@ -5810,7 +5878,7 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
     return pickOption(options, [(option) => option === "幼童", (option) => option === "婴童"]) || text
   }
   if (key === "适用人群多选" && ageYearRange(text)) {
-    return singleAgeOptionValue(text, options) || text
+    return multiPopulationOptionValue(text, options) || singleAgeOptionValue(text, options) || text
   }
   if (key === "适用季节" || key === "适用季节多选") {
     const seasonText = productArchiveSeasonText(text)
