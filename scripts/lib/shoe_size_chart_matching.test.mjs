@@ -148,9 +148,9 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
   });
   assert.deepEqual(result["抖音尺码表"].valueJson, {
     title: "脚长(cm),备注",
-    "26": "15.8-16.2,脚长15.8-16.2/内长17",
-    "27": "16.3-16.7,脚长16.3-16.7/内长17.7",
-    "38": "23.8-24.2,脚长23.8-24.2/内长25",
+    "26": "16,脚长15.8-16.2/内长17",
+    "27": "16.5,脚长16.3-16.7/内长17.7",
+    "38": "24,脚长23.8-24.2/内长25",
   });
   assert.deepEqual(result["多平台尺码"].valueJson, {
     title: "京东,拼多多,小红书,微信视频小店",

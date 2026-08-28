@@ -101,7 +101,7 @@ export const HIGH_CONFIDENCE_SIZE_CHART_RULES = [
   ["衣长", ["衣长"]],
   ["裙长", ["裙长"]],
   ["肩宽", ["肩宽"]],
-  ["胸围", ["胸围", "1/2胸围"]],
+  ["胸围", ["胸围", "1/2胸围（平量）", "1/2胸围"]],
   ["裤长", ["裤长"]],
   ["腰围", ["全腰围（平量）", "腰围", "1/2腰围（平量）", "1/2腰围"]],
   ["臀围", ["臀围", "臀围（平量）", "1/2臀围（平量）", "1/2臀围"]],
@@ -113,8 +113,6 @@ export const HIGH_CONFIDENCE_SIZE_CHART_RULES = [
 
 export const MEDIUM_CONFIDENCE_SIZE_CHART_RULES = [
   ["袖长", ["袖长", "袖长肩点量", "内袖长", "里：袖长"]],
-  ["袖口", ["1/2袖口（平量）", "里：1/2袖口（平量）", "1/2袖口"]],
-  ["袖口围", ["1/2袖口（平量）", "里：1/2袖口（平量）", "1/2袖口"]],
   ["前浪", ["前浪（弯量）"]],
   ["前档", ["前浪（弯量）"]],
   ["前裆", ["前浪（弯量）"]],
@@ -460,7 +458,7 @@ function mappedSizeChartValue(mapping, value) {
   if (!text) return text;
   const target = compactKey(mapping?.targetField);
   const source = stringValue(mapping?.sourcePoint).replace(/\s+/g, "");
-  const doublesHalfWidth = ["腰围", "臀围", "脚口", "裤口围"].some((field) => target === compactKey(field))
+  const doublesHalfWidth = ["胸围", "腰围", "臀围", "脚口", "裤口围"].some((field) => target === compactKey(field))
     && /1\/2/.test(source);
   if (!doublesHalfWidth) return text;
   const number = Number(text);

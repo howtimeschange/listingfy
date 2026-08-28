@@ -2933,6 +2933,31 @@ test("product archive service derives DeepDraw size-chart fields from PLM source
   assert.equal(service.isStructuredProductPayloadField({ field_name: "多平台尺码", field_type: "" }), true);
 });
 
+test("product archive derives JD size subattributes from actual SKU sizes", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const input = {
+    spu: { spu_code: "208426121101", product_line_name: "童装服饰" },
+    skus: [
+      { size_name: "130cm", size_code: "130" },
+      { size_name: "140cm", size_code: "140" },
+      { size_name: "130cm", size_code: "130" },
+    ],
+  };
+
+  assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("京东规格子属性", input), {
+    valueText: "130;140",
+    valueJson: {},
+  });
+  assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("京东自营子属性", input), {
+    valueText: "130;140",
+    valueJson: {},
+  });
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("京东规格子属性", {
+    spu: input.spu,
+    sourceRows: [{ source_type: "launch_plan", row_json: { "颜色名称": "黑色90001" } }],
+  }), "");
+});
+
 test("product archive size-chart validation checks size keys and column counts", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const issues = service.validateProductArchiveSizeChartValue({
@@ -3083,12 +3108,14 @@ test("product archive create payload omits scalar size-chart fields", async () =
     value_text: "篮球鞋",
     value_json: {},
   }), "篮球鞋");
-  assert.equal(service.productArchivePayloadFieldValue({
+  assert.deepEqual(service.productArchivePayloadFieldValue({
     field_name: "多平台尺码",
     field_type: "MULTI_TEXT",
-    value_text: "得物",
-    value_json: { title: "平台,尺码", "80cm": "得物,80" },
-  }), null);
+    value_text: "",
+    value_json: { title: "京东,拼多多", "80cm": "80,80cm" },
+    required: true,
+    blocking: true,
+  }), { title: "京东,拼多多", "80cm": "80,80cm" });
   assert.deepEqual(service.productArchivePayloadFieldValue({
     field_name: "多平台尺码",
     field_type: "MULTI_TEXT",
@@ -3667,6 +3694,38 @@ test("product archive service derives remaining field values from launch plan an
   assert.equal(derive("天猫特卖专柜价", "10000"), "359");
   assert.equal(derive("京东市场价"), "359");
   assert.equal(derive("京东市场价", "固定吊牌价"), "359");
+  for (const fieldName of [
+    "采购价",
+    "京东自营市场价",
+    "有赞标准价",
+    "有赞价格",
+    "原价",
+    "小红书市场价",
+    "抖音结算价格",
+    "抖音价",
+    "快手价",
+    "爱库存供货价",
+    "爱库存最低价",
+    "好衣库结算价",
+    "好衣库供货价",
+    "好衣库价",
+    "好衣库原价",
+    "微信视频小店价格",
+  ]) {
+    assert.equal(derive(fieldName), "359", `${fieldName} should use the shared category list price`);
+  }
+  assert.equal(derive("成本价"), "");
+  assert.equal(derive("特殊专柜价"), "");
+  assert.equal(service.resolveProductArchiveSourceRuleValue("唯品会市场价", {
+    spu: { ...spu, product_line_name: "童装服饰" },
+    sourceRows,
+    rule: { source_type: "skip" },
+  }), "359");
+  assert.equal(service.resolveProductArchiveSourceRuleValue("成本价", {
+    spu: { ...spu, product_line_name: "童装服饰" },
+    sourceRows,
+    rule: { source_type: "skip" },
+  }), "");
   assert.equal(derive("产品标题", "固定搜索标题"), "巴拉巴拉儿童外套男童女童衣服2026新款秋装卡通萌趣满印防护上衣");
   assert.equal(derive("微信视频小店标题", "固定内容平台标题"), "【balaOne】巴拉巴拉儿童外套男女2026新秋卡通萌趣满印防护上衣");
   assert.equal(derive("上市时间", "固定上市时间"), "2026年秋季");
@@ -3685,6 +3744,17 @@ test("product archive service derives remaining field values from launch plan an
   });
   assert.ok(trimmedComposition.length <= 200);
   assert.match(trimmedComposition, /1%$/);
+  const groupedComposition = [
+    "大身/领子：50%聚酯纤维、50%棉",
+    "袖子/侧缝：10%完整材质一、10%完整材质二、10%完整材质三、10%完整材质四、10%完整材质五、10%完整材质六、10%完整材质七、10%完整材质八",
+    "10%完整材质九、10%完整材质十、10%完整材质十一、10%完整材质十二、10%完整材质十三、10%完整材质十四、10%完整材质十五、10%完整材质十六、10%完整材质十七、10%完整材质十八、10%完整材质十九、10%完整材质二十、10%完整材质二十一、10%完整材质二十二、10%完整材质二十三、10%完整材质二十四",
+  ].join("\n");
+  const trimmedGroupedComposition = service.buildProductArchiveSourceDerivedFieldValue("主面料成分含量", {
+    spu: { ...spu, product_line_name: "童装服饰" },
+    sourceRows: [{ source_type: "copywriting", row_json: { "面料成分": groupedComposition } }],
+  });
+  assert.equal(trimmedGroupedComposition, "大身/领子：50%聚酯纤维、50%棉");
+  assert.doesNotMatch(trimmedGroupedComposition, /袖子\/侧缝/);
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("主面料成分含量", {
     spu: { ...spu, product_line_name: "童装服饰" },
     sourceRows: [{ source_type: "copywriting", row_json: { "面料成分": `面料：${"不可拆分材质".repeat(40)}` } }],
@@ -3701,6 +3771,12 @@ test("product archive service derives remaining field values from launch plan an
   assert.equal(derive("25版型指数"), "");
   assert.equal(derive("主图4文案1"), "春亚纺贴膜面料");
   assert.equal(derive("主图4文案2"), "表层防风防泼水透湿\n内里柔软抗静电");
+  assert.equal(derive("主图4样式"), "225");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("主图4样式", derive("主图4样式"), [
+    { value: "服饰标准样式225" },
+    { value: "服饰标准样式224" },
+  ]), "服饰标准样式225");
+  assert.equal(service.productArchiveAiFieldStrategyForField("主图4样式"), null);
   assert.equal(derive("快手标题"), "【balaOne】巴拉巴拉儿童外套男女2026新秋卡通萌趣满印防护上衣");
   assert.equal(derive("天猫导购标题"), "巴拉巴拉balaOne外套防护连帽衣");
   assert.equal(derive("天猫推荐理由"), "潮流满印外套");
@@ -3780,7 +3856,7 @@ test("product archive service derives down and platform text fields before AI fi
   assert.equal(derive("里料材质成分含量(多选)"), "100%聚酰胺纤维");
   assert.equal(derive("羽绒服洗涤说明"), "羽绒服洗涤说明");
   assert.equal(derive("快手标题"), "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖");
-  assert.equal(derive("拼多多标题"), "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖");
+  assert.equal(derive("拼多多标题"), "");
 });
 
 test("apparel mapping rules cover the 202426107205 copywriting and Merchant SKU contract", async () => {
@@ -3824,6 +3900,13 @@ test("apparel mapping rules cover the 202426107205 copywriting and Merchant SKU 
   });
 
   assert.equal(derive("商品短标题"), "巴拉巴拉儿童羽绒服男女童外套潮");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("商品短标题", {
+    spu,
+    sourceRows,
+    templatePlatform: "PDD",
+  }), "");
+  assert.equal(service.isProductArchiveBusinessBlankField("商品短标题", spu, sourceRows, "PDD"), true);
+  assert.equal(service.isProductArchiveBusinessBlankField("商品短标题", spu, sourceRows, "TMALL"), false);
   assert.equal(derive("上市时间"), "2026年冬季");
   assert.equal(derive("适用季节"), "2026年冬季");
   assert.equal(derive("详情页面料"), [
@@ -3905,6 +3988,51 @@ test("apparel mapping rules cover the 202426107205 copywriting and Merchant SKU 
       "巴拉巴拉儿童羽绒服男女童外套潮",
     ].join(","),
   );
+});
+
+test("shared platform list-price allowlist also fills Merchant SKU columns", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const listPriceColumns = [
+    "采购价",
+    "京东自营市场价",
+    "有赞标准价",
+    "有赞价格",
+    "原价",
+    "小红书市场价",
+    "抖音结算价格",
+    "抖音价",
+    "快手价",
+    "爱库存供货价",
+    "爱库存最低价",
+    "好衣库结算价",
+    "好衣库供货价",
+    "好衣库价",
+    "好衣库原价",
+    "微信视频小店价格",
+  ];
+  const templateOptions = [...listPriceColumns, "成本价", "特殊专柜价"];
+
+  for (const productLineName of ["童装服饰", "鞋品"]) {
+    const result = service.buildProductArchiveMdmDerivedFieldValue("商家SKU", {
+      spu: { spu_code: "208426121101", product_line_name: productLineName, price_tag: 299 },
+      sourceRows: [],
+      dateText: "2026-08-28",
+      templateOptions,
+      skus: [{
+        sku_code: "SKU-130",
+        skc_code: "SKC-130",
+        inner_code: "INNER-130",
+        ean_code: "6900000000130",
+        color_name: "黑色90001",
+        size_name: "130",
+        price_tag: 299,
+      }],
+    });
+    assert.equal(result.valueJson.title, listPriceColumns.join(","));
+    const values = result.valueJson["黑色90001"][productLineName === "鞋品" ? "130" : "130cm"].split(",");
+    assert.deepEqual(values, listPriceColumns.map(() => "299"));
+    assert.doesNotMatch(result.valueJson.title, /成本价|特殊专柜价/);
+  }
 });
 
 test("product archive evidence rules backfill filler text and equivalent down-content fields", async () => {
@@ -4747,6 +4875,13 @@ test("product archive service maps launch-plan size segments to Balabala age ran
     { value: "亲子" },
     { value: "中大童" },
   ]), "中大童");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("适用人群", {
+    spu: { product_line_name: "童装服饰", gender_name: "男" },
+    sourceRows: [{
+      source_type: "launch_plan",
+      row_json: { "尺码段": "130-170", "性别": "男" },
+    }],
+  }), "6-16岁");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用人群(多选)", "儿童;中大童;青少年", [
     { value: "儿童" },
     { value: "中大童" },
@@ -4765,6 +4900,18 @@ test("product archive service maps launch-plan size segments to Balabala age ran
     { value: "幼童" },
     { value: "青少年" },
   ]), "中大童;中学生;儿童;小学生;小童;青少年");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用人群", "6-16岁", [
+    { value: "青少年" },
+    { value: "男童" },
+    { value: "少年" },
+    { value: "学生" },
+    { value: "儿童" },
+  ]), "儿童");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用人群", "6-16岁", [
+    { value: "儿童" },
+    { value: "中大童" },
+    { value: "青少年" },
+  ]), "中大童");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("性别", "男童", [
     { value: "男童" },
     { value: "男" },
@@ -4809,6 +4956,26 @@ test("product archive local requirement follows the DeepDraw template when prese
   assert.equal(service.isProductArchiveFieldLocallyRequired("适用年龄", { templateRequired: true }), true);
   assert.equal(service.isProductArchiveFieldLocallyRequired("尺码表", { templatePresent: true, templateRequired: true, ruleBlocking: true }), true);
   assert.equal(service.isProductArchiveFieldLocallyRequired("多平台尺码", { templatePresent: true, templateRequired: true, ruleBlocking: true }), true);
+  for (const fieldName of ["尺码表", "唯品会尺码表", "抖音尺码表", "多平台尺码"]) {
+    assert.equal(
+      service.isProductArchiveFieldLocallyRequired(fieldName, {
+        templatePresent: true,
+        templateRequired: false,
+        ruleBlocking: false,
+        apparelProduct: true,
+      }),
+      true,
+      `${fieldName} must remain blocking for apparel even when the live template marks it optional`,
+    );
+    assert.deepEqual(service.productArchivePayloadFieldValue({
+      field_name: fieldName,
+      field_type: "MULTI_TEXT",
+      required: true,
+      blocking: true,
+      value_text: "",
+      value_json: { title: "身高,衣长", "130cm": "130,50.5" },
+    }), { title: "身高,衣长", "130cm": "130,50.5" });
+  }
   assert.equal(
     service.isProductArchiveFieldLocallyRequired("是否有腰带", { templatePresent: false, templateRequired: false, ruleBlocking: true }),
     false,
@@ -5381,6 +5548,12 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "聚酯纤维（涤纶）" },
     { value: "棉" },
   ]), "聚酯纤维（涤纶）");
+  for (const material of ["聚酯纤维", "棉", "聚酰胺纤维", "粘胶纤维"]) {
+    assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("材质", material, [
+      { value: "羊毛" },
+      { value: "其他" },
+    ]), "其他", `${material} should use the legal fallback enum`);
+  }
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("里料材质成分含量(多选)", "100%锦纶", [
     { value: "聚酰胺纤维" },
     { value: "聚酯纤维" },
@@ -5528,7 +5701,7 @@ test("product archive origin-country fields default to a fixed China source", as
 
   assert.match(service, /const originCountryField = isProductArchiveOriginCountryField\(fieldName\)/);
   assert.match(service, /const shoe1688OriginField = shoeProduct && compactFieldKey\(fieldName\) === "产地"/);
-  assert.match(service, /const ruleSourceType = stringValue\(rule\.source_type\) \|\| \(originCountryField \|\| shoe1688OriginField \? "fixed" : "manual"\)/);
+  assert.match(service, /stringValue\(rule\.source_type\) \|\| \(originCountryField \|\| shoe1688OriginField \? "fixed" : "manual"\)/);
   assert.match(service, /ruleSourceRef \|\| \(shoe1688OriginField \? shoe1688OriginValue\(\) : originCountryField \? "中国" : null\)/);
 });
 

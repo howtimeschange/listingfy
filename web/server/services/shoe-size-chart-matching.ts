@@ -316,7 +316,7 @@ export function buildShoeSizeChartFieldValues(input: {
   const douyin = templates.get("抖音尺码表")
   if (douyin) {
     const columns = supportedColumns(douyin, ["脚长(cm)", "备注"])
-    const value = tableValue(rows, columns, (row, column) => column === "脚长(cm)" ? footRange(row) : stringValue(row.douyin_mapping_text) || `脚长${footRange(row)}/内长${innerLength(row)}`)
+    const value = tableValue(rows, columns, (row, column) => column === "脚长(cm)" ? baselineFoot(row) : stringValue(row.douyin_mapping_text) || `脚长${footRange(row)}/内长${innerLength(row)}`)
     if (value && columns.length === 2) output["抖音尺码表"] = value
   }
 

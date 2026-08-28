@@ -60,8 +60,8 @@ test("normalizes PLM long-table rows and builds a high-confidence top size chart
   const result = buildSizeChartForTemplate({ rows, spuCode: "208326100020", template });
 
   assert.deepEqual(result.valueJson, {
-    title: "肩宽,袖长,袖口,胸围,衣长,下摆围",
-    "80cm": "26.5,24.5,8.4,66,38,80",
+    title: "肩宽,袖长,胸围,衣长,下摆围",
+    "80cm": "26.5,24.5,66,38,80",
   });
   assert.equal(result.mappings.find((item) => item.targetField === "袖长")?.sourcePoint, "里：袖长");
   assert.equal(result.mappings.find((item) => item.targetField === "袖长")?.confidence, "medium");
@@ -168,21 +168,22 @@ test("maps collar sleeve and weight when the PLM source provides them", () => {
   assert.equal(result.mappings.find((item) => item.targetField === "袖长")?.sourcePoint, "袖长肩点量");
 });
 
-test("doubles half-width waist hip and leg-opening measurements only", () => {
+test("doubles half-width chest waist hip and leg-opening measurements and omits cuff", () => {
   const result = buildSizeChartForTemplate({
     rows: [
+      { "款号": "202426107205", "测量点": "1/2胸围（平量）", "尺码": "090", "尺码值": "30" },
       { "款号": "202426107205", "测量点": "1/2腰围（平量）", "尺码": "090", "尺码值": "21" },
       { "款号": "202426107205", "测量点": "1/2臀围（平量）", "尺码": "090", "尺码值": "37" },
       { "款号": "202426107205", "测量点": "1/2脚口（平量）", "尺码": "090", "尺码值": "8" },
       { "款号": "202426107205", "测量点": "1/2袖口（平量）", "尺码": "090", "尺码值": "7" },
     ],
     spuCode: "202426107205",
-    template: { fieldName: "尺码表", options: ["腰围", "臀围", "脚口", "袖口"] },
+    template: { fieldName: "尺码表", options: ["胸围", "腰围", "臀围", "脚口", "袖口"] },
   });
 
   assert.deepEqual(result.valueJson, {
-    title: "腰围,臀围,脚口,袖口",
-    "90cm": "42,74,16,7",
+    title: "胸围,腰围,臀围,脚口",
+    "90cm": "60,42,74,16",
   });
 });
 
