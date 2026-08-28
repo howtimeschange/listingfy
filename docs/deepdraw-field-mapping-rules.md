@@ -1,5 +1,7 @@
 # 深绘字段映射规则（服饰 / 鞋品）
 
+> 当前代码的完整字段填写、mapping、识图和 AI 规范见 [`deepdraw-product-archive-field-spec.md`](./deepdraw-product-archive-field-spec.md)。本文保留群聊证据、逐款反馈和历史接口探针记录。
+
 ## 证据范围
 
 - 群：`深绘AI上新`
