@@ -199,7 +199,7 @@ export default function DeepdrawMetadataPage() {
 
   const syncAllMetadata = useMutation({
     mutationFn: () =>
-      api.post<MetadataSyncJob>("/deepdraw-metadata/sync-jobs", { tenantName, fieldConcurrency: 8, fieldRetryCount: 2 }),
+      api.post<MetadataSyncJob>("/deepdraw-metadata/sync-jobs", { tenantName, fieldConcurrency: 4, fieldRetryCount: 2 }),
     onSuccess: (job) => {
       setSyncJobId(job.id)
       toast.success("深绘类目字段同步任务已启动")

@@ -92,6 +92,37 @@ test("DeepDraw metadata scheduler starts after enqueue responses can flush", asy
   assert.doesNotMatch(source, /queueMicrotask/);
 });
 
+test("DeepDraw metadata sync defaults to proven concurrency and caps explicit values", () => {
+  assert.equal(service.DEFAULT_DEEPDRAW_FIELD_CONCURRENCY, 4);
+  assert.equal(service.normalizeDeepdrawFieldConcurrency(undefined), 4);
+  assert.equal(service.normalizeDeepdrawFieldConcurrency(null), 4);
+  assert.equal(service.normalizeDeepdrawFieldConcurrency(0), 1);
+  assert.equal(service.normalizeDeepdrawFieldConcurrency(99), 12);
+  assert.equal(service.normalizeDeepdrawFieldRetryCount(undefined), 2);
+  assert.equal(service.normalizeDeepdrawFieldRetryCount(99), 4);
+});
+
+test("DeepDraw metadata retries use exponential backoff with jitter", async () => {
+  const delays = [];
+  let attempts = 0;
+  const result = await service.retryDeepdrawMetadataOperation(async () => {
+    attempts += 1;
+    if (attempts < 3) throw new Error("fetch failed");
+    return "ok";
+  }, {
+    retryCount: 4,
+    random: () => 0.5,
+    waitFn: async (delay) => {
+      delays.push(delay);
+    },
+  });
+
+  assert.equal(result, "ok");
+  assert.equal(attempts, 3);
+  assert.deepEqual(delays, [600, 1200]);
+  assert.notEqual(service.deepdrawMetadataRetryDelayMs(0, () => 0), service.deepdrawMetadataRetryDelayMs(0, () => 1));
+});
+
 test("DeepDraw metadata drain marks one failed job and continues with the next job", async () => {
   assert.equal(typeof service.drainMetadataSyncJobs, "function");
 

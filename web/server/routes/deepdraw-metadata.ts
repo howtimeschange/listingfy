@@ -12,6 +12,8 @@ import {
   getMetadataSyncJob,
   listDeepdrawTradeFields,
   listDeepdrawTrades,
+  normalizeDeepdrawFieldConcurrency,
+  normalizeDeepdrawFieldRetryCount,
   syncDeepdrawTradeFields,
   syncDeepdrawTrades,
   syncDeepdrawTenantMetadata,
@@ -40,16 +42,6 @@ async function readJson(c: Context) {
   } catch {
     return {}
   }
-}
-
-function readFieldConcurrency(value: unknown) {
-  const number = Math.floor(Number(value))
-  return Number.isFinite(number) && number > 0 ? number : 8
-}
-
-function readFieldRetryCount(value: unknown) {
-  const number = Math.floor(Number(value))
-  return Number.isFinite(number) && number >= 0 ? number : 2
 }
 
 async function drainSyncJobs() {
@@ -142,8 +134,8 @@ deepdrawMetadata.post("/sync-jobs", async (c) => {
   requirePermission(c, "DEEPDRAW_METADATA_MANAGE")
   const body = await readJson(c)
   const tenantName = String(body.tenantName ?? body.tenant_name ?? "").trim() || undefined
-  const fieldConcurrency = readFieldConcurrency(body.fieldConcurrency ?? body.field_concurrency)
-  const fieldRetryCount = readFieldRetryCount(body.fieldRetryCount ?? body.field_retry_count)
+  const fieldConcurrency = normalizeDeepdrawFieldConcurrency(body.fieldConcurrency ?? body.field_concurrency)
+  const fieldRetryCount = normalizeDeepdrawFieldRetryCount(body.fieldRetryCount ?? body.field_retry_count)
   const job = createMetadataSyncJob(getDb(), {
     tenantName: tenantName ?? "",
     fieldConcurrency,

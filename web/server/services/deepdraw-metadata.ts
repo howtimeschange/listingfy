@@ -46,10 +46,12 @@ interface FieldSyncMarkerInput {
   syncedAt?: string
 }
 
-const DEFAULT_FIELD_CONCURRENCY = 8
+export const DEFAULT_DEEPDRAW_FIELD_CONCURRENCY = 4
 const MAX_FIELD_CONCURRENCY = 12
-const DEFAULT_FIELD_RETRY_COUNT = 2
+export const DEFAULT_DEEPDRAW_FIELD_RETRY_COUNT = 2
 const MAX_FIELD_RETRY_COUNT = 4
+const FIELD_RETRY_BASE_CEILING_MS = 800
+const FIELD_RETRY_MAX_CEILING_MS = 5_000
 
 function scheduleMetadataSyncWorker(run: () => void) {
   if (typeof setImmediate === "function") {
@@ -203,14 +205,16 @@ function numberValue(value: unknown): number | null {
   return Number.isFinite(number) ? number : null
 }
 
-function fieldConcurrency(value: unknown) {
-  const number = Math.floor(numberValue(value) ?? DEFAULT_FIELD_CONCURRENCY)
+export function normalizeDeepdrawFieldConcurrency(value: unknown) {
+  if (value == null || value === "") return DEFAULT_DEEPDRAW_FIELD_CONCURRENCY
+  const number = Math.floor(numberValue(value) ?? DEFAULT_DEEPDRAW_FIELD_CONCURRENCY)
   if (number < 1) return 1
   return Math.min(number, MAX_FIELD_CONCURRENCY)
 }
 
-function fieldRetryCount(value: unknown) {
-  const number = Math.floor(numberValue(value) ?? DEFAULT_FIELD_RETRY_COUNT)
+export function normalizeDeepdrawFieldRetryCount(value: unknown) {
+  if (value == null || value === "") return DEFAULT_DEEPDRAW_FIELD_RETRY_COUNT
+  const number = Math.floor(numberValue(value) ?? DEFAULT_DEEPDRAW_FIELD_RETRY_COUNT)
   if (number < 0) return 0
   return Math.min(number, MAX_FIELD_RETRY_COUNT)
 }
@@ -219,6 +223,39 @@ function wait(ms: number) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)
   })
+}
+
+export function deepdrawMetadataRetryDelayMs(attempt: number, random: () => number = Math.random) {
+  const normalizedAttempt = Math.max(0, Math.floor(Number(attempt) || 0))
+  const ceiling = Math.min(
+    FIELD_RETRY_MAX_CEILING_MS,
+    FIELD_RETRY_BASE_CEILING_MS * (2 ** normalizedAttempt),
+  )
+  const randomValue = Math.min(1, Math.max(0, Number(random()) || 0))
+  return Math.round((ceiling / 2) + ((ceiling / 2) * randomValue))
+}
+
+export async function retryDeepdrawMetadataOperation<T>(
+  operation: () => Promise<T>,
+  input: {
+    retryCount: number
+    waitFn?: (ms: number) => Promise<unknown>
+    random?: () => number
+  },
+) {
+  const retryCount = normalizeDeepdrawFieldRetryCount(input.retryCount)
+  let lastError: unknown
+  for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+    try {
+      return await operation()
+    } catch (error) {
+      lastError = error
+      if (attempt < retryCount) {
+        await (input.waitFn ?? wait)(deepdrawMetadataRetryDelayMs(attempt, input.random))
+      }
+    }
+  }
+  throw lastError
 }
 
 function assertDeepdrawMetadataSuccess(result: { status: number; ok: boolean; payload: unknown; text?: string }, type: string) {
@@ -740,18 +777,10 @@ async function attemptFieldSync(
   db: SyncPostgresDatabase,
   input: DeepdrawConfigInput & { tradeId: string; retryCount: number },
 ) {
-  let lastError: unknown
-  for (let attempt = 0; attempt <= input.retryCount; attempt += 1) {
-    try {
-      return await syncDeepdrawTradeFields(db, input)
-    } catch (error) {
-      lastError = error
-      if (attempt < input.retryCount) {
-        await wait(400 * (attempt + 1))
-      }
-    }
-  }
-  throw lastError
+  return retryDeepdrawMetadataOperation(
+    () => syncDeepdrawTradeFields(db, input),
+    { retryCount: input.retryCount },
+  )
 }
 
 async function runFieldWorker(input: {
@@ -802,7 +831,7 @@ export async function syncDeepdrawTenantMetadata(db: SyncPostgresDatabase, input
   const includeFields = input.includeFields !== false
   const leafOnly = input.leafOnly !== false
   const limit = numberValue(input.limit)
-  const retryCount = fieldRetryCount(input.fieldRetryCount)
+  const retryCount = normalizeDeepdrawFieldRetryCount(input.fieldRetryCount)
   const tradesSummary = await syncDeepdrawTrades(db, input)
   const tradeRows = listDeepdrawTrades(db, {
     tenantName: tradesSummary.tenantName,
@@ -817,7 +846,7 @@ export async function syncDeepdrawTenantMetadata(db: SyncPostgresDatabase, input
   let zeroFieldCount = 0
   if (includeFields) {
     let nextIndex = 0
-    const workers = Math.min(fieldConcurrency(input.fieldConcurrency), fieldCandidates.length)
+    const workers = Math.min(normalizeDeepdrawFieldConcurrency(input.fieldConcurrency), fieldCandidates.length)
     await Promise.all(Array.from({ length: workers }, () => runFieldWorker({
       db,
       projectRoot: input.projectRoot,
@@ -860,7 +889,7 @@ export async function syncDeepdrawTenantMetadata(db: SyncPostgresDatabase, input
     topLevelCount: tradesSummary.topLevelCount,
     flattenedCount: tradesSummary.flattenedCount,
     fieldTradeCount: includeFields ? fieldCandidates.length : 0,
-    fieldConcurrency: includeFields ? fieldConcurrency(input.fieldConcurrency) : 0,
+    fieldConcurrency: includeFields ? normalizeDeepdrawFieldConcurrency(input.fieldConcurrency) : 0,
     fieldRetryCount: retryCount,
     fieldCount,
     zeroFieldCount,

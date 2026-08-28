@@ -731,6 +731,7 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(metadataPage, /api\.get<.*>\(`\/deepdraw-metadata\/trades\?/s);
   assert.match(metadataPage, /api\.get<.*>\(`\/deepdraw-metadata\/trades\/\$\{selectedTradeId\}\/fields\?/s);
   assert.match(metadataPage, /api\.post<.*>\("\/deepdraw-metadata\/sync-jobs"/s);
+  assert.match(metadataPage, /fieldConcurrency: 4/);
   assert.match(metadataPage, /fieldRetryCount: 2/);
   assert.match(metadataPage, /api\.get<.*>\(`\/deepdraw-metadata\/sync-jobs\/\$\{syncJobId\}`\)/s);
   assert.match(metadataPage, /zeroFieldCount/);
