@@ -38,13 +38,6 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Table,
@@ -680,6 +673,72 @@ function issueSeverityClass(severity: string) {
   if (severity === "blocker") return "border-[#f1cccc] bg-[#fff1f1] text-[#d45656]"
   if (severity === "warning") return "border-[#f4ddb3] bg-[#fff8e8] text-[#c37d0d]"
   return "border-[#d7e5fb] bg-[#eef5ff] text-[#3772cf]"
+}
+
+function SingleChoiceFieldEditor({
+  field,
+  value,
+  options,
+  onChange,
+  disabled = false,
+}: {
+  field: DraftField
+  value: string
+  options: FieldOption[]
+  onChange: (value: string) => void
+  disabled?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const selectedOption = options.find((option) => option.value === value)
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          role="combobox"
+          aria-expanded={open}
+          className="h-8 min-w-[220px] max-w-[360px] justify-between px-3 font-normal"
+          disabled={disabled}
+        >
+          <span className={cn("min-w-0 truncate", !selectedOption && "text-muted-foreground")}>
+            {selectedOption ? selectedOption.label : "选择字段值"}
+          </span>
+          <Search className="ml-2 size-4 shrink-0 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[min(420px,calc(100vw-4rem))] p-0">
+        <Command>
+          <CommandInput placeholder={`搜索${field.field_name}选项`} />
+          <CommandList className="max-h-80">
+            <CommandEmpty>没有匹配的选项</CommandEmpty>
+            <CommandGroup>
+              {options.map((option) => {
+                const selected = option.value === value
+                return (
+                  <CommandItem
+                    key={option.value}
+                    value={`${option.label} ${option.value}`}
+                    onSelect={() => {
+                      if (disabled) return
+                      onChange(option.value)
+                      setOpen(false)
+                    }}
+                    className="gap-2"
+                  >
+                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                    {selected ? <span className="ml-1 size-1.5 shrink-0 rounded-full bg-[#0fa76e]" aria-hidden="true" /> : null}
+                  </CommandItem>
+                )
+              })}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
 }
 
 function MultiChoiceFieldEditor({
@@ -1656,50 +1715,52 @@ export default function ProductArchiveDraftDetailPage() {
               选择深绘类目
             </Button>
           </DialogTrigger>
-          <DialogContent className="grid max-h-[82vh] grid-rows-[auto_auto_auto_auto_minmax(0,1fr)_auto] sm:max-w-3xl">
+          <DialogContent className="grid h-[min(92dvh,900px)] max-h-[calc(100dvh-2rem)] w-[min(96vw,1040px)] max-w-none grid-rows-[auto_auto_auto_minmax(220px,1fr)_auto] overflow-hidden sm:max-w-[min(96vw,1040px)]">
             <DialogHeader>
               <DialogTitle>选择深绘类目</DialogTitle>
               <DialogDescription>
                 从已同步的深绘类目主数据中选择模板，应用后会按类目字段重新生成草稿字段。
               </DialogDescription>
             </DialogHeader>
-            {tradeSelectionDecision ? (
-              <div className={cn("rounded-lg border p-3", tradeSelectionClass(tradeSelectionDecision.status))}>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <div className="text-xs text-muted-foreground">系统选择结论</div>
-                    <div className="mt-0.5 text-sm font-medium">{tradeSelectionTitle(tradeSelectionDecision.status)}</div>
-                  </div>
-                  <Badge variant="outline">{tradeSelectionConfidenceLabel(tradeSelectionDecision.confidence)}</Badge>
-                </div>
-                <div className="mt-2 text-sm leading-5 text-muted-foreground">{tradeSelectionDecision.reason}</div>
-                <div className="mt-2 text-xs">
-                  推荐：{tradeSelectionDecision.recommendedTrade?.tradePath || "暂无唯一推荐"}
-                  {tradeSelectionDecision.recommendedTrade ? ` · ${tradeSelectionDecision.recommendedTrade.tradeId}` : ""}
-                </div>
-              </div>
-            ) : null}
-            <div className="rounded-lg border bg-muted/30 p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="text-sm font-medium">上市计划表类目参考</div>
-                <Badge variant={launchPlanReference.matched ? "secondary" : "outline"}>
-                  {launchPlanReference.matched ? "已匹配上市计划表" : "未匹配上市计划表"}
-                </Badge>
-              </div>
-              {launchPlanReference.matched ? (
-                <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                  {launchPlanReference.fields.map((field) => (
-                    <div key={field.key} className="rounded-md border bg-background px-3 py-2">
-                      <div className="text-xs text-muted-foreground">{field.label}</div>
-                      <div className="mt-1 break-words text-sm leading-5">{field.value}</div>
+            <div className="grid max-h-[min(38dvh,360px)] min-h-0 gap-3 overflow-y-auto pr-1 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] [scrollbar-gutter:stable]">
+              {tradeSelectionDecision ? (
+                <div className={cn("rounded-lg border p-3", tradeSelectionClass(tradeSelectionDecision.status))}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-xs text-muted-foreground">系统选择结论</div>
+                      <div className="mt-0.5 text-sm font-medium">{tradeSelectionTitle(tradeSelectionDecision.status)}</div>
                     </div>
-                  ))}
+                    <Badge variant="outline">{tradeSelectionConfidenceLabel(tradeSelectionDecision.confidence)}</Badge>
+                  </div>
+                  <div className="mt-2 text-sm leading-5 text-muted-foreground">{tradeSelectionDecision.reason}</div>
+                  <div className="mt-2 text-xs">
+                    推荐：{tradeSelectionDecision.recommendedTrade?.tradePath || "暂无唯一推荐"}
+                    {tradeSelectionDecision.recommendedTrade ? ` · ${tradeSelectionDecision.recommendedTrade.tradeId}` : ""}
+                  </div>
                 </div>
-              ) : (
-                <div className="mt-3 rounded-md border border-dashed bg-background px-3 py-2 text-sm text-muted-foreground">
-                  未匹配上市计划表
+              ) : null}
+              <div className="rounded-lg border bg-muted/30 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-medium">上市计划表类目参考</div>
+                  <Badge variant={launchPlanReference.matched ? "secondary" : "outline"}>
+                    {launchPlanReference.matched ? "已匹配上市计划表" : "未匹配上市计划表"}
+                  </Badge>
                 </div>
-              )}
+                {launchPlanReference.matched ? (
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {launchPlanReference.fields.map((field) => (
+                      <div key={field.key} className="rounded-md border bg-background px-3 py-2">
+                        <div className="text-xs text-muted-foreground">{field.label}</div>
+                        <div className="mt-1 break-words text-sm leading-5">{field.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-3 rounded-md border border-dashed bg-background px-3 py-2 text-sm text-muted-foreground">
+                    未匹配上市计划表
+                  </div>
+                )}
+              </div>
             </div>
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" />
@@ -1710,7 +1771,7 @@ export default function ProductArchiveDraftDetailPage() {
                 className="pl-9"
               />
             </div>
-            <ScrollArea className="min-h-0 rounded-lg border">
+            <ScrollArea className="min-h-0 overflow-hidden rounded-lg border">
               <div className="divide-y">
                 {(trades.data?.items ?? []).map((trade) => {
                   const selected = selectedTradeId === trade.trade_id
@@ -2247,21 +2308,13 @@ export default function ProductArchiveDraftDetailPage() {
                                           onChange={(nextValue) => setFieldValues((current) => ({ ...current, [field.id]: nextValue }))}
                                         />
                                       ) : isChoiceField && options.length > 0 ? (
-                                        <Select
-                                          value={options.some((option) => option.value === value) ? value : ""}
-                                          onValueChange={(nextValue) => setFieldValues((current) => ({ ...current, [field.id]: nextValue }))}
-                                        >
-                                          <SelectTrigger className="h-8" disabled={!canWrite}>
-                                            <SelectValue placeholder="选择字段值" />
-                                          </SelectTrigger>
-                                          <SelectContent>
-                                            {options.map((option) => (
-                                              <SelectItem key={option.value} value={option.value}>
-                                                {option.label}
-                                              </SelectItem>
-                                            ))}
-                                          </SelectContent>
-                                        </Select>
+                                        <SingleChoiceFieldEditor
+                                          field={field}
+                                          value={value}
+                                          options={options}
+                                          disabled={!canWrite}
+                                          onChange={(nextValue) => setFieldValues((current) => ({ ...current, [field.id]: nextValue }))}
+                                        />
                                       ) : isLongTextFieldType(field) ? (
                                         <Textarea
                                           value={value}

@@ -1477,6 +1477,72 @@ function issueSummaryText(issues: DraftIssue[]) {
   return Array.from(new Set(issues.map((issue) => issue.message).filter(Boolean))).join("；")
 }
 
+function SingleChoiceFieldEditor({
+  field,
+  value,
+  options,
+  onChange,
+  disabled = false,
+}: {
+  field: DraftField
+  value: string
+  options: FieldOption[]
+  onChange: (value: string) => void
+  disabled?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const selectedOption = options.find((option) => option.value === value)
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          role="combobox"
+          aria-expanded={open}
+          className="h-8 min-w-[220px] max-w-[360px] justify-between px-3 font-normal"
+          disabled={disabled}
+        >
+          <span className={cn("min-w-0 truncate", !selectedOption && "text-muted-foreground")}>
+            {selectedOption ? selectedOption.label : "选择字段值"}
+          </span>
+          <Search className="ml-2 size-4 shrink-0 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[min(420px,calc(100vw-4rem))] p-0">
+        <Command>
+          <CommandInput placeholder={`搜索${field.field_name}选项`} />
+          <CommandList className="max-h-80">
+            <CommandEmpty>没有匹配的选项</CommandEmpty>
+            <CommandGroup>
+              {options.map((option) => {
+                const selected = option.value === value
+                return (
+                  <CommandItem
+                    key={option.value}
+                    value={`${option.label} ${option.value}`}
+                    onSelect={() => {
+                      if (disabled) return
+                      onChange(option.value)
+                      setOpen(false)
+                    }}
+                    className="gap-2"
+                  >
+                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                    {selected ? <CheckMini /> : null}
+                  </CommandItem>
+                )
+              })}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function MultiChoiceFieldEditor({
   field,
   value,
@@ -1629,21 +1695,13 @@ function DraftFieldEditor({
   }
   if (isChoiceField && options.length > 0) {
     return (
-      <Select
-        value={options.some((option) => option.value === value) ? value : ""}
-        onValueChange={onChange}
-      >
-        <SelectTrigger className="h-8" disabled={!canWrite}>
-          <SelectValue placeholder="选择字段值" />
-        </SelectTrigger>
-        <SelectContent>
-          {options.map((option) => (
-            <SelectItem key={option.value} value={option.value}>
-              {option.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <SingleChoiceFieldEditor
+        field={field}
+        value={value}
+        options={options}
+        disabled={!canWrite}
+        onChange={onChange}
+      />
     )
   }
   if (isLongTextFieldType(field)) {
@@ -2921,7 +2979,7 @@ export default function ProductArchiveDraftsPage() {
           setTradeSearch("")
         }}
       >
-        <DialogContent className="grid max-h-[82vh] grid-rows-[auto_auto_auto_auto_minmax(0,1fr)_auto] sm:max-w-3xl">
+        <DialogContent className="grid h-[min(92dvh,900px)] max-h-[calc(100dvh-2rem)] w-[min(96vw,1040px)] max-w-none grid-rows-[auto_auto_auto_minmax(220px,1fr)_auto] overflow-hidden sm:max-w-[min(96vw,1040px)]">
           <DialogHeader>
             <DialogTitle>选择深绘类目</DialogTitle>
             <DialogDescription>
@@ -2938,7 +2996,7 @@ export default function ProductArchiveDraftsPage() {
               {activeDraftDetail.error instanceof Error ? activeDraftDetail.error.message : "草稿详情加载失败"}
             </div>
           ) : (
-            <>
+            <div className="grid max-h-[min(38dvh,360px)] min-h-0 gap-3 overflow-y-auto pr-1 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] [scrollbar-gutter:stable]">
               {activeDraftDetail.data?.tradeSelectionDecision ? (
                 <div className={cn("rounded-lg border p-3", tradeSelectionClass(activeDraftDetail.data.tradeSelectionDecision.status))}>
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2977,7 +3035,7 @@ export default function ProductArchiveDraftsPage() {
                   </div>
                 )}
               </div>
-            </>
+            </div>
           )}
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" />
@@ -2988,7 +3046,7 @@ export default function ProductArchiveDraftsPage() {
               className="pl-9"
             />
           </div>
-          <ScrollArea className="min-h-0 rounded-lg border">
+          <ScrollArea className="min-h-0 overflow-hidden rounded-lg border">
             <div className="divide-y">
               {(trades.data?.items ?? []).map((trade) => {
                 const selected = selectedTradeId === trade.trade_id
