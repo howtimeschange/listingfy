@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { existsSync } from "node:fs"
 import path from "node:path"
 import os from "node:os"
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
@@ -75,6 +76,7 @@ import { importListingLaunchPlanSheets } from "../services/listing-launch-plans"
 import { readSpreadsheetSheetsFromFile } from "../../../scripts/lib/listing_launch_plan_importer.mjs"
 import { readPlmSizeChartWorkbook } from "../../../scripts/lib/product_archive_size_chart.mjs"
 import { getDefaultAiScenarioRouter } from "../../../scripts/lib/ai_routing_context.mjs"
+import { withBackgroundTaskSlot } from "../lib/background-task-limiter"
 
 const productArchiveDrafts = new Hono()
 const PROJECT_ROOT =
@@ -164,6 +166,8 @@ async function syncDraftMdmMainImageSafely(db: ReturnType<typeof getDb>, draftId
 
 const draftQueue = createProductArchiveSyncQueue({
   autoRecover: false,
+  jobSliceSize: process.env.LISTINGIFY_PRODUCT_ARCHIVE_DRAFT_JOB_SLICE_SIZE ?? 5,
+  runWithSlot: (_context: unknown, run: () => Promise<unknown>) => withBackgroundTaskSlot("product_archive_draft", run),
   store: createPostgresProductArchiveSyncJobStore({
     getDb,
     queueName: "product_archive_drafts",
@@ -384,6 +388,37 @@ function scheduleProductArchiveBackgroundWorker(run: () => void) {
   setTimeout(run, 0)
 }
 
+function yieldToEventLoop() {
+  return new Promise<void>((resolve) => scheduleProductArchiveBackgroundWorker(resolve))
+}
+
+function productArchiveJobSliceSize(envName: string, fallback = 5) {
+  const number = Number(process.env[envName] ?? fallback)
+  if (!Number.isFinite(number)) return fallback
+  return Math.max(1, Math.min(100, Math.floor(number)))
+}
+
+function hasOpenQueueItems(items: Array<{ status: string }>) {
+  return items.some((item) => item.status !== "completed" && item.status !== "failed")
+}
+
+async function maybeYieldProductArchiveJob<T extends { status: "queued" | "running" | "completed"; items: Array<{ status: string }> }>(
+  job: T,
+  pending: T[],
+  persist: (job: T) => void,
+  processedInSlice: number,
+  envName: string,
+  fallback = 5,
+) {
+  if (processedInSlice < productArchiveJobSliceSize(envName, fallback)) return false
+  if (!hasOpenQueueItems(job.items)) return false
+  job.status = "queued"
+  persist(job)
+  pending.push(job)
+  await yieldToEventLoop()
+  return true
+}
+
 function cloneProductArchiveAiFillJob(job: ProductArchiveAiFillJob) {
   const currentItem = job.items.find((item) => item.status === "running") ?? null
   return {
@@ -457,47 +492,49 @@ function createProductArchiveAiFillQueue({
   }
 
   async function processItem(job: ProductArchiveAiFillJob, item: ProductArchiveAiFillJobItem) {
-    item.status = "running"
-    item.started_at ??= new Date(now()).toISOString()
-    persist(job)
+    return withBackgroundTaskSlot("product_archive_ai_fill", async () => {
+      item.status = "running"
+      item.started_at ??= new Date(now()).toISOString()
+      persist(job)
 
-    const db = getDb()
-    const result = await fillProductArchiveDraftFieldsWithAi(db, item.draft_id)
-    const detail = result.detail as { draft?: Record<string, unknown> }
-    const draft = detail.draft ?? {}
-    const validationSummary = draft.validation_summary_json && typeof draft.validation_summary_json === "object"
-      ? draft.validation_summary_json as Record<string, unknown>
-      : {}
-    const savedCount = result.saved.length
-    const warningCount = result.warnings.length
-    const itemResult = {
-      draftId: item.draft_id,
-      spuCode: item.spu_code,
-      savedCount,
-      warningCount,
-      status: stringValue(draft.status),
-      blockerCount: Number(validationSummary.blocker_count ?? 0) || 0,
-      warningIssueCount: Number(validationSummary.warning_count ?? 0) || 0,
-    }
-    try {
-      writeOperationLog(db, {
-        action: "draft.ai_fill.background_applied",
-        module: "PRODUCT_ARCHIVE_DRAFT",
-        entityType: "product_archive_draft",
-        entityId: item.draft_id,
-        summary: `后台 AI 推荐补齐深绘建档草稿字段 ${item.spu_code}`,
-        metadata: {
-          jobId: job.id,
-          draftId: item.draft_id,
-          spuCode: item.spu_code,
-          savedCount,
-          warningCount,
-        },
-      }, job.options.actor, job.options.ipAddress ?? undefined)
-    } catch (error) {
-      reportInternalError(error, { phase: "item_audit", jobId: job.id, draftId: item.draft_id })
-    }
-    setItemFinished(job, item, "completed", itemResult, null)
+      const db = getDb()
+      const result = await fillProductArchiveDraftFieldsWithAi(db, item.draft_id)
+      const detail = result.detail as { draft?: Record<string, unknown> }
+      const draft = detail.draft ?? {}
+      const validationSummary = draft.validation_summary_json && typeof draft.validation_summary_json === "object"
+        ? draft.validation_summary_json as Record<string, unknown>
+        : {}
+      const savedCount = result.saved.length
+      const warningCount = result.warnings.length
+      const itemResult = {
+        draftId: item.draft_id,
+        spuCode: item.spu_code,
+        savedCount,
+        warningCount,
+        status: stringValue(draft.status),
+        blockerCount: Number(validationSummary.blocker_count ?? 0) || 0,
+        warningIssueCount: Number(validationSummary.warning_count ?? 0) || 0,
+      }
+      try {
+        writeOperationLog(db, {
+          action: "draft.ai_fill.background_applied",
+          module: "PRODUCT_ARCHIVE_DRAFT",
+          entityType: "product_archive_draft",
+          entityId: item.draft_id,
+          summary: `后台 AI 推荐补齐深绘建档草稿字段 ${item.spu_code}`,
+          metadata: {
+            jobId: job.id,
+            draftId: item.draft_id,
+            spuCode: item.spu_code,
+            savedCount,
+            warningCount,
+          },
+        }, job.options.actor, job.options.ipAddress ?? undefined)
+      } catch (error) {
+        reportInternalError(error, { phase: "item_audit", jobId: job.id, draftId: item.draft_id })
+      }
+      setItemFinished(job, item, "completed", itemResult, null)
+    })
   }
 
   async function processLoop() {
@@ -511,6 +548,8 @@ function createProductArchiveAiFillQueue({
         job.status = "running"
         job.started_at ??= new Date(now()).toISOString()
         persist(job)
+        let processedInSlice = 0
+        let yielded = false
         try {
           for (const item of job.items) {
             if (item.status === "completed" || item.status === "failed") continue
@@ -523,23 +562,28 @@ function createProductArchiveAiFillQueue({
                 spuCode: item.spu_code,
               }, errorMessage(error))
             }
+            processedInSlice += 1
+            yielded = await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_JOB_SLICE_SIZE", 5)
+            if (yielded) break
           }
         } finally {
-          const completedItems = job.items.filter((item) => item.status === "completed")
-          job.result = {
-            processedDraftCount: completedItems.length,
-            failedDraftCount: job.items.filter((item) => item.status === "failed").length,
-            savedFieldCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.savedCount) || 0), 0),
-            warningCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.warningCount) || 0), 0),
+          if (!yielded) {
+            const completedItems = job.items.filter((item) => item.status === "completed")
+            job.result = {
+              processedDraftCount: completedItems.length,
+              failedDraftCount: job.items.filter((item) => item.status === "failed").length,
+              savedFieldCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.savedCount) || 0), 0),
+              warningCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.warningCount) || 0), 0),
+            }
+            job.status = "completed"
+            job.outcome = job.failed_count === 0
+              ? "succeeded"
+              : job.completed_count === 0
+                ? "failed"
+                : "partial_failure"
+            job.finished_at = new Date(now()).toISOString()
+            persist(job)
           }
-          job.status = "completed"
-          job.outcome = job.failed_count === 0
-            ? "succeeded"
-            : job.completed_count === 0
-              ? "failed"
-              : "partial_failure"
-          job.finished_at = new Date(now()).toISOString()
-          persist(job)
         }
       }
     } finally {
@@ -873,7 +917,7 @@ function createProductArchivePrecheckQueue({
     while (item.attempt_count < item.max_attempts) {
       item.attempt_count += 1
       try {
-        await runPrecheckItemOnce(job, item)
+        await withBackgroundTaskSlot("product_archive_precheck", () => runPrecheckItemOnce(job, item))
         return
       } catch (error) {
         if (isProductArchiveSyncLeaseError(error)) throw error
@@ -942,6 +986,8 @@ function createProductArchivePrecheckQueue({
         job.status = "running"
         job.started_at ??= new Date(now()).toISOString()
         persist(job)
+        let processedInSlice = 0
+        let yielded = false
         try {
           for (const item of job.items) {
             if (item.status === "completed" || item.status === "failed") continue
@@ -956,9 +1002,12 @@ function createProductArchivePrecheckQueue({
                 phase: item.phase,
               }, errorMessage(error), persist, now)
             }
+            processedInSlice += 1
+            yielded = await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_PRECHECK_JOB_SLICE_SIZE", 5)
+            if (yielded) break
           }
         } finally {
-          finishJob(job)
+          if (!yielded) finishJob(job)
         }
       }
     } finally {
@@ -1230,7 +1279,10 @@ function createProductArchivePublishQueue({
       item.next_retry_at = null
       persist(job)
       try {
-        const submitResult = await submitProductArchiveDraft(getDb(), item.draft_id, { dryRun: false })
+        const submitResult = await withBackgroundTaskSlot(
+          "product_archive_publish",
+          () => submitProductArchiveDraft(getDb(), item.draft_id, { dryRun: false }),
+        )
         const finished = publishItemResultFromSubmitResult(submitResult, item.draft_id, item.spu_code)
         if (!finished.ok) {
           setItemFinished(job, item, "failed", finished.result, finished.error)
@@ -1316,13 +1368,18 @@ function createProductArchivePublishQueue({
         job.status = "running"
         job.started_at ??= new Date(now()).toISOString()
         persist(job)
+        let processedInSlice = 0
+        let yielded = false
         try {
           for (const item of job.items) {
             if (item.status === "completed" || item.status === "failed") continue
             await processItem(job, item)
+            processedInSlice += 1
+            yielded = await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_JOB_SLICE_SIZE", 3)
+            if (yielded) break
           }
         } finally {
-          finishJob(job)
+          if (!yielded) finishJob(job)
         }
       }
     } finally {
@@ -1755,23 +1812,27 @@ function createHangtagWashlabelOcrQueue({
         job.status = "running"
         job.started_at ??= new Date(now()).toISOString()
         persist(job)
+        let processedInSlice = 0
         for (let index = 0; index < job.files.length; index += 1) {
-            const item = job.items[index]
-            if (!item || item.status === "completed" || item.status === "failed") continue
-            try {
-              await processFileItem(job, job.files[index], item)
-            } catch (error) {
-              if (isProductArchiveSyncLeaseError(error)) throw error
-              setItemFinished(job, item, "failed", {
-                fileName: job.files[index].fileName,
-              }, errorMessage(error))
-            }
+          const item = job.items[index]
+          if (!item || item.status === "completed" || item.status === "failed") continue
+          try {
+            await withBackgroundTaskSlot("product_archive_ocr", () => processFileItem(job, job.files[index], item))
+          } catch (error) {
+            if (isProductArchiveSyncLeaseError(error)) throw error
+            setItemFinished(job, item, "failed", {
+              fileName: job.files[index].fileName,
+            }, errorMessage(error))
+          }
+          processedInSlice += 1
+          if (await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_OCR_JOB_SLICE_SIZE", 3)) break
         }
+        if (job.status === "queued") continue
 
         const applyItem = job.items[job.items.length - 1]
         if (applyItem && applyItem.status !== "completed" && applyItem.status !== "failed") {
           try {
-            await applyRecognizedDocuments(job, applyItem)
+            await withBackgroundTaskSlot("product_archive_ocr", () => applyRecognizedDocuments(job, applyItem))
           } catch (error) {
             if (isProductArchiveSyncLeaseError(error)) throw error
             setItemFinished(job, applyItem, "failed", null, errorMessage(error))
@@ -1951,6 +2012,114 @@ export function resumeProductArchiveDraftQueue() {
   productArchiveAiFillQueue.resume()
   productArchivePrecheckQueue.resume()
   productArchivePublishQueue.resume()
+}
+
+type RequeueProductArchiveTaskType =
+  | "product_archive_mdm_draft"
+  | "product_archive_hangtag_washlabel_ocr"
+  | "product_archive_ai_fill"
+  | "product_archive_publish_precheck"
+  | "product_archive_publish"
+
+function requeueableItems<T extends { status?: string | null }>(items: T[] | undefined | null) {
+  return (items ?? []).filter((item) => stringValue(item.status) !== "completed")
+}
+
+function requeueTargets(items: Array<{ draft_id?: number | null; spu_code?: string | null; status?: string | null }>) {
+  return requeueableItems(items).flatMap((item) => {
+    const draftId = Number(item.draft_id)
+    const spuCode = stringValue(item.spu_code)
+    if (!Number.isFinite(draftId) || draftId <= 0 || !spuCode) return []
+    return [{ draftId, spuCode, title: null, status: "draft" }]
+  })
+}
+
+function assertRequeueableCount(count: number) {
+  if (count <= 0) throw new HTTPException(409, { message: "这个任务没有可重新加入队列的未完成项目" })
+}
+
+export function requeueProductArchiveDraftAsyncTask(input: {
+  taskType: RequeueProductArchiveTaskType
+  jobId: string
+  actor: AuditActor | null
+  ipAddress: string | null
+}) {
+  if (input.taskType === "product_archive_mdm_draft") {
+    const original = draftQueue.getJob(input.jobId)
+    if (!original) throw new HTTPException(404, { message: "MDM 同步建档任务不存在" })
+    const codes = requeueableItems(original.items).map((item) => item.spu_code).filter(Boolean)
+    assertRequeueableCount(codes.length)
+    return draftQueue.enqueue({
+      source: original.source,
+      rawCodes: codes,
+      intervalMs: original.interval_ms,
+      options: {
+        ...original.options,
+        retryOfJobId: original.id,
+      },
+    })
+  }
+
+  if (input.taskType === "product_archive_ai_fill") {
+    const original = productArchiveAiFillQueue.getJob(input.jobId)
+    if (!original) throw new HTTPException(404, { message: "批量 AI 填充任务不存在" })
+    const targets = requeueTargets(original.items)
+    assertRequeueableCount(targets.length)
+    return productArchiveAiFillQueue.enqueue({
+      targets,
+      actor: input.actor,
+      ipAddress: input.ipAddress,
+    })
+  }
+
+  if (input.taskType === "product_archive_publish_precheck") {
+    const original = productArchivePrecheckQueue.getJob(input.jobId)
+    if (!original) throw new HTTPException(404, { message: "批量发布预检任务不存在" })
+    const targets = requeueTargets(original.items)
+    assertRequeueableCount(targets.length)
+    return productArchivePrecheckQueue.enqueue({
+      targets,
+      maxAttempts: original.items[0]?.max_attempts,
+      retryDelayMs: original.options.retryDelayMs,
+      actor: input.actor,
+      ipAddress: input.ipAddress,
+    })
+  }
+
+  if (input.taskType === "product_archive_publish") {
+    const original = productArchivePublishQueue.getJob(input.jobId)
+    if (!original) throw new HTTPException(404, { message: "批量发布任务不存在" })
+    const targets = requeueTargets(original.items)
+    assertRequeueableCount(targets.length)
+    return productArchivePublishQueue.enqueue({
+      targets,
+      maxAttempts: original.items[0]?.max_attempts,
+      retryDelayMs: original.options.retryDelayMs,
+      actor: input.actor,
+      ipAddress: input.ipAddress,
+    })
+  }
+
+  const original = hangtagWashlabelOcrQueue.getJob(input.jobId)
+  if (!original) throw new HTTPException(404, { message: "吊牌/洗唛 OCR 任务不存在" })
+  const rerunApply = requeueableItems(original.items).some((item) => item.phase === "apply")
+  const files = original.files.filter((file, index) => (
+    rerunApply || stringValue(original.items[index]?.status) !== "completed"
+  ))
+  const existingFiles = files.filter((file) => existsSync(file.filePath))
+  if (files.length !== existingFiles.length) {
+    throw new HTTPException(409, { message: "原始上传文件已清理，无法自动重新加入 OCR 队列，请重新上传附件" })
+  }
+  assertRequeueableCount(existingFiles.length)
+  return hangtagWashlabelOcrQueue.enqueue({
+    files: existingFiles.filter((file) => file.kind === "ocr_asset"),
+    supplementFiles: existingFiles.filter((file) => file.kind === "scm_supplement"),
+    referenceImageFiles: existingFiles.filter((file) => file.kind === "reference_image"),
+    overwriteExisting: original.options.overwriteExisting,
+    actor: input.actor,
+    ipAddress: input.ipAddress,
+    uploadDir: original.options.uploadDir,
+  })
 }
 
 function readId(value: string) {

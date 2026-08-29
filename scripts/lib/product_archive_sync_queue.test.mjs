@@ -116,6 +116,40 @@ test("queue keeps going after one code fails", async () => {
   assert.match(finished.items[1].error, /upstream failed/);
 });
 
+test("queue slices long jobs so later jobs can run between chunks", async () => {
+  const events = [];
+  const queue = createProductArchiveSyncQueue({
+    jobSliceSize: 2,
+    wait: async () => {},
+    syncOne: async ({ spuCode, jobId }) => {
+      events.push([jobId, spuCode]);
+      return { ok: true };
+    },
+  });
+
+  const longJob = queue.enqueue({
+    source: "mdm",
+    rawCodes: ["A001", "A002", "A003"],
+    intervalMs: 0,
+  });
+  const quickJob = queue.enqueue({
+    source: "mdm",
+    rawCodes: ["B001"],
+    intervalMs: 0,
+  });
+
+  await queue.waitForIdle();
+
+  assert.deepEqual(events, [
+    [longJob.id, "A001"],
+    [longJob.id, "A002"],
+    [quickJob.id, "B001"],
+    [longJob.id, "A003"],
+  ]);
+  assert.equal(queue.getJob(longJob.id).status, "completed");
+  assert.equal(queue.getJob(quickJob.id).status, "completed");
+});
+
 test("queue retries transient rate-limit failures with bounded backoff", async () => {
   const waits = [];
   let attempts = 0;

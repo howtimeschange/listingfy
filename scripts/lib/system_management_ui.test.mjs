@@ -89,6 +89,59 @@ test("system sync task list includes SHEIN platform product async jobs", async (
   assert.match(route, /failed_count/);
 });
 
+test("background task limiter protects API while long queues are running", async () => {
+  const [systemRoute, limiter, draftRoute, archiveRoute, categoryRoute, platformJobs, launchPlanJobs] = await Promise.all([
+    file("web/server/routes/system.ts"),
+    file("web/server/lib/background-task-limiter.ts"),
+    file("web/server/routes/product-archive-drafts.ts"),
+    file("web/server/routes/product-archives.ts"),
+    file("web/server/routes/category-mapping.ts"),
+    file("web/server/services/shein-platform-product-jobs.ts"),
+    file("web/server/services/listing-launch-plan-import-jobs.ts"),
+  ]);
+
+  assert.match(limiter, /LISTINGIFY_BACKGROUND_MAX_ACTIVE/);
+  assert.match(limiter, /DEFAULT_MAX_ACTIVE\s*=\s*2/);
+  assert.match(systemRoute, /\/background-task-limiter/);
+  assert.match(systemRoute, /backgroundTaskLimiterSnapshot/);
+  assert.match(draftRoute, /withBackgroundTaskSlot\("product_archive_draft"/);
+  assert.match(draftRoute, /withBackgroundTaskSlot\("product_archive_ocr"/);
+  assert.match(draftRoute, /LISTINGIFY_PRODUCT_ARCHIVE_OCR_JOB_SLICE_SIZE/);
+  assert.match(archiveRoute, /withBackgroundTaskSlot\("product_archive_sync"/);
+  assert.match(archiveRoute, /LISTINGIFY_PRODUCT_ARCHIVE_SYNC_JOB_SLICE_SIZE/);
+  assert.match(categoryRoute, /withBackgroundTaskSlot\("category_mapping_ai_suggestions"/);
+  assert.match(platformJobs, /withBackgroundTaskSlot\(\s*"shein_platform_product_sync"/);
+  assert.match(platformJobs, /withBackgroundTaskSlot\(\s*"shein_platform_product_export"/);
+  assert.match(launchPlanJobs, /withBackgroundTaskSlot\(\s*"listing_launch_plan_import"/);
+});
+
+test("async task center supports backend stop delete and requeue confirmations", async () => {
+  const [taskCenter, context, route] = await Promise.all([
+    file("web/src/components/async-task-center.tsx"),
+    file("web/src/lib/async-task-context.ts"),
+    file("web/server/routes/system.ts"),
+  ]);
+
+  assert.match(taskCenter, /ConfirmDialog/);
+  assert.match(taskCenter, /CircleStop/);
+  assert.match(taskCenter, /RotateCcw/);
+  assert.match(taskCenter, /重新加入队列/);
+  assert.match(taskCenter, /会从未完成项重新跑，已成功的不会重复执行/);
+  assert.match(taskCenter, /\/system\/async-tasks\/\$\{task\.type\}\/\$\{encodeURIComponent\(task\.id\)\}\/stop/);
+  assert.match(taskCenter, /\/system\/async-tasks\/\$\{task\.type\}\/\$\{encodeURIComponent\(task\.id\)\}\/requeue/);
+  assert.match(taskCenter, /api\.delete<AsyncTaskActionResponse>\(`\/system\/async-tasks\/\$\{task\.type\}\/\$\{encodeURIComponent\(task\.id\)\}`\)/);
+  assert.match(context, /updateTask/);
+  assert.match(route, /post\("\/async-tasks\/:taskType\/:taskId\/stop"/);
+  assert.match(route, /post\("\/async-tasks\/:taskType\/:taskId\/requeue"/);
+  assert.match(route, /delete\("\/async-tasks\/:taskType\/:taskId"/);
+  assert.match(route, /async_task\.requeued/);
+  assert.match(route, /STOPPED_BY_USER_MESSAGE/);
+  assert.match(route, /product_archive_sync_job/);
+  assert.match(route, /listing_launch_plan_import_job/);
+  assert.match(route, /category_ai_suggestion_job/);
+  assert.match(route, /shein_platform_product_job/);
+});
+
 test("Yunxiao deploy overwrites forwarded security headers at the trusted proxy", async () => {
   const deploy = await file("ci/yunxiao-deploy.sh");
 

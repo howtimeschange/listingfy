@@ -5,6 +5,7 @@ import { routePermissionGuard } from "../lib/auth"
 import { uniqueStrings } from "../services/pre-publish/shared"
 import { resolveSheinKidsCategoryFallback } from "../services/pre-publish/category-fallback"
 import { refreshBucketProduct } from "./shein-products"
+import { withBackgroundTaskSlot } from "../lib/background-task-limiter"
 import {
   buildCategoryMatchPrompt,
   callAiCategoryMatcher,
@@ -557,11 +558,11 @@ async function generateCategoryAiSuggestions({
     }
   }
 
-  const result = await callAiCategoryMatcher({
+  const result = await withBackgroundTaskSlot("category_mapping_ai_suggestions", () => callAiCategoryMatcher({
     groups,
     candidates: candidates.slice(0, AI_CATEGORY_CANDIDATE_LIMIT),
     router: getDefaultAiScenarioRouter({ db }),
-  })
+  }))
   const suggestions = enrichSuggestions({
     groups,
     suggestions: result.suggestions as unknown as Array<Record<string, unknown>>,
@@ -794,6 +795,27 @@ function enqueueCategoryAiSuggestionJob(options: { limit: number; spuCodes: stri
   return snapshotCategoryAiJob(job)
 }
 
+export function requeueCategoryAiSuggestionTask(jobId: string) {
+  const db = getDb()
+  const original = readCategoryAiSuggestionJob(db, jobId)
+  if (!original) return null
+  const spuCodes = uniqueStrings(
+    (original.items ?? [])
+      .filter((item) => String(item.status ?? "").trim() !== "completed")
+      .map((item) => item.spu_code),
+  )
+  const requestedCodes = spuCodes.length || (original.items ?? []).length
+    ? spuCodes
+    : uniqueStrings(original.requested_spu_codes ?? [])
+  if (requestedCodes.length === 0) {
+    throw new HTTPException(409, { message: "这个类目 AI 任务没有可重新加入队列的未完成项目" })
+  }
+  return enqueueCategoryAiSuggestionJob({
+    limit: original.limit,
+    spuCodes: requestedCodes,
+  })
+}
+
 async function runCategoryAiSuggestionJob(jobId: string) {
   const db = getDb()
   let job = readCategoryAiSuggestionJob(db, jobId)
@@ -828,11 +850,11 @@ async function runCategoryAiSuggestionJob(jobId: string) {
       return
     }
 
-    const result = await callAiCategoryMatcher({
+    const result = await withBackgroundTaskSlot("category_mapping_ai_suggestions", () => callAiCategoryMatcher({
       groups,
       candidates: candidates.slice(0, AI_CATEGORY_CANDIDATE_LIMIT),
       router: getDefaultAiScenarioRouter({ db }),
-    })
+    }))
     const suggestions = enrichSuggestions({
       groups,
       suggestions: result.suggestions as unknown as Array<Record<string, unknown>>,

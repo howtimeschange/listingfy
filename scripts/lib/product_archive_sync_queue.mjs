@@ -6,6 +6,7 @@ const DEFAULT_RETRY_DELAY_MS = 3000;
 const DEFAULT_JOB_LEASE_MS = 30 * 60 * 1000;
 const MAX_RECOVERY_BATCH = 200;
 const MAX_CODES_PER_JOB = 2000;
+const DEFAULT_JOB_SLICE_SIZE = 0;
 const PRODUCT_ARCHIVE_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 function clampInterval(value) {
@@ -20,6 +21,12 @@ function clampMaxAttempts(value) {
   return Math.max(1, Math.min(10, Math.floor(number)));
 }
 
+function clampJobSliceSize(value) {
+  const number = Number(value ?? DEFAULT_JOB_SLICE_SIZE);
+  if (!Number.isFinite(number)) return DEFAULT_JOB_SLICE_SIZE;
+  return Math.max(0, Math.min(1000, Math.floor(number)));
+}
+
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -30,6 +37,10 @@ function scheduleProductArchiveSyncWorker(run) {
     return;
   }
   setTimeout(run, 0);
+}
+
+function yieldProductArchiveSyncWorker() {
+  return new Promise((resolve) => scheduleProductArchiveSyncWorker(resolve));
 }
 
 export class ProductArchiveSyncLeaseError extends Error {
@@ -78,6 +89,8 @@ export function createProductArchiveSyncQueue({
   wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now = () => Date.now(),
   leaseHeartbeatIntervalMs = null,
+  jobSliceSize = process.env.LISTINGIFY_PRODUCT_ARCHIVE_JOB_SLICE_SIZE ?? DEFAULT_JOB_SLICE_SIZE,
+  runWithSlot = async (_context, run) => run(),
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
 } = {}) {
@@ -89,6 +102,7 @@ export function createProductArchiveSyncQueue({
   const pending = [];
   const normalizedMaxAttempts = clampMaxAttempts(maxAttempts);
   const normalizedRetryDelayMs = clampInterval(retryDelayMs);
+  const normalizedJobSliceSize = clampJobSliceSize(jobSliceSize);
   let running = false;
   let processScheduled = false;
   let idleResolvers = [];
@@ -212,10 +226,15 @@ export function createProductArchiveSyncQueue({
         };
         try {
           stopLeaseHeartbeat = startLeaseHeartbeat(job, markLeaseLost);
+          let sliceExhausted = false;
           for (let index = 0; index < job.items.length; index += 1) {
             const item = job.items[index];
             if (leaseLost) break;
             if (["completed", "failed"].includes(item.status)) continue;
+            if (normalizedJobSliceSize > 0 && processedCount >= normalizedJobSliceSize) {
+              sliceExhausted = true;
+              break;
+            }
             if (processedCount > 0 && job.interval_ms > 0) {
               try {
                 await wait(job.interval_ms);
@@ -240,14 +259,21 @@ export function createProductArchiveSyncQueue({
                 break;
               }
               try {
-                const result = await syncOne({
+                const result = await runWithSlot({
+                  queue: "product_archive_sync",
+                  source: job.source,
+                  jobId: job.id,
+                  spuCode: item.spu_code,
+                  attempt: item.attempt_count,
+                  maxAttempts: item.max_attempts,
+                }, () => syncOne({
                   source: job.source,
                   spuCode: item.spu_code,
                   jobId: job.id,
                   options: job.options,
                   attempt: item.attempt_count,
                   maxAttempts: item.max_attempts,
-                });
+                }));
                 if (leaseLost) break;
                 item.status = "completed";
                 item.result = result ?? null;
@@ -295,11 +321,21 @@ export function createProductArchiveSyncQueue({
               break;
             }
           }
+          if (!leaseLost && sliceExhausted && job.items.some((item) => !["completed", "failed"].includes(item.status))) {
+            job.status = "queued";
+            if (!persist(job)) {
+              leaseLost = true;
+            } else {
+              pending.push(job);
+              await yieldProductArchiveSyncWorker();
+            }
+          }
         } finally {
           stopLeaseHeartbeat();
         }
 
         if (leaseLost) continue;
+        if (job.status === "queued") continue;
 
         job.status = "completed";
         job.outcome = job.failed_count === 0

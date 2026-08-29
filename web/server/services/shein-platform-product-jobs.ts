@@ -17,6 +17,7 @@ import {
   platformProductWorkbookRows,
   type PlatformProductExportRow,
 } from "../../src/lib/shein-platform-product-export"
+import { withBackgroundTaskSlot } from "../lib/background-task-limiter"
 
 type JsonRecord = Record<string, unknown>
 type PlatformProductJobType = "sync" | "export"
@@ -262,6 +263,10 @@ export function isSheinRateLimitMessage(value: unknown) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
+}
+
+function isJobClaimLostError(error: unknown) {
+  return error instanceof Error && error.message.includes("平台商品任务 claim 已失效")
 }
 
 function jobStatus(value: unknown): PlatformProductJobStatus {
@@ -537,6 +542,18 @@ function queuedPlatformProductJobItemCount(jobId: string, db: SyncPostgresDataba
   return numberValue(row?.count)
 }
 
+function nonCompletedPlatformProductJobItemCodes(jobId: string, db: SyncPostgresDatabase = getDb()) {
+  return db.prepare(`
+    select spu_code
+    from shein_platform_product_job_item
+    where job_id = ?
+      and status <> 'completed'
+    order by item_index asc
+  `).all(jobId)
+    .map((row) => stringValue((row as JsonRecord).spu_code))
+    .filter(Boolean)
+}
+
 export function createPlatformProductJobItems(
   jobId: string,
   codes: string[],
@@ -703,7 +720,10 @@ export async function processPlatformProductJobItem(
   }
 
   try {
-    const remote = await detailSync(item.spu_code, {}, job.actor)
+    const remote = await withBackgroundTaskSlot(
+      "shein_platform_product_sync",
+      () => detailSync(item.spu_code, {}, job.actor),
+    )
     if (!responseOk(remote.result)) {
       throw new Error(responseMessage(remote.result) || "详情同步失败")
     }
@@ -1003,7 +1023,10 @@ async function processSyncJob(job: PlatformProductJob) {
   job.items = [{ spu_code: "平台商品列表", status: "running", error: null, result: null, started_at: nowIso(), finished_at: null }]
   await savePlatformProductJob(job)
   try {
-    const result = await syncPlatformProducts(syncInput(job.payload), job.actor)
+    const result = await withBackgroundTaskSlot(
+      "shein_platform_product_sync",
+      () => syncPlatformProducts(syncInput(job.payload), job.actor),
+    )
     if (!responseOk(result.result)) {
       throw new Error(responseMessage(result.result) || "同步平台商品失败")
     }
@@ -1151,7 +1174,10 @@ async function processExportJob(job: PlatformProductJob) {
   job.items[0].spu_code = "生成 Excel 文件"
   job.items[0].result = { stage: "streaming_workbook", rowCount: 0, fileName }
   await savePlatformProductJob(job)
-  const rowCount = await writePlatformProductWorkbookFromPages(filePath, job)
+  const rowCount = await withBackgroundTaskSlot(
+    "shein_platform_product_export",
+    () => writePlatformProductWorkbookFromPages(filePath, job),
+  )
   job.fileName = fileName
   job.filePath = filePath
   job.downloadUrl = `/api/shein-platform-products/export-jobs/${job.id}/download`
@@ -1178,7 +1204,12 @@ async function processLoop(type: PlatformProductJobType) {
           await processExportJob(job)
         }
       } catch (error) {
-        await markJobFailed(job, error)
+        if (isJobClaimLostError(error)) continue
+        try {
+          await markJobFailed(job, error)
+        } catch (failureError) {
+          if (!isJobClaimLostError(failureError)) throw failureError
+        }
       }
       await wait(0)
     }
@@ -1226,6 +1257,56 @@ export function enqueuePlatformProductSyncJob(payload: unknown = {}, actor?: Lif
   if (codes.length) createPlatformProductJobItems(job.id, codes, db)
   schedulePlatformProductJobs()
   return snapshot(job, db)
+}
+
+export function requeuePlatformProductAsyncTask(input: {
+  type: PlatformProductJobType
+  jobId: string
+  actor?: LifecycleActor | null
+}) {
+  const original = loadPlatformProductJob(input.type, input.jobId)
+  if (!original) return null
+  if (input.type === "export") {
+    if (original.status === "completed" && original.failed_count <= 0) {
+      throw new Error("这个平台商品导出任务已成功完成，没有需要重新加入队列的内容")
+    }
+    return enqueuePlatformProductExportJob(original.payload)
+  }
+
+  const db = getDb()
+  const persistedItemCount = platformProductJobItemCount(original.id, db)
+  if (persistedItemCount > 0) {
+    const codes = nonCompletedPlatformProductJobItemCodes(original.id, db)
+    if (codes.length === 0) {
+      throw new Error("这个平台商品同步任务已成功完成，没有需要重新加入队列的 SPU")
+    }
+    return enqueuePlatformProductSyncJob({
+      ...original.payload,
+      spuNames: codes,
+      retryOfJobId: original.id,
+    }, input.actor ?? original.actor ?? null)
+  }
+
+  const itemCodes = original.items
+    .filter((item) => item.status !== "completed")
+    .map((item) => item.spu_code)
+    .filter((code) => code && code !== "平台商品列表" && code !== "SYNC")
+  const payloadCodes = detailSyncCodes(original.payload)
+  const codes = itemCodes.length ? itemCodes : payloadCodes
+  if (codes.length > 0) {
+    return enqueuePlatformProductSyncJob({
+      ...original.payload,
+      spuNames: codes,
+      retryOfJobId: original.id,
+    }, input.actor ?? original.actor ?? null)
+  }
+  if (original.status === "completed" && original.failed_count <= 0) {
+    throw new Error("这个平台商品同步任务已成功完成，没有需要重新加入队列的内容")
+  }
+  return enqueuePlatformProductSyncJob({
+    ...original.payload,
+    retryOfJobId: original.id,
+  }, input.actor ?? original.actor ?? null)
 }
 
 function platformProductJobMatchesPayload(row: JsonRecord | undefined) {

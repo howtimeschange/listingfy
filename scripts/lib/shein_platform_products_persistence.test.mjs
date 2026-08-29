@@ -277,7 +277,7 @@ test("SHEIN platform product export streams workbook files with progress heartbe
   assert.match(jobService, /addRow\(columns\.map[\s\S]*\.commit\(\)/);
   assert.match(jobService, /await workbook\.commit\(\)/);
   assert.match(jobService, /writePlatformProductWorkbookFromPages[\s\S]*await savePlatformProductJob\(job\)/);
-  assert.match(jobService, /processExportJob[\s\S]*await writePlatformProductWorkbookFromPages\(filePath, job\)/);
+  assert.match(jobService, /processExportJob[\s\S]*withBackgroundTaskSlot\(\s*"shein_platform_product_export"[\s\S]*writePlatformProductWorkbookFromPages\(filePath, job\)/);
   assert.doesNotMatch(jobService, /rows\.push\(\.\.\.response\.items/);
   assert.doesNotMatch(jobService, /readFile\(job\.filePath\)/);
   assert.match(route, /createReadStream/);

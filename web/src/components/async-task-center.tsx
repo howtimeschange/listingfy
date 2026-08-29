@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
-import { Activity, AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, Clock, Download, Trash2 } from "lucide-react"
+import { Activity, AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, CircleStop, Clock, Download, Loader2, RotateCcw, Trash2 } from "lucide-react"
 import { api } from "@/lib/api-client"
 import {
   AsyncTaskContext,
@@ -24,11 +24,20 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { ConfirmDialog } from "@/components/confirm-dialog"
 
 const TASK_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const TASK_CLEANUP_INTERVAL_MS = 10 * 60 * 1000
 const TASK_PAGE_SIZE = 5
 const MAX_STORED_TASKS = 100
+
+type AsyncTaskActionResponse = {
+  ok?: boolean
+  deleted?: boolean
+  missing?: boolean
+  message?: string
+  job?: AsyncTaskJob | null
+}
 
 function readStoredTasks(userId: number | null) {
   if (typeof window === "undefined") return []
@@ -101,6 +110,37 @@ function legacyRunningItem(items: AsyncTaskJob["items"]) {
 
 function runningTaskItem(task: AsyncTaskRecord) {
   return task.job?.current_item ?? legacyRunningItem(task.job?.items)
+}
+
+function asyncTaskEndpoint(type: AsyncTaskRecord["type"], jobId: string) {
+  switch (type) {
+    case "product_archive_hangtag_washlabel_ocr":
+      return `/product-archive-drafts/hangtag-washlabel-ocr/jobs/${jobId}`
+    case "product_archive_ai_fill":
+      return `/product-archive-drafts/ai-fill-jobs/${jobId}`
+    case "product_archive_publish_precheck":
+      return `/product-archive-drafts/precheck-jobs/${jobId}`
+    case "product_archive_publish":
+      return `/product-archive-drafts/publish-jobs/${jobId}`
+    case "listing_launch_plan_import":
+      return `/listing-launch-plans/import-jobs/${jobId}`
+    case "category_mapping_ai_suggestions":
+      return `/category-mapping/ai-suggestions/jobs/${jobId}`
+    case "shein_platform_product_sync":
+      return `/shein-platform-products/sync-jobs/${jobId}`
+    case "shein_platform_product_export":
+      return `/shein-platform-products/export-jobs/${jobId}`
+    default:
+      return `/product-archive-drafts/batch-jobs/${jobId}`
+  }
+}
+
+function canRequeueTask(task: AsyncTaskRecord) {
+  const job = task.job
+  if (job?.status !== "completed") return false
+  if (task.type === "listing_launch_plan_import") return false
+  if (job.outcome === "stopped" || job.outcome === "failed" || job.outcome === "partial_failure") return true
+  return (job.failed_count ?? 0) > 0 || (job.total_count ?? 0) > (job.completed_count ?? 0)
 }
 
 function numberResultValue(value: unknown) {
@@ -376,6 +416,19 @@ export function AsyncTaskProvider({ children }: { children: ReactNode }) {
     setOpen(false)
   }, [])
 
+  const removeTask = useCallback((taskId: string) => {
+    setTasks((current) => current.filter((task) => task.id !== taskId))
+  }, [])
+
+  const updateTask = useCallback((
+    taskId: string,
+    patch: Partial<Pick<AsyncTaskRecord, "job" | "lastError">>,
+  ) => {
+    setTasks((current) => current.map((task) => (
+      task.id === taskId ? { ...task, ...patch } : task
+    )))
+  }, [])
+
   const value = useMemo<AsyncTaskContextValue>(() => ({
     tasks,
     activeTaskCount: currentActiveTaskCount,
@@ -384,13 +437,14 @@ export function AsyncTaskProvider({ children }: { children: ReactNode }) {
     getTaskByJobId: (jobId) => tasks.find((task) => task.id === jobId) ?? null,
     openTaskCenter,
     closeTaskCenter,
-    removeTask: (taskId) => setTasks((current) => current.filter((task) => task.id !== taskId)),
-  }), [addTask, closeTaskCenter, currentActiveTaskCount, openTaskCenter, tasks, unreadCompletedCount])
+    removeTask,
+    updateTask,
+  }), [addTask, closeTaskCenter, currentActiveTaskCount, openTaskCenter, removeTask, tasks, unreadCompletedCount, updateTask])
 
   return (
     <AsyncTaskContext.Provider value={value}>
       {children}
-      <AsyncTaskDrawer open={open} onOpenChange={setOpen} tasks={tasks} onRemoveTask={value.removeTask} />
+      <AsyncTaskDrawer open={open} onOpenChange={setOpen} tasks={tasks} onAddTask={addTask} onRemoveTask={removeTask} onUpdateTask={updateTask} />
     </AsyncTaskContext.Provider>
   )
 }
@@ -423,17 +477,85 @@ function AsyncTaskDrawer({
   open,
   onOpenChange,
   tasks,
+  onAddTask,
   onRemoveTask,
+  onUpdateTask,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   tasks: AsyncTaskRecord[]
+  onAddTask: (input: AddTaskInput) => void
   onRemoveTask: (taskId: string) => void
+  onUpdateTask: (taskId: string, patch: Partial<Pick<AsyncTaskRecord, "job" | "lastError">>) => void
 }) {
   const [pageIndex, setPageIndex] = useState(0)
+  const [busyTaskId, setBusyTaskId] = useState<string | null>(null)
   const totalPages = Math.max(1, Math.ceil(tasks.length / TASK_PAGE_SIZE))
   const visiblePageIndex = Math.min(pageIndex, totalPages - 1)
   const currentPageTasks = tasks.slice(visiblePageIndex * TASK_PAGE_SIZE, visiblePageIndex * TASK_PAGE_SIZE + TASK_PAGE_SIZE)
+
+  const stopTask = useCallback(async (task: AsyncTaskRecord) => {
+    setBusyTaskId(task.id)
+    try {
+      const result = await api.post<AsyncTaskActionResponse>(`/system/async-tasks/${task.type}/${encodeURIComponent(task.id)}/stop`, {})
+      onUpdateTask(task.id, {
+        job: result.job ?? task.job ?? null,
+        lastError: null,
+      })
+    } catch (error) {
+      onUpdateTask(task.id, {
+        lastError: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      setBusyTaskId((current) => (current === task.id ? null : current))
+    }
+  }, [onUpdateTask])
+
+  const requeueTask = useCallback(async (task: AsyncTaskRecord) => {
+    setBusyTaskId(task.id)
+    try {
+      const result = await api.post<AsyncTaskActionResponse>(`/system/async-tasks/${task.type}/${encodeURIComponent(task.id)}/requeue`, {})
+      if (!result.job) throw new Error(result.message || "重新加入队列失败")
+      onAddTask({
+        job: result.job,
+        type: task.type,
+        title: `${task.title}（重新加入队列）`,
+        description: "从原任务重新加入未完成项目，已成功的不会重复执行",
+        endpoint: asyncTaskEndpoint(task.type, result.job.id),
+      })
+      onUpdateTask(task.id, { lastError: null })
+      setPageIndex(0)
+    } catch (error) {
+      onUpdateTask(task.id, {
+        lastError: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      setBusyTaskId((current) => (current === task.id ? null : current))
+    }
+  }, [onAddTask, onUpdateTask])
+
+  const deleteTask = useCallback(async (task: AsyncTaskRecord) => {
+    setBusyTaskId(task.id)
+    try {
+      if (task.job?.status === "completed") {
+        await api.delete<AsyncTaskActionResponse>(`/system/async-tasks/${task.type}/${encodeURIComponent(task.id)}`)
+      } else {
+        const result = await api.post<AsyncTaskActionResponse>(`/system/async-tasks/${task.type}/${encodeURIComponent(task.id)}/stop`, {})
+        if (result.job) onUpdateTask(task.id, { job: result.job, lastError: null })
+      }
+      onRemoveTask(task.id)
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        onRemoveTask(task.id)
+        return
+      }
+      onUpdateTask(task.id, {
+        lastError: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      setBusyTaskId((current) => (current === task.id ? null : current))
+    }
+  }, [onRemoveTask, onUpdateTask])
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -461,6 +583,8 @@ function AsyncTaskDrawer({
               const precheckItems = precheckTaskItems(task)
               const publishSummary = publishTaskSummary(task)
               const publishItems = publishTaskItems(task)
+              const busy = busyTaskId === task.id
+              const canRequeue = canRequeueTask(task)
               return (
                 <section key={task.id} className="rounded-lg border bg-card p-3">
                   <div className="flex items-start justify-between gap-3">
@@ -480,9 +604,76 @@ function AsyncTaskDrawer({
                         </p>
                       ) : null}
                     </div>
-                    <Button variant="ghost" size="icon" className="size-8" onClick={() => onRemoveTask(task.id)}>
-                      <Trash2 className="size-4" />
-                    </Button>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {canRequeue ? (
+                        <ConfirmDialog
+                          title="重新加入队列？"
+                          description="会从未完成项重新跑，已成功的不会重复执行；原任务记录会保留，方便后续排查。"
+                          confirmLabel="重新加入队列"
+                          cancelLabel="取消"
+                          onConfirm={() => { void requeueTask(task) }}
+                          trigger={(
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="size-8"
+                              disabled={busy}
+                              aria-label="重新加入队列"
+                              title="重新加入队列"
+                            >
+                              {busy ? <Loader2 className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
+                            </Button>
+                          )}
+                        />
+                      ) : null}
+                      {!done ? (
+                        <ConfirmDialog
+                          title="暂停这个后台任务？"
+                          description="确认后会请求后端停止任务，已经开始的当前步骤可能会先完成；未处理和等待重试的项目会标记为已停止，不会继续排队执行。"
+                          confirmLabel="暂停任务"
+                          cancelLabel="再等等"
+                          variant="destructive"
+                          onConfirm={() => { void stopTask(task) }}
+                          trigger={(
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="size-8"
+                              disabled={busy}
+                              aria-label="暂停任务"
+                              title="暂停任务"
+                            >
+                              {busy ? <Loader2 className="size-4 animate-spin" /> : <CircleStop className="size-4" />}
+                            </Button>
+                          )}
+                        />
+                      ) : null}
+                      <ConfirmDialog
+                        title={done ? "删除这条任务记录？" : "停止并移除这条任务？"}
+                        description={done
+                          ? "确认后会删除后端已完成的任务记录，并从当前任务中心移除卡片。下载文件或历史排查资料如果还需要，请先确认已经处理完。"
+                          : "这个任务仍在执行中。确认后会先请求后端停止任务，再从当前任务中心移除卡片；系统会保留停止记录，便于稍后排查。"}
+                        confirmLabel={done ? "删除记录" : "停止并移除"}
+                        cancelLabel="取消"
+                        variant="destructive"
+                        onConfirm={() => { void deleteTask(task) }}
+                        trigger={(
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="size-8"
+                            disabled={busy}
+                            aria-label={done ? "删除任务记录" : "停止并移除任务"}
+                            title={done ? "删除任务记录" : "停止并移除任务"}
+                          >
+                            {busy ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+                          </Button>
+                        )}
+                      />
+                    </div>
                   </div>
                   <div className="mt-3">
                     <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">

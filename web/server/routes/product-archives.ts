@@ -25,6 +25,7 @@ import {
   assertAllowedProductArchiveQuery,
   assertSafeProductArchiveCode,
 } from "../lib/product-archive-security"
+import { withBackgroundTaskSlot } from "../lib/background-task-limiter"
 import { syncMdmProduct } from "../services/product-archive-sync"
 
 const productArchives = new Hono()
@@ -168,6 +169,8 @@ async function syncDeepdrawProduct(
 
 const syncQueue = createProductArchiveSyncQueue({
   autoRecover: false,
+  jobSliceSize: process.env.LISTINGIFY_PRODUCT_ARCHIVE_SYNC_JOB_SLICE_SIZE ?? 5,
+  runWithSlot: (_context: unknown, run: () => Promise<unknown>) => withBackgroundTaskSlot("product_archive_sync", run),
   maxAttempts: 3,
   retryDelayMs: 3000,
   store: createPostgresProductArchiveSyncJobStore({

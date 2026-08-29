@@ -77,6 +77,7 @@ export interface AsyncTaskContextValue {
   openTaskCenter: () => void
   closeTaskCenter: () => void
   removeTask: (taskId: string) => void
+  updateTask: (taskId: string, patch: Partial<Pick<AsyncTaskRecord, "job" | "lastError">>) => void
 }
 
 export const AsyncTaskContext = createContext<AsyncTaskContextValue | null>(null)

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { rm } from "node:fs/promises"
 import { getDb } from "../db"
 import { writeOperationLog } from "../lib/audit"
+import { withBackgroundTaskSlot } from "../lib/background-task-limiter"
 import { importProductArchiveSourceRows, refreshProductArchiveDraftsFromSourceBatchInChunks } from "./product-archive-drafts"
 import { importListingLaunchPlanSheetsInChunks } from "./listing-launch-plans"
 import { readSpreadsheetSheetsFromFile } from "../../../scripts/lib/listing_launch_plan_importer.mjs"
@@ -96,6 +97,10 @@ function parseJsonArray(value: unknown): unknown[] {
 
 function jsonText(value: unknown) {
   return JSON.stringify(value ?? {})
+}
+
+function isJobClaimLostError(error: unknown) {
+  return error instanceof Error && error.message.includes("上市计划导入任务 claim 已失效")
 }
 
 function jobStatus(value: unknown): ImportJobStatus {
@@ -326,7 +331,10 @@ async function processImportJob(job: ImportJob) {
   try {
     setStageRunning(job, 0)
     saveListingLaunchPlanImportJob(job)
-    const sheets = await readSpreadsheetSheetsFromFile(job.filePath, { fileName: job.fileName })
+    const sheets = await withBackgroundTaskSlot(
+      "listing_launch_plan_import",
+      () => readSpreadsheetSheetsFromFile(job.filePath, { fileName: job.fileName }),
+    )
     const inputRowCount = sheets.reduce((sum, sheet) => sum + sheet.rows.length, 0)
     setStageCompleted(job, 0, { sheetCount: sheets.length, inputRowCount })
     saveListingLaunchPlanImportJob(job)
@@ -337,12 +345,14 @@ async function processImportJob(job: ImportJob) {
     const sourceBatchIds: number[] = []
     let sourceInsertedRowCount = 0
     for (const sheet of sheets) {
-      const sourceImport = importProductArchiveSourceRows(getDb(), {
-        sourceType: "launch_plan",
-        fileName: job.fileName,
-        sheetName: sheet.name,
-        rows: sheet.rows,
-      })
+      const sourceImport = await withBackgroundTaskSlot("listing_launch_plan_import", async () => (
+        importProductArchiveSourceRows(getDb(), {
+          sourceType: "launch_plan",
+          fileName: job.fileName,
+          sheetName: sheet.name,
+          rows: sheet.rows,
+        })
+      ))
       sourceBatchIds.push(Number(sourceImport.batch.id))
       sourceInsertedRowCount += Number(sourceImport.insertedRowCount ?? 0)
     }
@@ -352,22 +362,25 @@ async function processImportJob(job: ImportJob) {
 
     setStageRunning(job, 2)
     saveListingLaunchPlanImportJob(job)
-    const listingPlanImport = await importListingLaunchPlanSheetsInChunks(getDb(), {
-      fileName: job.fileName,
-      fileSizeBytes: job.fileSizeBytes,
-      sheets,
-      sourceBatchIds,
-      createdBy: job.actor?.id ?? null,
-    }, {
-      chunkSize: 50,
-      onProgress: ({ importId, insertedRowCount, totalRowCount }) => {
-        const item = job.items[2]
-        if (item) {
-          item.result = { importId, insertedRowCount, totalRowCount }
-        }
-        saveListingLaunchPlanImportJob(job)
-      },
-    })
+    const listingPlanImport = await withBackgroundTaskSlot(
+      "listing_launch_plan_import",
+      () => importListingLaunchPlanSheetsInChunks(getDb(), {
+        fileName: job.fileName,
+        fileSizeBytes: job.fileSizeBytes,
+        sheets,
+        sourceBatchIds,
+        createdBy: job.actor?.id ?? null,
+      }, {
+        chunkSize: 50,
+        onProgress: ({ importId, insertedRowCount, totalRowCount }) => {
+          const item = job.items[2]
+          if (item) {
+            item.result = { importId, insertedRowCount, totalRowCount }
+          }
+          saveListingLaunchPlanImportJob(job)
+        },
+      }),
+    )
     setStageCompleted(job, 2, {
       importId: listingPlanImport.import?.id ?? null,
       insertedRowCount: listingPlanImport.insertedRowCount,
@@ -380,23 +393,26 @@ async function processImportJob(job: ImportJob) {
     const refreshSummaries = []
     for (let index = 0; index < sourceBatchIds.length; index += 1) {
       const sourceBatchId = sourceBatchIds[index]
-      const summary = await refreshProductArchiveDraftsFromSourceBatchInChunks(getDb(), {
-        sourceBatchId,
-        sourceType: "launch_plan",
-      }, {
-        chunkSize: 5,
-        onProgress: (progress) => {
-          const item = job.items[3]
-          if (item) {
-            item.result = {
-              sourceBatchIndex: index + 1,
-              sourceBatchCount: sourceBatchIds.length,
-              ...progress,
+      const summary = await withBackgroundTaskSlot(
+        "listing_launch_plan_import",
+        () => refreshProductArchiveDraftsFromSourceBatchInChunks(getDb(), {
+          sourceBatchId,
+          sourceType: "launch_plan",
+        }, {
+          chunkSize: 5,
+          onProgress: (progress) => {
+            const item = job.items[3]
+            if (item) {
+              item.result = {
+                sourceBatchIndex: index + 1,
+                sourceBatchCount: sourceBatchIds.length,
+                ...progress,
+              }
             }
-          }
-          saveListingLaunchPlanImportJob(job)
-        },
-      })
+            saveListingLaunchPlanImportJob(job)
+          },
+        }),
+      )
       refreshSummaries.push(summary)
     }
     const autoAppliedTradeCount = refreshSummaries.reduce((sum, item) => sum + Number(item.autoAppliedTradeCount ?? 0), 0)
@@ -439,7 +455,15 @@ async function processLoop() {
       try {
         await processImportJob(job)
       } catch (error) {
-        await markJobFailed(job, error)
+        if (isJobClaimLostError(error)) {
+          if (job.filePath) await rm(job.filePath, { force: true })
+          continue
+        }
+        try {
+          await markJobFailed(job, error)
+        } catch (failureError) {
+          if (!isJobClaimLostError(failureError)) throw failureError
+        }
         if (job.filePath) await rm(job.filePath, { force: true })
       }
       await wait()
