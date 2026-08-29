@@ -112,6 +112,13 @@ function runningTaskItem(task: AsyncTaskRecord) {
   return task.job?.current_item ?? legacyRunningItem(task.job?.items)
 }
 
+function runningTaskItems(task: AsyncTaskRecord) {
+  const currentItems = task.job?.current_items?.filter((item) => item.status === "running" || item.status === "retrying") ?? []
+  if (currentItems.length > 0) return currentItems
+  const item = runningTaskItem(task)
+  return item ? [item] : []
+}
+
 function asyncTaskEndpoint(type: AsyncTaskRecord["type"], jobId: string) {
   switch (type) {
     case "product_archive_hangtag_washlabel_ocr":
@@ -575,7 +582,9 @@ function AsyncTaskDrawer({
             ) : currentPageTasks.map((task) => {
               const job = task.job
               const failures = failedItems(task)
-              const runningItem = runningTaskItem(task)
+              const runningItems = runningTaskItems(task)
+              const runningItem = runningItems[0] ?? null
+              const runningCount = Math.max(numberResultValue(job?.running_count), runningItems.length)
               const done = job?.status === "completed"
               const ocrSummary = hangtagWashlabelOcrTaskSummary(task)
               const aiFillSummary = aiFillTaskSummary(task)
@@ -598,8 +607,10 @@ function AsyncTaskDrawer({
                       ) : null}
                       <p className="mt-1 text-[11px] text-muted-foreground">{formatDateTime(task.createdAt)}</p>
                       {!done && runningItem ? (
-                        <p className="mt-1 text-[11px] text-muted-foreground">
-                          当前：{runningItem.spu_code}
+                        <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">
+                          {runningCount > 1
+                            ? `当前并发 ${formatNumber(runningCount)} 个：${runningItems.slice(0, 3).map((item) => item.spu_code).join("、")}${runningCount > runningItems.length ? " 等" : ""}`
+                            : `当前：${runningItem.spu_code}`}
                           {runningItem.status === "retrying" ? `，等待重试 ${formatDateTime(runningItem.next_retry_at)}` : ""}
                         </p>
                       ) : null}

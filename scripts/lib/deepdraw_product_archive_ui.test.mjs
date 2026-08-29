@@ -475,6 +475,8 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(asyncTaskCenter, /hangtagWashlabelOcrTaskSummary/);
   assert.match(asyncTaskCenter, /aiFillTaskSummary/);
   assert.match(asyncTaskCenter, /product_archive_ai_fill/);
+  assert.match(asyncTaskCenter, /current_items/);
+  assert.match(asyncTaskCenter, /当前并发/);
   assert.match(asyncTaskCenter, /precheckTaskSummary/);
   assert.match(asyncTaskCenter, /product_archive_publish_precheck/);
   assert.match(asyncTaskCenter, /precheckTaskItems/);

@@ -25,7 +25,7 @@ export type BackgroundTaskOptions = {
 }
 
 const DEFAULT_MAX_ACTIVE = 2
-const MAX_ACTIVE_CAP = 8
+const MAX_ACTIVE_CAP = 16
 const DEFAULT_TASK_TIMEOUT_MS = 15 * 60 * 1000
 const MAX_TASK_TIMEOUT_MS = 24 * 60 * 60 * 1000
 

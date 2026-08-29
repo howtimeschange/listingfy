@@ -78,7 +78,7 @@ import { importListingLaunchPlanSheetsInChunks } from "../services/listing-launc
 import { readSpreadsheetSheetsFromFileInWorker } from "../services/spreadsheet-worker"
 import { readPlmSizeChartWorkbook } from "../../../scripts/lib/product_archive_size_chart.mjs"
 import { getDefaultAiScenarioRouter } from "../../../scripts/lib/ai_routing_context.mjs"
-import { withBackgroundTaskSlot } from "../lib/background-task-limiter"
+import { backgroundTaskMaxActive, withBackgroundTaskSlot } from "../lib/background-task-limiter"
 
 const productArchiveDrafts = new Hono()
 const PROJECT_ROOT =
@@ -356,6 +356,8 @@ type ProductArchiveAiFillJob = {
   options: {
     actor: AuditActor | null
     ipAddress: string | null
+    queueKey?: string | null
+    concurrency?: number | null
   }
   items: ProductArchiveAiFillJobItem[]
   result: Record<string, unknown> | null
@@ -454,6 +456,28 @@ function productArchiveJobSliceSize(envName: string, fallback = 5) {
   return Math.max(1, Math.min(100, Math.floor(number)))
 }
 
+const PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY_CAP = 10
+
+function productArchiveAiFillUserConcurrency() {
+  const number = Number(process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY ?? 2)
+  if (!Number.isFinite(number)) return 2
+  return Math.max(1, Math.min(PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY_CAP, Math.floor(number)))
+}
+
+function productArchiveAiFillUserMaxConcurrency() {
+  const number = Number(process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY ?? PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY_CAP)
+  const fallback = Math.min(backgroundTaskMaxActive(), PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY_CAP)
+  if (!Number.isFinite(number)) return fallback
+  return Math.max(1, Math.min(backgroundTaskMaxActive(), PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY_CAP, Math.floor(number)))
+}
+
+function productArchiveAiFillQueueKey(actor: AuditActor | null | undefined) {
+  const id = Number(actor?.id)
+  if (Number.isFinite(id) && id > 0) return `user:${Math.floor(id)}`
+  const username = stringValue(actor?.username)
+  return username ? `username:${username}` : "anonymous"
+}
+
 function hasOpenQueueItems(items: Array<{ status: string }>) {
   return items.some((item) => item.status !== "completed" && item.status !== "failed")
 }
@@ -476,7 +500,7 @@ async function maybeYieldProductArchiveJob<T extends { status: "queued" | "runni
 }
 
 function cloneProductArchiveAiFillJob(job: ProductArchiveAiFillJob) {
-  const currentItem = job.items.find((item) => item.status === "running") ?? null
+  const runningItems = job.items.filter((item) => item.status === "running")
   return {
     ...job,
     options: {
@@ -484,26 +508,50 @@ function cloneProductArchiveAiFillJob(job: ProductArchiveAiFillJob) {
       actor: job.options.actor ? { ...job.options.actor } : null,
     },
     items: job.items.map((item) => ({ ...item, result: item.result ? { ...item.result } : null })),
-    current_item: currentItem ? { ...currentItem } : null,
+    current_item: runningItems[0] ? { ...runningItems[0] } : null,
+    current_items: runningItems.map((item) => ({ ...item })),
     failed_items: job.items.filter((item) => item.status === "failed").map((item) => ({ ...item })),
     queued_count: job.items.filter((item) => item.status === "queued").length,
-    running_count: job.items.filter((item) => item.status === "running").length,
+    running_count: runningItems.length,
   }
 }
 
-function createProductArchiveAiFillQueue({
+type ProductArchiveAiFillQueueState = {
+  pending: ProductArchiveAiFillJob[]
+  current: ProductArchiveAiFillJob | null
+  running: boolean
+  processScheduled: boolean
+}
+
+type ProductArchiveAiFillRunner = (
+  db: ReturnType<typeof getDb>,
+  draftId: number,
+  options: { signal?: AbortSignal },
+) => ReturnType<typeof fillProductArchiveDraftFieldsWithAi>
+
+type ProductArchiveAiFillSlotRunner = <T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  options?: { signal?: AbortSignal },
+) => Promise<T>
+
+export function createProductArchiveAiFillQueue({
   store,
   onInternalError = (error: unknown) => console.error("Product archive AI fill queue internal error", error),
+  getDatabase = getDb,
+  processDraftFieldsWithAi = (db, draftId, options) => fillProductArchiveDraftFieldsWithAi(db, draftId, options),
+  runWithSlot = (run, options) => withBackgroundTaskSlot("product_archive_ai_fill", run, options),
   now = () => Date.now(),
 }: {
   store: ReturnType<typeof createPostgresProductArchiveSyncJobStore>
   onInternalError?: (error: unknown, context?: Record<string, unknown>) => void
+  getDatabase?: () => ReturnType<typeof getDb>
+  processDraftFieldsWithAi?: ProductArchiveAiFillRunner
+  runWithSlot?: ProductArchiveAiFillSlotRunner
   now?: () => number
 }) {
   const jobs = new Map<string, ProductArchiveAiFillJob>()
-  const pending: ProductArchiveAiFillJob[] = []
-  let running = false
-  let processScheduled = false
+  const queues = new Map<string, ProductArchiveAiFillQueueState>()
+  let recoveryStarted = false
 
   function reportInternalError(error: unknown, context: Record<string, unknown>) {
     try {
@@ -513,7 +561,87 @@ function createProductArchiveAiFillQueue({
     }
   }
 
+  function queueForKey(queueKey: string) {
+    let queue = queues.get(queueKey)
+    if (!queue) {
+      queue = {
+        pending: [],
+        current: null,
+        running: false,
+        processScheduled: false,
+      }
+      queues.set(queueKey, queue)
+    }
+    return queue
+  }
+
+  function normalizeJobRuntimeOptions(job: ProductArchiveAiFillJob) {
+    const userMaxConcurrency = productArchiveAiFillUserMaxConcurrency()
+    const requestedConcurrency = Number(job.options?.concurrency)
+    job.options = {
+      actor: job.options?.actor ?? null,
+      ipAddress: job.options?.ipAddress ?? null,
+      queueKey: stringValue(job.options?.queueKey) || productArchiveAiFillQueueKey(job.options?.actor),
+      concurrency: requestedConcurrency > 0
+        ? Math.max(1, Math.min(userMaxConcurrency, Math.floor(requestedConcurrency)))
+        : Math.min(userMaxConcurrency, productArchiveAiFillUserConcurrency()),
+    }
+    return job.options
+  }
+
+  function openItemCount(job: ProductArchiveAiFillJob | null | undefined) {
+    return job?.items.filter((item) => item.status !== "completed" && item.status !== "failed").length ?? 0
+  }
+
+  function queueDemand(queue: ProductArchiveAiFillQueueState) {
+    return openItemCount(queue.current)
+      + queue.pending.reduce((sum, pendingJob) => sum + openItemCount(pendingJob), 0)
+  }
+
+  function dynamicConcurrencyShares() {
+    const maxActive = backgroundTaskMaxActive()
+    const userMaxConcurrency = productArchiveAiFillUserMaxConcurrency()
+    const activeQueues = Array.from(queues.entries())
+      .map(([queueKey, queue]) => ({
+        queueKey,
+        demand: queueDemand(queue),
+        share: 0,
+      }))
+      .filter((queue) => queue.demand > 0)
+    const shares = new Map<string, number>()
+    if (activeQueues.length === 0) return shares
+
+    let remaining = maxActive
+    while (remaining > 0) {
+      let assigned = false
+      for (const queue of activeQueues) {
+        if (remaining <= 0) break
+        if (queue.share >= queue.demand || queue.share >= userMaxConcurrency) continue
+        queue.share += 1
+        remaining -= 1
+        assigned = true
+      }
+      if (!assigned) break
+    }
+    for (const queue of activeQueues) {
+      shares.set(queue.queueKey, queue.share)
+    }
+    return shares
+  }
+
+  function dynamicConcurrencyForQueue(queueKey: string, job: ProductArchiveAiFillJob) {
+    const userMaxConcurrency = productArchiveAiFillUserMaxConcurrency()
+    const configuredConcurrency = Math.max(
+      1,
+      Math.min(userMaxConcurrency, Math.floor(Number(job.options?.concurrency) || productArchiveAiFillUserConcurrency())),
+    )
+    const shares = dynamicConcurrencyShares()
+    const dynamicShare = shares.get(queueKey) ?? configuredConcurrency
+    return Math.max(1, Math.min(openItemCount(job), dynamicShare))
+  }
+
   function persist(job: ProductArchiveAiFillJob) {
+    normalizeJobRuntimeOptions(job)
     try {
       if (store.save(cloneProductArchiveAiFillJob(job)) === false) {
         throw new ProductArchiveSyncLeaseError()
@@ -550,14 +678,14 @@ function createProductArchiveAiFillQueue({
     persist(job)
   }
 
-  async function processItem(job: ProductArchiveAiFillJob, item: ProductArchiveAiFillJobItem) {
-    return withBackgroundTaskSlot("product_archive_ai_fill", async (signal) => {
+  async function processItem(job: ProductArchiveAiFillJob, item: ProductArchiveAiFillJobItem, signal?: AbortSignal) {
+    return runWithSlot(async (signal) => {
       item.status = "running"
       item.started_at ??= new Date(now()).toISOString()
       persist(job)
 
-      const db = getDb()
-      const result = await fillProductArchiveDraftFieldsWithAi(db, item.draft_id, { signal })
+      const db = getDatabase()
+      const result = await processDraftFieldsWithAi(db, item.draft_id, { signal })
       const detail = result.detail as { draft?: Record<string, unknown> }
       const draft = detail.draft ?? {}
       const validationSummary = draft.validation_summary_json && typeof draft.validation_summary_json === "object"
@@ -593,67 +721,99 @@ function createProductArchiveAiFillQueue({
         reportInternalError(error, { phase: "item_audit", jobId: job.id, draftId: item.draft_id })
       }
       setItemFinished(job, item, "completed", itemResult, null)
-    })
+    }, { signal })
   }
 
-  async function processLoop() {
-    processScheduled = false
-    if (running) return
-    running = true
+  async function processItemSafely(
+    job: ProductArchiveAiFillJob,
+    item: ProductArchiveAiFillJobItem,
+    controller: AbortController,
+  ) {
     try {
-      while (pending.length > 0) {
-        const job = pending.shift()
+      await processItem(job, item, controller.signal)
+      return { leaseLost: false as const, error: null }
+    } catch (error) {
+      const leaseError = isProductArchiveSyncLeaseError(error)
+        ? error
+        : isProductArchiveSyncLeaseError(controller.signal.reason)
+          ? controller.signal.reason
+          : null
+      if (leaseError) {
+        controller.abort(leaseError)
+        return { leaseLost: true as const, error: leaseError }
+      }
+      try {
+        setItemFinished(job, item, "failed", {
+          draftId: item.draft_id,
+          spuCode: item.spu_code,
+        }, errorMessage(error))
+        return { leaseLost: false as const, error: null }
+      } catch (finishError) {
+        const finishLeaseError = isProductArchiveSyncLeaseError(finishError) ? finishError : null
+        if (finishLeaseError) {
+          controller.abort(finishLeaseError)
+          return { leaseLost: true as const, error: finishLeaseError }
+        }
+        throw finishError
+      }
+    }
+  }
+
+  async function processJob(queueKey: string, job: ProductArchiveAiFillJob) {
+    const options = normalizeJobRuntimeOptions(job)
+    let maxConcurrency = 1
+    job.status = "running"
+    job.started_at ??= new Date(now()).toISOString()
+    persist(job)
+
+    while (hasOpenQueueItems(job.items)) {
+      const concurrency = dynamicConcurrencyForQueue(queueKey, job)
+      maxConcurrency = Math.max(maxConcurrency, concurrency)
+      const items = job.items
+        .filter((item) => item.status !== "completed" && item.status !== "failed")
+        .slice(0, concurrency)
+      if (items.length === 0) break
+      const controller = new AbortController()
+      const results = await Promise.allSettled(items.map((item) => processItemSafely(job, item, controller)))
+      for (const result of results) {
+        if (result.status === "rejected") throw result.reason
+        if (result.value.leaseLost) throw result.value.error
+      }
+      await yieldToEventLoop()
+    }
+
+    const completedItems = job.items.filter((item) => item.status === "completed")
+    job.result = {
+      processedDraftCount: completedItems.length,
+      failedDraftCount: job.items.filter((item) => item.status === "failed").length,
+      savedFieldCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.savedCount) || 0), 0),
+      warningCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.warningCount) || 0), 0),
+      concurrency: maxConcurrency,
+      configuredConcurrency: options.concurrency,
+    }
+    job.status = "completed"
+    job.outcome = job.failed_count === 0
+      ? "succeeded"
+      : job.completed_count === 0
+        ? "failed"
+        : "partial_failure"
+    job.finished_at = new Date(now()).toISOString()
+    persist(job)
+  }
+
+  async function processLoop(queueKey: string) {
+    const queue = queues.get(queueKey)
+    if (!queue) return
+    queue.processScheduled = false
+    if (queue.running) return
+    queue.running = true
+    try {
+      while (queue.pending.length > 0) {
+        const job = queue.pending.shift()
         if (!job) continue
+        queue.current = job
         try {
-          let interrupted = false
-          let processedInSlice = 0
-          let yielded = false
-          job.status = "running"
-          job.started_at ??= new Date(now()).toISOString()
-          persist(job)
-          try {
-            for (const item of job.items) {
-              if (item.status === "completed" || item.status === "failed") continue
-              try {
-                await processItem(job, item)
-              } catch (error) {
-                if (isProductArchiveSyncLeaseError(error)) {
-                  interrupted = true
-                  throw error
-                }
-                setItemFinished(job, item, "failed", {
-                  draftId: item.draft_id,
-                  spuCode: item.spu_code,
-                }, errorMessage(error))
-              }
-              processedInSlice += 1
-              try {
-                yielded = await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_JOB_SLICE_SIZE", 5)
-              } catch (error) {
-                if (isProductArchiveSyncLeaseError(error)) interrupted = true
-                throw error
-              }
-              if (yielded) break
-            }
-          } finally {
-            if (!yielded && !interrupted) {
-              const completedItems = job.items.filter((item) => item.status === "completed")
-              job.result = {
-                processedDraftCount: completedItems.length,
-                failedDraftCount: job.items.filter((item) => item.status === "failed").length,
-                savedFieldCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.savedCount) || 0), 0),
-                warningCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.warningCount) || 0), 0),
-              }
-              job.status = "completed"
-              job.outcome = job.failed_count === 0
-                ? "succeeded"
-                : job.completed_count === 0
-                  ? "failed"
-                  : "partial_failure"
-              job.finished_at = new Date(now()).toISOString()
-              persist(job)
-            }
-          }
+          await processJob(queueKey, job)
         } catch (error) {
           if (isProductArchiveSyncLeaseError(error)) {
             jobs.delete(job.id)
@@ -661,19 +821,25 @@ function createProductArchiveAiFillQueue({
             continue
           }
           throw error
+        } finally {
+          if (queue.current === job) queue.current = null
         }
       }
     } finally {
-      running = false
+      queue.running = false
+      if (queue.pending.length === 0 && !queue.processScheduled) {
+        queues.delete(queueKey)
+      }
     }
   }
 
-  function schedule() {
-    if (processScheduled) return
-    processScheduled = true
+  function schedule(queueKey: string) {
+    const queue = queueForKey(queueKey)
+    if (queue.processScheduled) return
+    queue.processScheduled = true
     scheduleProductArchiveBackgroundWorker(() => {
-      void processLoop().catch((error) => {
-        reportInternalError(error, { phase: "process_loop" })
+      void processLoop(queueKey).catch((error) => {
+        reportInternalError(error, { phase: "process_loop", queueKey })
       })
     })
   }
@@ -689,6 +855,8 @@ function createProductArchiveAiFillQueue({
   }) {
     if (targets.length === 0) throw new Error("请先选择需要 AI 填充的草稿")
     const nowText = new Date(now()).toISOString()
+    const queueKey = productArchiveAiFillQueueKey(actor)
+    const concurrency = productArchiveAiFillUserMaxConcurrency()
     const job: ProductArchiveAiFillJob = {
       id: randomUUID(),
       source: "ai_fill",
@@ -700,7 +868,7 @@ function createProductArchiveAiFillQueue({
       created_at: nowText,
       started_at: null,
       finished_at: null,
-      options: { actor, ipAddress },
+      options: { actor, ipAddress, queueKey, concurrency },
       items: targets.map((target) => ({
         draft_id: target.draftId,
         spu_code: target.spuCode,
@@ -713,17 +881,21 @@ function createProductArchiveAiFillQueue({
       result: null,
     }
     jobs.set(job.id, job)
-    pending.push(job)
+    queueForKey(queueKey).pending.push(job)
     persist(job)
-    schedule()
+    schedule(queueKey)
     return cloneProductArchiveAiFillJob(job)
   }
 
   function resume() {
+    if (recoveryStarted) return
+    recoveryStarted = true
+    const queuedKeys = new Set<string>()
     const recovered = (store.recover() as ProductArchiveAiFillJob[])
       .filter((job) => job?.source === "ai_fill")
     for (const storedJob of recovered) {
       const job = storedJob
+      const options = normalizeJobRuntimeOptions(job)
       job.status = "queued"
       job.started_at = null
       job.finished_at = null
@@ -737,11 +909,13 @@ function createProductArchiveAiFillQueue({
       }
       job.completed_count = job.items.filter((item) => item.status === "completed").length
       job.failed_count = job.items.filter((item) => item.status === "failed").length
+      job.outcome = null
       jobs.set(job.id, job)
-      pending.push(job)
+      queueForKey(options.queueKey ?? productArchiveAiFillQueueKey(options.actor)).pending.push(job)
+      queuedKeys.add(options.queueKey ?? productArchiveAiFillQueueKey(options.actor))
       persist(job)
     }
-    if (pending.length > 0) schedule()
+    for (const queueKey of queuedKeys) schedule(queueKey)
   }
 
   return {

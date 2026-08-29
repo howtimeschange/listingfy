@@ -6629,10 +6629,69 @@ function buildSourceRowsAiContext(sourceRows: JsonRecord[]) {
   })).filter((row) => Object.keys(row.row).length > 0)
 }
 
+export function productArchiveAiFillReferenceImageRole(image: JsonRecord) {
+  const payload = recordValue(image.raw_payload_json)
+  const assetKind = stringValue(payload.asset_kind || image.asset_kind).toLowerCase()
+  if (assetKind === "flat_image") return "flat_image"
+  if (assetKind === "model_image") return "model_image"
+  if (assetKind === "main_image" || assetKind === "main" || assetKind === "primary_image") return "main_image"
+
+  const text = [
+    image.original_file_name,
+    image.source_ref,
+    image.file_name,
+    payload.original_file_name,
+    payload.source_ref,
+  ].map(stringValue).join(" ")
+  if (/主图|main[_ -]?image|primary[_ -]?image/i.test(text)) return "main_image"
+  if (/平铺|平铺图|flat[_ -]?image/i.test(text)) return "flat_image"
+
+  const explicitKind = stringValue(image.kind)
+  if (explicitKind === "hangtag" || explicitKind === "washlabel") return explicitKind
+
+  const listKind = productArchiveDraftListImageKind(image)
+  if (listKind === "hangtag" || listKind === "washlabel") return listKind
+  return "reference_image"
+}
+
+function productArchiveAiFillReferenceImageRoleLabel(role: string) {
+  switch (role) {
+    case "flat_image": return "平铺图"
+    case "main_image": return "主图"
+    case "model_image": return "模特图"
+    case "hangtag": return "吊牌图"
+    case "washlabel": return "洗唛图"
+    default: return "商品参考图"
+  }
+}
+
+function productArchiveAiFillReferenceImageRank(image: JsonRecord) {
+  const role = productArchiveAiFillReferenceImageRole(image)
+  const ranks: Record<string, number> = {
+    flat_image: 0,
+    main_image: 1,
+    model_image: 2,
+    reference_image: 3,
+    hangtag: 4,
+    washlabel: 5,
+  }
+  return ranks[role] ?? 6
+}
+
+export function sortProductArchiveAiFillReferenceImages(referenceImages: JsonRecord[]) {
+  return [...referenceImages].sort((left, right) => (
+    productArchiveAiFillReferenceImageRank(left) - productArchiveAiFillReferenceImageRank(right)
+    || Number(left.sort_no ?? 0) - Number(right.sort_no ?? 0)
+    || Number(left.id ?? 0) - Number(right.id ?? 0)
+  ))
+}
+
 function buildReferenceImageAiContext(referenceImages: JsonRecord[]) {
-  return referenceImages.slice(0, 12).map((image) => ({
+  return sortProductArchiveAiFillReferenceImages(referenceImages).slice(0, 12).map((image) => ({
     id: Number(image.id),
     file_name: stringValue(image.original_file_name) || stringValue(image.file_name),
+    role: productArchiveAiFillReferenceImageRole(image),
+    asset_kind: stringValue(recordValue(image.raw_payload_json).asset_kind || image.asset_kind) || undefined,
     source_type: stringValue(image.source_type),
     source_ref: stringValue(image.source_ref) || undefined,
     width: numberValue(image.width) || undefined,
@@ -6654,13 +6713,14 @@ function productArchiveDraftImageDataUrl(image: JsonRecord) {
 
 function buildDeepdrawAiFillMessages(prompt: string, referenceImages: JsonRecord[] = []) {
   const imageParts: JsonRecord[] = []
-  for (const image of referenceImages.slice(0, AI_FILL_REFERENCE_IMAGE_LIMIT)) {
+  for (const image of sortProductArchiveAiFillReferenceImages(referenceImages).slice(0, AI_FILL_REFERENCE_IMAGE_LIMIT)) {
     const dataUrl = productArchiveDraftImageDataUrl(image)
     if (!dataUrl) continue
     const imageName = stringValue(image.original_file_name) || stringValue(image.file_name) || `参考图${image.id}`
+    const roleLabel = productArchiveAiFillReferenceImageRoleLabel(productArchiveAiFillReferenceImageRole(image))
     imageParts.push({
       type: "text",
-      text: `SPU 参考图：${imageName}。用于判断款式、版型、面料观感、颜色和细节元素；仍然只能在有明确视觉证据时填写。`,
+      text: `SPU 参考图（${roleLabel}）：${imageName}。用于判断款式、版型、面料观感、颜色和细节元素；仍然只能在有明确视觉证据时填写。`,
     })
     imageParts.push({
       type: "image_url",

@@ -63,6 +63,17 @@ test("background limiter removes an aborted waiter without consuming a slot", as
   }
 });
 
+test("background limiter allows tested AI-fill isolation capacity up to the configured cap", () => {
+  const previousMax = process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
+  process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = "32";
+  try {
+    assert.equal(backgroundTaskLimiterSnapshot().maxActive, 16);
+  } finally {
+    if (previousMax == null) delete process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
+    else process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = previousMax;
+  }
+});
+
 test("background limiter releases an active slot when the caller cancels hung work", async () => {
   const controller = new AbortController();
   let markStarted;

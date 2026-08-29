@@ -9,6 +9,7 @@ import {
   classifyProductArchiveOcrFile,
   extractHangtagWashlabelFieldsFromOcrText,
   extractStyleCodesFromText,
+  clearProductArchiveOcrRuntimeCache,
   normalizeScmChineseCompositionText,
   productArchiveOcrFileType,
   readScmHangtagWashlabelSupplementWorkbook,
@@ -358,6 +359,43 @@ test("OCR file recognizer falls back to multimodal vision when OCR extracts no f
   }
 });
 
+test("OCR vision router accepts a structured empty extraction as a valid no-result response", async () => {
+  const workDir = await mkdtemp(path.join(os.tmpdir(), "listingify-ocr-vision-empty-"));
+  try {
+    const filePath = path.join(workDir, "208426107229平铺图.jpg");
+    await writeFile(filePath, await simpleJpegBuffer());
+    let routeCalls = 0;
+    const result = await recognizeProductArchiveOcrFile(
+      { filePath, fileName: "208426107229平铺图.jpg", fileType: "image" },
+      {
+        provider: async () => ({ text: "%%%@ OCR ???", providerKind: "tesseract_js" }),
+        preprocessWashlabel: false,
+        ocrQualityGate: false,
+        aiRouter: {
+          callJson: async (input) => {
+            routeCalls += 1;
+            assert.equal(input.scenario, "product_archive_ocr_vision");
+            const json = { raw_text: "", fields: [] };
+            assert.equal(input.validate(json), true);
+            return {
+              json,
+              provider: { key: "semir_overseas_openai", model: "gemini-3.5-flash" },
+              routing: { mode: "guarded" },
+            };
+          },
+        },
+      },
+    );
+
+    assert.equal(routeCalls, 1);
+    assert.deepEqual(result.providerKinds, ["tesseract_js", "ai_vision"]);
+    assert.match(result.warnings.join("\n"), /多模态兜底未提取到可写入/);
+    assert.doesNotMatch(result.warnings.join("\n"), /多模态兜底失败/);
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
 test("washlabel OCR uses vision when fill-weight evidence was left unstructured", async () => {
   const workDir = await mkdtemp(path.join(os.tmpdir(), "listingify-ocr-washlabel-incomplete-"));
   try {
@@ -675,6 +713,49 @@ test("OCR batch recognizer stops before starting files when the AI fill task is 
     /AI fill task timed out/,
   );
   assert.equal(providerCalls, 0);
+});
+
+test("OCR batch recognizer bounds file concurrency and reuses identical in-flight work", async () => {
+  clearProductArchiveOcrRuntimeCache();
+  const workDir = await mkdtemp(path.join(os.tmpdir(), "listingify-ocr-cache-concurrency-"));
+  try {
+    const filePath = path.join(workDir, "202426103105吊牌.jpg");
+    await writeFile(filePath, await simpleJpegBuffer());
+    let active = 0;
+    let maxActive = 0;
+    let providerCalls = 0;
+    const result = await recognizeProductArchiveOcrFiles(
+      [
+        { filePath, fileName: "202426103105吊牌.jpg", fileType: "image" },
+        { filePath, fileName: "202426103105吊牌.jpg", fileType: "image" },
+        { filePath: "/tmp/202426103106吊牌.jpg", fileName: "202426103106吊牌.jpg", fileType: "image" },
+        { filePath: "/tmp/202426103107吊牌.jpg", fileName: "202426103107吊牌.jpg", fileType: "image" },
+      ],
+      {
+        fileConcurrency: 2,
+        ocrCacheWithInjectedProvider: true,
+        preprocessWashlabel: false,
+        ocrQualityGate: false,
+        visionFallback: false,
+        provider: async () => {
+          providerCalls += 1;
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          active -= 1;
+          return "产品名称：针织衫\n产品货号：202426103105\n执行标准：FZ/T 73018-2021";
+        },
+      },
+    );
+
+    assert.equal(result.length, 4);
+    assert.equal(providerCalls, 3);
+    assert.equal(maxActive, 2);
+    assert.equal(result[1].fields.find((field) => field.key === "executionStandard")?.value, "FZ/T 73018-2021");
+  } finally {
+    clearProductArchiveOcrRuntimeCache();
+    await rm(workDir, { recursive: true, force: true });
+  }
 });
 
 test("OCR vision fallback does not return a result after the AI fill task is cancelled", async () => {

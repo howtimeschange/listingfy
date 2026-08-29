@@ -2434,6 +2434,8 @@ test("product archive AI fill prompt uses trusted draft MDM and source context o
   assert.match(service, /filled_fields: buildFilledFieldAiContext\(input\.allFields \?\? \[\], input\.fields\)/);
   assert.match(service, /reference_images: buildReferenceImageAiContext\(input\.referenceImages \?\? \[\]\)/);
   assert.match(service, /buildDeepdrawAiFillMessages\(prompt, referenceImages\)/);
+  assert.match(service, /sortProductArchiveAiFillReferenceImages\(referenceImages\)/);
+  assert.match(service, /SPU 参考图（\$\{roleLabel\}）/);
   assert.match(service, /type: "image_url"/);
   assert.match(service, /data:\$\{mimeType\};base64/);
   assert.match(service, /忽略 source_type 为 ai_rule_fallback 的历史值/);
@@ -2713,9 +2715,211 @@ test("single and batch AI fill both propagate the bounded task cancellation sign
     'productArchiveDrafts.post("/:draftId/size-chart/ai-recommend"',
   );
 
-  assert.match(queueSection, /withBackgroundTaskSlot\("product_archive_ai_fill", async \(signal\) =>[\s\S]*fillProductArchiveDraftFieldsWithAi\(db, item\.draft_id, \{ signal \}\)/);
+  assert.match(queueSection, /productArchiveAiFillQueueKey/);
+  assert.match(queueSection, /const queues = new Map<string, ProductArchiveAiFillQueueState>\(\)/);
+  assert.match(route, /LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY/);
+  assert.match(route, /LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY/);
+  assert.match(route, /PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY_CAP\s*=\s*10/);
+  assert.match(route, /dynamicConcurrencyShares/);
+  assert.match(queueSection, /Promise\.allSettled\(items\.map\(\(item\) => processItemSafely\(job, item, controller\)\)\)/);
+  assert.doesNotMatch(queueSection, /const pending: ProductArchiveAiFillJob\[] = \[]/);
+  assert.match(queueSection, /runWithSlot = \(run, options\) => withBackgroundTaskSlot\("product_archive_ai_fill", run, options\)/);
+  assert.match(queueSection, /processDraftFieldsWithAi\(db, item\.draft_id, \{ signal \}\)/);
   assert.match(singleRoute, /withBackgroundTaskSlot\("product_archive_ai_fill", \(signal\) =>[\s\S]*fillProductArchiveDraftFieldsWithAi\(db, draftId, \{ signal \}\)/);
   assert.match(service, /ocr_fallback_unavailable/);
+});
+
+test("batch AI fill queue isolates user queues and runs style items concurrently", async () => {
+  const { createProductArchiveAiFillQueue } = await import("../../web/server/routes/product-archive-drafts.ts");
+  const previousConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY;
+  const previousMaxConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
+  const previousBackgroundMax = process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
+  process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY = "2";
+  delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
+  process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = "4";
+  const savedJobs = new Map();
+  const events = [];
+  let active = 0;
+  let maxActive = 0;
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const store = {
+    requiresLease: false,
+    save(job) {
+      savedJobs.set(job.id, structuredClone(job));
+      return true;
+    },
+    get(id) {
+      return savedJobs.get(id) ?? null;
+    },
+    recover() {
+      return [];
+    },
+  };
+
+  try {
+    const queue = createProductArchiveAiFillQueue({
+      store,
+      getDatabase: () => ({
+        prepare() {
+          return { run: () => ({ changes: 1 }) };
+        },
+      }),
+      runWithSlot: async (run) => run(new AbortController().signal),
+      processDraftFieldsWithAi: async (_db, draftId) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        events.push({ type: "start", draftId, at: Date.now() });
+        await wait(25);
+        events.push({ type: "finish", draftId, at: Date.now() });
+        active -= 1;
+        return {
+          saved: [{ field_id: draftId }],
+          warnings: [],
+          detail: {
+            draft: {
+              status: "ready",
+              validation_summary_json: { blocker_count: 0, warning_count: 0 },
+            },
+          },
+        };
+      },
+    });
+
+    const userOneJob = queue.enqueue({
+      actor: { id: 101, username: "user-one" },
+      ipAddress: "127.0.0.1",
+      targets: [1, 2, 3, 4].map((draftId) => ({
+        draftId,
+        spuCode: `U1-${draftId}`,
+        title: null,
+        status: "draft",
+      })),
+    });
+    const userTwoJob = queue.enqueue({
+      actor: { id: 202, username: "user-two" },
+      ipAddress: "127.0.0.1",
+      targets: [101, 102, 103, 104].map((draftId) => ({
+        draftId,
+        spuCode: `U2-${draftId}`,
+        title: null,
+        status: "draft",
+      })),
+    });
+
+    let finalOne = queue.getJob(userOneJob.id);
+    let finalTwo = queue.getJob(userTwoJob.id);
+    const deadline = Date.now() + 2_000;
+    while ((finalOne?.status !== "completed" || finalTwo?.status !== "completed") && Date.now() < deadline) {
+      await wait(5);
+      finalOne = queue.getJob(userOneJob.id);
+      finalTwo = queue.getJob(userTwoJob.id);
+    }
+
+    assert.equal(finalOne?.status, "completed");
+    assert.equal(finalTwo?.status, "completed");
+    assert.equal(finalOne?.completed_count, 4);
+    assert.equal(finalTwo?.completed_count, 4);
+    assert.equal(finalOne?.options.queueKey, "user:101");
+    assert.equal(finalTwo?.options.queueKey, "user:202");
+    assert.equal(finalOne?.result.concurrency, 2);
+    assert.equal(finalTwo?.result.concurrency, 2);
+    assert.ok(maxActive >= 4, `expected both user queues to run two style items each; maxActive=${maxActive}`);
+    const firstStarts = events.filter((event) => event.type === "start").slice(0, 4).map((event) => event.draftId).sort((a, b) => a - b);
+    assert.deepEqual(firstStarts, [1, 2, 101, 102]);
+  } finally {
+    if (previousConcurrency == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY;
+    else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY = previousConcurrency;
+    if (previousMaxConcurrency == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
+    else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY = previousMaxConcurrency;
+    if (previousBackgroundMax == null) delete process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
+    else process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = previousBackgroundMax;
+  }
+});
+
+test("batch AI fill queue lets a single busy user borrow idle global slots", async () => {
+  const { createProductArchiveAiFillQueue } = await import("../../web/server/routes/product-archive-drafts.ts");
+  const previousConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY;
+  const previousMaxConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
+  const previousBackgroundMax = process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
+  process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY = "2";
+  process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY = "10";
+  process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = "16";
+  const savedJobs = new Map();
+  let active = 0;
+  let maxActive = 0;
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const store = {
+    requiresLease: false,
+    save(job) {
+      savedJobs.set(job.id, structuredClone(job));
+      return true;
+    },
+    get(id) {
+      return savedJobs.get(id) ?? null;
+    },
+    recover() {
+      return [];
+    },
+  };
+
+  try {
+    const queue = createProductArchiveAiFillQueue({
+      store,
+      getDatabase: () => ({
+        prepare() {
+          return { run: () => ({ changes: 1 }) };
+        },
+      }),
+      runWithSlot: async (run) => run(new AbortController().signal),
+      processDraftFieldsWithAi: async (_db, draftId) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await wait(25);
+        active -= 1;
+        return {
+          saved: [{ field_id: draftId }],
+          warnings: [],
+          detail: {
+            draft: {
+              status: "ready",
+              validation_summary_json: { blocker_count: 0, warning_count: 0 },
+            },
+          },
+        };
+      },
+    });
+
+    const job = queue.enqueue({
+      actor: { id: 101, username: "user-one" },
+      ipAddress: "127.0.0.1",
+      targets: Array.from({ length: 12 }, (_unused, index) => ({
+        draftId: index + 1,
+        spuCode: `U1-${index + 1}`,
+        title: null,
+        status: "draft",
+      })),
+    });
+
+    let finalJob = queue.getJob(job.id);
+    const deadline = Date.now() + 2_000;
+    while (finalJob?.status !== "completed" && Date.now() < deadline) {
+      await wait(5);
+      finalJob = queue.getJob(job.id);
+    }
+
+    assert.equal(finalJob?.status, "completed");
+    assert.equal(finalJob?.completed_count, 12);
+    assert.equal(finalJob?.result.concurrency, 10);
+    assert.ok(maxActive >= 10, `expected single user to borrow idle slots up to the cap; maxActive=${maxActive}`);
+    assert.ok(maxActive <= 10, `expected single user cap to hold at 10; maxActive=${maxActive}`);
+  } finally {
+    if (previousConcurrency == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY;
+    else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY = previousConcurrency;
+    if (previousMaxConcurrency == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
+    else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY = previousMaxConcurrency;
+    if (previousBackgroundMax == null) delete process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
+    else process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = previousBackgroundMax;
+  }
 });
 
 test("product archive AI fill derives material enum fields from trusted composition text before model fallback", async () => {
@@ -4658,6 +4862,21 @@ test("product archive asset package helpers classify reference images and model 
   assert.equal(service.classifyProductArchiveAssetPackageFileName("深绘吊牌洗唛平铺图下载结果_20260817.xlsx"), "spreadsheet");
   assert.equal(service.productArchiveImageHasModelShot("208426108013/208426108013-00455_有模拍.jpg"), true);
   assert.equal(service.productArchiveImageHasModelShot("208426108013/208426108013-00455.jpg"), false);
+  assert.deepEqual(service.sortProductArchiveAiFillReferenceImages([
+    { id: 6, kind: "washlabel", original_file_name: "洗唛.jpg", sort_no: 6 },
+    { id: 3, original_file_name: "主图1.jpg", sort_no: 3 },
+    { id: 5, kind: "hangtag", original_file_name: "吊牌.jpg", sort_no: 5 },
+    { id: 1, original_file_name: "平铺图.jpg", raw_payload_json: { asset_kind: "flat_image" }, sort_no: 1 },
+    { id: 4, original_file_name: "详情图.jpg", sort_no: 4 },
+    { id: 2, original_file_name: "有模拍.jpg", raw_payload_json: { asset_kind: "model_image" }, sort_no: 2 },
+  ]).map((image) => service.productArchiveAiFillReferenceImageRole(image)), [
+    "flat_image",
+    "main_image",
+    "model_image",
+    "reference_image",
+    "hangtag",
+    "washlabel",
+  ]);
   assert.match(route, /function repairLegacyDraftImageLocalPath/);
   assert.match(route, /imageFileVariant\(c\.req\.query\("variant"\)/);
   assert.match(route, /resize\(160, 160, \{ fit: "cover"/);

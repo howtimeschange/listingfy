@@ -21,6 +21,7 @@
     "admin:create": "NODE_OPTIONS=--no-warnings=ExperimentalWarning ./web/node_modules/.bin/tsx scripts/create_admin_user.mjs",
     "test": "NODE_OPTIONS=--no-warnings=ExperimentalWarning ./web/node_modules/.bin/tsx --test scripts/lib/*.test.mjs",
     "test:security": "NODE_OPTIONS=--no-warnings=ExperimentalWarning ./web/node_modules/.bin/tsx --test scripts/lib/auth_security.test.mjs scripts/lib/platform_config.test.mjs scripts/lib/system_management_ui.test.mjs",
+    "test:ai-fill-concurrency": "NODE_OPTIONS=--no-warnings=ExperimentalWarning ./web/node_modules/.bin/tsx scripts/bench/product_archive_ai_fill_concurrency_bench.mjs",
     "web:build": "npm --prefix web run build",
     "web:lint": "npm --prefix web run lint",
     "web:dev": "npm --prefix web run dev",

@@ -301,7 +301,8 @@ test("SHEIN platform product export keeps final workbook generation visible and 
   assert.match(jobService, /job\.items\[0\]\.spu_code = "生成 Excel 文件"/);
   assert.match(jobService, /job\.completed_count = rowCount/);
   assert.match(taskCenter, /if \(job\.status !== "completed"\) return Math\.min\(99, progress\)/);
-  assert.match(taskCenter, /当前：\{runningItem\.spu_code\}/);
+  assert.match(taskCenter, /当前并发/);
+  assert.match(taskCenter, /当前：\$\{runningItem\.spu_code\}/);
 });
 
 test("SHEIN platform products backend exposes durable sync and lifecycle actions", async () => {

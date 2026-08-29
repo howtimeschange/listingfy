@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -27,6 +27,8 @@ const FIELD_LABELS = {
   washCare: ["洗涤说明", "洗护说明", "洗涤方法", "洗护方法"],
 };
 const FIELD_LABEL_TEXT = Object.values(FIELD_LABELS).flat();
+const OCR_FILE_CACHE_MAX_ENTRIES = 500;
+const ocrFileResultCache = new Map();
 const SCM_COMPOSITION_COMPONENT_LABELS = [
   "主面料",
   "下摆罗纹",
@@ -718,6 +720,78 @@ function positiveInteger(value, fallback, { min = 1, max = Number.POSITIVE_INFIN
   return Math.max(min, Math.min(Math.floor(parsed), max));
 }
 
+function ocrFileConcurrency(options = {}) {
+  return positiveInteger(
+    options.fileConcurrency ?? process.env.LISTINGIFY_HANGTAG_OCR_FILE_CONCURRENCY,
+    2,
+    { min: 1, max: 4 },
+  );
+}
+
+function ocrCacheTtlMs(options = {}) {
+  return positiveInteger(
+    options.ocrCacheTtlMs ?? process.env.LISTINGIFY_HANGTAG_OCR_CACHE_TTL_MS,
+    10 * 60 * 1000,
+    { min: 1000, max: 60 * 60 * 1000 },
+  );
+}
+
+function cloneOcrDocument(document) {
+  if (typeof structuredClone === "function") return structuredClone(document);
+  return JSON.parse(JSON.stringify(document));
+}
+
+function pruneOcrFileResultCache(now = Date.now()) {
+  const ttlMs = ocrCacheTtlMs();
+  for (const [key, entry] of ocrFileResultCache.entries()) {
+    if (now - entry.savedAt > ttlMs) ocrFileResultCache.delete(key);
+  }
+  while (ocrFileResultCache.size > OCR_FILE_CACHE_MAX_ENTRIES) {
+    const oldest = ocrFileResultCache.keys().next().value;
+    if (!oldest) break;
+    ocrFileResultCache.delete(oldest);
+  }
+}
+
+export function clearProductArchiveOcrRuntimeCache() {
+  ocrFileResultCache.clear();
+}
+
+function shouldUseOcrFileCache(options = {}) {
+  if (options.ocrCache === false) return false;
+  return (!options.provider || options.ocrCacheWithInjectedProvider === true)
+    && !options.visionProvider
+    && !options.ocrQualityProvider;
+}
+
+async function ocrFileResultCacheKey(file, options = {}) {
+  if (!shouldUseOcrFileCache(options)) return null;
+  const rawFilePath = stringValue(file.filePath);
+  if (!rawFilePath) return null;
+  const filePath = path.resolve(rawFilePath);
+  const fileName = stringValue(file.fileName) || path.basename(filePath);
+  const fileType = stringValue(file.fileType) || productArchiveOcrFileType(fileName);
+  const sourceKind = stringValue(file.sourceKind) || classifyProductArchiveOcrFile(fileName);
+  const stats = await stat(filePath).catch(() => null);
+  if (!stats?.isFile?.()) return null;
+  return [
+    filePath,
+    stats.size,
+    Math.floor(stats.mtimeMs),
+    fileType,
+    sourceKind,
+    stringValue(options.ocrProvider ?? process.env.LISTINGIFY_HANGTAG_OCR_PROVIDER) || "tesseract_js",
+    normalizeTesseractJsLang(options.lang),
+    stringValue(options.psm ?? process.env.LISTINGIFY_HANGTAG_OCR_PSM) || "6",
+    enabledFlag((options.env ?? process.env).LISTINGIFY_HANGTAG_OCR_AI_QUALITY_GATE, true) ? "quality:on" : "quality:off",
+    enabledFlag((options.env ?? process.env).LISTINGIFY_HANGTAG_OCR_VISION_FALLBACK, true) ? "vision:on" : "vision:off",
+    visionImageWidth(options),
+    visionImageMaxBytes(options),
+    visionMaxImages(options),
+    ocrQualityTextLimit(options),
+  ].join("\u0000");
+}
+
 function visionImageMaxBytes(options = {}) {
   return positiveInteger(
     options.visionImageMaxBytes ?? process.env.LISTINGIFY_HANGTAG_OCR_VISION_IMAGE_MAX_BYTES,
@@ -1130,6 +1204,27 @@ function visionRawText(json, fields = []) {
   return normalizeOcrText(lines.join("\n"));
 }
 
+function hasOwnRecordKey(record, keys = []) {
+  return keys.some((key) => Object.hasOwn(record, key));
+}
+
+function isValidVisionOcrJson(json) {
+  const record = recordValue(json);
+  const fields = record.fields ?? record.extracted_fields ?? record.extractedFields;
+  const hasExtractedValue = Boolean(
+    stringValue(record.raw_text ?? record.rawText ?? record.text)
+    || stringValue(record.style_code ?? record.styleCode ?? record.spu_code ?? record.spuCode)
+    || visionFieldRows(record).some((row) => stringValue(row.value ?? row.field_value ?? row.text)),
+  );
+  if (hasExtractedValue) return true;
+
+  return Boolean(
+    hasOwnRecordKey(record, ["raw_text", "rawText", "text", "style_code", "styleCode", "spu_code", "spuCode"])
+    || Array.isArray(fields)
+    || (fields && typeof fields === "object" && !Array.isArray(fields))
+  );
+}
+
 function analyzeVisionOcrDocument({
   fileName,
   fileType,
@@ -1283,14 +1378,7 @@ async function callVisionOcrProvider({
     scenario: "product_archive_ocr_vision",
     promptVersion: "product-archive-ocr-vision-v1",
     messages,
-    validate: (json) => {
-      const record = recordValue(json);
-      return Boolean(
-        stringValue(record.raw_text ?? record.rawText ?? record.text)
-        || stringValue(record.style_code ?? record.styleCode ?? record.spu_code ?? record.spuCode)
-        || visionFieldRows(record).some((row) => stringValue(row.value ?? row.field_value ?? row.text)),
-      );
-    },
+    validate: isValidVisionOcrJson,
     auditValue: (json) => {
       const record = recordValue(json);
       return {
@@ -1605,11 +1693,43 @@ export async function recognizeProductArchiveOcrFile(file, options = {}) {
   }
 }
 
+async function recognizeProductArchiveOcrFileCached(file, options = {}) {
+  const cacheKey = await ocrFileResultCacheKey(file, options);
+  if (!cacheKey) return recognizeProductArchiveOcrFile(file, options);
+
+  pruneOcrFileResultCache();
+  const existing = ocrFileResultCache.get(cacheKey);
+  if (existing && Date.now() - existing.savedAt <= ocrCacheTtlMs(options)) {
+    return cloneOcrDocument(await existing.promise);
+  }
+
+  const promise = recognizeProductArchiveOcrFile(file, options)
+    .catch((error) => {
+      ocrFileResultCache.delete(cacheKey);
+      throw error;
+    });
+  ocrFileResultCache.set(cacheKey, { savedAt: Date.now(), promise });
+  return cloneOcrDocument(await promise);
+}
+
 export async function recognizeProductArchiveOcrFiles(files = [], options = {}) {
-  const output = [];
-  for (const file of files) {
+  const inputFiles = Array.isArray(files) ? files : [];
+  const output = new Array(inputFiles.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(inputFiles.length, ocrFileConcurrency(options));
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < inputFiles.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const file = inputFiles[index];
+      throwIfAborted(options.signal);
+      output[index] = await recognizeProductArchiveOcrFileCached(file, options);
+    }
+  });
+  await Promise.all(workers);
+  for (const document of output) {
     throwIfAborted(options.signal);
-    output.push(await recognizeProductArchiveOcrFile(file, options));
+    if (!document) throw new Error("OCR 文件识别未返回结果");
   }
   throwIfAborted(options.signal);
   return output;

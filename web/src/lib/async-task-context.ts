@@ -39,6 +39,7 @@ export interface AsyncTaskJob {
   finished_at?: string | null
   items?: AsyncTaskJobItem[]
   current_item?: AsyncTaskJobItem | null
+  current_items?: AsyncTaskJobItem[]
   failed_items?: AsyncTaskJobItem[]
   queued_count?: number
   running_count?: number
