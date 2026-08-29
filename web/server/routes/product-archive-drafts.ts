@@ -2174,6 +2174,35 @@ function assertRequeueableCount(count: number) {
   if (count <= 0) throw new HTTPException(409, { message: "这个任务没有可重新加入队列的未完成项目" })
 }
 
+function readCompletedProductArchiveTask<T>(queueName: string, jobId: string) {
+  const db = getDb()
+  return db.transaction(() => {
+    const row = db.prepare(`
+      select status, payload_json
+      from product_archive_sync_job
+      where id = ?
+        and queue_name = ?
+      for update
+    `).get(jobId, queueName) as { status?: unknown; payload_json?: unknown } | undefined
+    if (!row) return null
+    if (stringValue(row.status) !== "completed") {
+      throw new HTTPException(409, { message: "任务仍在执行中，请先停止或等待任务完成后再重新加入队列" })
+    }
+    let payload = row.payload_json
+    if (typeof payload === "string") {
+      try {
+        payload = JSON.parse(payload)
+      } catch {
+        throw new HTTPException(409, { message: "任务快照损坏，无法安全地重新加入队列" })
+      }
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      throw new HTTPException(409, { message: "任务快照损坏，无法安全地重新加入队列" })
+    }
+    return payload as T
+  })()
+}
+
 export function requeueProductArchiveDraftAsyncTask(input: {
   taskType: RequeueProductArchiveTaskType
   jobId: string
@@ -2181,7 +2210,10 @@ export function requeueProductArchiveDraftAsyncTask(input: {
   ipAddress: string | null
 }) {
   if (input.taskType === "product_archive_mdm_draft") {
-    const original = draftQueue.getJob(input.jobId)
+    const original = readCompletedProductArchiveTask<NonNullable<ReturnType<typeof draftQueue.getJob>>>(
+      "product_archive_drafts",
+      input.jobId,
+    )
     if (!original) throw new HTTPException(404, { message: "MDM 同步建档任务不存在" })
     const codes = requeueableItems(original.items).map((item) => item.spu_code).filter(Boolean)
     assertRequeueableCount(codes.length)
@@ -2197,7 +2229,10 @@ export function requeueProductArchiveDraftAsyncTask(input: {
   }
 
   if (input.taskType === "product_archive_ai_fill") {
-    const original = productArchiveAiFillQueue.getJob(input.jobId)
+    const original = readCompletedProductArchiveTask<NonNullable<ReturnType<typeof productArchiveAiFillQueue.getJob>>>(
+      "product_archive_ai_fill",
+      input.jobId,
+    )
     if (!original) throw new HTTPException(404, { message: "批量 AI 填充任务不存在" })
     const targets = requeueTargets(original.items)
     assertRequeueableCount(targets.length)
@@ -2209,7 +2244,10 @@ export function requeueProductArchiveDraftAsyncTask(input: {
   }
 
   if (input.taskType === "product_archive_publish_precheck") {
-    const original = productArchivePrecheckQueue.getJob(input.jobId)
+    const original = readCompletedProductArchiveTask<NonNullable<ReturnType<typeof productArchivePrecheckQueue.getJob>>>(
+      "product_archive_publish_precheck",
+      input.jobId,
+    )
     if (!original) throw new HTTPException(404, { message: "批量发布预检任务不存在" })
     const targets = requeueTargets(original.items)
     assertRequeueableCount(targets.length)
@@ -2223,7 +2261,10 @@ export function requeueProductArchiveDraftAsyncTask(input: {
   }
 
   if (input.taskType === "product_archive_publish") {
-    const original = productArchivePublishQueue.getJob(input.jobId)
+    const original = readCompletedProductArchiveTask<NonNullable<ReturnType<typeof productArchivePublishQueue.getJob>>>(
+      "product_archive_publish",
+      input.jobId,
+    )
     if (!original) throw new HTTPException(404, { message: "批量发布任务不存在" })
     const targets = requeueTargets(original.items)
     assertRequeueableCount(targets.length)
@@ -2236,7 +2277,10 @@ export function requeueProductArchiveDraftAsyncTask(input: {
     })
   }
 
-  const original = hangtagWashlabelOcrQueue.getJob(input.jobId)
+  const original = readCompletedProductArchiveTask<NonNullable<ReturnType<typeof hangtagWashlabelOcrQueue.getJob>>>(
+    "product_archive_hangtag_washlabel_ocr",
+    input.jobId,
+  )
   if (!original) throw new HTTPException(404, { message: "吊牌/洗唛 OCR 任务不存在" })
   const rerunApply = requeueableItems(original.items).some((item) => item.phase === "apply")
   const files = original.files.filter((file, index) => (
@@ -2880,10 +2924,13 @@ function existingLaunchPlanSpuCodes(db: ReturnType<typeof getDb>, spuCodes: stri
   const codes = uniqueStrings(spuCodes)
   if (codes.length === 0) return new Set<string>()
   const rows = db.prepare(`
-    select distinct spu_code
-    from product_archive_source_row
-    where source_type = 'launch_plan'
-      and spu_code in (${codes.map(() => "?").join(", ")})
+    select distinct source.spu_code
+    from product_archive_source_row source
+    join product_archive_source_batch batch
+      on batch.id = source.source_batch_id
+     and batch.import_status = 'committed'
+    where source.source_type = 'launch_plan'
+      and source.spu_code in (${codes.map(() => "?").join(", ")})
   `).all(...codes) as Array<{ spu_code: unknown }>
   return new Set(uniqueStrings(rows.map((row) => row.spu_code)))
 }
@@ -2892,11 +2939,14 @@ function launchPlanBatchIdsForSpuCodes(db: ReturnType<typeof getDb>, spuCodes: s
   const codes = uniqueStrings(spuCodes)
   if (codes.length === 0) return []
   const rows = db.prepare(`
-    select distinct on (spu_code) source_batch_id
-    from product_archive_source_row
-    where source_type = 'launch_plan'
-      and spu_code in (${codes.map(() => "?").join(", ")})
-    order by spu_code, source_batch_id desc
+    select distinct on (source.spu_code) source.source_batch_id
+    from product_archive_source_row source
+    join product_archive_source_batch batch
+      on batch.id = source.source_batch_id
+     and batch.import_status = 'committed'
+    where source.source_type = 'launch_plan'
+      and source.spu_code in (${codes.map(() => "?").join(", ")})
+    order by source.spu_code, source.source_batch_id desc
   `).all(...codes) as Array<{ source_batch_id: unknown }>
   return rows.map((row) => Number(row.source_batch_id)).filter((id) => Number.isInteger(id) && id > 0)
 }
@@ -3031,35 +3081,44 @@ async function importWorkflowSourceFile(
     let inputRowCount = 0
     let insertedRowCount = 0
     for (const sheet of sheets) {
-      const result = await importProductArchiveSourceRowsInChunks(db, {
-        sourceType,
-        fileName: file.name,
-        sheetName: sheet.name,
-        rows: sheet.rows,
-      }, {
-        chunkSize: 1000,
-      })
+      const result = await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
+        importProductArchiveSourceRowsInChunks(db, {
+          sourceType,
+          fileName: file.name,
+          sheetName: sheet.name,
+          rows: sheet.rows,
+        }, {
+          chunkSize: 1000,
+          signal,
+        })
+      ))
       const sourceBatchId = Number(result.batch.id)
       sourceBatchIds.push(sourceBatchId)
       inputRowCount += result.inputRowCount
       insertedRowCount += result.insertedRowCount
-      refreshSummaries.push(await refreshProductArchiveDraftsFromSourceBatchInChunks(db, {
-        sourceBatchId,
-        sourceType: result.sourceType,
-      }, {
-        chunkSize: 5,
-      }))
+      refreshSummaries.push(await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
+        refreshProductArchiveDraftsFromSourceBatchInChunks(db, {
+          sourceBatchId,
+          sourceType: result.sourceType,
+        }, {
+          chunkSize: 5,
+          signal,
+        })
+      )))
     }
     const listingPlanImport = sourceType === "launch_plan"
-      ? await importListingLaunchPlanSheetsInChunks(db, {
-          fileName: file.name,
-          fileSizeBytes: file.size,
-          sheets,
-          sourceBatchIds,
-          createdBy,
-        }, {
-          chunkSize: 1000,
-        })
+      ? await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
+          importListingLaunchPlanSheetsInChunks(db, {
+            fileName: file.name,
+            fileSizeBytes: file.size,
+            sheets,
+            sourceBatchIds,
+            createdBy,
+          }, {
+            chunkSize: 1000,
+            signal,
+          })
+        ))
       : null
     return {
       fileName: file.name,
@@ -3077,14 +3136,17 @@ async function importWorkflowSourceFile(
 }
 
 async function readProductArchiveSourceSheets(filePath: string, fileName: string, sourceType: string) {
-  if (sourceType === "size_chart") {
-    const rows = await readPlmSizeChartWorkbook(filePath, { fileName })
-    return [{
-      name: "PLM尺码表",
-      rows: rows.map((row) => row.rowJson ?? row),
-    }]
-  }
-  return readSpreadsheetSheetsFromFileInWorker(filePath, { fileName })
+  return withBackgroundTaskSlot("product_archive_source_import", async (signal) => {
+    if (sourceType === "size_chart") {
+      const rows = await readPlmSizeChartWorkbook(filePath, { fileName })
+      if (signal.aborted) throw signal.reason
+      return [{
+        name: "PLM尺码表",
+        rows: rows.map((row) => row.rowJson ?? row),
+      }]
+    }
+    return readSpreadsheetSheetsFromFileInWorker(filePath, { fileName, signal })
+  })
 }
 
 productArchiveDrafts.get("/", (c) => {
@@ -3344,24 +3406,30 @@ productArchiveDrafts.post("/source-imports/upload", productArchiveSpreadsheetBod
     let skippedExistingDraftCount = 0
 
     for (const sheet of sheets) {
-      const result = await importProductArchiveSourceRowsInChunks(db, {
-        sourceType,
-        fileName: file.name,
-        sheetName: sheet.name,
-        rows: sheet.rows,
-      }, {
-        chunkSize: 1000,
-      })
+      const result = await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
+        importProductArchiveSourceRowsInChunks(db, {
+          sourceType,
+          fileName: file.name,
+          sheetName: sheet.name,
+          rows: sheet.rows,
+        }, {
+          chunkSize: 1000,
+          signal,
+        })
+      ))
       const sourceBatchId = Number(result.batch.id)
       sourceBatchIds.push(sourceBatchId)
       inputRowCount += result.inputRowCount
       insertedRowCount += result.insertedRowCount
-      const refreshSummary = await refreshProductArchiveDraftsFromSourceBatchInChunks(db, {
-        sourceBatchId,
-        sourceType: result.sourceType,
-      }, {
-        chunkSize: 5,
-      })
+      const refreshSummary = await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
+        refreshProductArchiveDraftsFromSourceBatchInChunks(db, {
+          sourceBatchId,
+          sourceType: result.sourceType,
+        }, {
+          chunkSize: 5,
+          signal,
+        })
+      ))
       refreshSummaries.push(refreshSummary)
 
       const shouldAutoCreateDrafts = autoSyncMissingMdm && ["launch_plan", "copywriting"].includes(result.sourceType)
@@ -3397,15 +3465,18 @@ productArchiveDrafts.post("/source-imports/upload", productArchiveSpreadsheetBod
     }
 
     const listingPlanImport = sourceType === "launch_plan"
-      ? await importListingLaunchPlanSheetsInChunks(db, {
-          fileName: file.name,
-          fileSizeBytes: file.size,
-          sheets,
-          sourceBatchIds,
-          createdBy: user.id,
-        }, {
-          chunkSize: 1000,
-        })
+      ? await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
+          importListingLaunchPlanSheetsInChunks(db, {
+            fileName: file.name,
+            fileSizeBytes: file.size,
+            sheets,
+            sourceBatchIds,
+            createdBy: user.id,
+          }, {
+            chunkSize: 1000,
+            signal,
+          })
+        ))
       : null
     auditFromContext(c, {
       action: "source.imported",
@@ -3453,22 +3524,28 @@ productArchiveDrafts.post("/size-chart/import", productArchiveSpreadsheetBodyLim
   const db = getDb()
   const { file, filePath } = await saveUploadedSpreadsheet(c)
   try {
-    const rows = await readPlmSizeChartWorkbook(filePath, { fileName: file.name })
-    const result = await importProductArchiveSourceRowsInChunks(db, {
-      sourceType: "size_chart",
-      fileName: file.name,
-      sheetName: "PLM尺码表",
-      rows: rows.map((row) => row.rowJson ?? row),
-    }, {
-      chunkSize: 1000,
-    })
+    const sheets = await readProductArchiveSourceSheets(filePath, file.name, "size_chart")
+    const result = await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
+      importProductArchiveSourceRowsInChunks(db, {
+        sourceType: "size_chart",
+        fileName: file.name,
+        sheetName: "PLM尺码表",
+        rows: sheets.flatMap((sheet) => sheet.rows),
+      }, {
+        chunkSize: 1000,
+        signal,
+      })
+    ))
     const sourceBatchId = Number(result.batch.id)
-    const refreshSummary = await refreshProductArchiveDraftsFromSourceBatchInChunks(db, {
-      sourceBatchId,
-      sourceType: result.sourceType,
-    }, {
-      chunkSize: 5,
-    })
+    const refreshSummary = await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
+      refreshProductArchiveDraftsFromSourceBatchInChunks(db, {
+        sourceBatchId,
+        sourceType: result.sourceType,
+      }, {
+        chunkSize: 5,
+        signal,
+      })
+    ))
     auditFromContext(c, {
       action: "size_chart.imported",
       module: "PRODUCT_ARCHIVE_DRAFT",

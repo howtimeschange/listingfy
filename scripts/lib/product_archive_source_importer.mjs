@@ -282,11 +282,20 @@ function wait(ms = 0) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  const error = new Error("表格来源行标准化已取消");
+  error.name = "AbortError";
+  throw error;
+}
+
 export async function normalizeSpreadsheetRowsInChunks(rows = [], options = {}) {
   const normalizer = buildSpreadsheetRowNormalizer(rows);
   const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 1000)));
   const output = [];
   for (let start = 0; start < normalizer.rows.length; start += chunkSize) {
+    throwIfAborted(options.signal);
     const end = Math.min(start + chunkSize, normalizer.rows.length);
     for (let index = start; index < end; index += 1) {
       const row = normalizer.normalizeRow(normalizer.rows[index]);
@@ -297,6 +306,7 @@ export async function normalizeSpreadsheetRowsInChunks(rows = [], options = {}) 
       totalRowCount: normalizer.rows.length,
       normalizedRowCount: output.length,
     });
+    throwIfAborted(options.signal);
     await wait();
   }
   return output;
@@ -357,6 +367,7 @@ export async function normalizeProductArchiveSourceRowsInChunks(sourceType, rows
   const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 1000)));
   const output = [];
   for (let start = 0; start < normalizedRows.length; start += chunkSize) {
+    throwIfAborted(options.signal);
     const end = Math.min(start + chunkSize, normalizedRows.length);
     for (let index = start; index < end; index += 1) {
       const rowJson = cleanRow(normalizedRows[index]);
@@ -374,6 +385,7 @@ export async function normalizeProductArchiveSourceRowsInChunks(sourceType, rows
       totalRowCount: normalizedRows.length,
       normalizedRowCount: output.length,
     });
+    throwIfAborted(options.signal);
     await wait();
   }
   return output;

@@ -228,6 +228,7 @@ interface SourceImportInput {
 
 interface SourceImportChunkOptions {
   chunkSize?: number
+  signal?: AbortSignal
   onProgress?: (progress: {
     sourceBatchId: number
     insertedRowCount: number
@@ -242,6 +243,7 @@ interface RefreshSourceBatchInput {
 
 interface RefreshSourceBatchChunkOptions {
   chunkSize?: number
+  signal?: AbortSignal
   onProgress?: (progress: {
     sourceBatchId: number
     scannedDraftCount: number
@@ -275,6 +277,14 @@ function nextTimestampIso(values: unknown[]) {
 
 function wait(ms = 0) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (!signal?.aborted) return
+  if (signal.reason instanceof Error) throw signal.reason
+  const error = new Error("后台处理已取消")
+  error.name = "AbortError"
+  throw error
 }
 
 function readLimit(value: unknown, fallback = 50, max = 200) {
@@ -3029,6 +3039,9 @@ function sourceRowsForSpu(db: SyncPostgresDatabase, spuCode: string, sourceBatch
   const rows = db.prepare(`
     select source.*
     from product_archive_source_row source
+    join product_archive_source_batch batch
+      on batch.id = source.source_batch_id
+     and batch.import_status = 'committed'
     where ${where.join(" and ")}
     order by source.source_type, source.skc_code nulls first, source.id desc
   `).all(...params) as JsonRecord[]
@@ -3041,6 +3054,9 @@ function sourceRowsForSpuBatchIds(db: SyncPostgresDatabase, spuCode: string, sou
   const rows = db.prepare(`
     select source.*
     from product_archive_source_row source
+    join product_archive_source_batch batch
+      on batch.id = source.source_batch_id
+     and batch.import_status = 'committed'
     where source.spu_code = ?
       and source.source_batch_id in (${batchIds.map(() => "?").join(", ")})
     order by source.source_type, source.skc_code nulls first, source.id desc
@@ -3120,6 +3136,9 @@ function sourceRowsWithShoeStaticEvidenceFallback(
   const fallbackRows = db.prepare(`
     select source.*
     from product_archive_source_row source
+    join product_archive_source_batch batch
+      on batch.id = source.source_batch_id
+     and batch.import_status = 'committed'
     where source.spu_code = ?
       and source.source_type = 'launch_plan'
     order by source.skc_code nulls first, source.id desc
@@ -3215,6 +3234,7 @@ function sourceBatchesById(db: SyncPostgresDatabase, sourceBatchIds: number[]) {
     select id, source_type
     from product_archive_source_batch
     where id in (${ids.map(() => '?').join(', ')})
+      and import_status = 'committed'
   `).all(...ids) as JsonRecord[]
 }
 
@@ -3226,6 +3246,9 @@ function latestSourceBatchesForSpu(db: SyncPostgresDatabase, spuCode: string, so
       source.source_type,
       source.source_batch_id
     from product_archive_source_row source
+    join product_archive_source_batch batch
+      on batch.id = source.source_batch_id
+     and batch.import_status = 'committed'
     where source.spu_code = ?
       and source.source_type in (${types.map(() => '?').join(', ')})
     order by source.source_type, source.source_batch_id desc
@@ -7770,9 +7793,11 @@ export function importProductArchiveSourceRows(db: SyncPostgresDatabase, input: 
         sheet_name,
         row_count,
         raw_manifest_json,
+        import_status,
+        committed_at,
         created_at
       )
-      values (?, ?, ?, ?, ?, ?::jsonb, ?::timestamptz)
+      values (?, ?, ?, ?, ?, ?::jsonb, 'committed', ?::timestamptz, ?::timestamptz)
     `).run(
       sourceBatchNo(sourceType),
       sourceType,
@@ -7784,6 +7809,7 @@ export function importProductArchiveSourceRows(db: SyncPostgresDatabase, input: 
         inserted_row_count: normalizedRows.length,
         source_type: sourceType,
       }),
+      now,
       now,
     )
     const sourceBatchId = Number(batch.lastInsertRowid)
@@ -7871,7 +7897,11 @@ export async function importProductArchiveSourceRowsInChunks(
   const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 1000)))
   const normalizedRows = sourceType === "size_chart"
     ? normalizePlmSizeChartRows(rows, { sheetName: input.sheetName ?? undefined })
-    : await normalizeProductArchiveSourceRowsInChunks(sourceType, rows, { chunkSize })
+    : await normalizeProductArchiveSourceRowsInChunks(sourceType, rows, {
+        chunkSize,
+        signal: options.signal,
+      })
+  throwIfAborted(options.signal)
   const now = nowIso()
 
   const batchId = Number(db.prepare(`
@@ -7882,9 +7912,10 @@ export async function importProductArchiveSourceRowsInChunks(
       sheet_name,
       row_count,
       raw_manifest_json,
+      import_status,
       created_at
     )
-    values (?, ?, ?, ?, ?, ?::jsonb, ?::timestamptz)
+    values (?, ?, ?, ?, ?, ?::jsonb, 'importing', ?::timestamptz)
   `).run(
     sourceBatchNo(sourceType),
     sourceType,
@@ -7913,6 +7944,7 @@ export async function importProductArchiveSourceRowsInChunks(
       values (?, ?, ?, ?, ?::jsonb, ?::timestamptz)
     `)
     for (let start = 0; start < normalizedRows.length; start += chunkSize) {
+      throwIfAborted(options.signal)
       const end = Math.min(start + chunkSize, normalizedRows.length)
       db.transaction(() => {
         for (let index = start; index < end; index += 1) {
@@ -7932,10 +7964,21 @@ export async function importProductArchiveSourceRowsInChunks(
         insertedRowCount: end,
         totalRowCount: normalizedRows.length,
       })
+      throwIfAborted(options.signal)
       await wait()
     }
+    throwIfAborted(options.signal)
+    const committedBatch = db.prepare(`
+      update product_archive_source_batch
+      set import_status = 'committed',
+        committed_at = clock_timestamp()
+      where id = ?
+        and import_status = 'importing'
+      returning *
+    `).get(batchId)
+    if (!committedBatch) throw new Error("来源表批次提交失败，未完成数据不会对草稿可见")
     return {
-      batch: db.prepare("select * from product_archive_source_batch where id = ?").get(batchId),
+      batch: committedBatch,
       sourceType,
       inputRowCount: rows.length,
       insertedRowCount: normalizedRows.length,
@@ -8117,8 +8160,10 @@ export async function refreshProductArchiveDraftsFromSourceBatchInChunks(
   const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 10)))
 
   for (let start = 0; start < drafts.length; start += chunkSize) {
+    throwIfAborted(options.signal)
     const end = Math.min(start + chunkSize, drafts.length)
     for (let index = start; index < end; index += 1) {
+      throwIfAborted(options.signal)
       const draft = drafts[index]
       const draftId = numberValue(draft.id)
       if (draftId === null) continue
@@ -8158,6 +8203,7 @@ export async function refreshProductArchiveDraftsFromSourceBatchInChunks(
       skippedNoTradeMatchCount,
       failedDraftCount: failedDrafts.length,
     })
+    throwIfAborted(options.signal)
     await wait()
   }
 

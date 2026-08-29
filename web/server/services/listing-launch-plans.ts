@@ -28,6 +28,7 @@ interface ListRowsInput {
 
 interface ImportListingLaunchPlanChunkOptions {
   chunkSize?: number
+  signal?: AbortSignal
   onProgress?: (progress: {
     importId: number
     insertedRowCount: number
@@ -37,6 +38,14 @@ interface ImportListingLaunchPlanChunkOptions {
 
 function nowIso() {
   return new Date().toISOString()
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (!signal?.aborted) return
+  if (signal.reason instanceof Error) throw signal.reason
+  const error = new Error("上市计划导入已取消")
+  error.name = "AbortError"
+  throw error
 }
 
 function stringValue(value: unknown) {
@@ -124,16 +133,19 @@ function prepareListingLaunchPlanImport(input: ImportListingLaunchPlanInput) {
 
 async function prepareListingLaunchPlanImportInChunks(
   input: ImportListingLaunchPlanInput,
-  options: Pick<ImportListingLaunchPlanChunkOptions, "chunkSize"> = {},
+  options: Pick<ImportListingLaunchPlanChunkOptions, "chunkSize" | "signal"> = {},
 ) {
   const sheets = Array.isArray(input.sheets) ? input.sheets : []
   const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 1000)))
   const normalizedRows: JsonRecord[] = []
   for (const sheet of sheets) {
+    throwIfAborted(options.signal)
     normalizedRows.push(...await normalizeListingLaunchPlanRowsInChunks(sheet.rows, {
       sheetName: sheet.name,
       chunkSize,
+      signal: options.signal,
     }))
+    throwIfAborted(options.signal)
     await wait()
   }
   const now = nowIso()
@@ -295,12 +307,14 @@ export async function importListingLaunchPlanSheetsInChunks(
   options: ImportListingLaunchPlanChunkOptions = {},
 ) {
   const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 100)))
-  const prepared = await prepareListingLaunchPlanImportInChunks(input, { chunkSize })
+  const prepared = await prepareListingLaunchPlanImportInChunks(input, { chunkSize, signal: options.signal })
+  throwIfAborted(options.signal)
   let importId: number | null = null
   try {
     importId = insertListingLaunchPlanImportRecord(db, input, prepared)
     const insertRow = listingLaunchPlanRowStatement(db)
     for (let start = 0; start < prepared.normalizedRows.length; start += chunkSize) {
+      throwIfAborted(options.signal)
       const end = Math.min(start + chunkSize, prepared.normalizedRows.length)
       db.transaction(() => {
         for (let index = start; index < end; index += 1) {
@@ -312,6 +326,7 @@ export async function importListingLaunchPlanSheetsInChunks(
         insertedRowCount: end,
         totalRowCount: prepared.normalizedRows.length,
       })
+      throwIfAborted(options.signal)
       await wait()
     }
     return importResult(db, importId, prepared)

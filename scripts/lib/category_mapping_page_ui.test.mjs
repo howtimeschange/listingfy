@@ -76,7 +76,7 @@ test("category mapping AI job state is persisted so polling survives process res
   assert.match(route, /readCategoryAiSuggestionJob/);
   assert.match(route, /recoverCategoryAiSuggestionJobs/);
   assert.match(route, /scheduleCategoryAiSuggestionJob\(job\.id\)/);
-  assert.match(route, /where status in \('queued', 'running'\)/);
+  assert.match(route, /where status = 'queued'[\s\S]+claim_expires_at is null or claim_expires_at <= clock_timestamp\(\)/);
   assert.match(route, /categoryMapping\.get\("\/ai-suggestions\/jobs\/:jobId"[\s\S]+readCategoryAiSuggestionJob/);
   assert.doesNotMatch(route, /new Map<string,\s*CategoryAiSuggestionJob>/);
 });

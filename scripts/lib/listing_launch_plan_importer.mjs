@@ -57,6 +57,14 @@ function wait(ms = 0) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  const error = new Error("上市计划表标准化已取消");
+  error.name = "AbortError";
+  throw error;
+}
+
 function coerceCellValue(value) {
   if (value == null) return "";
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
@@ -131,6 +139,201 @@ function hasUnresolvedSharedString(values = []) {
   return values.some((value) => value
     && typeof value === "object"
     && Number.isInteger(value.sharedString));
+}
+
+export class SpreadsheetResourceLimitError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "SpreadsheetResourceLimitError";
+    this.code = "SPREADSHEET_RESOURCE_LIMIT";
+  }
+}
+
+const DEFAULT_SPREADSHEET_LIMITS = Object.freeze({
+  chunkRows: 500,
+  maxSheets: 50,
+  maxRows: 200_000,
+  maxCells: 4_000_000,
+  maxCellChars: 100_000,
+  maxTotalChars: 64 * 1024 * 1024,
+});
+
+function boundedResourceLimit(value, fallback, cap) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.max(1, Math.min(cap, Math.floor(parsed)));
+}
+
+export function spreadsheetResourceLimits(options = {}) {
+  return {
+    chunkRows: boundedResourceLimit(options.chunkRows, DEFAULT_SPREADSHEET_LIMITS.chunkRows, 5_000),
+    maxSheets: boundedResourceLimit(options.maxSheets, DEFAULT_SPREADSHEET_LIMITS.maxSheets, 200),
+    maxRows: boundedResourceLimit(options.maxRows, DEFAULT_SPREADSHEET_LIMITS.maxRows, 1_000_000),
+    maxCells: boundedResourceLimit(options.maxCells, DEFAULT_SPREADSHEET_LIMITS.maxCells, 20_000_000),
+    maxCellChars: boundedResourceLimit(options.maxCellChars, DEFAULT_SPREADSHEET_LIMITS.maxCellChars, 1_000_000),
+    maxTotalChars: boundedResourceLimit(options.maxTotalChars, DEFAULT_SPREADSHEET_LIMITS.maxTotalChars, 256 * 1024 * 1024),
+  };
+}
+
+function createSpreadsheetResourceTracker(limits) {
+  let rowCount = 0;
+  let cellCount = 0;
+  let totalChars = 0;
+  const sheetIndexes = new Set();
+  return {
+    addSheet(sheetIndex) {
+      sheetIndexes.add(sheetIndex);
+      if (sheetIndexes.size > limits.maxSheets) {
+        throw new SpreadsheetResourceLimitError(`表格工作表数量超过限制（最多 ${limits.maxSheets} 个）`);
+      }
+    },
+    addRow(row) {
+      rowCount += 1;
+      if (rowCount > limits.maxRows) {
+        throw new SpreadsheetResourceLimitError(`表格数据行数超过限制（最多 ${limits.maxRows} 行）`);
+      }
+      for (const value of Object.values(row)) {
+        cellCount += 1;
+        if (cellCount > limits.maxCells) {
+          throw new SpreadsheetResourceLimitError(`表格非空单元格数量超过限制（最多 ${limits.maxCells} 个）`);
+        }
+        const chars = String(value ?? "").length;
+        if (chars > limits.maxCellChars) {
+          throw new SpreadsheetResourceLimitError(`表格单元格内容超过限制（最多 ${limits.maxCellChars} 个字符）`);
+        }
+        totalChars += chars;
+        if (totalChars > limits.maxTotalChars) {
+          throw new SpreadsheetResourceLimitError(`表格文本总量超过限制（最多 ${limits.maxTotalChars} 个字符）`);
+        }
+      }
+    },
+  };
+}
+
+async function emitSpreadsheetChunk(options, payload) {
+  if (typeof options.onChunk !== "function") return;
+  await options.onChunk(payload);
+}
+
+async function streamCsvSheet(filePath, options, limits) {
+  const tracker = createSpreadsheetResourceTracker(limits);
+  const rows = [];
+  tracker.addSheet(0);
+  const flush = async () => {
+    if (rows.length === 0) return;
+    const chunk = rows.splice(0, rows.length);
+    await emitSpreadsheetChunk(options, { sheetIndex: 0, name: "Sheet1", rows: chunk });
+  };
+  const rl = readline.createInterface({
+    input: fs.createReadStream(filePath, { encoding: "utf8" }),
+    crlfDelay: Infinity,
+  });
+  for await (const line of rl) {
+    if (!line.trim()) continue;
+    const values = parseCsvLine(line.replace(/^\uFEFF/, ""));
+    const row = {};
+    values.forEach((value, index) => {
+      if (value.trim()) row[`Column ${index + 1}`] = value.trim();
+    });
+    if (Object.keys(row).length === 0) continue;
+    tracker.addRow(row);
+    rows.push(row);
+    if (rows.length >= limits.chunkRows) await flush();
+  }
+  await flush();
+}
+
+class UnresolvedSharedStringError extends Error {}
+
+async function streamXlsxSheets(filePath, options, limits) {
+  const tracker = createSpreadsheetResourceTracker(limits);
+  const workbookReader = new (getExcelJS().stream.xlsx.WorkbookReader)(filePath, {
+    entries: "emit",
+    sharedStrings: "cache",
+    hyperlinks: "ignore",
+    styles: "ignore",
+    worksheets: "emit",
+  });
+  let sheetIndex = 0;
+  for await (const worksheetReader of workbookReader) {
+    const currentSheetIndex = sheetIndex;
+    const sheetName = worksheetReader.name || `Sheet${sheetIndex + 1}`;
+    const rows = [];
+    let hasRows = false;
+    const flush = async () => {
+      if (rows.length === 0) return;
+      const chunk = rows.splice(0, rows.length);
+      await emitSpreadsheetChunk(options, { sheetIndex: currentSheetIndex, name: sheetName, rows: chunk });
+    };
+    for await (const row of worksheetReader) {
+      if (hasUnresolvedSharedString(row.values)) throw new UnresolvedSharedStringError();
+      const item = rowValuesToObject(row.values);
+      if (Object.keys(item).length === 0) continue;
+      if (!hasRows) {
+        tracker.addSheet(currentSheetIndex);
+        hasRows = true;
+      }
+      tracker.addRow(item);
+      rows.push(item);
+      if (rows.length >= limits.chunkRows) await flush();
+    }
+    await flush();
+    sheetIndex += 1;
+  }
+}
+
+async function streamXlsxSheetsInMemory(filePath, options, limits) {
+  const tracker = createSpreadsheetResourceTracker(limits);
+  const workbook = new (getExcelJS().Workbook)();
+  await workbook.xlsx.readFile(filePath);
+  let sheetIndex = 0;
+  for (const worksheet of workbook.worksheets) {
+    const currentSheetIndex = sheetIndex;
+    const sheetName = worksheet.name || `Sheet${sheetIndex + 1}`;
+    const rows = [];
+    let hasRows = false;
+    const flush = async () => {
+      if (rows.length === 0) return;
+      const chunk = rows.splice(0, rows.length);
+      await emitSpreadsheetChunk(options, { sheetIndex: currentSheetIndex, name: sheetName, rows: chunk });
+    };
+    for (let rowNumber = 1; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+      const item = rowValuesToObject(worksheet.getRow(rowNumber).values);
+      if (Object.keys(item).length === 0) continue;
+      if (!hasRows) {
+        tracker.addSheet(currentSheetIndex);
+        hasRows = true;
+      }
+      tracker.addRow(item);
+      rows.push(item);
+      if (rows.length >= limits.chunkRows) await flush();
+    }
+    await flush();
+    sheetIndex += 1;
+  }
+}
+
+/**
+ * Streams bounded row chunks to the caller. When ExcelJS exposes worksheet
+ * entries before workbook metadata, a stable reader is used only inside the
+ * memory-capped worker fallback; the caller discards chunks from the failed
+ * streaming attempt first.
+ */
+export async function streamSpreadsheetSheetsFromFile(filePath, options = {}) {
+  const fileName = options.fileName || filePath;
+  assertSupportedFile(fileName);
+  const limits = spreadsheetResourceLimits(options);
+  if (extensionFor(fileName) === ".csv") {
+    await streamCsvSheet(filePath, options, limits);
+    return;
+  }
+  try {
+    await streamXlsxSheets(filePath, options, limits);
+  } catch (error) {
+    if (error instanceof SpreadsheetResourceLimitError) throw error;
+    await options.onReset?.();
+    await streamXlsxSheetsInMemory(filePath, options, limits);
+  }
 }
 
 async function readXlsxSheetsInMemory(filePath) {
@@ -300,9 +503,10 @@ export function normalizeListingLaunchPlanRows(rows = [], options = {}) {
 export async function normalizeListingLaunchPlanRowsInChunks(rows = [], options = {}) {
   const headerIndex = detectHeaderIndex(rows);
   const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 1000)));
-  const normalizedRows = await normalizeSpreadsheetRowsInChunks(rows, { chunkSize });
+  const normalizedRows = await normalizeSpreadsheetRowsInChunks(rows, { chunkSize, signal: options.signal });
   const output = [];
   for (let start = 0; start < normalizedRows.length; start += chunkSize) {
+    throwIfAborted(options.signal);
     const end = Math.min(start + chunkSize, normalizedRows.length);
     for (let index = start; index < end; index += 1) {
       const row = normalizedRows[index];
@@ -346,6 +550,7 @@ export async function normalizeListingLaunchPlanRowsInChunks(rows = [], options 
       totalRowCount: normalizedRows.length,
       normalizedRowCount: output.length,
     });
+    throwIfAborted(options.signal);
     await wait();
   }
   return output;

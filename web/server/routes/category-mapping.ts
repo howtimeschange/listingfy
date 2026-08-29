@@ -15,6 +15,8 @@ import { getDefaultAiScenarioRouter } from "../../../scripts/lib/ai_routing_cont
 const categoryMapping = new Hono()
 categoryMapping.use("*", routePermissionGuard("RULE_READ", "RULE_WRITE"))
 const AI_CATEGORY_CANDIDATE_LIMIT = 20
+const DEFAULT_CATEGORY_AI_CLAIM_MS = 10 * 60 * 1000
+const MAX_CATEGORY_AI_CLAIM_MS = 60 * 60 * 1000
 
 type MappingRuleBody = {
   mdm_middle_category_code?: string | null
@@ -117,6 +119,11 @@ type CategoryAiSuggestionJob = {
   started_at?: string | null
   finished_at?: string | null
   updated_at: string
+}
+
+type CategoryAiJobClaim = {
+  token: string
+  version: number
 }
 
 const categoryAiPending: string[] = []
@@ -702,18 +709,150 @@ function readCategoryAiSuggestionJob(db: ReturnType<typeof getDb>, jobId: string
   return row ? snapshotCategoryAiJob(categoryAiJobFromRow(row)) : null
 }
 
-function updateCategoryAiJob(
+function categoryAiClaimMs() {
+  const value = Number(process.env.LISTINGIFY_CATEGORY_AI_CLAIM_MS ?? DEFAULT_CATEGORY_AI_CLAIM_MS)
+  if (!Number.isFinite(value)) return DEFAULT_CATEGORY_AI_CLAIM_MS
+  return Math.max(60_000, Math.min(MAX_CATEGORY_AI_CLAIM_MS, Math.floor(value)))
+}
+
+function categoryAiClaimLostError() {
+  return new Error("类目 AI 任务 claim 已失效，拒绝旧 worker 写入")
+}
+
+function isCategoryAiClaimLostError(error: unknown) {
+  return error instanceof Error && error.message.includes("类目 AI 任务 claim 已失效")
+}
+
+function claimCategoryAiSuggestionJob(db: ReturnType<typeof getDb>, jobId: string) {
+  const token = randomUUID()
+  const row = db.prepare(`
+    update category_ai_suggestion_job
+    set status = 'running',
+      claim_token = ?,
+      claim_version = claim_version + 1,
+      claim_expires_at = clock_timestamp() + (?::double precision * interval '1 millisecond'),
+      started_at = coalesce(started_at, clock_timestamp()),
+      updated_at = clock_timestamp()
+    where id = ?
+      and (
+        status = 'queued'
+        or (
+          status = 'running'
+          and (claim_expires_at is null or claim_expires_at <= clock_timestamp())
+        )
+      )
+    returning *
+  `).get(token, categoryAiClaimMs(), jobId) as Record<string, unknown> | undefined
+  if (!row) return null
+  return {
+    job: snapshotCategoryAiJob(categoryAiJobFromRow(row)),
+    claim: {
+      token,
+      version: Number(row.claim_version ?? 0),
+    } satisfies CategoryAiJobClaim,
+  }
+}
+
+function renewCategoryAiClaim(db: ReturnType<typeof getDb>, jobId: string, claim: CategoryAiJobClaim) {
+  const result = db.prepare(`
+    update category_ai_suggestion_job
+    set claim_expires_at = clock_timestamp() + (?::double precision * interval '1 millisecond'),
+      updated_at = clock_timestamp()
+    where id = ?
+      and status = 'running'
+      and claim_token = ?
+      and claim_version = ?
+  `).run(categoryAiClaimMs(), jobId, claim.token, claim.version)
+  return Number(result.changes ?? 0) > 0
+}
+
+function startCategoryAiClaimHeartbeat(db: ReturnType<typeof getDb>, jobId: string, claim: CategoryAiJobClaim) {
+  const timer = setInterval(() => {
+    try {
+      renewCategoryAiClaim(db, jobId, claim)
+    } catch {
+      // The fenced write below remains the source of truth if a heartbeat fails.
+    }
+  }, Math.max(10_000, Math.floor(categoryAiClaimMs() / 3)))
+  timer.unref?.()
+  return () => clearInterval(timer)
+}
+
+function assertCategoryAiClaim(db: ReturnType<typeof getDb>, jobId: string, claim: CategoryAiJobClaim) {
+  const row = db.prepare(`
+    select id
+    from category_ai_suggestion_job
+    where id = ?
+      and status = 'running'
+      and claim_token = ?
+      and claim_version = ?
+      and claim_expires_at > clock_timestamp()
+    for update
+  `).get(jobId, claim.token, claim.version)
+  if (!row) throw categoryAiClaimLostError()
+}
+
+function updateClaimedCategoryAiJob(
   db: ReturnType<typeof getDb>,
   job: CategoryAiSuggestionJob,
   patch: Partial<CategoryAiSuggestionJob>,
+  claim: CategoryAiJobClaim,
 ) {
   const next = snapshotCategoryAiJob({
     ...job,
     ...patch,
     updated_at: new Date().toISOString(),
   })
-  persistCategoryAiJob(db, next)
-  return next
+  const completed = next.status === "completed"
+  const row = db.prepare(`
+    update category_ai_suggestion_job
+    set status = ?,
+      total_count = ?,
+      completed_count = ?,
+      failed_count = ?,
+      limit_count = ?,
+      requested_spu_codes_json = ?::jsonb,
+      refreshed_spu_codes_json = ?::jsonb,
+      items_json = ?::jsonb,
+      groups_json = ?::jsonb,
+      candidates_json = ?::jsonb,
+      suggestions_json = ?::jsonb,
+      provider_json = ?::jsonb,
+      error_message = ?,
+      started_at = ?::timestamptz,
+      finished_at = ?::timestamptz,
+      claim_token = case when ? then null else claim_token end,
+      claim_expires_at = case when ? then null else claim_expires_at end,
+      updated_at = clock_timestamp()
+    where id = ?
+      and status = 'running'
+      and claim_token = ?
+      and claim_version = ?
+    returning *
+  `).get(
+    next.status,
+    next.total_count,
+    next.completed_count,
+    next.failed_count,
+    next.limit,
+    JSON.stringify(next.requested_spu_codes ?? []),
+    JSON.stringify(next.refreshed_spu_codes ?? []),
+    JSON.stringify(next.items ?? []),
+    JSON.stringify(next.groups ?? []),
+    JSON.stringify(next.candidates ?? []),
+    JSON.stringify(next.suggestions ?? []),
+    JSON.stringify(next.provider ?? {}),
+    next.error ?? null,
+    next.started_at ?? null,
+    next.finished_at ?? null,
+    completed,
+    completed,
+    next.id,
+    claim.token,
+    claim.version,
+  ) as Record<string, unknown> | undefined
+  if (!row) throw categoryAiClaimLostError()
+  return snapshotCategoryAiJob(categoryAiJobFromRow(row))
 }
 
 function buildCategoryAiJobItems(groups: UnmappedGroup[], requestedSpuCodes: string[]) {
@@ -755,22 +894,25 @@ function recoverCategoryAiSuggestionJobs(db: ReturnType<typeof getDb>) {
   const rows = db.prepare(`
     select id
     from category_ai_suggestion_job
-    where status in ('queued', 'running')
+    where status = 'queued'
+      or (
+        status = 'running'
+        and (claim_expires_at is null or claim_expires_at <= clock_timestamp())
+      )
     order by created_at asc
     limit 20
   `).all() as Array<{ id: string }>
   for (const row of rows) scheduleCategoryAiSuggestionJob(String(row.id))
 }
 
-function enqueueCategoryAiSuggestionJob(options: { limit: number; spuCodes: string[] }) {
-  const db = getDb()
+function createCategoryAiSuggestionJob(options: { limit: number; spuCodes: string[] }) {
   const now = new Date().toISOString()
   const initialItems = options.spuCodes.map((spuCode) => ({
     spu_code: spuCode,
     status: "queued" as const,
     error: null,
   }))
-  const job: CategoryAiSuggestionJob = {
+  return {
     id: randomUUID(),
     status: "queued",
     total_count: initialItems.length,
@@ -789,7 +931,12 @@ function enqueueCategoryAiSuggestionJob(options: { limit: number; spuCodes: stri
     started_at: null,
     finished_at: null,
     updated_at: now,
-  }
+  } satisfies CategoryAiSuggestionJob
+}
+
+function enqueueCategoryAiSuggestionJob(options: { limit: number; spuCodes: string[] }) {
+  const db = getDb()
+  const job = createCategoryAiSuggestionJob(options)
   persistCategoryAiJob(db, job)
   scheduleCategoryAiSuggestionJob(job.id)
   return snapshotCategoryAiJob(job)
@@ -797,56 +944,72 @@ function enqueueCategoryAiSuggestionJob(options: { limit: number; spuCodes: stri
 
 export function requeueCategoryAiSuggestionTask(jobId: string) {
   const db = getDb()
-  const original = readCategoryAiSuggestionJob(db, jobId)
-  if (!original) return null
-  const spuCodes = uniqueStrings(
-    (original.items ?? [])
-      .filter((item) => String(item.status ?? "").trim() !== "completed")
-      .map((item) => item.spu_code),
-  )
-  const requestedCodes = spuCodes.length || (original.items ?? []).length
-    ? spuCodes
-    : uniqueStrings(original.requested_spu_codes ?? [])
-  if (requestedCodes.length === 0) {
-    throw new HTTPException(409, { message: "这个类目 AI 任务没有可重新加入队列的未完成项目" })
-  }
-  return enqueueCategoryAiSuggestionJob({
-    limit: original.limit,
-    spuCodes: requestedCodes,
-  })
+  const next = db.transaction(() => {
+    const row = db.prepare(`
+      select *
+      from category_ai_suggestion_job
+      where id = ?
+      for update
+    `).get(jobId) as Record<string, unknown> | undefined
+    if (!row) return null
+    if (normalizeText(row.status) !== "completed") {
+      throw new HTTPException(409, { message: "任务仍在执行中，请先停止或等待任务完成后再重新加入队列" })
+    }
+    const original = snapshotCategoryAiJob(categoryAiJobFromRow(row))
+    const spuCodes = uniqueStrings(
+      (original.items ?? [])
+        .filter((item) => String(item.status ?? "").trim() !== "completed")
+        .map((item) => item.spu_code),
+    )
+    const requestedCodes = spuCodes.length || (original.items ?? []).length
+      ? spuCodes
+      : uniqueStrings(original.requested_spu_codes ?? [])
+    if (requestedCodes.length === 0) {
+      throw new HTTPException(409, { message: "这个类目 AI 任务没有可重新加入队列的未完成项目" })
+    }
+    const job = createCategoryAiSuggestionJob({
+      limit: original.limit,
+      spuCodes: requestedCodes,
+    })
+    persistCategoryAiJob(db, job)
+    return snapshotCategoryAiJob(job)
+  })()
+  if (next) scheduleCategoryAiSuggestionJob(next.id)
+  return next
 }
 
 async function runCategoryAiSuggestionJob(jobId: string) {
   const db = getDb()
-  let job = readCategoryAiSuggestionJob(db, jobId)
-  if (!job) return
-  if (job.status === "completed") return
-  job = updateCategoryAiJob(db, job, {
-    status: "running",
-    started_at: new Date().toISOString(),
-  })
+  const claimed = claimCategoryAiSuggestionJob(db, jobId)
+  if (!claimed) return
+  let { job } = claimed
+  const { claim } = claimed
+  const stopHeartbeat = startCategoryAiClaimHeartbeat(db, jobId, claim)
 
   try {
     const groups = attachSkcExamples(db, listUnmappedGroups(db, job.limit, job.requested_spu_codes))
     const candidates = listCategoryCandidates(db, groups)
     const items = buildCategoryAiJobItems(groups, job.requested_spu_codes)
-    job = updateCategoryAiJob(db, job, {
+    job = updateClaimedCategoryAiJob(db, job, {
       groups,
       candidates,
       items,
       total_count: items.length,
       completed_count: 0,
       failed_count: 0,
-    })
+    }, claim)
 
     if (groups.length === 0) {
       const completedItems = items.map((item) => ({ ...item, status: "completed" as const }))
-      updateCategoryAiJob(db, job, {
-        status: "completed",
-        completed_count: completedItems.length,
-        items: completedItems,
-        finished_at: new Date().toISOString(),
-      })
+      db.transaction(() => {
+        assertCategoryAiClaim(db, jobId, claim)
+        updateClaimedCategoryAiJob(db, job, {
+          status: "completed",
+          completed_count: completedItems.length,
+          items: completedItems,
+          finished_at: new Date().toISOString(),
+        }, claim)
+      })()
       return
     }
 
@@ -859,38 +1022,51 @@ async function runCategoryAiSuggestionJob(jobId: string) {
       groups,
       suggestions: result.suggestions as unknown as Array<Record<string, unknown>>,
     })
-    persistAiSuggestions({
-      db,
-      groups,
-      suggestions,
-      provider: result.provider,
-    })
-    const refreshedSpuCodes = refreshAffectedBucketProducts(db, groups, job.requested_spu_codes)
     const completedItems = items.map((item) => ({ ...item, status: "completed" as const }))
-    updateCategoryAiJob(db, job, {
-      status: "completed",
-      completed_count: completedItems.length,
-      failed_count: 0,
-      items: completedItems,
-      suggestions,
-      provider: result.provider,
-      refreshed_spu_codes: refreshedSpuCodes,
-      finished_at: new Date().toISOString(),
-    })
+    db.transaction(() => {
+      assertCategoryAiClaim(db, jobId, claim)
+      persistAiSuggestions({
+        db,
+        groups,
+        suggestions,
+        provider: result.provider,
+      })
+      const refreshedSpuCodes = refreshAffectedBucketProducts(db, groups, job.requested_spu_codes)
+      updateClaimedCategoryAiJob(db, job, {
+        status: "completed",
+        completed_count: completedItems.length,
+        failed_count: 0,
+        items: completedItems,
+        suggestions,
+        provider: result.provider,
+        refreshed_spu_codes: refreshedSpuCodes,
+        finished_at: new Date().toISOString(),
+      }, claim)
+    })()
   } catch (error) {
+    if (isCategoryAiClaimLostError(error)) return
     const message = error instanceof Error ? error.message : String(error)
     const failedItems = job.items.length
       ? job.items.map((item) => ({ ...item, status: "failed" as const, error: message }))
       : [{ spu_code: job.requested_spu_codes[0] ?? "AI_CATEGORY_MATCH", status: "failed" as const, error: message }]
-    updateCategoryAiJob(db, job, {
-      status: "completed",
-      completed_count: 0,
-      failed_count: failedItems.length || 1,
-      total_count: failedItems.length || 1,
-      items: failedItems,
-      error: message,
-      finished_at: new Date().toISOString(),
-    })
+    try {
+      db.transaction(() => {
+        assertCategoryAiClaim(db, jobId, claim)
+        updateClaimedCategoryAiJob(db, job, {
+          status: "completed",
+          completed_count: 0,
+          failed_count: failedItems.length || 1,
+          total_count: failedItems.length || 1,
+          items: failedItems,
+          error: message,
+          finished_at: new Date().toISOString(),
+        }, claim)
+      })()
+    } catch (claimError) {
+      if (!isCategoryAiClaimLostError(claimError)) throw claimError
+    }
+  } finally {
+    stopHeartbeat()
   }
 }
 
@@ -898,11 +1074,20 @@ async function processCategoryAiSuggestionQueue() {
   categoryAiScheduled = false
   if (categoryAiRunning) return
   categoryAiRunning = true
-  while (categoryAiPending.length > 0) {
-    const jobId = categoryAiPending.shift()
-    if (jobId) await runCategoryAiSuggestionJob(jobId)
+  try {
+    while (categoryAiPending.length > 0) {
+      const jobId = categoryAiPending.shift()
+      if (!jobId) continue
+      try {
+        await runCategoryAiSuggestionJob(jobId)
+      } catch (error) {
+        console.error("Category AI suggestion queue internal error", error)
+      }
+    }
+  } finally {
+    categoryAiRunning = false
+    if (categoryAiPending.length > 0) scheduleCategoryAiSuggestionJob(categoryAiPending[0])
   }
-  categoryAiRunning = false
 }
 
 // GET /api/category-mapping/rules

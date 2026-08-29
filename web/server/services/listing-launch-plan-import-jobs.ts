@@ -333,7 +333,7 @@ async function processImportJob(job: ImportJob) {
     saveListingLaunchPlanImportJob(job)
     const sheets = await withBackgroundTaskSlot(
       "listing_launch_plan_import",
-      () => readSpreadsheetSheetsFromFileInWorker(job.filePath, { fileName: job.fileName }),
+      (signal) => readSpreadsheetSheetsFromFileInWorker(job.filePath, { fileName: job.fileName, signal }),
     )
     const inputRowCount = sheets.reduce((sum, sheet) => sum + sheet.rows.length, 0)
     setStageCompleted(job, 0, { sheetCount: sheets.length, inputRowCount })
@@ -345,7 +345,7 @@ async function processImportJob(job: ImportJob) {
     const sourceBatchIds: number[] = []
     let sourceInsertedRowCount = 0
     for (const sheet of sheets) {
-      const sourceImport = await withBackgroundTaskSlot("listing_launch_plan_import", async () => (
+      const sourceImport = await withBackgroundTaskSlot("listing_launch_plan_import", async (signal) => (
         importProductArchiveSourceRowsInChunks(getDb(), {
           sourceType: "launch_plan",
           fileName: job.fileName,
@@ -353,6 +353,7 @@ async function processImportJob(job: ImportJob) {
           rows: sheet.rows,
         }, {
           chunkSize: 1000,
+          signal,
           onProgress: ({ sourceBatchId, insertedRowCount, totalRowCount }) => {
             const item = job.items[1]
             if (item) {
@@ -378,7 +379,7 @@ async function processImportJob(job: ImportJob) {
     saveListingLaunchPlanImportJob(job)
     const listingPlanImport = await withBackgroundTaskSlot(
       "listing_launch_plan_import",
-      () => importListingLaunchPlanSheetsInChunks(getDb(), {
+      (signal) => importListingLaunchPlanSheetsInChunks(getDb(), {
         fileName: job.fileName,
         fileSizeBytes: job.fileSizeBytes,
         sheets,
@@ -386,6 +387,7 @@ async function processImportJob(job: ImportJob) {
         createdBy: job.actor?.id ?? null,
       }, {
         chunkSize: 50,
+        signal,
         onProgress: ({ importId, insertedRowCount, totalRowCount }) => {
           const item = job.items[2]
           if (item) {
@@ -409,11 +411,12 @@ async function processImportJob(job: ImportJob) {
       const sourceBatchId = sourceBatchIds[index]
       const summary = await withBackgroundTaskSlot(
         "listing_launch_plan_import",
-        () => refreshProductArchiveDraftsFromSourceBatchInChunks(getDb(), {
+        (signal) => refreshProductArchiveDraftsFromSourceBatchInChunks(getDb(), {
           sourceBatchId,
           sourceType: "launch_plan",
         }, {
           chunkSize: 5,
+          signal,
           onProgress: (progress) => {
             const item = job.items[3]
             if (item) {

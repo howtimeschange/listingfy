@@ -1264,7 +1264,22 @@ export function requeuePlatformProductAsyncTask(input: {
   jobId: string
   actor?: LifecycleActor | null
 }) {
-  const original = loadPlatformProductJob(input.type, input.jobId)
+  const db = getDb()
+  const original = db.transaction(() => {
+    const row = db.prepare(`
+      select *
+      from shein_platform_product_job
+      where id = ?
+        and job_type = ?
+      for update
+    `).get(input.jobId, input.type) as JsonRecord | undefined
+    if (!row) return null
+    const job = jobFromRow(row)
+    if (job.status !== "completed") {
+      throw new Error("任务仍在执行中，请先停止或等待任务完成后再重新加入队列")
+    }
+    return job
+  })()
   if (!original) return null
   if (input.type === "export") {
     if (original.status === "completed" && original.failed_count <= 0) {
@@ -1273,7 +1288,6 @@ export function requeuePlatformProductAsyncTask(input: {
     return enqueuePlatformProductExportJob(original.payload)
   }
 
-  const db = getDb()
   const persistedItemCount = platformProductJobItemCount(original.id, db)
   if (persistedItemCount > 0) {
     const codes = nonCompletedPlatformProductJobItemCodes(original.id, db)

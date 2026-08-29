@@ -306,6 +306,9 @@ function stopCategoryAiSuggestionTask(jobId: string) {
         failed_count = ?,
         items_json = ?::jsonb,
         error_message = ?,
+        claim_token = null,
+        claim_expires_at = null,
+        claim_version = claim_version + 1,
         started_at = ?::timestamptz,
         finished_at = ?::timestamptz,
         updated_at = clock_timestamp()

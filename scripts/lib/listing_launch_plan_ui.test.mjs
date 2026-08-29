@@ -139,8 +139,10 @@ test("listing launch plan import jobs offload spreadsheet parsing and chunk sour
   assert.match(spreadsheetWorkerService, /from "node:worker_threads"/);
   assert.match(spreadsheetWorkerService, /new Worker/);
   assert.match(spreadsheetWorkerService, /spreadsheet_parse_worker\.mjs/);
-  assert.match(spreadsheetParserWorker, /readSpreadsheetSheetsFromFile/);
-  assert.match(spreadsheetParserWorker, /parentPort\.postMessage/);
+  assert.match(spreadsheetParserWorker, /streamSpreadsheetSheetsFromFile/);
+  assert.match(spreadsheetParserWorker, /port\.postMessage/);
+  assert.match(spreadsheetParserWorker, /type: "chunk"/);
+  assert.match(spreadsheetParserWorker, /type !== "ack"/);
 
   assert.match(service, /normalizeListingLaunchPlanRowsInChunks/);
   assert.match(draftService, /export async function importProductArchiveSourceRowsInChunks/);
