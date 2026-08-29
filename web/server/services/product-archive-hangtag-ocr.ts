@@ -310,6 +310,8 @@ function normalizedOcrFields(document: OcrDocument) {
 }
 
 function betterTarget(left: JsonRecord, right: JsonRecord) {
+  const applyDelta = Number(Boolean(left.willApply)) - Number(Boolean(right.willApply))
+  if (applyDelta !== 0) return applyDelta > 0 ? left : right
   const confidenceDelta = fieldConfidenceRank(left.confidence) - fieldConfidenceRank(right.confidence)
   if (confidenceDelta !== 0) return confidenceDelta > 0 ? left : right
   const sourceDelta = sourceRank(left.sourceKind) - sourceRank(right.sourceKind)

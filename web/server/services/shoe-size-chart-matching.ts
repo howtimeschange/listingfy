@@ -173,11 +173,59 @@ function optionText(option: unknown) {
   if (typeof option === "string" || typeof option === "number") return stringValue(option)
   if (!option || typeof option !== "object" || Array.isArray(option)) return ""
   const row = option as JsonRecord
-  return stringValue(row.value ?? row.label ?? row.name)
+  return stringValue(
+    row.attrValueName
+      ?? row.attr_value_name
+      ?? row.label
+      ?? row.name
+      ?? row.text
+      ?? row.optionName
+      ?? row.option_name
+      ?? row.title
+      ?? row.value
+      ?? row.optionValue
+      ?? row.option_value
+      ?? row.code
+      ?? row.key
+      ?? row.id
+      ?? row.attrValueId
+      ?? row.attr_value_id,
+  )
+}
+
+function isPrimitiveOptionToken(option: unknown) {
+  return option == null || typeof option !== "object"
+}
+
+function looksLikeDeepdrawOptionIdToken(option: unknown) {
+  return /^\d{4,}$/.test(stringValue(option))
+}
+
+function hasReadableOptionText(option: unknown) {
+  const text = stringValue(option)
+  return Boolean(text && !looksLikeDeepdrawOptionIdToken(text) && /[A-Za-z\u4e00-\u9fff]/.test(text))
+}
+
+function primitiveOptionTokenIsPairedId(options: unknown[], index: number) {
+  const option = options[index]
+  if (!isPrimitiveOptionToken(option) || !looksLikeDeepdrawOptionIdToken(option)) return false
+  const readablePeerCount = options.filter((candidate) => isPrimitiveOptionToken(candidate) && hasReadableOptionText(candidate)).length
+  if (readablePeerCount < 2 && !(options.length === 2 && readablePeerCount === 1)) return false
+  return [
+    options[index - 1],
+    options[index + 1],
+  ].some((candidate) => isPrimitiveOptionToken(candidate) && hasReadableOptionText(candidate))
+}
+
+function optionValues(options: unknown[] = []) {
+  return uniqueTextValues(options.map((option, index) => {
+    if (primitiveOptionTokenIsPairedId(options, index)) return ""
+    return optionText(option).replace(/\s*[（(]\s*\d{4,}\s*[）)]\s*$/g, "").trim()
+  }))
 }
 
 function templateOptions(template: ShoeFieldTemplate) {
-  return new Set((template.options ?? []).map(optionText).filter(Boolean))
+  return new Set(optionValues(template.options ?? []))
 }
 
 function supportedColumns(template: ShoeFieldTemplate, desired: string[], fallbacks: Record<string, string[]> = {}) {
@@ -280,6 +328,17 @@ function parseClosedAgeRange(value: unknown): AgeRangeMonths | null {
   return Number.isFinite(months) ? { startMonths: months, endMonths: months } : null
 }
 
+function parseOpenAgeRange(value: unknown): AgeRangeMonths | null {
+  const text = stringValue(value)
+  const match = text.match(/(\d{1,2}(?:\.\d+)?)\s*(周岁|岁半|岁|个月|月)\s*(以上|及以上|以后|起|以下|及以下|以内)/)
+  if (!match) return null
+  const months = ageUnitMonths(Number(match[1]), match[2])
+  if (!Number.isFinite(months)) return null
+  return /以下|以内/.test(match[3])
+    ? { startMonths: 0, endMonths: months }
+    : { startMonths: months, endMonths: Number.POSITIVE_INFINITY }
+}
+
 function ageRangesFromText(value: unknown) {
   return uniqueTextValues(stringValue(value).split(/[;；]/))
     .map(parseClosedAgeRange)
@@ -320,24 +379,29 @@ export function shoeSizeChartRecommendedAgeText(rows: JsonRecord[]) {
 }
 
 export function normalizeAgeFieldOptionValue(value: unknown, options: unknown[], multi: boolean) {
-  const sourceRange = aggregateAgeRange(ageRangesFromText(value))
+  const sourceRange = aggregateAgeRange(ageRangesFromText(value)) ?? parseOpenAgeRange(value)
   if (!sourceRange) return ""
-  const candidates = (options ?? []).map(optionText).filter(Boolean).map((option, index) => ({
+  const values = optionValues(options)
+  const candidates = values.map((option, index) => ({
     option,
     index,
-    range: parseClosedAgeRange(option),
+    range: parseClosedAgeRange(option) ?? parseOpenAgeRange(option),
   })).filter((candidate): candidate is { option: string; index: number; range: AgeRangeMonths } => Boolean(candidate.range))
+  const allStage = values.find((option) => /^(?:全阶段|全年龄|全龄段|全龄|通用|不限)$/.test(option))
   if (multi) {
-    return uniqueTextValues(
+    const values = uniqueTextValues(
       candidates
+        .filter((candidate) => Number.isFinite(candidate.range.endMonths))
         .filter((candidate) => ageRangesOverlap(sourceRange, candidate.range))
         .map((candidate) => candidate.option),
-    ).join(";")
+    )
+    return values.length ? values.join(";") : (allStage ?? "")
   }
   const covering = candidates
     .filter((candidate) => candidate.range.startMonths <= sourceRange.startMonths && candidate.range.endMonths >= sourceRange.endMonths)
     .sort((left, right) => ageRangeWidth(left.range) - ageRangeWidth(right.range) || left.index - right.index)[0]
   if (covering) return covering.option
+  if (allStage) return allStage
   const overlapping = candidates
     .filter((candidate) => ageRangesOverlap(sourceRange, candidate.range))
     .sort((left, right) => {

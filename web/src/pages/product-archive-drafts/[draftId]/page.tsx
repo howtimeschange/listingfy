@@ -352,13 +352,65 @@ function fieldOptionText(option: unknown, keys: string[]) {
   return stringOptionValue(record.value) || stringOptionValue(record.label) || stringOptionValue(record.name)
 }
 
+function fieldOptionCanonicalValue(option: unknown) {
+  if (!option || typeof option !== "object") return stringOptionValue(option)
+  return fieldOptionText(option, [
+    "attrValueName",
+    "attr_value_name",
+    "label",
+    "name",
+    "text",
+    "optionName",
+    "option_name",
+    "title",
+  ]) || fieldOptionText(option, [
+    "value",
+    "optionValue",
+    "option_value",
+    "code",
+    "key",
+    "id",
+    "attrValueId",
+    "attr_value_id",
+  ])
+}
+
+function isPrimitiveOptionToken(option: unknown) {
+  return option == null || typeof option !== "object"
+}
+
+function looksLikeDeepdrawOptionIdToken(option: unknown) {
+  return /^\d{4,}$/.test(stringOptionValue(option))
+}
+
+function hasReadableOptionText(option: unknown) {
+  const text = stringOptionValue(option)
+  return Boolean(text && !looksLikeDeepdrawOptionIdToken(text) && /[A-Za-z\u4e00-\u9fff]/.test(text))
+}
+
+function primitiveOptionTokenIsPairedId(options: unknown[], index: number) {
+  const option = options[index]
+  if (!isPrimitiveOptionToken(option) || !looksLikeDeepdrawOptionIdToken(option)) return false
+  const readablePeerCount = options.filter((candidate) => isPrimitiveOptionToken(candidate) && hasReadableOptionText(candidate)).length
+  if (readablePeerCount < 2 && !(options.length === 2 && readablePeerCount === 1)) return false
+  return [
+    options[index - 1],
+    options[index + 1],
+  ].some((candidate) => isPrimitiveOptionToken(candidate) && hasReadableOptionText(candidate))
+}
+
+function visibleFieldOptionValue(option: unknown, options: unknown[], index: number) {
+  if (primitiveOptionTokenIsPairedId(options, index)) return ""
+  return fieldOptionCanonicalValue(option).replace(/\s*[（(]\s*\d{4,}\s*[）)]\s*$/g, "").trim()
+}
+
 function fieldOptions(field: DraftField): FieldOption[] {
-  const options = parseOptionList(field.options_json)
-    .map((option) => {
-      const value = fieldOptionText(option, ["value", "code", "id", "optionValue", "option_value", "key", "name", "label"])
-      const label = fieldOptionText(option, ["label", "name", "text", "optionName", "option_name", "title", "value", "code"])
-      if (!value && !label) return null
-      return { value: value || label, label: label || value }
+  const rawOptions = parseOptionList(field.options_json)
+  const options = rawOptions
+    .map((option, index) => {
+      const value = visibleFieldOptionValue(option, rawOptions, index)
+      if (!value) return null
+      return { value, label: value }
     })
     .filter(Boolean) as FieldOption[]
   return Array.from(new Map(options.map((option) => [option.value, option])).values())

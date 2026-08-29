@@ -316,12 +316,21 @@ function optionText(value: unknown) {
   if (value == null) return ""
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return stringValue(value)
   const record = recordValue(value)
+  const display = fieldOptionText(value, [
+    "attrValueName",
+    "attr_value_name",
+    "label",
+    "name",
+    "text",
+    "optionName",
+    "option_name",
+    "title",
+  ])
+  if (display) return display
   return stringValue(
     record.value
       ?? record.optionValue
       ?? record.option_value
-      ?? record.attrValueName
-      ?? record.attr_value_name
       ?? record.attrValueId
       ?? record.attr_value_id
       ?? record.code
@@ -335,28 +344,37 @@ function optionText(value: unknown) {
   )
 }
 
-function optionTextCandidates(value: unknown) {
-  if (value == null) return []
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return [stringValue(value)].filter(Boolean)
-  const record = recordValue(value)
-  return uniqueTextValues([
-    record.value,
-    record.optionValue,
-    record.option_value,
-    record.attrValueName,
-    record.attr_value_name,
-    record.attrValueId,
-    record.attr_value_id,
-    record.code,
-    record.key,
-    record.name,
-    record.label,
-    record.text,
-    record.optionName,
-    record.option_name,
-    record.title,
-    record.id,
-  ])
+function isPrimitiveOptionToken(value: unknown) {
+  return value == null || typeof value !== "object"
+}
+
+function looksLikeDeepdrawOptionIdToken(value: unknown) {
+  const text = stringValue(value)
+  return /^\d{4,}$/.test(text)
+}
+
+function hasReadableOptionText(value: unknown) {
+  const text = stringValue(value)
+  return Boolean(text && !looksLikeDeepdrawOptionIdToken(text) && /[A-Za-z\u4e00-\u9fff]/.test(text))
+}
+
+function primitiveOptionTokenIsPairedId(options: unknown[], index: number) {
+  const option = options[index]
+  if (!isPrimitiveOptionToken(option) || !looksLikeDeepdrawOptionIdToken(option)) return false
+  const readablePeerCount = options.filter((candidate) => (
+    isPrimitiveOptionToken(candidate)
+    && hasReadableOptionText(candidate)
+  )).length
+  if (readablePeerCount < 2 && !(options.length === 2 && readablePeerCount === 1)) return false
+  return [
+    options[index - 1],
+    options[index + 1],
+  ].some((candidate) => isPrimitiveOptionToken(candidate) && hasReadableOptionText(candidate))
+}
+
+function visibleOptionText(option: unknown, options: unknown[] = [], index = -1) {
+  if (index >= 0 && primitiveOptionTokenIsPairedId(options, index)) return ""
+  return optionText(option).replace(/\s*[（(]\s*\d{4,}\s*[）)]\s*$/g, "").trim()
 }
 
 function numberValue(value: unknown): number | null {
@@ -724,7 +742,7 @@ const PRODUCT_ARCHIVE_MERCHANT_SKU_RULE_COLUMNS = [
 ]
 
 function merchantSkuColumns(templateOptions: unknown[] = []) {
-  const supported = new Set(templateOptions.flatMap(optionTextCandidates).map(stringValue).filter(Boolean))
+  const supported = new Set(optionValues(templateOptions))
   if (supported.size === 0) return PRODUCT_ARCHIVE_MERCHANT_SKU_BASE_COLUMNS
   return PRODUCT_ARCHIVE_MERCHANT_SKU_RULE_COLUMNS.filter((column) => supported.has(column))
 }
@@ -907,7 +925,7 @@ function isProductArchiveSkuSizeTemplateOptionValue(value: unknown) {
 }
 
 function productArchiveSkuSizeTemplateOptionTexts(options: unknown[]) {
-  return uniqueTextValues(options.flatMap(optionTextCandidates).filter(isProductArchiveSkuSizeTemplateOptionValue))
+  return optionValues(options).filter(isProductArchiveSkuSizeTemplateOptionValue)
 }
 
 function colorFamily(value: unknown) {
@@ -5214,35 +5232,11 @@ function fieldOptionText(option: unknown, keys: string[]) {
 function fieldOptionsFromTemplate(optionsJson: unknown) {
   const rawOptions = arrayValue(optionsJson)
   return rawOptions
-    .map((option) => {
-      const value = fieldOptionText(option, [
-        "value",
-        "code",
-        "id",
-        "optionValue",
-        "option_value",
-        "attrValueId",
-        "attr_value_id",
-        "attrValueName",
-        "attr_value_name",
-        "key",
-        "name",
-        "label",
-      ])
-      const label = fieldOptionText(option, [
-        "label",
-        "name",
-        "text",
-        "optionName",
-        "option_name",
-        "attrValueName",
-        "attr_value_name",
-        "title",
-        "value",
-        "code",
-      ])
-      if (!value && !label) return null
-      return { value: value || label, label: label || value }
+    .map((option, index) => {
+      const value = visibleOptionText(option, rawOptions, index)
+      const label = value
+      if (!value) return null
+      return { value, label }
     })
     .filter((option): option is { value: string; label: string } => Boolean(option))
 }
@@ -5250,7 +5244,7 @@ function fieldOptionsFromTemplate(optionsJson: unknown) {
 export function productArchiveFieldValueMatchesOptions(value: unknown, options: unknown[], fieldName?: unknown) {
   if (!options.length || !hasValue(value)) return true
   if (value && typeof value === "object" && !Array.isArray(value)) return true
-  const allowed = new Set(options.flatMap(optionTextCandidates).filter(Boolean))
+  const allowed = new Set(optionValues(options))
   if (!allowed.size) return true
   const text = stringValue(value)
   const groups = text.split(/[;；]/).map((part) => part.trim()).filter(Boolean)
@@ -5276,7 +5270,7 @@ function productArchiveFieldOptionValidationMessage(value: unknown, options: unk
 }
 
 function optionValues(options: unknown[]) {
-  return uniqueTextValues(options.flatMap(optionTextCandidates))
+  return uniqueTextValues(options.map((option, index) => visibleOptionText(option, options, index)))
 }
 
 function pickOption(options: unknown[], predicates: Array<(value: string) => boolean>) {
@@ -6278,6 +6272,17 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
   return text
 }
 
+export function normalizeProductArchiveTemplateFieldValue(
+  fieldName: string,
+  value: unknown,
+  options: unknown[],
+  input: { preserveInvalid?: boolean } = {},
+) {
+  const normalized = normalizeProductArchiveDeepdrawFieldValue(fieldName, value, options)
+  if (!hasValue(normalized) || !options.length || input.preserveInvalid) return normalized
+  return productArchiveFieldValueMatchesOptions(normalized, options, fieldName) ? normalized : ""
+}
+
 function semicolonTextValues(value: unknown) {
   return stringValue(value).split(/[;；]/).map((part) => part.trim()).filter(Boolean)
 }
@@ -6907,6 +6912,22 @@ function evidenceRuleValueForField(input: {
   const currentValue = stringValue(input.field.value_text)
   const contextSpu = ruleContextSpu(input.draft, input.spu)
   const options = arrayValue(input.field.options_json)
+  if (isProductArchiveAgeFieldName(fieldName)) {
+    const sourceValue = applicableAgeText(contextSpu, input.sourceRows)
+      || launchValue(input.sourceRows, "年龄段")
+      || launchValue(input.sourceRows, "适用年龄")
+      || currentValue
+      || stringValue(contextSpu.age_group_name)
+    const normalized = normalizeProductArchiveDeepdrawFieldValue(fieldName, sourceValue, options)
+    if (normalized && productArchiveFieldValueMatchesOptions(normalized, options, fieldName)) {
+      return {
+        value: normalized,
+        sourceType: "source_rule",
+        sourceRef: "尺码段/年龄段",
+        reason: "根据尺码段、上市计划年龄段或当前来源值归一到深绘模板年龄枚举",
+      }
+    }
+  }
   if (isProductArchiveProductCategoryFieldKey(key)) {
     const value = productArchiveCategoryFieldValue({
       draft: input.draft,
@@ -6921,6 +6942,23 @@ function evidenceRuleValueForField(input: {
         sourceType: "source_rule",
         sourceRef: "深绘类目/来源类目",
         reason: "根据深绘类目路径、上市计划或 MDM 类目信息归一产品类别",
+      }
+    }
+  }
+  if (key === "款式" || key === "款式多选" || key === "款式单选" || key === "类型" || key === "类型多选" || key === "分类") {
+    const sourceValue = launchValue(input.sourceRows, "主款式 （唯品四级品类）")
+      || launchValue(input.sourceRows, "主款式（唯品四级品类）")
+      || launchValue(input.sourceRows, "品类")
+      || currentValue
+      || stringValue(contextSpu.subclass_name)
+      || stringValue(contextSpu.spu_name)
+    const normalized = normalizeProductArchiveDeepdrawFieldValue(fieldName, sourceValue, options)
+    if (normalized && productArchiveFieldValueMatchesOptions(normalized, options, fieldName)) {
+      return {
+        value: normalized,
+        sourceType: "source_rule",
+        sourceRef: "上市计划/MDM款式",
+        reason: "根据上市计划、MDM 子类或当前来源值归一到深绘模板款式枚举",
       }
     }
   }
@@ -7662,7 +7700,9 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
       : colorField
         ? mdmDerived.valueText || sourceValueText
         : sourceValueText || mdmDerived.valueText
-    const valueText = normalizeProductArchiveDeepdrawFieldValue(fieldName, rawValueText, templateOptions)
+    const valueText = normalizeProductArchiveTemplateFieldValue(fieldName, rawValueText, templateOptions, {
+      preserveInvalid: existingManual,
+    })
     const valueJson = businessBlank ? {} : existingManual ? recordValue(existing.value_json) : mdmDerived.valueJson
     const fieldSourceType = existingManual
       ? (stringValue(existing.source_type) || "manual")
@@ -9386,6 +9426,11 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
   const aiById = new Map(aiFills.map((fill) => [Number(fill.field_id), fill]))
   const now = nowIso()
   const saved: Array<{ field_id: number; field_name: string; field_value: string; source: string; confidence: number | null }> = []
+  const templateOptionsByFieldId = new Map(
+    fields
+      .map((field) => [Number(field.id), fieldOptionsFromTemplate(field.options_json)] as const)
+      .filter(([fieldId]) => Number.isInteger(fieldId) && fieldId > 0),
+  )
   const markDraftChanged = () => {
     if (warnings.some((warning) => warning.code === "draft_changed")) return
     warnings.push({
@@ -9436,8 +9481,11 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
         markDraftChanged()
         return
       }
+      const templateOptions = templateOptionsByFieldId.get(input.fieldId) ?? []
+      const fieldValue = normalizeProductArchiveTemplateFieldValue(input.fieldName, input.fieldValue, templateOptions)
+      if (!fieldValue && templateOptions.length > 0) return
       const update = updateField.run(
-        input.fieldValue,
+        fieldValue || input.fieldValue,
         jsonText(input.valueJson),
         input.sourceType,
         input.sourceRef,
@@ -9464,7 +9512,7 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
       saved.push({
         field_id: input.fieldId,
         field_name: input.fieldName,
-        field_value: input.fieldValue,
+        field_value: fieldValue || input.fieldValue,
         source: input.source,
         confidence: input.confidence,
       })
@@ -10147,11 +10195,13 @@ export function productArchivePayloadFieldValue(field: JsonRecord, options: {
   }
   const text = stringValue(field.value_text)
   if (text) {
-    return normalizeProductArchiveDeepdrawFieldValue(
+    const optionsJson = arrayValue(field.options_json)
+    const normalized = normalizeProductArchiveTemplateFieldValue(
       stringValue(field.template_field_name) || stringValue(field.field_name),
       text,
-      arrayValue(field.options_json),
-    ) || text
+      optionsJson,
+    )
+    return normalized || (optionsJson.length ? null : text)
   }
   return hasValue(jsonValue) ? jsonValue : null
 }

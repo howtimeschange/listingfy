@@ -2621,6 +2621,12 @@ test("product archive AI fill persists OCR text and enum evidence before the gen
       validation_status: "missing", validation_message: "必填字段缺失", updated_at: "2026-08-29T00:00:02.000Z",
       options_json: [{ label: "B类", value: "B类" }], field_type: "SINGLE_CHOICE",
     },
+    {
+      id: 3, draft_id: 917, field_name: "安全等级多选", field_id: "safety-multi", source_type: "manual", source_ref: null,
+      value_text: null, value_json: {}, required: true, blocking: true, manual_override: false,
+      validation_status: "missing", validation_message: "必填字段缺失", updated_at: "2026-08-29T00:00:03.000Z",
+      options_json: [{ attrValueId: 7777, attrValueName: "A类" }], field_type: "MULTI_CHOICE",
+    },
   ];
   const images = [{
     id: 12,
@@ -2671,12 +2677,11 @@ test("product archive AI fill persists OCR text and enum evidence before the gen
       fields: [
         { key: "executionStandard", label: "执行标准", value: "FZ/T 73018-2021", confidence: "high", sourceKind: "hangtag" },
         { key: "safetyCategory", label: "安全技术级别", value: "符合 GB 31701 B类", confidence: "high", sourceKind: "hangtag" },
+        { key: "safetyCategory", label: "安全技术级别", value: "7777", confidence: "high", sourceKind: "hangtag" },
       ],
     }],
     router: {
-      callJson: async () => {
-        throw new Error("general AI should not run for OCR-filled fields");
-      },
+      callJson: async () => ({ json: { fills: [] } }),
     },
   });
 
@@ -3808,6 +3813,22 @@ test("product archive field option validation supports multi-value strings and o
       { value: "粉红" },
     ]),
     true,
+  );
+  assert.equal(
+    service.productArchiveFieldValueMatchesOptions("飞织鞋", [{ attrValueId: 2370485, attrValueName: "飞织鞋" }]),
+    true,
+  );
+  assert.equal(
+    service.productArchiveFieldValueMatchesOptions("2370485", [{ attrValueId: 2370485, attrValueName: "飞织鞋" }]),
+    false,
+  );
+  assert.equal(
+    service.productArchiveFieldValueMatchesOptions("鲨鱼裤", ["鲨鱼裤", 301690, "靴裤", 1207452]),
+    true,
+  );
+  assert.equal(
+    service.productArchiveFieldValueMatchesOptions("301690", ["鲨鱼裤", 301690, "靴裤", 1207452]),
+    false,
   );
   assert.equal(
     service.productArchiveFieldValueMatchesOptions({ title: "价格,货号", 蓝色调00388: { "080": "359,code" } }, []),
@@ -5557,6 +5578,61 @@ test("product archive AI rules fill shoe product category and insole fallback in
   ]);
 });
 
+test("product archive AI evidence rules repair invalid age and shoe style values to visible template enums", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const fills = service.buildProductArchiveEvidenceRuleFills({
+    draft: {
+      spu_code: "204426141023",
+      trade_path: "童鞋/亲子鞋 / 男童鞋 / 运动鞋",
+      source_snapshot_json: {
+        spu: {
+          spu_code: "204426141023",
+          product_line_name: "鞋品",
+          subclass_name: "运动鞋",
+          spec_range: "25-33",
+        },
+      },
+    },
+    sourceRows: [],
+    fields: [
+      {
+        id: 611,
+        field_name: "适用年龄",
+        source_type: "manual",
+        value_text: "3-7岁",
+        value_json: {},
+        validation_status: "invalid",
+        validation_message: "字段值不在深绘模板选项中",
+        options_json: [
+          { attrValueId: 280696, attrValueName: "全阶段" },
+          { attrValueId: 321880, attrValueName: "9-12个月" },
+          { attrValueId: 321877, attrValueName: "8-18个月" },
+          { attrValueId: 2377314, attrValueName: "7岁以上" },
+        ],
+      },
+      {
+        id: 612,
+        field_name: "款式(单选)",
+        source_type: "manual",
+        value_text: "休闲鞋",
+        value_json: {},
+        validation_status: "invalid",
+        validation_message: "字段值不在深绘模板选项中",
+        options_json: [
+          { attrValueId: 2370485, attrValueName: "飞织鞋" },
+          { attrValueId: 1343692, attrValueName: "运动凉鞋" },
+          { attrValueId: 2430427, attrValueName: "运动休闲鞋" },
+        ],
+      },
+    ],
+  });
+
+  assert.deepEqual(fills.map((fill) => [fill.field_name, fill.field_value, fill.source_type]), [
+    ["适用年龄", "全阶段", "source_rule"],
+    ["款式(单选)", "运动休闲鞋", "source_rule"],
+  ]);
+});
+
 test("product archive AI candidates expose required visual blockers and exclude punctuated SKU-size fields", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const candidates = service.buildProductArchiveAiFillCandidateFields([
@@ -5600,6 +5676,85 @@ test("product archive AI candidates expose required visual blockers and exclude 
   assert.equal(candidates.find((candidate) => candidate.fieldName === "内胆类型")?.required, true);
   assert.equal(candidates.find((candidate) => candidate.fieldName === "是否有腰带")?.required, true);
   assert.equal(candidates.some((candidate) => candidate.fieldName === "尺码."), false);
+});
+
+test("product archive AI enum candidates and fills use visible option values instead of DeepDraw ids", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const candidates = service.buildProductArchiveAiFillCandidateFields([
+    {
+      id: 701,
+      field_name: "款式(单选)",
+      source_type: "manual",
+      value_text: "",
+      value_json: {},
+      required: true,
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [
+        { attrValueId: 2370485, attrValueName: "飞织鞋" },
+        { attrValueId: 2430427, attrValueName: "运动休闲鞋" },
+      ],
+    },
+  ], [], []);
+
+  assert.deepEqual(candidates[0].options, [
+    { value: "飞织鞋", label: "飞织鞋" },
+    { value: "运动休闲鞋", label: "运动休闲鞋" },
+  ]);
+  assert.equal(
+    service.normalizeProductArchiveAiFillValue("款式(单选)", "", "2370485", candidates[0].options),
+    "",
+  );
+  assert.equal(
+    service.normalizeProductArchiveAiFillValue("款式(单选)", "", "运动休闲鞋", candidates[0].options),
+    "运动休闲鞋",
+  );
+
+  const flatCandidates = service.buildProductArchiveAiFillCandidateFields([
+    {
+      id: 702,
+      field_name: "分类",
+      source_type: "manual",
+      value_text: "外套",
+      value_json: {},
+      required: true,
+      validation_status: "invalid",
+      validation_message: "字段值不在深绘模板选项中",
+      options_json: ["鲨鱼裤", 301690, "靴裤", 1207452, "面包裤", 1207455, "防蚊裤", 2215168],
+    },
+    {
+      id: 703,
+      field_name: "服装版型",
+      source_type: "manual",
+      value_text: "合体",
+      value_json: {},
+      required: true,
+      validation_status: "invalid",
+      validation_message: "字段值不在深绘模板选项中",
+      options_json: ["紧身型", 2537595, "紧身", 443205, "直筒型", 3001788, "直筒", 443341],
+    },
+    {
+      id: 704,
+      field_name: "裤长",
+      source_type: "manual",
+      value_text: "不适用",
+      value_json: {},
+      required: true,
+      validation_status: "invalid",
+      validation_message: "字段值不在深绘模板选项中",
+      options_json: ["长裤", 1394, "超长裤", 3012693, "超短裤/热裤", 444769, "短裤", 2498],
+    },
+  ], [], []);
+
+  assert.deepEqual(flatCandidates.map((field) => [field.fieldName, field.options.map((option) => option.value)]), [
+    ["分类", ["鲨鱼裤", "靴裤", "面包裤", "防蚊裤"]],
+    ["服装版型", ["紧身型", "紧身", "直筒型", "直筒"]],
+    ["裤长", ["长裤", "超长裤", "超短裤/热裤", "短裤"]],
+  ]);
+  assert.equal(service.normalizeProductArchiveAiFillValue("分类", "外套", "301690", flatCandidates[0].options), "");
+  assert.equal(service.normalizeProductArchiveAiFillValue("分类", "外套", "鲨鱼裤", flatCandidates[0].options), "鲨鱼裤");
+  assert.equal(service.normalizeProductArchiveTemplateFieldValue("分类", "外套", ["鲨鱼裤", 301690, "靴裤", 1207452]), "");
+  assert.equal(service.normalizeProductArchiveTemplateFieldValue("裤长", "不适用", ["长裤", 1394, "短裤", 2498]), "");
 });
 
 test("product archive AI fill includes color fields when SKU colors need template matching", async () => {
@@ -6049,6 +6204,21 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "9-12岁" },
     { value: "12岁以上" },
   ]), "3-6岁;6-9岁;9-12岁");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄", "3-7岁", [
+    { attrValueId: 280696, attrValueName: "全阶段" },
+    { attrValueId: 321880, attrValueName: "9-12个月" },
+    { attrValueId: 321877, attrValueName: "8-18个月" },
+    { attrValueId: 2377314, attrValueName: "7岁以上" },
+  ]), "全阶段");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄", "8-14岁", [
+    { attrValueId: 280696, attrValueName: "全阶段" },
+    { attrValueId: 2377314, attrValueName: "7岁以上" },
+  ]), "7岁以上");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("款式(单选)", "休闲鞋", [
+    { attrValueId: 2370485, attrValueName: "飞织鞋" },
+    { attrValueId: 1343692, attrValueName: "运动凉鞋" },
+    { attrValueId: 2430427, attrValueName: "运动休闲鞋" },
+  ]), "运动休闲鞋");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄(多选)", "2-7岁", [
     { value: "1-3岁" },
     { value: "2岁" },

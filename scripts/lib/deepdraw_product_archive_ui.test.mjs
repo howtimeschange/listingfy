@@ -667,6 +667,14 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftDetailPage, /api\.get<.*>\(`\/deepdraw-metadata\/trades\?/s);
   assert.match(draftDetailPage, /fieldOptions/);
   assert.match(draftDetailPage, /fieldOptions\(field\)\.length > 0\) return true/);
+  assert.match(draftListPage, /function fieldOptionCanonicalValue\(option: unknown\)/);
+  assert.match(draftListPage, /"attrValueName"[\s\S]*"attr_value_name"[\s\S]*"label"[\s\S]*"optionName"/);
+  assert.match(draftListPage, /function primitiveOptionTokenIsPairedId\(options: unknown\[\], index: number\)/);
+  assert.match(draftListPage, /visibleFieldOptionValue\(option, rawOptions, index\)/);
+  assert.match(draftDetailPage, /function fieldOptionCanonicalValue\(option: unknown\)/);
+  assert.match(draftDetailPage, /"attrValueName"[\s\S]*"attr_value_name"[\s\S]*"label"[\s\S]*"optionName"/);
+  assert.match(draftDetailPage, /function primitiveOptionTokenIsPairedId\(options: unknown\[\], index: number\)/);
+  assert.match(draftDetailPage, /visibleFieldOptionValue\(option, rawOptions, index\)/);
   assert.match(draftDetailPage, /MULTI_CHOICE_FIELD_TYPES/);
   assert.match(draftDetailPage, /type === "MULTI_TEXT"/);
   assert.doesNotMatch(draftDetailPage, /当前值/);
