@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  normalizeListingLaunchPlanRowsInChunks,
   normalizeListingLaunchPlanRows,
   readSpreadsheetSheetsFromFile,
 } from "./listing_launch_plan_importer.mjs";
+import { readSpreadsheetSheetsFromFileInWorker } from "../../web/server/services/spreadsheet-worker.ts";
 
 const requireFromWeb = createRequire(new URL("../../web/package.json", import.meta.url));
+const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 
 test("normalizeListingLaunchPlanRows extracts key fields from the 326 launch plan template", () => {
   const rows = normalizeListingLaunchPlanRows([
@@ -155,4 +158,44 @@ test("readSpreadsheetSheetsFromFile never drops XLSX shared strings when streami
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
+});
+
+test("readSpreadsheetSheetsFromFileInWorker parses XLSX without using the service event loop", async () => {
+  const ExcelJS = requireFromWeb("exceljs");
+  const workDir = await mkdtemp(path.join(os.tmpdir(), "listingify-xlsx-worker-"));
+  try {
+    const filePath = path.join(workDir, "launch-plan.xlsx");
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("计划");
+    worksheet.addRow(["大货款号", "发布类目 (官方)"]);
+    worksheet.addRow(["208226102001", "童装>>上衣"]);
+    await workbook.xlsx.writeFile(filePath);
+
+    const sheets = await readSpreadsheetSheetsFromFileInWorker(filePath, { fileName: "launch-plan.xlsx" });
+
+    assert.equal(sheets.length, 1);
+    assert.equal(sheets[0].name, "计划");
+    assert.equal(sheets[0].rows[1]["Column 1"], "208226102001");
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
+test("listing launch plan importer loads ExcelJS lazily and exposes chunked normalization", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "scripts/lib/listing_launch_plan_importer.mjs"), "utf8");
+
+  assert.match(source, /function getExcelJS\(\)/);
+  assert.doesNotMatch(source, /const ExcelJS = requireFromWeb\("exceljs"\)/);
+  assert.match(source, /getExcelJS\(\)\.stream\.xlsx\.WorkbookReader/);
+  assert.match(source, /export async function normalizeListingLaunchPlanRowsInChunks/);
+
+  const rows = await normalizeListingLaunchPlanRowsInChunks([
+    { "Column 1": "大货款号", "Column 2": "发布类目 (官方)" },
+    { "Column 1": "208226102001", "Column 2": "童装>>上衣" },
+    { "Column 1": "208226102002", "Column 2": "童装>>裤子" },
+  ], { sheetName: "Sheet1", chunkSize: 1 });
+
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].spuCode, "208226102001");
+  assert.equal(rows[1].officialCategory, "童装>>裤子");
 });

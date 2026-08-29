@@ -11,6 +11,8 @@ const files = {
   route: path.join(PROJECT_ROOT, "web/server/routes/listing-launch-plans.ts"),
   service: path.join(PROJECT_ROOT, "web/server/services/listing-launch-plans.ts"),
   importJobService: path.join(PROJECT_ROOT, "web/server/services/listing-launch-plan-import-jobs.ts"),
+  spreadsheetWorkerService: path.join(PROJECT_ROOT, "web/server/services/spreadsheet-worker.ts"),
+  spreadsheetParserWorker: path.join(PROJECT_ROOT, "scripts/lib/spreadsheet_parse_worker.mjs"),
   draftRoute: path.join(PROJECT_ROOT, "web/server/routes/product-archive-drafts.ts"),
   draftService: path.join(PROJECT_ROOT, "web/server/services/product-archive-drafts.ts"),
   router: path.join(PROJECT_ROOT, "web/src/router.tsx"),
@@ -121,4 +123,27 @@ test("draft source import refreshes existing drafts after launch plan or copywri
   assert.match(draftService, /applyProductArchiveDraftTrade/);
   assert.match(draftService, /rebuildProductArchiveDraftFields/);
   assert.match(draftService, /sourceBatchIds/);
+});
+
+test("listing launch plan import jobs offload spreadsheet parsing and chunk source writes", async () => {
+  const [service, importJobService, spreadsheetWorkerService, spreadsheetParserWorker, draftService] = await Promise.all([
+    readFile(files.service, "utf8"),
+    readFile(files.importJobService, "utf8"),
+    readFile(files.spreadsheetWorkerService, "utf8"),
+    readFile(files.spreadsheetParserWorker, "utf8"),
+    readFile(files.draftService, "utf8"),
+  ]);
+
+  assert.match(importJobService, /readSpreadsheetSheetsFromFileInWorker/);
+  assert.doesNotMatch(importJobService, /import \{ readSpreadsheetSheetsFromFile \}/);
+  assert.match(spreadsheetWorkerService, /from "node:worker_threads"/);
+  assert.match(spreadsheetWorkerService, /new Worker/);
+  assert.match(spreadsheetWorkerService, /spreadsheet_parse_worker\.mjs/);
+  assert.match(spreadsheetParserWorker, /readSpreadsheetSheetsFromFile/);
+  assert.match(spreadsheetParserWorker, /parentPort\.postMessage/);
+
+  assert.match(service, /normalizeListingLaunchPlanRowsInChunks/);
+  assert.match(draftService, /export async function importProductArchiveSourceRowsInChunks/);
+  assert.match(importJobService, /importProductArchiveSourceRowsInChunks/);
+  assert.match(importJobService, /onProgress: \(\{ sourceBatchId, insertedRowCount, totalRowCount \}\)/);
 });

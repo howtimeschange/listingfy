@@ -55,6 +55,7 @@ import {
   fillProductArchiveDraftFieldsWithAi,
   getProductArchiveDraftImageFile,
   getProductArchiveDraftDetail,
+  importProductArchiveSourceRowsInChunks,
   importProductArchiveSourceRows,
   isReusableProductArchiveDraftStatus,
   latestProductArchiveDraftForSpuCode,
@@ -67,13 +68,14 @@ import {
   readbackProductArchiveDraft,
   recommendProductArchiveSizeChartMappings,
   refreshDraftTradeSelectionFromLaunchPlan,
+  refreshProductArchiveDraftsFromSourceBatchInChunks,
   refreshProductArchiveDraftsFromSourceBatch,
   saveProductArchiveSizeChartMappings,
   submitProductArchiveDraft,
   validateProductArchiveDraft,
 } from "../services/product-archive-drafts"
-import { importListingLaunchPlanSheets } from "../services/listing-launch-plans"
-import { readSpreadsheetSheetsFromFile } from "../../../scripts/lib/listing_launch_plan_importer.mjs"
+import { importListingLaunchPlanSheetsInChunks } from "../services/listing-launch-plans"
+import { readSpreadsheetSheetsFromFileInWorker } from "../services/spreadsheet-worker"
 import { readPlmSizeChartWorkbook } from "../../../scripts/lib/product_archive_size_chart.mjs"
 import { getDefaultAiScenarioRouter } from "../../../scripts/lib/ai_routing_context.mjs"
 import { withBackgroundTaskSlot } from "../lib/background-task-limiter"
@@ -94,6 +96,12 @@ function positiveBatchMegabytes(name: string, fallback: number) {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback
 }
 
+function positiveInteger(name: string, fallback: number, cap: number) {
+  const value = Number(process.env[name] ?? fallback)
+  if (!Number.isFinite(value) || value <= 0) return fallback
+  return Math.max(1, Math.min(cap, Math.floor(value)))
+}
+
 const MAX_PRODUCT_ARCHIVE_IMAGE_BATCH_BYTES = positiveBatchMegabytes(
   "LISTINGIFY_MAX_PRODUCT_ARCHIVE_IMAGE_BATCH_MB",
   256,
@@ -102,6 +110,20 @@ const MAX_PRODUCT_ARCHIVE_OCR_BATCH_BYTES = positiveBatchMegabytes(
   "LISTINGIFY_MAX_PRODUCT_ARCHIVE_OCR_BATCH_MB",
   512,
 ) * MB
+const MAX_PRODUCT_ARCHIVE_OCR_PREVIEW_BATCH_BYTES = positiveBatchMegabytes(
+  "LISTINGIFY_MAX_PRODUCT_ARCHIVE_OCR_PREVIEW_BATCH_MB",
+  128,
+) * MB
+const MAX_PRODUCT_ARCHIVE_OCR_FILES = positiveInteger(
+  "LISTINGIFY_MAX_PRODUCT_ARCHIVE_OCR_FILES",
+  160,
+  300,
+)
+const MAX_PRODUCT_ARCHIVE_OCR_PREVIEW_FILES = positiveInteger(
+  "LISTINGIFY_MAX_PRODUCT_ARCHIVE_OCR_PREVIEW_FILES",
+  40,
+  100,
+)
 const MAX_PRODUCT_ARCHIVE_WORKFLOW_SPREADSHEET_BYTES = maxUploadBytes("spreadsheet") * 3
 
 function uploadBodyLimit(maxSize: number, message: string) {
@@ -118,6 +140,10 @@ const productArchiveImageBodyLimit = uploadBodyLimit(
 const productArchiveOcrBodyLimit = uploadBodyLimit(
   MAX_PRODUCT_ARCHIVE_OCR_BATCH_BYTES,
   "吊牌/洗唛 OCR 批次总大小超过限制",
+)
+const productArchiveOcrPreviewBodyLimit = uploadBodyLimit(
+  MAX_PRODUCT_ARCHIVE_OCR_PREVIEW_BATCH_BYTES,
+  "吊牌/洗唛 OCR 预览批次总大小超过限制",
 )
 const productArchiveSpreadsheetBodyLimit = bodyLimit({
   maxSize: maxUploadBytes("spreadsheet") + SPREADSHEET_MULTIPART_OVERHEAD_BYTES,
@@ -267,6 +293,36 @@ type HangtagWashlabelOcrJob = {
   }
   items: HangtagWashlabelOcrJobItem[]
   result: Record<string, unknown> | null
+}
+
+function hangtagWashlabelUploadFileCount(...groups: HangtagWashlabelOcrUploadFile[][]) {
+  return groups.reduce((sum, files) => sum + files.length, 0)
+}
+
+function hangtagWashlabelUploadByteCount(...groups: HangtagWashlabelOcrUploadFile[][]) {
+  return groups.reduce(
+    (sum, files) => sum + files.reduce((fileSum, file) => fileSum + Number(file.size || 0), 0),
+    0,
+  )
+}
+
+function assertHangtagWashlabelPreviewSize(
+  files: HangtagWashlabelOcrUploadFile[],
+  supplementFiles: HangtagWashlabelOcrUploadFile[],
+  referenceImageFiles: HangtagWashlabelOcrUploadFile[],
+) {
+  const fileCount = hangtagWashlabelUploadFileCount(files, supplementFiles, referenceImageFiles)
+  if (fileCount > MAX_PRODUCT_ARCHIVE_OCR_PREVIEW_FILES) {
+    throw new HTTPException(413, {
+      message: `识别预览最多支持 ${MAX_PRODUCT_ARCHIVE_OCR_PREVIEW_FILES} 个文件；大图包请提交后台识别`,
+    })
+  }
+  const totalBytes = hangtagWashlabelUploadByteCount(files, supplementFiles, referenceImageFiles)
+  if (totalBytes > MAX_PRODUCT_ARCHIVE_OCR_PREVIEW_BATCH_BYTES) {
+    throw new HTTPException(413, {
+      message: `识别预览批次总大小超过限制（上限 ${Math.floor(MAX_PRODUCT_ARCHIVE_OCR_PREVIEW_BATCH_BYTES / MB)}MB）；大图包请提交后台识别`,
+    })
+  }
 }
 
 type ProductArchiveDraftBatchTarget = {
@@ -464,7 +520,10 @@ function createProductArchiveAiFillQueue({
       }
     } catch (error) {
       reportInternalError(error, { phase: "persist", jobId: job.id })
-      if (store.requiresLease) throw error
+      if (store.requiresLease) {
+        jobs.delete(job.id)
+        throw error
+      }
     }
   }
 
@@ -545,45 +604,63 @@ function createProductArchiveAiFillQueue({
       while (pending.length > 0) {
         const job = pending.shift()
         if (!job) continue
-        job.status = "running"
-        job.started_at ??= new Date(now()).toISOString()
-        persist(job)
-        let processedInSlice = 0
-        let yielded = false
         try {
-          for (const item of job.items) {
-            if (item.status === "completed" || item.status === "failed") continue
-            try {
-              await processItem(job, item)
-            } catch (error) {
-              if (isProductArchiveSyncLeaseError(error)) throw error
-              setItemFinished(job, item, "failed", {
-                draftId: item.draft_id,
-                spuCode: item.spu_code,
-              }, errorMessage(error))
+          let interrupted = false
+          let processedInSlice = 0
+          let yielded = false
+          job.status = "running"
+          job.started_at ??= new Date(now()).toISOString()
+          persist(job)
+          try {
+            for (const item of job.items) {
+              if (item.status === "completed" || item.status === "failed") continue
+              try {
+                await processItem(job, item)
+              } catch (error) {
+                if (isProductArchiveSyncLeaseError(error)) {
+                  interrupted = true
+                  throw error
+                }
+                setItemFinished(job, item, "failed", {
+                  draftId: item.draft_id,
+                  spuCode: item.spu_code,
+                }, errorMessage(error))
+              }
+              processedInSlice += 1
+              try {
+                yielded = await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_JOB_SLICE_SIZE", 5)
+              } catch (error) {
+                if (isProductArchiveSyncLeaseError(error)) interrupted = true
+                throw error
+              }
+              if (yielded) break
             }
-            processedInSlice += 1
-            yielded = await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_JOB_SLICE_SIZE", 5)
-            if (yielded) break
-          }
-        } finally {
-          if (!yielded) {
-            const completedItems = job.items.filter((item) => item.status === "completed")
-            job.result = {
-              processedDraftCount: completedItems.length,
-              failedDraftCount: job.items.filter((item) => item.status === "failed").length,
-              savedFieldCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.savedCount) || 0), 0),
-              warningCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.warningCount) || 0), 0),
+          } finally {
+            if (!yielded && !interrupted) {
+              const completedItems = job.items.filter((item) => item.status === "completed")
+              job.result = {
+                processedDraftCount: completedItems.length,
+                failedDraftCount: job.items.filter((item) => item.status === "failed").length,
+                savedFieldCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.savedCount) || 0), 0),
+                warningCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.warningCount) || 0), 0),
+              }
+              job.status = "completed"
+              job.outcome = job.failed_count === 0
+                ? "succeeded"
+                : job.completed_count === 0
+                  ? "failed"
+                  : "partial_failure"
+              job.finished_at = new Date(now()).toISOString()
+              persist(job)
             }
-            job.status = "completed"
-            job.outcome = job.failed_count === 0
-              ? "succeeded"
-              : job.completed_count === 0
-                ? "failed"
-                : "partial_failure"
-            job.finished_at = new Date(now()).toISOString()
-            persist(job)
           }
+        } catch (error) {
+          if (isProductArchiveSyncLeaseError(error)) {
+            jobs.delete(job.id)
+            reportInternalError(error, { phase: "lease_lost", jobId: job.id })
+            continue
+          }
+          throw error
         }
       }
     } finally {
@@ -797,7 +874,10 @@ function createProductArchivePrecheckQueue({
       }
     } catch (error) {
       reportInternalError(error, { phase: "persist", jobId: job.id })
-      if (store.requiresLease) throw error
+      if (store.requiresLease) {
+        jobs.delete(job.id)
+        throw error
+      }
     }
   }
 
@@ -983,31 +1063,49 @@ function createProductArchivePrecheckQueue({
       while (pending.length > 0) {
         const job = pending.shift()
         if (!job) continue
-        job.status = "running"
-        job.started_at ??= new Date(now()).toISOString()
-        persist(job)
-        let processedInSlice = 0
-        let yielded = false
         try {
-          for (const item of job.items) {
-            if (item.status === "completed" || item.status === "failed") continue
-            try {
-              await processItem(job, item)
-            } catch (error) {
-              if (isProductArchiveSyncLeaseError(error)) throw error
-              setPrecheckItemFailed(job, item, {
-                draftId: item.draft_id,
-                spuCode: item.spu_code,
-                resultKind: "failed",
-                phase: item.phase,
-              }, errorMessage(error), persist, now)
+          let interrupted = false
+          let processedInSlice = 0
+          let yielded = false
+          job.status = "running"
+          job.started_at ??= new Date(now()).toISOString()
+          persist(job)
+          try {
+            for (const item of job.items) {
+              if (item.status === "completed" || item.status === "failed") continue
+              try {
+                await processItem(job, item)
+              } catch (error) {
+                if (isProductArchiveSyncLeaseError(error)) {
+                  interrupted = true
+                  throw error
+                }
+                setPrecheckItemFailed(job, item, {
+                  draftId: item.draft_id,
+                  spuCode: item.spu_code,
+                  resultKind: "failed",
+                  phase: item.phase,
+                }, errorMessage(error), persist, now)
+              }
+              processedInSlice += 1
+              try {
+                yielded = await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_PRECHECK_JOB_SLICE_SIZE", 5)
+              } catch (error) {
+                if (isProductArchiveSyncLeaseError(error)) interrupted = true
+                throw error
+              }
+              if (yielded) break
             }
-            processedInSlice += 1
-            yielded = await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_PRECHECK_JOB_SLICE_SIZE", 5)
-            if (yielded) break
+          } finally {
+            if (!yielded && !interrupted) finishJob(job)
           }
-        } finally {
-          if (!yielded) finishJob(job)
+        } catch (error) {
+          if (isProductArchiveSyncLeaseError(error)) {
+            jobs.delete(job.id)
+            reportInternalError(error, { phase: "lease_lost", jobId: job.id })
+            continue
+          }
+          throw error
         }
       }
     } finally {
@@ -1243,7 +1341,10 @@ function createProductArchivePublishQueue({
       }
     } catch (error) {
       reportInternalError(error, { phase: "persist", jobId: job.id })
-      if (store.requiresLease) throw error
+      if (store.requiresLease) {
+        jobs.delete(job.id)
+        throw error
+      }
     }
   }
 
@@ -1365,21 +1466,44 @@ function createProductArchivePublishQueue({
       while (pending.length > 0) {
         const job = pending.shift()
         if (!job) continue
-        job.status = "running"
-        job.started_at ??= new Date(now()).toISOString()
-        persist(job)
-        let processedInSlice = 0
-        let yielded = false
         try {
-          for (const item of job.items) {
-            if (item.status === "completed" || item.status === "failed") continue
-            await processItem(job, item)
-            processedInSlice += 1
-            yielded = await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_JOB_SLICE_SIZE", 3)
-            if (yielded) break
+          let interrupted = false
+          let processedInSlice = 0
+          let yielded = false
+          job.status = "running"
+          job.started_at ??= new Date(now()).toISOString()
+          persist(job)
+          try {
+            for (const item of job.items) {
+              if (item.status === "completed" || item.status === "failed") continue
+              try {
+                await processItem(job, item)
+              } catch (error) {
+                if (isProductArchiveSyncLeaseError(error)) {
+                  interrupted = true
+                  throw error
+                }
+                throw error
+              }
+              processedInSlice += 1
+              try {
+                yielded = await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_JOB_SLICE_SIZE", 3)
+              } catch (error) {
+                if (isProductArchiveSyncLeaseError(error)) interrupted = true
+                throw error
+              }
+              if (yielded) break
+            }
+          } finally {
+            if (!yielded && !interrupted) finishJob(job)
           }
-        } finally {
-          if (!yielded) finishJob(job)
+        } catch (error) {
+          if (isProductArchiveSyncLeaseError(error)) {
+            jobs.delete(job.id)
+            reportInternalError(error, { phase: "lease_lost", jobId: job.id })
+            continue
+          }
+          throw error
         }
       }
     } finally {
@@ -1647,7 +1771,10 @@ function createHangtagWashlabelOcrQueue({
       }
     } catch (error) {
       reportInternalError(error, { phase: "persist", jobId: job.id })
-      if (store.requiresLease) throw error
+      if (store.requiresLease) {
+        jobs.delete(job.id)
+        throw error
+      }
     }
   }
 
@@ -1809,55 +1936,64 @@ function createHangtagWashlabelOcrQueue({
       while (pending.length > 0) {
         const job = pending.shift()
         if (!job) continue
-        job.status = "running"
-        job.started_at ??= new Date(now()).toISOString()
-        persist(job)
-        let processedInSlice = 0
-        for (let index = 0; index < job.files.length; index += 1) {
-          const item = job.items[index]
-          if (!item || item.status === "completed" || item.status === "failed") continue
-          try {
-            await withBackgroundTaskSlot("product_archive_ocr", () => processFileItem(job, job.files[index], item))
-          } catch (error) {
-            if (isProductArchiveSyncLeaseError(error)) throw error
-            setItemFinished(job, item, "failed", {
-              fileName: job.files[index].fileName,
-            }, errorMessage(error))
+        try {
+          let processedInSlice = 0
+          job.status = "running"
+          job.started_at ??= new Date(now()).toISOString()
+          persist(job)
+          for (let index = 0; index < job.files.length; index += 1) {
+            const item = job.items[index]
+            if (!item || item.status === "completed" || item.status === "failed") continue
+            try {
+              await withBackgroundTaskSlot("product_archive_ocr", () => processFileItem(job, job.files[index], item))
+            } catch (error) {
+              if (isProductArchiveSyncLeaseError(error)) throw error
+              setItemFinished(job, item, "failed", {
+                fileName: job.files[index].fileName,
+              }, errorMessage(error))
+            }
+            processedInSlice += 1
+            if (await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_OCR_JOB_SLICE_SIZE", 3)) break
           }
-          processedInSlice += 1
-          if (await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_OCR_JOB_SLICE_SIZE", 3)) break
-        }
-        if (job.status === "queued") continue
+          if (job.status === "queued") continue
 
-        const applyItem = job.items[job.items.length - 1]
-        if (applyItem && applyItem.status !== "completed" && applyItem.status !== "failed") {
-          try {
-            await withBackgroundTaskSlot("product_archive_ocr", () => applyRecognizedDocuments(job, applyItem))
-          } catch (error) {
-            if (isProductArchiveSyncLeaseError(error)) throw error
-            setItemFinished(job, applyItem, "failed", null, errorMessage(error))
-            job.result = {
-              error: errorMessage(error),
-              previewSummary: previewProductArchiveHangtagWashlabelOcr(getDb(), {
-                documents: documentsFromOcrJobItems(job.items),
-                overwriteExisting: job.options.overwriteExisting,
-              }).summary,
+          const applyItem = job.items[job.items.length - 1]
+          if (applyItem && applyItem.status !== "completed" && applyItem.status !== "failed") {
+            try {
+              await withBackgroundTaskSlot("product_archive_ocr", () => applyRecognizedDocuments(job, applyItem))
+            } catch (error) {
+              if (isProductArchiveSyncLeaseError(error)) throw error
+              setItemFinished(job, applyItem, "failed", null, errorMessage(error))
+              job.result = {
+                error: errorMessage(error),
+                previewSummary: previewProductArchiveHangtagWashlabelOcr(getDb(), {
+                  documents: documentsFromOcrJobItems(job.items),
+                  overwriteExisting: job.options.overwriteExisting,
+                }).summary,
+              }
             }
           }
-        }
 
-        job.status = "completed"
-        job.outcome = job.failed_count === 0
-          ? "succeeded"
-          : job.completed_count === 0
-            ? "failed"
-            : "partial_failure"
-        job.finished_at = new Date(now()).toISOString()
-        persist(job)
-        try {
-          await rm(job.options.uploadDir, { recursive: true, force: true })
+          job.status = "completed"
+          job.outcome = job.failed_count === 0
+            ? "succeeded"
+            : job.completed_count === 0
+              ? "failed"
+              : "partial_failure"
+          job.finished_at = new Date(now()).toISOString()
+          persist(job)
+          try {
+            await rm(job.options.uploadDir, { recursive: true, force: true })
+          } catch (error) {
+            reportInternalError(error, { phase: "cleanup", jobId: job.id })
+          }
         } catch (error) {
-          reportInternalError(error, { phase: "cleanup", jobId: job.id })
+          if (isProductArchiveSyncLeaseError(error)) {
+            jobs.delete(job.id)
+            reportInternalError(error, { phase: "lease_lost", jobId: job.id })
+            continue
+          }
+          throw error
         }
       }
     } finally {
@@ -2600,12 +2736,11 @@ async function saveOcrFormFiles(c: Context) {
     ...form.getAll("supplementFile").map((file) => ({ field: "supplementFile", file })),
     ...form.getAll("workbook").map((file) => ({ field: "workbook", file })),
   ].filter((entry): entry is { field: string; file: File } => entry.file instanceof File && entry.file.size > 0)
-  const maxFileCount = Math.max(1, Math.min(Number(process.env.LISTINGIFY_MAX_PRODUCT_ARCHIVE_OCR_FILES ?? 160) || 160, 300))
   if (rawEntries.length === 0) {
     throw new HTTPException(400, { message: "请上传 PDF 吊牌、JPG/PNG 洗唛、平铺图或 SCM 下载结果 Excel" })
   }
-  if (rawEntries.length > maxFileCount) {
-    throw new HTTPException(400, { message: `单次最多导入 ${maxFileCount} 个吊牌/洗唛/平铺图文件` })
+  if (rawEntries.length > MAX_PRODUCT_ARCHIVE_OCR_FILES) {
+    throw new HTTPException(400, { message: `单次最多导入 ${MAX_PRODUCT_ARCHIVE_OCR_FILES} 个吊牌/洗唛/平铺图文件` })
   }
   assertAggregateUploadBytes(
     rawEntries.map((entry) => entry.file),
@@ -2896,28 +3031,34 @@ async function importWorkflowSourceFile(
     let inputRowCount = 0
     let insertedRowCount = 0
     for (const sheet of sheets) {
-      const result = importProductArchiveSourceRows(db, {
+      const result = await importProductArchiveSourceRowsInChunks(db, {
         sourceType,
         fileName: file.name,
         sheetName: sheet.name,
         rows: sheet.rows,
+      }, {
+        chunkSize: 1000,
       })
       const sourceBatchId = Number(result.batch.id)
       sourceBatchIds.push(sourceBatchId)
       inputRowCount += result.inputRowCount
       insertedRowCount += result.insertedRowCount
-      refreshSummaries.push(refreshProductArchiveDraftsFromSourceBatch(db, {
+      refreshSummaries.push(await refreshProductArchiveDraftsFromSourceBatchInChunks(db, {
         sourceBatchId,
         sourceType: result.sourceType,
+      }, {
+        chunkSize: 5,
       }))
     }
     const listingPlanImport = sourceType === "launch_plan"
-      ? importListingLaunchPlanSheets(db, {
+      ? await importListingLaunchPlanSheetsInChunks(db, {
           fileName: file.name,
           fileSizeBytes: file.size,
           sheets,
           sourceBatchIds,
           createdBy,
+        }, {
+          chunkSize: 1000,
         })
       : null
     return {
@@ -2943,7 +3084,7 @@ async function readProductArchiveSourceSheets(filePath: string, fileName: string
       rows: rows.map((row) => row.rowJson ?? row),
     }]
   }
-  return readSpreadsheetSheetsFromFile(filePath, { fileName })
+  return readSpreadsheetSheetsFromFileInWorker(filePath, { fileName })
 }
 
 productArchiveDrafts.get("/", (c) => {
@@ -3203,19 +3344,23 @@ productArchiveDrafts.post("/source-imports/upload", productArchiveSpreadsheetBod
     let skippedExistingDraftCount = 0
 
     for (const sheet of sheets) {
-      const result = importProductArchiveSourceRows(db, {
+      const result = await importProductArchiveSourceRowsInChunks(db, {
         sourceType,
         fileName: file.name,
         sheetName: sheet.name,
         rows: sheet.rows,
+      }, {
+        chunkSize: 1000,
       })
       const sourceBatchId = Number(result.batch.id)
       sourceBatchIds.push(sourceBatchId)
       inputRowCount += result.inputRowCount
       insertedRowCount += result.insertedRowCount
-      const refreshSummary = refreshProductArchiveDraftsFromSourceBatch(db, {
+      const refreshSummary = await refreshProductArchiveDraftsFromSourceBatchInChunks(db, {
         sourceBatchId,
         sourceType: result.sourceType,
+      }, {
+        chunkSize: 5,
       })
       refreshSummaries.push(refreshSummary)
 
@@ -3252,12 +3397,14 @@ productArchiveDrafts.post("/source-imports/upload", productArchiveSpreadsheetBod
     }
 
     const listingPlanImport = sourceType === "launch_plan"
-      ? importListingLaunchPlanSheets(db, {
+      ? await importListingLaunchPlanSheetsInChunks(db, {
           fileName: file.name,
           fileSizeBytes: file.size,
           sheets,
           sourceBatchIds,
           createdBy: user.id,
+        }, {
+          chunkSize: 1000,
         })
       : null
     auditFromContext(c, {
@@ -3307,16 +3454,20 @@ productArchiveDrafts.post("/size-chart/import", productArchiveSpreadsheetBodyLim
   const { file, filePath } = await saveUploadedSpreadsheet(c)
   try {
     const rows = await readPlmSizeChartWorkbook(filePath, { fileName: file.name })
-    const result = importProductArchiveSourceRows(db, {
+    const result = await importProductArchiveSourceRowsInChunks(db, {
       sourceType: "size_chart",
       fileName: file.name,
       sheetName: "PLM尺码表",
       rows: rows.map((row) => row.rowJson ?? row),
+    }, {
+      chunkSize: 1000,
     })
     const sourceBatchId = Number(result.batch.id)
-    const refreshSummary = refreshProductArchiveDraftsFromSourceBatch(db, {
+    const refreshSummary = await refreshProductArchiveDraftsFromSourceBatchInChunks(db, {
       sourceBatchId,
       sourceType: result.sourceType,
+    }, {
+      chunkSize: 5,
     })
     auditFromContext(c, {
       action: "size_chart.imported",
@@ -3471,11 +3622,12 @@ productArchiveDrafts.post("/workflow/start", productArchiveWorkflowSpreadsheetBo
   }, syncJob ? 202 : 200)
 })
 
-productArchiveDrafts.post("/hangtag-washlabel-ocr/preview", productArchiveOcrBodyLimit, async (c) => {
+productArchiveDrafts.post("/hangtag-washlabel-ocr/preview", productArchiveOcrPreviewBodyLimit, async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   const db = getDb()
   const { form, files, supplementFiles, referenceImageFiles, uploadDir } = await saveOcrFormFiles(c)
   try {
+    assertHangtagWashlabelPreviewSize(files, supplementFiles, referenceImageFiles)
     const documents = await recognizeProductArchiveOcrFiles(files.map((file) => ({
       filePath: file.filePath,
       fileName: file.fileName,

@@ -1,10 +1,20 @@
 import fs from "node:fs";
 import readline from "node:readline";
 import { createRequire } from "node:module";
-import { normalizeSpreadsheetRows } from "./product_archive_source_importer.mjs";
+import {
+  normalizeSpreadsheetRows,
+  normalizeSpreadsheetRowsInChunks,
+} from "./product_archive_source_importer.mjs";
 
 const requireFromWeb = createRequire(new URL("../../web/package.json", import.meta.url));
-const ExcelJS = requireFromWeb("exceljs");
+let excelJsModule = null;
+
+function getExcelJS() {
+  if (!excelJsModule) {
+    excelJsModule = requireFromWeb("exceljs");
+  }
+  return excelJsModule;
+}
 
 const SUPPORTED_EXTENSIONS = new Set([".xlsx", ".csv"]);
 
@@ -41,6 +51,10 @@ function assertSupportedFile(fileName = "") {
   if (!SUPPORTED_EXTENSIONS.has(extension)) {
     throw new Error("仅支持 .xlsx 和 .csv 文件，请先另存为新版 Excel 或 CSV");
   }
+}
+
+function wait(ms = 0) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function coerceCellValue(value) {
@@ -120,7 +134,7 @@ function hasUnresolvedSharedString(values = []) {
 }
 
 async function readXlsxSheetsInMemory(filePath) {
-  const workbook = new ExcelJS.Workbook();
+  const workbook = new (getExcelJS().Workbook)();
   await workbook.xlsx.readFile(filePath);
   const sheets = [];
   for (const worksheet of workbook.worksheets) {
@@ -137,7 +151,7 @@ async function readXlsxSheetsInMemory(filePath) {
 }
 
 async function readXlsxSheetsStreaming(filePath) {
-  const workbookReader = new ExcelJS.stream.xlsx.WorkbookReader(filePath, {
+  const workbookReader = new (getExcelJS().stream.xlsx.WorkbookReader)(filePath, {
     entries: "emit",
     sharedStrings: "cache",
     hyperlinks: "ignore",
@@ -281,4 +295,58 @@ export function normalizeListingLaunchPlanRows(rows = [], options = {}) {
       };
     })
     .filter(Boolean);
+}
+
+export async function normalizeListingLaunchPlanRowsInChunks(rows = [], options = {}) {
+  const headerIndex = detectHeaderIndex(rows);
+  const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 1000)));
+  const normalizedRows = await normalizeSpreadsheetRowsInChunks(rows, { chunkSize });
+  const output = [];
+  for (let start = 0; start < normalizedRows.length; start += chunkSize) {
+    const end = Math.min(start + chunkSize, normalizedRows.length);
+    for (let index = start; index < end; index += 1) {
+      const row = normalizedRows[index];
+      const spuCode = firstValue(row, ["大货款号", "款号", "货号", "商品品种编号"]);
+      if (!spuCode) continue;
+      const launchDateText = firstValue(row, ["上市时间", "内容上市时间", "测试上市时间"]);
+      output.push({
+        sheetName: stringValue(options.sheetName),
+        rowNumber: headerIndex >= 0 ? headerIndex + index + 2 : index + 2,
+        spuCode,
+        skcCode: firstValue(row, ["款色号", "款色", "款色编码"]) || null,
+        productSeason: firstValue(row, ["产品季"]) || null,
+        productLine: firstValue(row, ["产品线"]) || null,
+        scene: firstValue(row, ["场景"]) || null,
+        attribute: firstValue(row, ["属性", "属性-销"]) || null,
+        ageGroup: firstValue(row, ["年龄段"]) || null,
+        sizeRange: firstValue(row, ["尺码段"]) || null,
+        gender: firstValue(row, ["性别"]) || null,
+        categoryName: firstValue(row, ["品类"]) || null,
+        subcategoryName: firstValue(row, ["小类"]) || null,
+        colorName: firstValue(row, ["颜色名称", "颜色"]) || null,
+        colorCode: firstValue(row, ["颜色代码"]) || null,
+        tagPrice: numberValue(firstValue(row, ["吊牌价", "吊牌价格"])),
+        calculatedTagPrice: numberValue(firstValue(row, ["核算吊牌价"])),
+        fabric: firstValue(row, ["大身面料", "面料", "面种"]) || null,
+        fab: firstValue(row, ["FAB"]) || null,
+        launchBatch: firstValue(row, ["上市批次"]) || null,
+        launchDateText,
+        searchLaunchDateText: firstValue(row, ["搜索上市时间"]) || "",
+        contentLaunchDateText: firstValue(row, ["内容上市时间"]) || "",
+        listingChannel: firstValue(row, ["上市渠道", "测款上市渠道"]) || null,
+        officialCategory: firstValue(row, ["官方发布类目", "发布类目 (官方)", "发布类目(官方)", "发布类目（官方）"]) || null,
+        vipCategory: firstValue(row, ["发布类目 (唯品)", "发布类目(唯品)", "发布类目（唯品）"]) || null,
+        vipStyleCategory: firstValue(row, ["主款式 （唯品四级品类）", "主款式（唯品四级品类）", "主款式 (唯品四级品类)"]) || null,
+        douyinCategory: firstValue(row, ["发布类目 (抖音)", "发布类目(抖音)", "发布类目（抖音）"]) || null,
+        rawRowJson: cleanRawRow(row),
+      });
+    }
+    await options.onProgress?.({
+      processedRowCount: end,
+      totalRowCount: normalizedRows.length,
+      normalizedRowCount: output.length,
+    });
+    await wait();
+  }
+  return output;
 }

@@ -232,27 +232,41 @@ function keyHeaderScore(row) {
 
 export function normalizeSpreadsheetRows(rows = []) {
   if (!Array.isArray(rows) || rows.length === 0) return [];
-  if (keyHeaderScore(rows[0]) >= 2) {
-    return rows.map(cleanRow).filter((row) => Object.keys(row).length > 0);
+  const normalizer = buildSpreadsheetRowNormalizer(rows);
+  return normalizer.rows
+    .map((row) => normalizer.normalizeRow(row))
+    .filter((row) => Object.keys(row).length > 0);
+}
+
+function buildSpreadsheetRowNormalizer(rows = []) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  if (sourceRows.length === 0) {
+    return { rows: [], normalizeRow: () => ({}) };
+  }
+  if (keyHeaderScore(sourceRows[0]) >= 2) {
+    return { rows: sourceRows, normalizeRow: cleanRow };
   }
   let headerIndex = -1;
   let bestScore = 0;
-  rows.slice(0, 12).forEach((row, index) => {
+  sourceRows.slice(0, 12).forEach((row, index) => {
     const score = headerScore(row);
     if (score > bestScore) {
       bestScore = score;
       headerIndex = index;
     }
   });
-  if (headerIndex < 0 || bestScore < 2) return rows.map(cleanRow).filter((row) => Object.keys(row).length > 0);
+  if (headerIndex < 0 || bestScore < 2) {
+    return { rows: sourceRows, normalizeRow: cleanRow };
+  }
 
-  const headerRow = rows[headerIndex] ?? {};
+  const headerRow = sourceRows[headerIndex] ?? {};
   const headers = Object.entries(headerRow).map(([key, value]) => [
     key,
     normalizeHeaderName(value) || normalizeHeaderName(key),
   ]);
-  return rows.slice(headerIndex + 1)
-    .map((row) => {
+  return {
+    rows: sourceRows.slice(headerIndex + 1),
+    normalizeRow: (row) => {
       const output = {};
       for (const [originalKey, header] of headers) {
         if (!header) continue;
@@ -260,8 +274,32 @@ export function normalizeSpreadsheetRows(rows = []) {
         if (value) output[header] = value;
       }
       return cleanRow(output);
-    })
-    .filter((row) => Object.keys(row).length > 0);
+    },
+  };
+}
+
+function wait(ms = 0) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function normalizeSpreadsheetRowsInChunks(rows = [], options = {}) {
+  const normalizer = buildSpreadsheetRowNormalizer(rows);
+  const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 1000)));
+  const output = [];
+  for (let start = 0; start < normalizer.rows.length; start += chunkSize) {
+    const end = Math.min(start + chunkSize, normalizer.rows.length);
+    for (let index = start; index < end; index += 1) {
+      const row = normalizer.normalizeRow(normalizer.rows[index]);
+      if (Object.keys(row).length > 0) output.push(row);
+    }
+    await options.onProgress?.({
+      processedRowCount: end,
+      totalRowCount: normalizer.rows.length,
+      normalizedRowCount: output.length,
+    });
+    await wait();
+  }
+  return output;
 }
 
 export function parseProductArchiveFieldRuleRows(rows = []) {
@@ -311,4 +349,32 @@ export function normalizeProductArchiveSourceRows(sourceType, rows = []) {
       };
     })
     .filter(Boolean);
+}
+
+export async function normalizeProductArchiveSourceRowsInChunks(sourceType, rows = [], options = {}) {
+  const normalizedSourceType = sourceTypeValue(sourceType);
+  const normalizedRows = await normalizeSpreadsheetRowsInChunks(rows, options);
+  const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 1000)));
+  const output = [];
+  for (let start = 0; start < normalizedRows.length; start += chunkSize) {
+    const end = Math.min(start + chunkSize, normalizedRows.length);
+    for (let index = start; index < end; index += 1) {
+      const rowJson = cleanRow(normalizedRows[index]);
+      const spuCode = firstValue(rowJson, SPU_KEYS);
+      if (!spuCode) continue;
+      output.push({
+        sourceType: normalizedSourceType,
+        spuCode,
+        skcCode: firstValue(rowJson, SKC_KEYS) || null,
+        rowJson,
+      });
+    }
+    await options.onProgress?.({
+      processedRowCount: end,
+      totalRowCount: normalizedRows.length,
+      normalizedRowCount: output.length,
+    });
+    await wait();
+  }
+  return output;
 }

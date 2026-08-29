@@ -70,6 +70,14 @@ import { Textarea } from "@/components/ui/textarea"
 import { QueryErrorState } from "@/components/query-error-state"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 
+const OCR_UPLOAD_MB = 1024 * 1024
+const OCR_PREVIEW_MAX_FILES = 40
+const OCR_PREVIEW_MAX_BYTES = 128 * OCR_UPLOAD_MB
+const OCR_BACKGROUND_BATCH_MAX_FILES = 160
+const OCR_BACKGROUND_BATCH_MAX_BYTES = 512 * OCR_UPLOAD_MB
+const OCR_MAX_EVIDENCE_FILE_BYTES = 50 * OCR_UPLOAD_MB
+const OCR_MAX_REFERENCE_IMAGE_BYTES = 20 * OCR_UPLOAD_MB
+
 interface ProductArchiveDraftRow {
   id: number
   draft_no: string
@@ -481,6 +489,96 @@ function hangtagWashlabelOcrJobSummary(job?: AsyncTaskJob | null) {
 
 function isCollapsedOcrCaptureField(field: HangtagWashlabelOcrExtractedField) {
   return field.key === "rawText" || /截取/.test(field.label) || field.value.length > 96
+}
+
+function formatUploadBytes(bytes: number) {
+  if (bytes >= OCR_UPLOAD_MB) return `${(bytes / OCR_UPLOAD_MB).toFixed(bytes >= 10 * OCR_UPLOAD_MB ? 0 : 1)}MB`
+  return `${Math.max(1, Math.ceil(bytes / 1024))}KB`
+}
+
+type OcrUploadEntry = {
+  kind: "ocr" | "reference" | "supplement"
+  file: File
+}
+
+function hangtagWashlabelUploadEntries(files: File[], scmSupplementFile: File | null, referenceImageFiles: File[]) {
+  return [
+    ...files.map((file) => ({ kind: "ocr" as const, file })),
+    ...(scmSupplementFile ? [{ kind: "supplement" as const, file: scmSupplementFile }] : []),
+    ...referenceImageFiles.map((file) => ({ kind: "reference" as const, file })),
+  ]
+}
+
+function hangtagWashlabelUploadSummary(files: File[], scmSupplementFile: File | null, referenceImageFiles: File[]) {
+  const entries = hangtagWashlabelUploadEntries(files, scmSupplementFile, referenceImageFiles)
+  return {
+    count: entries.length,
+    bytes: entries.reduce((sum, entry) => sum + Number(entry.file.size || 0), 0),
+  }
+}
+
+function assertHangtagWashlabelClientLimits(files: File[], scmSupplementFile: File | null, referenceImageFiles: File[]) {
+  const oversizedEvidence = [...files, ...(scmSupplementFile ? [scmSupplementFile] : [])]
+    .find((file) => Number(file.size || 0) > OCR_MAX_EVIDENCE_FILE_BYTES)
+  if (oversizedEvidence) {
+    throw new Error(`${uploadDisplayName(oversizedEvidence)} 超过 ${formatUploadBytes(OCR_MAX_EVIDENCE_FILE_BYTES)}，请压缩后再上传`)
+  }
+  const oversizedReference = referenceImageFiles.find((file) => Number(file.size || 0) > OCR_MAX_REFERENCE_IMAGE_BYTES)
+  if (oversizedReference) {
+    throw new Error(`${uploadDisplayName(oversizedReference)} 超过 ${formatUploadBytes(OCR_MAX_REFERENCE_IMAGE_BYTES)}，请压缩后再上传`)
+  }
+}
+
+function assertHangtagWashlabelPreviewLimits(files: File[], scmSupplementFile: File | null, referenceImageFiles: File[]) {
+  assertHangtagWashlabelClientLimits(files, scmSupplementFile, referenceImageFiles)
+  const summary = hangtagWashlabelUploadSummary(files, scmSupplementFile, referenceImageFiles)
+  if (summary.count > OCR_PREVIEW_MAX_FILES || summary.bytes > OCR_PREVIEW_MAX_BYTES) {
+    throw new Error(`当前图包 ${formatNumber(summary.count)} 个 / ${formatUploadBytes(summary.bytes)}，超过预览上限，请提交后台识别`)
+  }
+}
+
+function splitHangtagWashlabelBackgroundBatches(files: File[], scmSupplementFile: File | null, referenceImageFiles: File[]) {
+  assertHangtagWashlabelClientLimits(files, scmSupplementFile, referenceImageFiles)
+  const batches: OcrUploadEntry[][] = []
+  let current: OcrUploadEntry[] = []
+  let currentBytes = 0
+  for (const entry of hangtagWashlabelUploadEntries(files, scmSupplementFile, referenceImageFiles)) {
+    const entryBytes = Number(entry.file.size || 0)
+    const exceedsCount = current.length >= OCR_BACKGROUND_BATCH_MAX_FILES
+    const exceedsBytes = currentBytes > 0 && currentBytes + entryBytes > OCR_BACKGROUND_BATCH_MAX_BYTES
+    if (current.length > 0 && (exceedsCount || exceedsBytes)) {
+      batches.push(current)
+      current = []
+      currentBytes = 0
+    }
+    current.push(entry)
+    currentBytes += entryBytes
+  }
+  if (current.length > 0) batches.push(current)
+  return batches.map((batch) => ({
+    files: batch.filter((entry) => entry.kind === "ocr").map((entry) => entry.file),
+    scmSupplementFile: batch.find((entry) => entry.kind === "supplement")?.file ?? null,
+    referenceImageFiles: batch.filter((entry) => entry.kind === "reference").map((entry) => entry.file),
+  }))
+}
+
+function estimateHangtagWashlabelBackgroundBatchCount(files: File[], scmSupplementFile: File | null, referenceImageFiles: File[]) {
+  const entries = hangtagWashlabelUploadEntries(files, scmSupplementFile, referenceImageFiles)
+  if (entries.length === 0) return 0
+  let count = 1
+  let currentCount = 0
+  let currentBytes = 0
+  for (const entry of entries) {
+    const entryBytes = Number(entry.file.size || 0)
+    if (currentCount > 0 && (currentCount >= OCR_BACKGROUND_BATCH_MAX_FILES || currentBytes + entryBytes > OCR_BACKGROUND_BATCH_MAX_BYTES)) {
+      count += 1
+      currentCount = 0
+      currentBytes = 0
+    }
+    currentCount += 1
+    currentBytes += entryBytes
+  }
+  return count
 }
 
 function buildHangtagWashlabelOcrForm(files: File[], scmSupplementFile: File | null, overwriteExisting: boolean, referenceImageFiles: File[] = []) {
@@ -1861,6 +1959,9 @@ function HangtagWashlabelImportDialog({
   const jobRunning = Boolean(job && job.status !== "completed")
   const jobProgress = asyncJobProgress(job)
   const jobSummary = hangtagWashlabelOcrJobSummary(job)
+  const uploadSummary = hangtagWashlabelUploadSummary(files, scmSupplementFile, referenceImageFiles)
+  const previewTooLarge = uploadSummary.count > OCR_PREVIEW_MAX_FILES || uploadSummary.bytes > OCR_PREVIEW_MAX_BYTES
+  const backgroundBatchCount = estimateHangtagWashlabelBackgroundBatchCount(files, scmSupplementFile, referenceImageFiles)
   const onFolderSelection = (selectedFiles: File[]) => {
     const split = splitHangtagWashlabelUploads(selectedFiles)
     onFilesChange(split.ocrFiles)
@@ -1932,6 +2033,13 @@ function HangtagWashlabelImportDialog({
                 <Badge variant="outline" className="max-w-[360px] truncate">
                   SCM补充：{uploadDisplayName(scmSupplementFile)}
                 </Badge>
+              </div>
+            ) : null}
+            {hasUploadInput ? (
+              <div className={`mt-3 rounded-md border px-3 py-2 text-xs ${previewTooLarge ? "border-[#f3d7a1] bg-[#fff8eb] text-[#8a5a0a]" : "border-[#d7e5fb] bg-[#f6fbff] text-[#245f9f]"}`}>
+                已选择 {formatNumber(uploadSummary.count)} 个文件 / {formatUploadBytes(uploadSummary.bytes)}
+                {backgroundBatchCount > 1 ? `，后台识别将拆分为 ${formatNumber(backgroundBatchCount)} 个任务` : ""}
+                {previewTooLarge ? `；超过预览上限 ${formatNumber(OCR_PREVIEW_MAX_FILES)} 个 / ${formatUploadBytes(OCR_PREVIEW_MAX_BYTES)}` : ""}
               </div>
             ) : null}
             <label className="mt-3 flex items-center gap-2 text-sm">
@@ -2066,7 +2174,7 @@ function HangtagWashlabelImportDialog({
           <Button
             type="button"
             variant="outline"
-            disabled={!canWrite || isPreviewing || isApplying || isSubmittingJob || jobRunning || !hasUploadInput}
+            disabled={!canWrite || isPreviewing || isApplying || isSubmittingJob || jobRunning || !hasUploadInput || previewTooLarge}
             onClick={onPreview}
           >
             {isPreviewing ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
@@ -2353,6 +2461,7 @@ export default function ProductArchiveDraftsPage() {
 
   const previewHangtagWashlabelOcr = useMutation({
     mutationFn: async () => {
+      assertHangtagWashlabelPreviewLimits(ocrFiles, ocrScmSupplementFile, ocrReferenceImageFiles)
       const form = buildHangtagWashlabelOcrForm(ocrFiles, ocrScmSupplementFile, ocrOverwriteExisting, ocrReferenceImageFiles)
       return api.postForm<HangtagWashlabelOcrPreviewResponse>("/product-archive-drafts/hangtag-washlabel-ocr/preview", form)
     },
@@ -2371,25 +2480,37 @@ export default function ProductArchiveDraftsPage() {
     },
   })
 
+  function addHangtagWashlabelOcrTask(job: AsyncTaskJob, index: number, total: number) {
+    addTask({
+      job,
+      type: "product_archive_hangtag_washlabel_ocr",
+      title: total > 1 ? `吊牌/洗唛/平铺图后台识别 ${index + 1}/${total}` : "吊牌/洗唛/平铺图后台识别",
+      description: `待识别并写入 ${formatNumber(Math.max(0, (job.total_count ?? 1) - 1))} 个上传项`,
+      endpoint: `/product-archive-drafts/hangtag-washlabel-ocr/jobs/${job.id}`,
+    })
+  }
+
   const submitHangtagWashlabelOcrJob = useMutation({
     mutationFn: async () => {
-      const form = buildHangtagWashlabelOcrForm(ocrFiles, ocrScmSupplementFile, ocrOverwriteExisting, ocrReferenceImageFiles)
-      return api.postForm<AsyncTaskJob>("/product-archive-drafts/hangtag-washlabel-ocr/jobs", form)
+      const batches = splitHangtagWashlabelBackgroundBatches(ocrFiles, ocrScmSupplementFile, ocrReferenceImageFiles)
+      const jobs: AsyncTaskJob[] = []
+      for (const [index, batch] of batches.entries()) {
+        const form = buildHangtagWashlabelOcrForm(batch.files, batch.scmSupplementFile, ocrOverwriteExisting, batch.referenceImageFiles)
+        const job = await api.postForm<AsyncTaskJob>("/product-archive-drafts/hangtag-washlabel-ocr/jobs", form)
+        jobs.push(job)
+        addHangtagWashlabelOcrTask(job, index, batches.length)
+      }
+      return jobs
     },
-    onSuccess: (job) => {
-      addTask({
-        job,
-        type: "product_archive_hangtag_washlabel_ocr",
-        title: "吊牌/洗唛/平铺图后台识别",
-        description: `待识别并写入 ${formatNumber(Math.max(0, (job.total_count ?? 1) - 1))} 个上传项`,
-        endpoint: `/product-archive-drafts/hangtag-washlabel-ocr/jobs/${job.id}`,
-      })
-      setOcrJobId(job.id)
+    onSuccess: (jobs) => {
+      setOcrJobId(jobs.at(-1)?.id ?? null)
       setOcrPreview(null)
       setOcrFiles([])
       setOcrReferenceImageFiles([])
       setOcrScmSupplementFile(null)
-      toast.success("吊牌/洗唛/平铺图后台识别任务已提交")
+      toast.success(jobs.length > 1
+        ? `吊牌/洗唛/平铺图后台识别已拆分为 ${formatNumber(jobs.length)} 个任务`
+        : "吊牌/洗唛/平铺图后台识别任务已提交")
       openTaskCenter()
     },
     onError: (error) => {

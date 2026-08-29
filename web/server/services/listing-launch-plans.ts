@@ -1,5 +1,8 @@
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
-import { normalizeListingLaunchPlanRows } from "../../../scripts/lib/listing_launch_plan_importer.mjs"
+import {
+  normalizeListingLaunchPlanRows,
+  normalizeListingLaunchPlanRowsInChunks,
+} from "../../../scripts/lib/listing_launch_plan_importer.mjs"
 
 type JsonRecord = Record<string, unknown>
 
@@ -106,6 +109,33 @@ function prepareListingLaunchPlanImport(input: ImportListingLaunchPlanInput) {
   const normalizedRows = sheets.flatMap((sheet) =>
     normalizeListingLaunchPlanRows(sheet.rows, { sheetName: sheet.name }),
   )
+  const now = nowIso()
+  const sourceBatchIds = Array.from(
+    new Set((input.sourceBatchIds ?? []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)),
+  )
+  return {
+    sheets,
+    normalizedRows,
+    now,
+    sourceBatchIds,
+    inputRowCount: sheets.reduce((sum, sheet) => sum + sheet.rows.length, 0),
+  }
+}
+
+async function prepareListingLaunchPlanImportInChunks(
+  input: ImportListingLaunchPlanInput,
+  options: Pick<ImportListingLaunchPlanChunkOptions, "chunkSize"> = {},
+) {
+  const sheets = Array.isArray(input.sheets) ? input.sheets : []
+  const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 1000)))
+  const normalizedRows: JsonRecord[] = []
+  for (const sheet of sheets) {
+    normalizedRows.push(...await normalizeListingLaunchPlanRowsInChunks(sheet.rows, {
+      sheetName: sheet.name,
+      chunkSize,
+    }))
+    await wait()
+  }
   const now = nowIso()
   const sourceBatchIds = Array.from(
     new Set((input.sourceBatchIds ?? []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)),
@@ -264,8 +294,8 @@ export async function importListingLaunchPlanSheetsInChunks(
   input: ImportListingLaunchPlanInput,
   options: ImportListingLaunchPlanChunkOptions = {},
 ) {
-  const prepared = prepareListingLaunchPlanImport(input)
   const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 100)))
+  const prepared = await prepareListingLaunchPlanImportInChunks(input, { chunkSize })
   let importId: number | null = null
   try {
     importId = insertListingLaunchPlanImportRecord(db, input, prepared)

@@ -3585,6 +3585,25 @@ test("product archive payload expands neutral gender when template has only boy 
   }), "男童;女童");
 });
 
+test("product archive OCR queue bounds large previews and isolates lost leases", async () => {
+  const route = await readText(files.draftRoute);
+
+  assert.match(route, /const MAX_PRODUCT_ARCHIVE_OCR_BATCH_BYTES = positiveBatchMegabytes\(\s*"LISTINGIFY_MAX_PRODUCT_ARCHIVE_OCR_BATCH_MB",\s*512,/);
+  assert.match(route, /const MAX_PRODUCT_ARCHIVE_OCR_PREVIEW_BATCH_BYTES = positiveBatchMegabytes\(\s*"LISTINGIFY_MAX_PRODUCT_ARCHIVE_OCR_PREVIEW_BATCH_MB",\s*128,/);
+  assert.match(route, /const MAX_PRODUCT_ARCHIVE_OCR_FILES = positiveInteger\(\s*"LISTINGIFY_MAX_PRODUCT_ARCHIVE_OCR_FILES",\s*160,\s*300,/);
+  assert.match(route, /const MAX_PRODUCT_ARCHIVE_OCR_PREVIEW_FILES = positiveInteger\(\s*"LISTINGIFY_MAX_PRODUCT_ARCHIVE_OCR_PREVIEW_FILES",\s*40,\s*100,/);
+  assert.match(route, /const productArchiveOcrPreviewBodyLimit = uploadBodyLimit\(/);
+  assert.match(route, /productArchiveDrafts\.post\("\/hangtag-washlabel-ocr\/preview", productArchiveOcrPreviewBodyLimit/);
+  assert.match(route, /assertHangtagWashlabelPreviewSize\(files, supplementFiles, referenceImageFiles\)/);
+  assert.match(route, /识别预览最多支持/);
+  assert.match(route, /大图包请提交后台识别/);
+
+  const leaseLostHandlers = route.match(/reportInternalError\(error, \{ phase: "lease_lost", jobId: job\.id \}\)/g) ?? [];
+  assert.ok(leaseLostHandlers.length >= 4, "expected each product archive async queue to isolate lost leases per job");
+  assert.match(route, /jobs\.delete\(job\.id\)[\s\S]*throw error/);
+  assert.match(route, /if \(!yielded && !interrupted\)/);
+});
+
 test("product archive field patch rejects stale field revisions instead of reporting success", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const draftUpdatedAt = "2026-08-24T04:00:00.000Z";

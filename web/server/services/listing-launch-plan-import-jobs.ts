@@ -3,9 +3,9 @@ import { rm } from "node:fs/promises"
 import { getDb } from "../db"
 import { writeOperationLog } from "../lib/audit"
 import { withBackgroundTaskSlot } from "../lib/background-task-limiter"
-import { importProductArchiveSourceRows, refreshProductArchiveDraftsFromSourceBatchInChunks } from "./product-archive-drafts"
+import { importProductArchiveSourceRowsInChunks, refreshProductArchiveDraftsFromSourceBatchInChunks } from "./product-archive-drafts"
 import { importListingLaunchPlanSheetsInChunks } from "./listing-launch-plans"
-import { readSpreadsheetSheetsFromFile } from "../../../scripts/lib/listing_launch_plan_importer.mjs"
+import { readSpreadsheetSheetsFromFileInWorker } from "./spreadsheet-worker"
 import type { AuditActor } from "../lib/audit"
 
 type JsonRecord = Record<string, unknown>
@@ -333,7 +333,7 @@ async function processImportJob(job: ImportJob) {
     saveListingLaunchPlanImportJob(job)
     const sheets = await withBackgroundTaskSlot(
       "listing_launch_plan_import",
-      () => readSpreadsheetSheetsFromFile(job.filePath, { fileName: job.fileName }),
+      () => readSpreadsheetSheetsFromFileInWorker(job.filePath, { fileName: job.fileName }),
     )
     const inputRowCount = sheets.reduce((sum, sheet) => sum + sheet.rows.length, 0)
     setStageCompleted(job, 0, { sheetCount: sheets.length, inputRowCount })
@@ -346,11 +346,25 @@ async function processImportJob(job: ImportJob) {
     let sourceInsertedRowCount = 0
     for (const sheet of sheets) {
       const sourceImport = await withBackgroundTaskSlot("listing_launch_plan_import", async () => (
-        importProductArchiveSourceRows(getDb(), {
+        importProductArchiveSourceRowsInChunks(getDb(), {
           sourceType: "launch_plan",
           fileName: job.fileName,
           sheetName: sheet.name,
           rows: sheet.rows,
+        }, {
+          chunkSize: 1000,
+          onProgress: ({ sourceBatchId, insertedRowCount, totalRowCount }) => {
+            const item = job.items[1]
+            if (item) {
+              item.result = {
+                sourceBatchId,
+                insertedRowCount,
+                totalRowCount,
+                sourceBatchCount: sourceBatchIds.length + 1,
+              }
+            }
+            saveListingLaunchPlanImportJob(job)
+          },
         })
       ))
       sourceBatchIds.push(Number(sourceImport.batch.id))

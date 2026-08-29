@@ -764,3 +764,19 @@ test("product archive workflow templates are repository assets", async () => {
 
   assert.doesNotMatch(gitignore, /data\/product-archive-templates\//);
 });
+
+test("product archive OCR import protects the UI from oversized apparel and shoe packages", async () => {
+  const draftListPage = await readFile(files.draftListPage, "utf8");
+
+  assert.match(draftListPage, /const OCR_PREVIEW_MAX_FILES = 40/);
+  assert.match(draftListPage, /const OCR_PREVIEW_MAX_BYTES = 128 \* OCR_UPLOAD_MB/);
+  assert.match(draftListPage, /const OCR_BACKGROUND_BATCH_MAX_FILES = 160/);
+  assert.match(draftListPage, /const OCR_BACKGROUND_BATCH_MAX_BYTES = 512 \* OCR_UPLOAD_MB/);
+  assert.match(draftListPage, /function splitHangtagWashlabelBackgroundBatches/);
+  assert.match(draftListPage, /currentBytes \+ entryBytes > OCR_BACKGROUND_BATCH_MAX_BYTES/);
+  assert.match(draftListPage, /for \(const \[index, batch\] of batches\.entries\(\)\)/);
+  assert.match(draftListPage, /addHangtagWashlabelOcrTask\(job, index, batches\.length\)/);
+  assert.match(draftListPage, /previewTooLarge/);
+  assert.match(draftListPage, /disabled=\{!canWrite \|\| isPreviewing \|\| isApplying \|\| isSubmittingJob \|\| jobRunning \|\| !hasUploadInput \|\| previewTooLarge\}/);
+  assert.match(draftListPage, /后台识别已拆分为/);
+});

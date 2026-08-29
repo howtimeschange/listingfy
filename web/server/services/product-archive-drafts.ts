@@ -2,6 +2,7 @@ import fs from "node:fs"
 import { randomUUID } from "node:crypto"
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import {
+  normalizeProductArchiveSourceRowsInChunks,
   normalizeProductArchiveSourceRows,
   parseProductArchiveFieldRuleRows,
 } from "../../../scripts/lib/product_archive_source_importer.mjs"
@@ -223,6 +224,15 @@ interface SourceImportInput {
   fileName?: string | null
   sheetName?: string | null
   rows?: JsonRecord[]
+}
+
+interface SourceImportChunkOptions {
+  chunkSize?: number
+  onProgress?: (progress: {
+    sourceBatchId: number
+    insertedRowCount: number
+    totalRowCount: number
+  }) => void | Promise<void>
 }
 
 interface RefreshSourceBatchInput {
@@ -7839,6 +7849,100 @@ export function importProductArchiveSourceRows(db: SyncPostgresDatabase, input: 
     sourceType,
     inputRowCount: rows.length,
     insertedRowCount: normalizedRows.length,
+  }
+}
+
+export async function importProductArchiveSourceRowsInChunks(
+  db: SyncPostgresDatabase,
+  input: SourceImportInput,
+  options: SourceImportChunkOptions = {},
+) {
+  const sourceType = sourceImportType(input.sourceType)
+  if (sourceType === "field_mapping") {
+    const result = importProductArchiveSourceRows(db, input)
+    await options.onProgress?.({
+      sourceBatchId: Number((result.batch as JsonRecord)?.id),
+      insertedRowCount: result.insertedRowCount,
+      totalRowCount: result.insertedRowCount,
+    })
+    return result
+  }
+  const rows = Array.isArray(input.rows) ? input.rows : []
+  const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 1000)))
+  const normalizedRows = sourceType === "size_chart"
+    ? normalizePlmSizeChartRows(rows, { sheetName: input.sheetName ?? undefined })
+    : await normalizeProductArchiveSourceRowsInChunks(sourceType, rows, { chunkSize })
+  const now = nowIso()
+
+  const batchId = Number(db.prepare(`
+    insert into product_archive_source_batch (
+      batch_no,
+      source_type,
+      file_name,
+      sheet_name,
+      row_count,
+      raw_manifest_json,
+      created_at
+    )
+    values (?, ?, ?, ?, ?, ?::jsonb, ?::timestamptz)
+  `).run(
+    sourceBatchNo(sourceType),
+    sourceType,
+    stringValue(input.fileName) || null,
+    stringValue(input.sheetName) || null,
+    normalizedRows.length,
+    jsonText({
+      input_row_count: rows.length,
+      inserted_row_count: normalizedRows.length,
+      source_type: sourceType,
+      chunk_size: chunkSize,
+    }),
+    now,
+  ).lastInsertRowid)
+
+  try {
+    const insertSourceRow = db.prepare(`
+      insert into product_archive_source_row (
+        source_batch_id,
+        source_type,
+        spu_code,
+        skc_code,
+        row_json,
+        created_at
+      )
+      values (?, ?, ?, ?, ?::jsonb, ?::timestamptz)
+    `)
+    for (let start = 0; start < normalizedRows.length; start += chunkSize) {
+      const end = Math.min(start + chunkSize, normalizedRows.length)
+      db.transaction(() => {
+        for (let index = start; index < end; index += 1) {
+          const row = normalizedRows[index]
+          insertSourceRow.run(
+            batchId,
+            row.sourceType,
+            row.spuCode,
+            row.skcCode,
+            jsonText(row.rowJson),
+            now,
+          )
+        }
+      })()
+      await options.onProgress?.({
+        sourceBatchId: batchId,
+        insertedRowCount: end,
+        totalRowCount: normalizedRows.length,
+      })
+      await wait()
+    }
+    return {
+      batch: db.prepare("select * from product_archive_source_batch where id = ?").get(batchId),
+      sourceType,
+      inputRowCount: rows.length,
+      insertedRowCount: normalizedRows.length,
+    }
+  } catch (error) {
+    db.prepare("delete from product_archive_source_batch where id = ?").run(batchId)
+    throw error
   }
 }
 
