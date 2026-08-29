@@ -551,13 +551,13 @@ function createProductArchiveAiFillQueue({
   }
 
   async function processItem(job: ProductArchiveAiFillJob, item: ProductArchiveAiFillJobItem) {
-    return withBackgroundTaskSlot("product_archive_ai_fill", async () => {
+    return withBackgroundTaskSlot("product_archive_ai_fill", async (signal) => {
       item.status = "running"
       item.started_at ??= new Date(now()).toISOString()
       persist(job)
 
       const db = getDb()
-      const result = await fillProductArchiveDraftFieldsWithAi(db, item.draft_id)
+      const result = await fillProductArchiveDraftFieldsWithAi(db, item.draft_id, { signal })
       const detail = result.detail as { draft?: Record<string, unknown> }
       const draft = detail.draft ?? {}
       const validationSummary = draft.validation_summary_json && typeof draft.validation_summary_json === "object"
@@ -4384,7 +4384,9 @@ productArchiveDrafts.post("/:draftId/ai-fill", async (c) => {
   const draftId = readId(c.req.param("draftId"))
   let result
   try {
-    result = await fillProductArchiveDraftFieldsWithAi(db, draftId)
+    result = await withBackgroundTaskSlot("product_archive_ai_fill", (signal) => (
+      fillProductArchiveDraftFieldsWithAi(db, draftId, { signal })
+    ))
   } catch (error) {
     throw productArchiveDraftMutationException(error)
   }

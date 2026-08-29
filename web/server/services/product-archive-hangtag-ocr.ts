@@ -85,7 +85,7 @@ function jsonText(value: unknown) {
 }
 
 function compactFieldKey(value: unknown) {
-  return stringValue(value).replace(/\s+/g, "").replace(/[().。]/g, "").toLowerCase()
+  return stringValue(value).replace(/\s+/g, "").replace(/[()（）.。]/g, "").toLowerCase()
 }
 
 function isStaleMaterialAiRuleFallbackField(field: JsonRecord) {
@@ -106,13 +106,14 @@ function fieldConfidenceRank(value: unknown) {
 }
 
 function sourceRank(value: unknown) {
-  return { hangtag: 4, scm_list: 3, washlabel: 2, unknown: 1 }[stringValue(value)] ?? 0
+  return { hangtag: 4, scm_list: 3, washlabel: 2, flat_image: 1, unknown: 0 }[stringValue(value)] ?? 0
 }
 
 function sourceTypeForOcrField(field: OcrField, document: OcrDocument) {
   const sourceKind = stringValue(field.sourceKind) || stringValue(document.sourceKind) || "unknown"
   if (sourceKind === "hangtag") return "hangtag_ocr"
   if (sourceKind === "washlabel") return "washlabel_ocr"
+  if (sourceKind === "flat_image") return "flat_image_ocr"
   if (sourceKind === "scm_list") return "scm_list"
   return "document_ocr"
 }
@@ -530,6 +531,69 @@ function applyMinimumDownFillWeightRule(items: ReturnType<typeof buildPreviewIte
       item.status = "all_skipped"
     }
   }
+}
+
+function aiFillOcrEvidenceFieldEligible(field: JsonRecord) {
+  const sourceType = stringValue(field.source_type)
+  const aiGenerated = sourceType === "ai" || sourceType === "ai_rule_fallback"
+  if (Boolean(field.manual_override) && !aiGenerated) return false
+  if (sourceType === "ai_rule_fallback") return true
+  if (stringValue(field.validation_status) === "invalid") return true
+  return !hasFieldValue(field)
+}
+
+function ocrConfidenceScore(value: unknown) {
+  return { high: 0.98, medium: 0.88, low: 0.72 }[stringValue(value)] ?? 0.8
+}
+
+export function buildProductArchiveAiFillOcrEvidenceFills(input: {
+  draftId: number
+  spuCode: string
+  fields?: JsonRecord[]
+  documents?: OcrDocument[]
+}) {
+  const draftId = Number(input.draftId)
+  const spuCode = stringValue(input.spuCode)
+  const eligibleFields = (input.fields ?? []).filter(aiFillOcrEvidenceFieldEligible)
+  if (!Number.isInteger(draftId) || draftId <= 0 || !spuCode || eligibleFields.length === 0) return []
+
+  const items = (input.documents ?? [])
+    .filter((document) => stringValue(document.detectedSpuCode) === spuCode)
+    .map((document) => ({
+      fileName: stringValue(document.fileName),
+      matchedDraft: { id: draftId, spuCode },
+      status: "ready",
+      targetFields: buildTargetFieldsForDocument(eligibleFields, document, { overwriteExisting: true }),
+    }))
+  applyMinimumDownFillWeightRule(items as ReturnType<typeof buildPreviewItem>[])
+
+  const targetsByFieldId = new Map<number, JsonRecord>()
+  for (const item of items) {
+    for (const target of item.targetFields) {
+      if (!target.willApply) continue
+      const fieldId = Number(target.fieldId)
+      const candidate = { ...target, fileName: item.fileName }
+      const existing = targetsByFieldId.get(fieldId)
+      targetsByFieldId.set(fieldId, existing ? betterTarget(existing, candidate) : candidate)
+    }
+  }
+  return Array.from(targetsByFieldId.values())
+    .map((target) => ({
+      field_id: Number(target.fieldId),
+      field_name: stringValue(target.fieldName),
+      field_value: stringValue(target.valueText),
+      field_key: stringValue(target.fieldKey),
+      field_label: stringValue(target.label),
+      source_type: stringValue(target.sourceType),
+      source_ref: stringValue(target.sourceRef) || null,
+      source_kind: stringValue(target.sourceKind),
+      file_name: stringValue(target.fileName),
+      confidence: ocrConfidenceScore(target.confidence),
+      confidence_label: stringValue(target.confidence) || "medium",
+      evidence_text: stringValue(target.evidenceText),
+      page_number: Number(target.pageNumber) || null,
+    }))
+    .sort((left, right) => Number(left.field_id) - Number(right.field_id))
 }
 
 export function previewProductArchiveHangtagWashlabelOcr(db: SyncPostgresDatabase, input: PreviewInput = {}) {

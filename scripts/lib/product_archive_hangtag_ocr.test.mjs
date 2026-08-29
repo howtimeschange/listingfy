@@ -13,6 +13,7 @@ import {
   productArchiveOcrFileType,
   readScmHangtagWashlabelSupplementWorkbook,
   recognizeProductArchiveOcrFile,
+  recognizeProductArchiveOcrFiles,
 } from "./product_archive_hangtag_ocr.mjs";
 
 const requireFromWeb = createRequire(new URL("../../web/package.json", import.meta.url));
@@ -149,6 +150,18 @@ test("hangtag OCR extractor falls back to standard and safety regexes when label
     ["safetyCategory", "符合 GB 31701 B类", "medium"],
     ["productGrade", "合格品", "medium"],
   ]);
+});
+
+test("hangtag OCR extractor recognizes the safety technical level label used by apparel tags", () => {
+  const result = extractHangtagWashlabelFieldsFromOcrText(`
+产品货号：202426103105
+执行标准：FZ/T 73018-2021
+安全技术级别：符合 GB 31701 B类
+`);
+
+  assert.equal(result.fields.find((field) => field.key === "executionStandard")?.value, "FZ/T 73018-2021");
+  assert.equal(result.fields.find((field) => field.key === "safetyCategory")?.value, "符合 GB 31701 B类");
+  assert.equal(result.fields.find((field) => field.key === "safetyCategory")?.confidence, "high");
 });
 
 test("hangtag OCR extractor rejects malformed execution standard noise", () => {
@@ -598,6 +611,99 @@ test("OCR file recognizer falls back to multimodal vision when OCR provider fail
     assert.deepEqual(result.providerKinds, ["ai_vision"]);
     assert.equal(result.fields.find((field) => field.key === "executionStandard")?.value, "Q/BALABALA 104-2022");
     assert.match(result.warnings.join("\n"), /OCR 识别失败，已使用多模态模型兜底识别/);
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
+test("OCR file recognizer uses vision fallback when GB 31701 is present but the safety class is incomplete", async () => {
+  const workDir = await mkdtemp(path.join(os.tmpdir(), "listingify-ocr-incomplete-safety-"));
+  try {
+    const filePath = path.join(workDir, "202426103105吊牌.jpg");
+    await writeFile(filePath, await simpleJpegBuffer());
+    const visionCalls = [];
+    const result = await recognizeProductArchiveOcrFile(
+      { filePath, fileName: "202426103105吊牌.jpg", fileType: "image" },
+      {
+        provider: async () => ({
+          providerKind: "tesseract_js",
+          text: "产品货号：202426103105\n执行标准：FZ/T 73018-2021\n安全技术级别：符合GB 31701 BK",
+        }),
+        ocrQualityGate: false,
+        visionProvider: async (input) => {
+          visionCalls.push(input);
+          assert.match(input.fallbackReason, /GB 31701.*A\/B\/C 类/);
+          return {
+            providerKind: "ai_vision",
+            json: {
+              style_code: "202426103105",
+              fields: [
+                { key: "executionStandard", label: "执行标准", value: "FZ/T 73018-2021", confidence: "high" },
+                { key: "safetyCategory", label: "安全技术级别", value: "符合 GB 31701 B类", confidence: "high" },
+              ],
+            },
+          };
+        },
+      },
+    );
+
+    assert.equal(visionCalls.length, 1);
+    assert.equal(result.fields.find((field) => field.key === "executionStandard")?.value, "FZ/T 73018-2021");
+    assert.equal(result.fields.find((field) => field.key === "safetyCategory")?.value, "符合 GB 31701 B类");
+    assert.deepEqual(result.providerKinds, ["tesseract_js", "ai_vision"]);
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
+test("OCR batch recognizer stops before starting files when the AI fill task is already aborted", async () => {
+  const controller = new AbortController();
+  controller.abort(new Error("AI fill task timed out"));
+  let providerCalls = 0;
+
+  await assert.rejects(
+    recognizeProductArchiveOcrFiles(
+      [{ filePath: "/does/not/need/to/exist.jpg", fileName: "202426103105吊牌.jpg", fileType: "image" }],
+      {
+        signal: controller.signal,
+        provider: async () => {
+          providerCalls += 1;
+          return "";
+        },
+      },
+    ),
+    /AI fill task timed out/,
+  );
+  assert.equal(providerCalls, 0);
+});
+
+test("OCR vision fallback does not return a result after the AI fill task is cancelled", async () => {
+  const workDir = await mkdtemp(path.join(os.tmpdir(), "listingify-ocr-vision-cancel-"));
+  try {
+    const filePath = path.join(workDir, "202426103105吊牌.jpg");
+    await writeFile(filePath, await simpleJpegBuffer());
+    const controller = new AbortController();
+
+    await assert.rejects(
+      recognizeProductArchiveOcrFile(
+        { filePath, fileName: "202426103105吊牌.jpg", fileType: "image" },
+        {
+          signal: controller.signal,
+          provider: async () => "产品货号：202426103105\n安全技术级别：符合GB 31701 BK",
+          ocrQualityGate: false,
+          visionProvider: async () => {
+            controller.abort(new Error("AI fill task timed out"));
+            return {
+              json: {
+                style_code: "202426103105",
+                fields: [{ key: "safetyCategory", value: "符合 GB 31701 B类", confidence: "high" }],
+              },
+            };
+          },
+        },
+      ),
+      /AI fill task timed out/,
+    );
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }

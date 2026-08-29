@@ -20,7 +20,7 @@ const FIELD_LABELS = {
   productName: ["产品名称", "品名", "名称"],
   articleNo: ["产品货号", "货号", "款号", "产品款号"],
   executionStandard: ["执行标准", "执行标准号", "产品执行标准"],
-  safetyCategory: ["安全技术类别", "安全类别", "安全技术要求"],
+  safetyCategory: ["安全技术类别", "安全技术级别", "安全类别", "安全技术要求"],
   productGrade: ["产品等级", "质量等级", "等级"],
   materialComposition: ["面料成分", "材质成分", "纤维含量", "成分"],
   downFillWeight: ["充绒量", "充绒量（单位：克）", "充绒量(单位：克)", "充绒量(单位:克)"],
@@ -74,6 +74,14 @@ function arrayValue(value) {
     }
   }
   return [];
+}
+
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  const error = new Error(stringValue(signal.reason) || "吊牌/洗唛 OCR 任务已取消");
+  error.name = "AbortError";
+  throw error;
 }
 
 function uniqueTextValues(values) {
@@ -686,8 +694,12 @@ function ocrTextLooksUnusable(text) {
 function visionFallbackReason(document = {}) {
   if (stringValue(document.status) === "ocr_failed") return "OCR 识别失败";
   if (!Array.isArray(document.fields) || document.fields.length === 0) return "OCR 未提取到结构化字段";
+  const rawText = normalizeOcrText(document.rawText);
+  const safetyCategory = document.fields.find((field) => stringValue(field?.key) === "safetyCategory");
+  if (/GB\s*31701/i.test(rawText) && !/[ABCＡＢＣ]\s*类/i.test(stringValue(safetyCategory?.value))) {
+    return "吊牌/洗唛包含 GB 31701 安全标准，但 OCR 未提取 A/B/C 类";
+  }
   if (stringValue(document.sourceKind) === "washlabel") {
-    const rawText = normalizeOcrText(document.rawText);
     const fieldKeys = new Set(document.fields.map((field) => stringValue(field?.key)));
     if (/充绒量/.test(rawText) && !fieldKeys.has("downFillWeight")) {
       return "洗唛包含充绒量证据，但 OCR 未提取尺码克重表";
@@ -827,7 +839,7 @@ async function pdfVisionImagePayloads(filePath, options = {}) {
 
 function buildOcrQualityPrompt({ fileName, sourceKind, rawText, fields }) {
   return JSON.stringify({
-    task: "质检商品吊牌/洗唛普通 OCR 的结构化抽取结果，判断字段是否可信，是否需要改走多模态看原图兜底。",
+    task: "质检商品吊牌、洗唛或平铺图标签文字的普通 OCR 结构化抽取结果，判断字段是否可信，是否需要改走多模态看原图兜底。",
     file_name: fileName,
     source_kind: sourceKind,
     raw_text: rawText,
@@ -870,7 +882,7 @@ function buildOcrQualityMessages(document, options = {}) {
   return [
     {
       role: "system",
-      content: "你是商品吊牌和洗唛 OCR 质量审核智能体，只判断普通 OCR 结果是否可信。",
+      content: "你是商品吊牌、洗唛和平铺图标签文字的 OCR 质量审核智能体，只判断普通 OCR 结果是否可信。",
     },
     {
       role: "user",
@@ -1152,7 +1164,7 @@ function analyzeVisionOcrDocument({
   ]);
   const warnings = analyzed.warnings.filter((warning) => !/未识别到可写入/.test(warning));
   const finalFields = Array.from(fieldsByKey.values());
-  if (finalFields.length === 0) warnings.push("多模态兜底未提取到可写入的吊牌/洗唛字段");
+  if (finalFields.length === 0) warnings.push("多模态兜底未提取到可写入的吊牌/洗唛/平铺图字段");
   return {
     ...analyzed,
     detectedSpuCode: styleCodes[0] ?? analyzed.detectedSpuCode,
@@ -1166,7 +1178,7 @@ function analyzeVisionOcrDocument({
 
 function buildVisionOcrPrompt({ fileName, sourceKind, fallbackReason }) {
   return JSON.stringify({
-    task: "从商品吊牌或洗唛图片中做多模态文字识别，并提取可写入深绘建档草稿的结构化字段。",
+    task: "从商品吊牌、洗唛或带标签文字的平铺图中做多模态文字识别，并提取可写入深绘建档草稿的结构化字段。",
     file_name: fileName,
     source_kind: sourceKind,
     fallback_reason: fallbackReason,
@@ -1212,7 +1224,7 @@ function buildVisionOcrMessages({ fileName, sourceKind, fallbackReason, imagePay
   return [
     {
       role: "system",
-      content: "你是商品吊牌和洗唛 OCR 兜底识别器，只做忠实转写和字段抽取。",
+      content: "你是商品吊牌、洗唛和平铺图标签文字的 OCR 兜底识别器，只做忠实转写和字段抽取。",
     },
     {
       role: "user",
@@ -1335,6 +1347,7 @@ async function applyVisionFallback(document, {
   options,
   fallbackReason,
 }) {
+  throwIfAborted(options.signal);
   const warnings = Array.isArray(document.warnings) ? [...document.warnings] : [];
   if (!visionFallbackEnabled(options)) return document;
   const imagePaths = visionImagePathCandidates({ filePath, fileType, pageImagePaths }, options);
@@ -1346,6 +1359,7 @@ async function applyVisionFallback(document, {
   }
   try {
     let { payloads, warnings: payloadWarnings } = await visionImagePayloads(imagePaths, options);
+    throwIfAborted(options.signal);
     if (payloads.length === 0 && fileType === "pdf") {
       try {
         const rerendered = await pdfVisionImagePayloads(filePath, options);
@@ -1378,6 +1392,7 @@ async function applyVisionFallback(document, {
       fallbackReason,
       imagePayloads: payloads,
     }, options);
+    throwIfAborted(options.signal);
     const visionDocument = analyzeVisionOcrDocument({
       fileName,
       fileType,
@@ -1414,6 +1429,7 @@ async function applyVisionFallback(document, {
       visionRouting: vision.routing ?? null,
     };
   } catch (error) {
+    if (options.signal?.aborted || error?.name === "AbortError") throw error;
     return {
       ...document,
       warnings: uniqueTextValues([...warnings, `多模态兜底失败：${errorText(error)}`]),
@@ -1523,6 +1539,7 @@ export async function readScmHangtagWashlabelSupplementWorkbook(filePath, option
 }
 
 export async function recognizeProductArchiveOcrFile(file, options = {}) {
+  throwIfAborted(options.signal);
   const filePath = stringValue(file.filePath);
   const fileName = stringValue(file.fileName) || path.basename(filePath);
   const fileType = stringValue(file.fileType) || productArchiveOcrFileType(fileName);
@@ -1540,7 +1557,9 @@ export async function recognizeProductArchiveOcrFile(file, options = {}) {
       pageImagePaths = prepared.files;
       const pages = [];
       for (let index = 0; index < pageImagePaths.length; index += 1) {
+        throwIfAborted(options.signal);
         const providerResult = normalizeProviderResult(await provider(pageImagePaths[index], providerOptions), requestedProviderKind);
+        throwIfAborted(options.signal);
         const text = providerResult.text;
         if (providerResult.providerKind) providerKinds.push(providerResult.providerKind);
         pages.push({ pageNumber: index + 1, text });
@@ -1563,11 +1582,13 @@ export async function recognizeProductArchiveOcrFile(file, options = {}) {
     }
 
     const localFallbackReason = visionFallbackReason(document);
+    throwIfAborted(options.signal);
     const quality = localFallbackReason
       ? { document, fallbackReason: localFallbackReason }
       : await applyOcrQualityGate(document, options);
+    throwIfAborted(options.signal);
     if (!quality.fallbackReason) return quality.document;
-    return applyVisionFallback(quality.document, {
+    const visionDocument = await applyVisionFallback(quality.document, {
       filePath,
       fileName,
       fileType,
@@ -1576,6 +1597,8 @@ export async function recognizeProductArchiveOcrFile(file, options = {}) {
       options,
       fallbackReason: quality.fallbackReason,
     });
+    throwIfAborted(options.signal);
+    return visionDocument;
   } finally {
     if (dispose) await dispose(providerOptions);
     if (imageWorkDir) await rm(imageWorkDir, { recursive: true, force: true });
@@ -1585,7 +1608,9 @@ export async function recognizeProductArchiveOcrFile(file, options = {}) {
 export async function recognizeProductArchiveOcrFiles(files = [], options = {}) {
   const output = [];
   for (const file of files) {
+    throwIfAborted(options.signal);
     output.push(await recognizeProductArchiveOcrFile(file, options));
   }
+  throwIfAborted(options.signal);
   return output;
 }

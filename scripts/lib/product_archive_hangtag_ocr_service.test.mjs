@@ -4,6 +4,83 @@ import test from "node:test";
 
 const SERVICE_FILE = new URL("../../web/server/services/product-archive-hangtag-ocr.ts", import.meta.url);
 
+test("AI fill OCR evidence maps apparel compliance fields without overwriting confirmed values", async () => {
+  const service = await import("../../web/server/services/product-archive-hangtag-ocr.ts");
+  const fills = service.buildProductArchiveAiFillOcrEvidenceFills({
+    draftId: 917,
+    spuCode: "202426103105",
+    fields: [
+      { id: 1, field_name: "执行标准", value_text: "", value_json: {}, source_type: "manual", manual_override: false, validation_status: "missing", options_json: [] },
+      { id: 2, field_name: "安全等级", value_text: "", value_json: {}, source_type: "manual", manual_override: false, validation_status: "missing", options_json: [{ label: "B类", value: "B类" }] },
+      { id: 3, field_name: "安全等级（多选）", value_text: "", value_json: {}, source_type: "manual", manual_override: false, validation_status: "missing", options_json: [{ label: "B类", value: "B类" }] },
+      { id: 4, field_name: "产品等级", value_text: "一等品", value_json: {}, source_type: "manual", manual_override: true, validation_status: "valid", options_json: [] },
+      { id: 5, field_name: "吊牌截取", value_text: "", value_json: {}, source_type: "manual", manual_override: false, validation_status: "missing", options_json: [] },
+    ],
+    documents: [
+      {
+        fileName: "202426103105吊牌.jpg",
+        sourceKind: "hangtag",
+        detectedSpuCode: "202426103105",
+        rawText: "执行标准：FZ/T 73018-2021\n安全技术级别：符合 GB 31701 B类\n产品等级：合格品",
+        fields: [
+          { key: "executionStandard", label: "执行标准", value: "FZ/T 73018-2021", confidence: "high", sourceKind: "hangtag" },
+          { key: "safetyCategory", label: "安全技术级别", value: "符合 GB 31701 B类", confidence: "high", sourceKind: "hangtag" },
+          { key: "productGrade", label: "产品等级", value: "合格品", confidence: "high", sourceKind: "hangtag" },
+        ],
+      },
+      {
+        fileName: "wrong-style吊牌.jpg",
+        sourceKind: "hangtag",
+        detectedSpuCode: "202426103106",
+        fields: [{ key: "executionStandard", label: "执行标准", value: "QB/T 0000-2020", confidence: "high", sourceKind: "hangtag" }],
+      },
+    ],
+  });
+
+  assert.deepEqual(fills.map((fill) => [fill.field_id, fill.field_name, fill.field_value, fill.source_type]), [
+    [1, "执行标准", "FZ/T 73018-2021", "hangtag_ocr"],
+    [2, "安全等级", "B类", "hangtag_ocr"],
+    [3, "安全等级（多选）", "B类", "hangtag_ocr"],
+    [5, "吊牌截取", "执行标准：FZ/T 73018-2021\n安全技术级别：符合 GB 31701 B类\n产品等级：合格品", "hangtag_ocr"],
+  ]);
+  assert.equal(fills.some((fill) => fill.field_id === 4), false);
+  assert.deepEqual(fills.map((fill) => fill.source_ref), [
+    "202426103105吊牌.jpg",
+    "202426103105吊牌.jpg",
+    "202426103105吊牌.jpg",
+    "202426103105吊牌.jpg#p1",
+  ]);
+});
+
+test("AI fill OCR evidence keeps the strongest duplicate document result", async () => {
+  const service = await import("../../web/server/services/product-archive-hangtag-ocr.ts");
+  const fills = service.buildProductArchiveAiFillOcrEvidenceFills({
+    draftId: 917,
+    spuCode: "202426103105",
+    fields: [
+      { id: 1, field_name: "执行标准", value_text: "", value_json: {}, source_type: "manual", manual_override: false, validation_status: "missing", options_json: [] },
+    ],
+    documents: [
+      {
+        fileName: "低清吊牌.jpg",
+        sourceKind: "hangtag",
+        detectedSpuCode: "202426103105",
+        fields: [{ key: "executionStandard", label: "执行标准", value: "FZ/T 73018-2012", confidence: "low", sourceKind: "hangtag" }],
+      },
+      {
+        fileName: "高清吊牌.jpg",
+        sourceKind: "hangtag",
+        detectedSpuCode: "202426103105",
+        fields: [{ key: "executionStandard", label: "执行标准", value: "FZ/T 73018-2021", confidence: "high", sourceKind: "hangtag" }],
+      },
+    ],
+  });
+
+  assert.deepEqual(fills.map((fill) => [fill.field_value, fill.file_name, fill.confidence_label]), [
+    ["FZ/T 73018-2021", "高清吊牌.jpg", "high"],
+  ]);
+});
+
 test("product archive hangtag OCR preview maps recognized compliance fields onto current draft fields", async () => {
   const service = await import("../../web/server/services/product-archive-hangtag-ocr.ts");
   const queries = [];

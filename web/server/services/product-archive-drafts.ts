@@ -27,6 +27,7 @@ import {
   getDefaultAiScenarioRouter,
   withAiRoutingHashes,
 } from "../../../scripts/lib/ai_routing_context.mjs"
+import { recognizeProductArchiveOcrFiles } from "../../../scripts/lib/product_archive_hangtag_ocr.mjs"
 import { extractDeepdrawTradeFieldRows } from "./deepdraw-metadata"
 import {
   buildShoeSizeChartFieldValues,
@@ -183,11 +184,15 @@ interface SubmitOptions {
 
 interface AiFillOptions {
   fetchImpl?: typeof fetch
+  signal?: AbortSignal
   router?: {
     callJson: (input: Record<string, unknown>) => Promise<{
       json: Record<string, unknown>
     }>
   }
+  fileExists?: (filePath: string) => boolean
+  ocrRecognizer?: typeof recognizeProductArchiveOcrFiles
+  ocrOptions?: JsonRecord
 }
 
 type ProductArchiveAiFillWarning = {
@@ -460,7 +465,7 @@ function sourceFieldValuesAny(rows: JsonRecord[], sourceType: string, sourceFiel
 }
 
 function compactFieldKey(value: unknown) {
-  return stringValue(value).replace(/\s+/g, "").replace(/[().。]/g, "").toLowerCase()
+  return stringValue(value).replace(/\s+/g, "").replace(/[()（）.。]/g, "").toLowerCase()
 }
 
 function uploadPathText(value: unknown) {
@@ -6210,6 +6215,154 @@ export type ProductArchiveAiFillCandidate = {
 const AI_FILL_MIN_CONFIDENCE = 0.7
 const AI_FILL_REFERENCE_IMAGE_LIMIT = 4
 const AI_FILL_REFERENCE_IMAGE_MAX_BYTES = 4 * 1024 * 1024
+const AI_FILL_OCR_DEFAULT_FILE_LIMIT = 6
+const AI_FILL_OCR_MAX_FILE_LIMIT = 12
+
+function aiFillOcrFileLimit() {
+  const value = Number(process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_OCR_FILE_LIMIT ?? AI_FILL_OCR_DEFAULT_FILE_LIMIT)
+  if (!Number.isFinite(value)) return AI_FILL_OCR_DEFAULT_FILE_LIMIT
+  return Math.max(1, Math.min(Math.floor(value), AI_FILL_OCR_MAX_FILE_LIMIT))
+}
+
+function productArchiveAiFillOcrTargetField(field: JsonRecord) {
+  const sourceType = stringValue(field.source_type)
+  const aiGenerated = sourceType === "ai" || sourceType === "ai_rule_fallback"
+  if (Boolean(field.manual_override) && !aiGenerated) return false
+  const needsFill = sourceType === "ai_rule_fallback"
+    || stringValue(field.validation_status) === "invalid"
+    || (!hasValue(field.value_text) && !hasValue(recordValue(field.value_json)))
+  if (!needsFill) return false
+  const name = compactFieldKey(field.field_name)
+  if (name.includes("执行标准") || name.includes("执行规范")) return true
+  if (name === "安全等级" || name === "安全等级多选" || name.includes("安全技术类别") || name.includes("安全类别") || name.includes("安全技术要求")) return true
+  if (name.includes("产品等级") || name.includes("质量等级")) return true
+  if (["产品名称", "商品名称", "品名", "产品货号", "商品货号", "货号", "款号"].includes(name)) return true
+  if (name.includes("材质成分") || name.includes("面料成分") || name.includes("成分含量文本")) return true
+  if ((name.includes("材质") || name.includes("面料")) && arrayValue(field.options_json).length > 0) return true
+  if (name.includes("充绒量") && arrayValue(field.options_json).length === 0) return true
+  return name.includes("洗涤说明") || name.includes("洗护说明") || name.includes("洗涤方法")
+}
+
+function productArchiveAiFillOcrFile(image: JsonRecord, fileExists: (filePath: string) => boolean) {
+  const listKind = stringValue(image.kind) || productArchiveDraftListImageKind(image)
+  const payloadKind = stringValue(recordValue(image.raw_payload_json).asset_kind || image.asset_kind).toLowerCase()
+  const sourceKind = listKind === "hangtag" || listKind === "washlabel"
+    ? listKind
+    : listKind === "flat_image" || payloadKind === "flat_image"
+      ? "flat_image"
+      : ""
+  if (!sourceKind) return null
+  const filePath = stringValue(image.local_path)
+  if (!filePath || !fileExists(filePath)) return null
+  const fileName = stringValue(image.original_file_name)
+    || stringValue(image.source_ref)
+    || stringValue(image.file_name)
+    || `draft-image-${image.id}`
+  const mimeType = stringValue(image.mime_type).toLowerCase()
+  return {
+    filePath,
+    fileName,
+    fileType: mimeType === "application/pdf" || uploadExtension(fileName) === ".pdf" ? "pdf" : "image",
+    sourceKind,
+  }
+}
+
+export async function buildProductArchiveAiFillOcrFallback(input: {
+  draftId: number
+  spuCode: string
+  fields?: JsonRecord[]
+  images?: JsonRecord[]
+}, options: AiFillOptions = {}) {
+  const warnings: ProductArchiveAiFillWarning[] = []
+  const fields = input.fields ?? []
+  if (!fields.some(productArchiveAiFillOcrTargetField)) return { fills: [], documents: [], warnings }
+
+  const fileExists = options.fileExists ?? fs.existsSync
+  const availableFiles = (input.images ?? [])
+    .map((image) => productArchiveAiFillOcrFile(image, fileExists))
+    .filter((file): file is NonNullable<ReturnType<typeof productArchiveAiFillOcrFile>> => Boolean(file))
+  const labelFiles = availableFiles.filter((file) => file.sourceKind === "hangtag" || file.sourceKind === "washlabel")
+  const flatImageFiles = availableFiles.filter((file) => file.sourceKind === "flat_image")
+  const fileLimit = aiFillOcrFileLimit()
+  const primaryFiles = (labelFiles.length > 0 ? labelFiles : flatImageFiles).slice(0, fileLimit)
+  const fallbackFlatImageFiles = labelFiles.length > 0
+    ? flatImageFiles.slice(0, Math.max(0, fileLimit - primaryFiles.length))
+    : []
+  if (primaryFiles.length === 0) return { fills: [], documents: [], warnings }
+
+  try {
+    const recognizer = options.ocrRecognizer ?? recognizeProductArchiveOcrFiles
+    const recognizeFiles = async (files: typeof primaryFiles) => {
+      const documents = await recognizer(files, {
+        fetchImpl: options.fetchImpl,
+        aiRouter: options.router,
+        ...(options.ocrOptions ?? {}),
+        signal: options.signal,
+      }) as JsonRecord[]
+      throwIfAborted(options.signal)
+      return documents
+    }
+    const { buildProductArchiveAiFillOcrEvidenceFills } = await import("./product-archive-hangtag-ocr")
+    let documents = await recognizeFiles(primaryFiles)
+    let fills = buildProductArchiveAiFillOcrEvidenceFills({
+      draftId: input.draftId,
+      spuCode: input.spuCode,
+      fields,
+      documents,
+    })
+    const targetFieldIds = new Set(
+      fields.filter(productArchiveAiFillOcrTargetField).map((field) => Number(field.id)),
+    )
+    const filledFieldIds = new Set(fills.map((fill) => Number(fill.field_id)))
+    const needsFlatImageFallback = fallbackFlatImageFiles.length > 0
+      && Array.from(targetFieldIds).some((fieldId) => !filledFieldIds.has(fieldId))
+    if (needsFlatImageFallback) {
+      try {
+        const flatImageDocuments = await recognizeFiles(fallbackFlatImageFiles)
+        documents = [...documents, ...flatImageDocuments]
+        fills = buildProductArchiveAiFillOcrEvidenceFills({
+          draftId: input.draftId,
+          spuCode: input.spuCode,
+          fields,
+          documents,
+        })
+      } catch (error) {
+        if (options.signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error
+        const message = error instanceof Error ? error.message : String(error)
+        warnings.push({
+          code: "ocr_fallback_unavailable",
+          message: `AI 填充的平铺图 OCR 二次兜底暂不可用：${message}`,
+        })
+      }
+    }
+    const failedDocuments = documents.filter((document) => stringValue(document.status) === "ocr_failed")
+    if (failedDocuments.length > 0) {
+      warnings.push({
+        code: "ocr_fallback_unavailable",
+        message: `AI 填充的吊牌/洗唛/平铺图 OCR 兜底有 ${failedDocuments.length} 个文件识别失败，已继续其余字段填充`,
+      })
+    }
+    const mismatchedDocuments = documents.filter((document) => {
+      const detectedSpuCode = stringValue(document.detectedSpuCode)
+      return detectedSpuCode && detectedSpuCode !== stringValue(input.spuCode)
+    })
+    if (mismatchedDocuments.length > 0) {
+      warnings.push({
+        code: "ocr_fallback_spu_mismatch",
+        message: `AI 填充已跳过 ${mismatchedDocuments.length} 个款号不一致的吊牌/洗唛/平铺图 OCR 结果`,
+      })
+    }
+    return { fills, documents, warnings }
+  } catch (error) {
+    if (options.signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error
+    const message = error instanceof Error ? error.message : String(error)
+    warnings.push({
+      code: "ocr_fallback_unavailable",
+      message: `AI 填充的吊牌/洗唛/平铺图 OCR 兜底暂不可用：${message}`,
+    })
+    return { fills: [], documents: [], warnings }
+  }
+}
 
 function compactAiText(value: unknown, maxLength = 240) {
   const text = typeof value === "object" && value !== null
@@ -8839,22 +8992,6 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
       sourceRows,
       referenceImages,
     })
-    const evidenceRuleFillById = new Map(evidenceRuleFills.map((fill) => [Number(fill.field_id), fill]))
-    const aiFillCandidates = candidates.filter((field) => !evidenceRuleFillById.has(field.id))
-    const materialEvidenceFills = buildProductArchiveMaterialEvidenceFills(fields, aiFillCandidates, sourceRows)
-    const materialEvidenceById = new Map(materialEvidenceFills.map((fill) => [Number(fill.field_id), fill]))
-    const aiCandidates = aiFillCandidates.filter((field) => !materialEvidenceById.has(field.id))
-    const prompt = aiCandidates.length > 0
-      ? buildDeepdrawAiFillPrompt({
-          draft,
-          fields: aiCandidates,
-          skus,
-          allFields: fields,
-          sourceRows,
-          mdmSpu,
-          referenceImages,
-        })
-      : ""
     const fieldSnapshots = new Map(
       fields
         .map((field) => [Number(field.id), aiFillFieldSnapshot(field)] as const)
@@ -8865,11 +9002,12 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
       referenceImages,
       fieldSnapshots,
       candidates,
+      draft,
+      fields,
+      skus,
+      sourceRows,
+      mdmSpu,
       evidenceRuleFills,
-      evidenceRuleFillById,
-      materialEvidenceById,
-      aiCandidates,
-      prompt,
       warnings: [] as ProductArchiveAiFillWarning[],
     }
   })()
@@ -8878,22 +9016,56 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
     referenceImages,
     fieldSnapshots,
     candidates,
-    evidenceRuleFills,
-    evidenceRuleFillById,
-    materialEvidenceById,
-    aiCandidates,
-    prompt,
+    draft,
+    fields,
+    skus,
+    sourceRows,
+    mdmSpu,
+    evidenceRuleFills: preparedEvidenceRuleFills,
     warnings,
   } = prepared
 
-  if (candidates.length === 0 && evidenceRuleFills.length === 0) {
+  throwIfAborted(options.signal)
+  const ocrFallback = await buildProductArchiveAiFillOcrFallback({
+    draftId,
+    spuCode: stringValue(draft.spu_code),
+    fields,
+    images: referenceImages,
+  }, options)
+  throwIfAborted(options.signal)
+  warnings.push(...ocrFallback.warnings)
+  const ocrFills = ocrFallback.fills as JsonRecord[]
+  const ocrFillById = new Map(ocrFills.map((fill) => [Number(fill.field_id), fill]))
+  const evidenceRuleFills = preparedEvidenceRuleFills.filter((fill) => !ocrFillById.has(Number(fill.field_id)))
+  const evidenceRuleFillById = new Map(evidenceRuleFills.map((fill) => [Number(fill.field_id), fill]))
+  const aiFillCandidates = candidates.filter((field) => (
+    !ocrFillById.has(field.id) && !evidenceRuleFillById.has(field.id)
+  ))
+  const materialEvidenceFills = buildProductArchiveMaterialEvidenceFills(fields, aiFillCandidates, sourceRows)
+  const materialEvidenceById = new Map(materialEvidenceFills.map((fill) => [Number(fill.field_id), fill]))
+  const aiCandidates = aiFillCandidates.filter((field) => !materialEvidenceById.has(field.id))
+  const prompt = aiCandidates.length > 0
+    ? buildDeepdrawAiFillPrompt({
+        draft,
+        fields: aiCandidates,
+        skus,
+        allFields: fields,
+        sourceRows,
+        mdmSpu,
+        referenceImages,
+      })
+    : ""
+
+  if (ocrFills.length === 0 && candidates.length === 0 && evidenceRuleFills.length === 0) {
     return { saved: [], detail, warnings }
   }
   let aiFills: JsonRecord[] = []
   if (aiCandidates.length > 0) {
     try {
       aiFills = await callDeepdrawAiFill(db, prompt, aiCandidates, referenceImages, options)
+      throwIfAborted(options.signal)
     } catch (error) {
+      if (options.signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error
       const attempts = Array.isArray((error as { attempts?: unknown }).attempts)
         ? (error as { attempts: JsonRecord[] }).attempts
         : []
@@ -8908,6 +9080,7 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
       })
     }
   }
+  throwIfAborted(options.signal)
   const aiById = new Map(aiFills.map((fill) => [Number(fill.field_id), fill]))
   const now = nowIso()
   const saved: Array<{ field_id: number; field_name: string; field_value: string; source: string; confidence: number | null }> = []
@@ -8994,6 +9167,33 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
         confidence: input.confidence,
       })
     }
+    for (const fill of ocrFills) {
+      const confidence = Number(fill.confidence)
+      applyFieldFill({
+        fieldId: Number(fill.field_id),
+        fieldName: stringValue(fill.field_name),
+        fieldValue: stringValue(fill.field_value),
+        valueJson: {
+          ocr_evidence: {
+            file_name: stringValue(fill.file_name),
+            field_key: stringValue(fill.field_key),
+            field_label: stringValue(fill.field_label),
+            source_kind: stringValue(fill.source_kind),
+            source_ref: stringValue(fill.source_ref) || null,
+            confidence: Number.isFinite(confidence) ? confidence : null,
+            confidence_label: stringValue(fill.confidence_label),
+            evidence_text: stringValue(fill.evidence_text),
+            page_number: Number(fill.page_number) || null,
+            applied_at: now,
+          },
+          source: "OCR_EVIDENCE",
+        },
+        sourceType: stringValue(fill.source_type),
+        sourceRef: stringValue(fill.source_ref) || null,
+        source: "OCR_EVIDENCE",
+        confidence: Number.isFinite(confidence) ? confidence : null,
+      })
+    }
     for (const fill of evidenceRuleFills) {
       applyFieldFill({
         fieldId: fill.field_id,
@@ -9015,7 +9215,7 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
       })
     }
     for (const field of candidates) {
-      if (evidenceRuleFillById.has(field.id)) continue
+      if (ocrFillById.has(field.id) || evidenceRuleFillById.has(field.id)) continue
       const materialFill = materialEvidenceById.get(field.id)
       const aiFill = materialFill ?? aiById.get(field.id)
       if (!aiFill) continue

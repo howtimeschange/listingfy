@@ -2453,6 +2453,266 @@ test("product archive AI fill prompt uses trusted draft MDM and source context o
   assert.doesNotMatch(service, /options\[0\]/);
 });
 
+test("product archive AI fill OCR fallback prefers stored label assets over flat images", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const calls = [];
+  const result = await service.buildProductArchiveAiFillOcrFallback({
+    draftId: 917,
+    spuCode: "202426103105",
+    fields: [
+      { id: 1, field_name: "执行标准", value_text: "", value_json: {}, source_type: "manual", manual_override: false, validation_status: "missing", options_json: [] },
+      { id: 2, field_name: "安全等级", value_text: "", value_json: {}, source_type: "manual", manual_override: false, validation_status: "missing", options_json: [{ label: "B类", value: "B类" }] },
+    ],
+    images: [
+      { id: 11, kind: "reference", local_path: "/tmp/202426103105-flat.jpg", original_file_name: "202426103105-00355.jpg", mime_type: "image/jpeg", raw_payload_json: { asset_kind: "flat_image" } },
+      { id: 12, kind: "hangtag", local_path: "/tmp/202426103105-tag.jpg", original_file_name: "202426103105吊牌.jpg", mime_type: "image/jpeg" },
+      { id: 13, kind: "washlabel", local_path: "/tmp/202426103105-wash.jpg", original_file_name: "202426103105洗唛.jpg", mime_type: "image/jpeg" },
+    ],
+  }, {
+    fileExists: () => true,
+    ocrRecognizer: async (files, options) => {
+      calls.push({ files, options });
+      return [{
+        fileName: "202426103105吊牌.jpg",
+        sourceKind: "hangtag",
+        detectedSpuCode: "202426103105",
+        fields: [
+          { key: "executionStandard", label: "执行标准", value: "FZ/T 73018-2021", confidence: "high", sourceKind: "hangtag" },
+          { key: "safetyCategory", label: "安全技术级别", value: "符合 GB 31701 B类", confidence: "high", sourceKind: "hangtag" },
+        ],
+      }];
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].files.map((file) => [file.fileName, file.sourceKind]), [
+    ["202426103105吊牌.jpg", "hangtag"],
+    ["202426103105洗唛.jpg", "washlabel"],
+  ]);
+  assert.deepEqual(result.fills.map((fill) => [fill.field_name, fill.field_value]), [
+    ["执行标准", "FZ/T 73018-2021"],
+    ["安全等级", "B类"],
+  ]);
+  assert.deepEqual(result.warnings, []);
+});
+
+test("product archive AI fill OCR fallback scans a stored flat image when label assets are absent", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const calls = [];
+  const result = await service.buildProductArchiveAiFillOcrFallback({
+    draftId: 917,
+    spuCode: "202426103105",
+    fields: [
+      { id: 1, field_name: "执行标准", value_text: "", value_json: {}, source_type: "manual", manual_override: false, validation_status: "missing", options_json: [] },
+    ],
+    images: [
+      { id: 11, kind: "reference", local_path: "/tmp/202426103105-flat.jpg", original_file_name: "202426103105-00355.jpg", mime_type: "image/jpeg", raw_payload_json: { asset_kind: "flat_image" } },
+      { id: 12, kind: "reference", local_path: "/tmp/202426103105-model.jpg", original_file_name: "202426103105-模特图.jpg", mime_type: "image/jpeg", raw_payload_json: { asset_kind: "model_image" } },
+    ],
+  }, {
+    fileExists: () => true,
+    ocrRecognizer: async (files) => {
+      calls.push(files);
+      return [{
+        fileName: "202426103105-00355.jpg",
+        sourceKind: "flat_image",
+        detectedSpuCode: "202426103105",
+        fields: [
+          { key: "executionStandard", label: "执行标准", value: "FZ/T 73018-2021", confidence: "high", sourceKind: "flat_image" },
+        ],
+      }];
+    },
+  });
+
+  assert.deepEqual(calls.flat().map((file) => [file.fileName, file.sourceKind]), [
+    ["202426103105-00355.jpg", "flat_image"],
+  ]);
+  assert.deepEqual(result.fills.map((fill) => [fill.field_name, fill.field_value, fill.source_type]), [
+    ["执行标准", "FZ/T 73018-2021", "flat_image_ocr"],
+  ]);
+});
+
+test("product archive AI fill OCR fallback tries a flat image when label OCR cannot fill the target", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const calls = [];
+  const result = await service.buildProductArchiveAiFillOcrFallback({
+    draftId: 917,
+    spuCode: "202426103105",
+    fields: [
+      { id: 1, field_name: "执行标准", value_text: "", value_json: {}, source_type: "manual", manual_override: false, validation_status: "missing", options_json: [] },
+    ],
+    images: [
+      { id: 11, kind: "hangtag", local_path: "/tmp/202426103105-tag.jpg", original_file_name: "202426103105吊牌.jpg", mime_type: "image/jpeg" },
+      { id: 12, kind: "reference", local_path: "/tmp/202426103105-flat.jpg", original_file_name: "202426103105-00355.jpg", mime_type: "image/jpeg", raw_payload_json: { asset_kind: "flat_image" } },
+    ],
+  }, {
+    fileExists: () => true,
+    ocrRecognizer: async (files) => {
+      calls.push(files.map((file) => file.sourceKind));
+      if (files[0].sourceKind === "hangtag") {
+        return [{
+          fileName: "202426103105吊牌.jpg",
+          sourceKind: "hangtag",
+          detectedSpuCode: "202426103105",
+          status: "ocr_failed",
+          fields: [],
+        }];
+      }
+      return [{
+        fileName: "202426103105-00355.jpg",
+        sourceKind: "flat_image",
+        detectedSpuCode: "202426103105",
+        status: "recognized",
+        fields: [{ key: "executionStandard", label: "执行标准", value: "FZ/T 73018-2021", confidence: "high", sourceKind: "flat_image" }],
+      }];
+    },
+  });
+
+  assert.deepEqual(calls, [["hangtag"], ["flat_image"]]);
+  assert.deepEqual(result.fills.map((fill) => [fill.field_value, fill.source_type]), [
+    ["FZ/T 73018-2021", "flat_image_ocr"],
+  ]);
+  assert.equal(result.warnings.some((warning) => warning.code === "ocr_fallback_unavailable"), true);
+});
+
+test("product archive AI fill OCR fallback degrades to a warning when recognition fails", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const result = await service.buildProductArchiveAiFillOcrFallback({
+    draftId: 917,
+    spuCode: "202426103105",
+    fields: [{ id: 1, field_name: "执行标准", value_text: "", value_json: {}, source_type: "manual", manual_override: false, validation_status: "missing", options_json: [] }],
+    images: [{ id: 12, kind: "hangtag", local_path: "/tmp/202426103105-tag.jpg", original_file_name: "202426103105吊牌.jpg", mime_type: "image/jpeg" }],
+  }, {
+    fileExists: () => true,
+    ocrRecognizer: async () => {
+      throw new Error("tesseract unavailable");
+    },
+  });
+
+  assert.deepEqual(result.fills, []);
+  assert.equal(result.warnings.length, 1);
+  assert.equal(result.warnings[0].code, "ocr_fallback_unavailable");
+  assert.match(result.warnings[0].message, /tesseract unavailable/);
+});
+
+test("product archive AI fill persists OCR text and enum evidence before the general model fallback", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const draft = {
+    id: 917,
+    spu_code: "202426103105",
+    tenant_name: "tenant",
+    merchant_id: "merchant",
+    trade_id: "trade-917",
+    trade_path: "童装婴幼儿服装 / 针织衫",
+    title: "儿童针织衫",
+    status: "manual_review",
+    submit_claim_token: null,
+    source_snapshot_json: { spu: { spu_code: "202426103105", spu_name: "儿童针织衫" } },
+  };
+  const fields = [
+    {
+      id: 1, draft_id: 917, field_name: "执行标准", field_id: "standard", source_type: "manual", source_ref: null,
+      value_text: null, value_json: {}, required: true, blocking: true, manual_override: false,
+      validation_status: "missing", validation_message: "必填字段缺失", updated_at: "2026-08-29T00:00:01.000Z", options_json: [], field_type: "TEXT",
+    },
+    {
+      id: 2, draft_id: 917, field_name: "安全等级", field_id: "safety", source_type: "manual", source_ref: null,
+      value_text: null, value_json: {}, required: true, blocking: true, manual_override: false,
+      validation_status: "missing", validation_message: "必填字段缺失", updated_at: "2026-08-29T00:00:02.000Z",
+      options_json: [{ label: "B类", value: "B类" }], field_type: "SINGLE_CHOICE",
+    },
+  ];
+  const images = [{
+    id: 12,
+    draft_id: 917,
+    spu_code: "202426103105",
+    source_type: "crawshrimp_asset_package",
+    source_ref: "202426103105吊牌.jpg",
+    local_path: "/tmp/202426103105-tag.jpg",
+    file_name: "202426103105-tag.jpg",
+    original_file_name: "202426103105吊牌.jpg",
+    mime_type: "image/jpeg",
+    raw_payload_json: { asset_kind: "hangtag" },
+    sort_no: 1,
+  }];
+  const fieldUpdates = [];
+  const db = {
+    transaction(fn) {
+      return () => fn();
+    },
+    prepare(sql) {
+      const normalized = sql.replace(/\s+/g, " ").trim();
+      return {
+        get() {
+          if (/from product_archive_draft/i.test(normalized)) return draft;
+          return undefined;
+        },
+        all() {
+          if (/from product_archive_draft_field/i.test(normalized)) return fields;
+          if (/from product_archive_draft_image/i.test(normalized)) return images;
+          return [];
+        },
+        run(...args) {
+          if (/update product_archive_draft_field field/i.test(normalized)) {
+            fieldUpdates.push({ fieldId: Number(args[6]), value: args[0], sourceType: args[2] });
+          }
+          return { changes: 1 };
+        },
+      };
+    },
+  };
+
+  const result = await service.fillProductArchiveDraftFieldsWithAi(db, draft.id, {
+    fileExists: () => true,
+    ocrRecognizer: async () => [{
+      fileName: "202426103105吊牌.jpg",
+      sourceKind: "hangtag",
+      detectedSpuCode: "202426103105",
+      fields: [
+        { key: "executionStandard", label: "执行标准", value: "FZ/T 73018-2021", confidence: "high", sourceKind: "hangtag" },
+        { key: "safetyCategory", label: "安全技术级别", value: "符合 GB 31701 B类", confidence: "high", sourceKind: "hangtag" },
+      ],
+    }],
+    router: {
+      callJson: async () => {
+        throw new Error("general AI should not run for OCR-filled fields");
+      },
+    },
+  });
+
+  assert.deepEqual(fieldUpdates, [
+    { fieldId: 1, value: "FZ/T 73018-2021", sourceType: "hangtag_ocr" },
+    { fieldId: 2, value: "B类", sourceType: "hangtag_ocr" },
+  ]);
+  assert.deepEqual(result.saved.map((field) => [field.field_id, field.source]), [
+    [1, "OCR_EVIDENCE"],
+    [2, "OCR_EVIDENCE"],
+  ]);
+  assert.equal(result.warnings.some((warning) => warning.code === "ai_provider_unavailable"), false);
+});
+
+test("single and batch AI fill both propagate the bounded task cancellation signal", async () => {
+  const [route, service] = await Promise.all([
+    readFile(files.draftRoute, "utf8"),
+    readFile(files.draftService, "utf8"),
+  ]);
+  const routeSection = (startMarker, endMarker) => {
+    const start = route.indexOf(startMarker);
+    const end = route.indexOf(endMarker, start + startMarker.length);
+    assert.ok(start >= 0 && end > start, `missing route section: ${startMarker}`);
+    return route.slice(start, end);
+  };
+  const queueSection = routeSection("function createProductArchiveAiFillQueue", "function createProductArchivePrecheckQueue");
+  const singleRoute = routeSection(
+    'productArchiveDrafts.post("/:draftId/ai-fill"',
+    'productArchiveDrafts.post("/:draftId/size-chart/ai-recommend"',
+  );
+
+  assert.match(queueSection, /withBackgroundTaskSlot\("product_archive_ai_fill", async \(signal\) =>[\s\S]*fillProductArchiveDraftFieldsWithAi\(db, item\.draft_id, \{ signal \}\)/);
+  assert.match(singleRoute, /withBackgroundTaskSlot\("product_archive_ai_fill", \(signal\) =>[\s\S]*fillProductArchiveDraftFieldsWithAi\(db, draftId, \{ signal \}\)/);
+  assert.match(service, /ocr_fallback_unavailable/);
+});
+
 test("product archive AI fill derives material enum fields from trusted composition text before model fallback", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const fields = [
