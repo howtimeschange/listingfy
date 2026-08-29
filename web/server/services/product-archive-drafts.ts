@@ -1314,7 +1314,6 @@ const PRODUCT_ARCHIVE_ALWAYS_BLANK_FIELDS = new Set([
 ])
 
 const PRODUCT_ARCHIVE_SHOE_BLANK_FIELDS = new Set([
-  "鞋垫材质",
   "试穿报告表",
   "balaone仅专供新品",
   "balaone仅专供新品勾选",
@@ -1333,6 +1332,17 @@ const PRODUCT_ARCHIVE_SHOE_BLANK_FIELDS = new Set([
   "主图4文案2",
   "主图4样式",
 ])
+
+function isProductArchiveShoeBusinessBlankFieldKey(key: string) {
+  return PRODUCT_ARCHIVE_SHOE_BLANK_FIELDS.has(key)
+    || (!key.includes("京东") && /^(?:商品)?(?:包裹|包装)(?:重量|长度|宽度|高度|长|宽|高)$/.test(key))
+    || /^唯品(?:会)?重量$/.test(key)
+    || /^唯品(?:会)?(?:商品)?【?包装】?(?:重量|长度|宽度|高度|长|宽|高)$/.test(key)
+}
+
+function isProductArchiveShoeBusinessBlankField(fieldName: string) {
+  return isProductArchiveShoeBusinessBlankFieldKey(businessRuleFieldKey(fieldName))
+}
 
 const PRODUCT_ARCHIVE_COMPATIBLE_PLATFORMS = [
   "1688",
@@ -1467,10 +1477,7 @@ export function isProductArchiveBusinessBlankField(
   const apparelProduct = isApparelProduct(spu, sourceRows)
   if ((shoeProduct || apparelProduct) && (key === "拼多多标题" || key === "拼多多短标题")) return true
   if ((shoeProduct || apparelProduct) && key === "商品短标题" && isProductArchivePddPlatform(templatePlatform)) return true
-  if (shoeProduct && PRODUCT_ARCHIVE_SHOE_BLANK_FIELDS.has(key)) return true
-  if (shoeProduct && !key.includes("京东") && /^(?:商品)?(?:包裹|包装)(?:重量|长度|宽度|高度|长|宽|高)$/.test(key)) return true
-  if (shoeProduct && /^唯品(?:会)?重量$/.test(key)) return true
-  if (shoeProduct && /^唯品(?:会)?(?:商品)?【?包装】?(?:重量|长度|宽度|高度|长|宽|高)$/.test(key)) return true
+  if (shoeProduct && isProductArchiveShoeBusinessBlankFieldKey(key)) return true
   if (shoeProduct && ["微信视频小店副标题", "快手商品卖点"].includes(key)) return false
   if (PRODUCT_ARCHIVE_ALWAYS_BLANK_FIELDS.has(key)) return true
   const categoryText = productCategoryText(spu, sourceRows)
@@ -1501,6 +1508,7 @@ export function isProductArchiveFieldLocallyRequired(fieldName: string, input: {
 } = {}) {
   const apparelRequiredSizeChart = Boolean(input.apparelProduct)
     && ["尺码表", "唯品会尺码表", "抖音尺码表", "多平台尺码"].includes(compactFieldKey(fieldName))
+  if (Boolean(input.shoeProduct) && isProductArchiveShoeBusinessBlankField(fieldName)) return false
   if (Object.prototype.hasOwnProperty.call(input, "templatePresent")) {
     if (!input.templatePresent) return false
     const persistedStructuredRequirement = isProductArchiveStructuredSizeFieldName(fieldName) && Boolean(input.ruleBlocking)
@@ -9523,6 +9531,15 @@ export function validateProductArchiveDraft(
   return db.transaction(() => {
     assertProductArchiveDraftMutable(db, draftId, { claimToken: options.claimToken })
     const draft = draftById(db, draftId)
+    const draftSnapshot = recordValue(draft.source_snapshot_json)
+    const snapshotSourceRows = arrayValue(draftSnapshot.sourceRows).map((row) => recordValue(row))
+    const snapshotSpu = recordValue(draftSnapshot.spu)
+    const validationShoeProduct = isShoeDraftContext({
+      draft,
+      spu: snapshotSpu,
+      sourceRows: snapshotSourceRows,
+    })
+    const validationApparelProduct = !validationShoeProduct && isApparelProduct(snapshotSpu, snapshotSourceRows)
   const fields = db.prepare("select * from product_archive_draft_field where draft_id = ?").all(draftId) as JsonRecord[]
   const skus = db.prepare("select * from product_archive_draft_sku where draft_id = ?").all(draftId) as JsonRecord[]
   const templateLookup = fieldOptionsLookup(db, draft)
@@ -9558,6 +9575,8 @@ export function validateProductArchiveDraft(
       templatePresent: Boolean(template),
       ruleBlocking: Boolean(field.blocking) || Boolean(field.required),
       sourceType: field.source_type,
+      shoeProduct: validationShoeProduct,
+      apparelProduct: validationApparelProduct,
     })
     const blocking = required
     const options = template?.options ?? []
@@ -9620,6 +9639,8 @@ export function validateProductArchiveDraft(
       templatePresent: Boolean(template),
       ruleBlocking: Boolean(field.blocking) || Boolean(field.required),
       sourceType: field.source_type,
+      shoeProduct: validationShoeProduct,
+      apparelProduct: validationApparelProduct,
     })
     issues.push(...validateProductArchiveSizeChartValue({
       fieldName,

@@ -5245,6 +5245,25 @@ test("product archive local requirement follows the DeepDraw template when prese
   assert.equal(service.isProductArchiveFieldLocallyRequired("适用年龄", { templateRequired: true }), true);
   assert.equal(service.isProductArchiveFieldLocallyRequired("尺码表", { templatePresent: true, templateRequired: true, ruleBlocking: true }), true);
   assert.equal(service.isProductArchiveFieldLocallyRequired("多平台尺码", { templatePresent: true, templateRequired: true, ruleBlocking: true }), true);
+  assert.equal(service.isProductArchiveBusinessBlankField("鞋垫材质", { product_line_name: "鞋品" }), false);
+  assert.equal(
+    service.isProductArchiveFieldLocallyRequired("鞋垫材质", {
+      templatePresent: true,
+      templateRequired: true,
+      ruleBlocking: true,
+      shoeProduct: true,
+    }),
+    true,
+  );
+  assert.equal(
+    service.isProductArchiveFieldLocallyRequired("试穿报告表", {
+      templatePresent: true,
+      templateRequired: true,
+      ruleBlocking: true,
+      shoeProduct: true,
+    }),
+    false,
+  );
   for (const fieldName of ["尺码表", "唯品会尺码表", "抖音尺码表", "多平台尺码"]) {
     assert.equal(
       service.isProductArchiveFieldLocallyRequired(fieldName, {
