@@ -4365,7 +4365,13 @@ test("product archive asset package helpers classify reference images and model 
   assert.match(route, /assertLocalImageFile\(\{ rootDir: DRAFT_IMAGE_DIR, filePath: localPath \}\)/);
   assert.match(route, /assertLocalProductArchiveAssetFile\(\{ rootDir: DRAFT_IMAGE_DIR, filePath: localPath \}\)/);
   assert.match(serviceSource, /asset_kind: stringValue\(payload\.asset_kind\) \|\| null/);
-  assert.match(serviceSource, /thumbnail_image_url: draftImagePreviewUrl\(row\.thumbnail_image_id, \{ thumbnail: true \}\)/);
+  assert.match(serviceSource, /type ProductArchiveDraftListImageCounts = Record<ProductArchiveDraftListImageKind, number>/);
+  assert.match(serviceSource, /state\.counts\[preview\.kind\] \+= 1/);
+  assert.match(serviceSource, /asset_package_image_count: imageCounts\.reference/);
+  assert.match(serviceSource, /hangtag_upload_count: Math\.max\(Number\(row\.hangtag_upload_count \?\? 0\), imageCounts\.hangtag\)/);
+  assert.match(serviceSource, /washlabel_upload_count: Math\.max\(Number\(row\.washlabel_upload_count \?\? 0\), imageCounts\.washlabel\)/);
+  assert.match(serviceSource, /const displayImage = imagePreviews\.reference\.find\(\(image\) => image\.asset_kind === "flat_image"\)/);
+  assert.match(serviceSource, /thumbnail_image_url: displayImage\?\.thumbnail_url \?\? null/);
 });
 
 test("product archive source and evidence rules fill 208426 batch workbook fields", async () => {

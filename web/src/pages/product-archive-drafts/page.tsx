@@ -1079,6 +1079,14 @@ function groupPreviewImages(images: ProductArchiveDraftImagePreview[]): ProductA
   }, { reference: [], hangtag: [], washlabel: [] })
 }
 
+function draftAssetUploaded(item: ProductArchiveDraftRow, kind: DraftAssetKind) {
+  const groups = draftImageGroups(item)
+  if (groups[kind].length > 0) return true
+  if (kind === "reference") return !item.image_previews && item.asset_package_image_count > 0
+  if (kind === "hangtag") return item.hangtag_upload_count > 0
+  return item.washlabel_upload_count > 0
+}
+
 function AssetPreviewBadge({
   label,
   uploaded,
@@ -1147,19 +1155,19 @@ function AssetPackageCell({
       <div className="mt-1 flex flex-wrap gap-1">
         <AssetPreviewBadge
           label="吊牌"
-          uploaded={item.hangtag_upload_count > 0}
+          uploaded={draftAssetUploaded(item, "hangtag")}
           images={groups.hangtag}
           onPreview={() => openGroupPreview("hangtag", "吊牌")}
         />
         <AssetPreviewBadge
           label="洗唛"
-          uploaded={item.washlabel_upload_count > 0}
+          uploaded={draftAssetUploaded(item, "washlabel")}
           images={groups.washlabel}
           onPreview={() => openGroupPreview("washlabel", "洗唛")}
         />
         <AssetPreviewBadge
           label="平铺图"
-          uploaded={item.asset_package_image_count > 0}
+          uploaded={draftAssetUploaded(item, "reference")}
           images={groups.reference}
           onPreview={() => openGroupPreview("reference", "平铺图")}
         />

@@ -591,9 +591,12 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /HoverImagePreview/);
   assert.match(draftListPage, /ImagePreviewDialog/);
   assert.match(draftListPage, /AssetPreviewBadge/);
-  assert.match(draftListPage, /label="吊牌"[\s\S]*uploaded=\{item\.hangtag_upload_count > 0\}/);
-  assert.match(draftListPage, /label="洗唛"[\s\S]*uploaded=\{item\.washlabel_upload_count > 0\}/);
-  assert.match(draftListPage, /label="平铺图"[\s\S]*uploaded=\{item\.asset_package_image_count > 0\}/);
+  assert.match(draftListPage, /function draftAssetUploaded/);
+  assert.match(draftListPage, /groups\[kind\]\.length > 0/);
+  assert.match(draftListPage, /kind === "reference"[\s\S]*!item\.image_previews[\s\S]*item\.asset_package_image_count > 0/);
+  assert.match(draftListPage, /label="吊牌"[\s\S]*uploaded=\{draftAssetUploaded\(item, "hangtag"\)\}/);
+  assert.match(draftListPage, /label="洗唛"[\s\S]*uploaded=\{draftAssetUploaded\(item, "washlabel"\)\}/);
+  assert.match(draftListPage, /label="平铺图"[\s\S]*uploaded=\{draftAssetUploaded\(item, "reference"\)\}/);
   assert.match(draftListPage, /确认写入草稿/);
   assert.match(draftListPage, /api\.get<.*>\(`\/product-archive-drafts\/batch-jobs\/\$\{batchJobId\}`\)/s);
   assert.match(draftListPage, /开始商品建档/);

@@ -7316,6 +7316,17 @@ function serializeProductArchiveDraftImage(image: JsonRecord) {
 }
 
 type ProductArchiveDraftListImageKind = "reference" | "hangtag" | "washlabel"
+type ProductArchiveDraftListImagePreview = ReturnType<typeof serializeProductArchiveDraftListImagePreview>
+type ProductArchiveDraftListImagePreviewGroups = Record<ProductArchiveDraftListImageKind, ProductArchiveDraftListImagePreview[]>
+type ProductArchiveDraftListImageCounts = Record<ProductArchiveDraftListImageKind, number>
+
+function emptyProductArchiveDraftListImageGroups(): ProductArchiveDraftListImagePreviewGroups {
+  return { reference: [], hangtag: [], washlabel: [] }
+}
+
+function emptyProductArchiveDraftListImageCounts(): ProductArchiveDraftListImageCounts {
+  return { reference: 0, hangtag: 0, washlabel: 0 }
+}
 
 function isProductArchiveDraftPdfAsset(image: JsonRecord) {
   const mimeType = stringValue(image.mime_type).toLowerCase()
@@ -7370,9 +7381,16 @@ function serializeProductArchiveDraftListImagePreview(image: JsonRecord) {
 
 function listProductArchiveDraftImagePreviews(db: SyncPostgresDatabase, draftIds: number[]) {
   const ids = Array.from(new Set(draftIds.filter((id) => Number.isInteger(id) && id > 0)))
-  const emptyGroup = () => ({ reference: [], hangtag: [], washlabel: [] } as Record<ProductArchiveDraftListImageKind, ReturnType<typeof serializeProductArchiveDraftListImagePreview>[]>)
-  const previewMap = new Map<number, ReturnType<typeof emptyGroup>>()
-  for (const id of ids) previewMap.set(id, emptyGroup())
+  const previewMap = new Map<number, {
+    groups: ProductArchiveDraftListImagePreviewGroups
+    counts: ProductArchiveDraftListImageCounts
+  }>()
+  for (const id of ids) {
+    previewMap.set(id, {
+      groups: emptyProductArchiveDraftListImageGroups(),
+      counts: emptyProductArchiveDraftListImageCounts(),
+    })
+  }
   if (ids.length === 0) return previewMap
 
   const rows = db.prepare(`
@@ -7390,11 +7408,12 @@ function listProductArchiveDraftImagePreviews(db: SyncPostgresDatabase, draftIds
   `).all(...ids) as JsonRecord[]
   for (const row of rows) {
     const draftId = Number(row.draft_id)
-    const group = previewMap.get(draftId)
-    if (!group) continue
+    const state = previewMap.get(draftId)
+    if (!state) continue
     const preview = serializeProductArchiveDraftListImagePreview(row)
-    if (group[preview.kind].length >= 4) continue
-    group[preview.kind].push(preview)
+    state.counts[preview.kind] += 1
+    if (state.groups[preview.kind].length >= 4) continue
+    state.groups[preview.kind].push(preview)
   }
   return previewMap
 }
@@ -7696,13 +7715,25 @@ export function listProductArchiveDrafts(db: SyncPostgresDatabase, input: ListDr
     db,
     (rows as JsonRecord[]).map((row) => Number(row.id)),
   )
-  const items = (rows as JsonRecord[]).map((row) => ({
-    ...row,
-    thumbnail_image_url: draftImagePreviewUrl(row.thumbnail_image_id, { thumbnail: true }),
-    thumbnail_preview_url: draftImagePreviewUrl(row.thumbnail_image_id, { preview: true }),
-    thumbnail_full_url: draftImagePreviewUrl(row.thumbnail_image_id),
-    image_previews: previewMap.get(Number(row.id)) ?? { reference: [], hangtag: [], washlabel: [] },
-  }))
+  const items = (rows as JsonRecord[]).map((row) => {
+    const imageState = previewMap.get(Number(row.id))
+    const imagePreviews = imageState?.groups ?? emptyProductArchiveDraftListImageGroups()
+    const imageCounts = imageState?.counts ?? emptyProductArchiveDraftListImageCounts()
+    const displayImage = imagePreviews.reference.find((image) => image.asset_kind === "flat_image")
+      ?? imagePreviews.reference[0]
+      ?? null
+    return {
+      ...row,
+      thumbnail_image_url: displayImage?.thumbnail_url ?? null,
+      thumbnail_preview_url: displayImage?.preview_url ?? null,
+      thumbnail_full_url: displayImage?.full_url ?? null,
+      thumbnail_file_name: displayImage?.label ?? null,
+      asset_package_image_count: imageCounts.reference,
+      hangtag_upload_count: Math.max(Number(row.hangtag_upload_count ?? 0), imageCounts.hangtag),
+      washlabel_upload_count: Math.max(Number(row.washlabel_upload_count ?? 0), imageCounts.washlabel),
+      image_previews: imagePreviews,
+    }
+  })
   return { items, pagination: { total: Number(total.count ?? 0), limit, offset } }
 }
 
