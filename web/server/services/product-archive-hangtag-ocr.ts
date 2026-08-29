@@ -88,6 +88,10 @@ function compactFieldKey(value: unknown) {
   return stringValue(value).replace(/\s+/g, "").replace(/[()（）.。]/g, "").toLowerCase()
 }
 
+function hasExplicitShoeInsoleMaterialEvidence(value: unknown) {
+  return /(?:^|\n)\s*鞋垫(?:材质|材料|面料)?\s*(?:[:：]|为|是|\n)/.test(stringValue(value))
+}
+
 function isStaleMaterialAiRuleFallbackField(field: JsonRecord) {
   if (!/材质|面料/.test(stringValue(field.field_name))) return false
   if (stringValue(field.source_type) !== "ai_rule_fallback") return false
@@ -263,6 +267,13 @@ function ocrFieldMatchesDraftField(field: OcrField, draftFieldName: unknown, dra
   if (key === "articleNo") return name === "产品货号" || name === "商品货号" || name === "货号" || name === "款号"
   if (key === "materialComposition") {
     if (name.includes("材质成分") || name.includes("面料成分") || name.includes("成分含量文本")) return true
+    if (name === "鞋垫材质") {
+      return hasExplicitShoeInsoleMaterialEvidence([
+        field.label,
+        field.value,
+        field.evidenceText,
+      ].map(stringValue).join("\n"))
+    }
     const hasTemplateOptions = arrayValue(draftField.options_json).length > 0
     return hasTemplateOptions && (name.includes("材质") || name.includes("面料"))
   }

@@ -7,6 +7,8 @@ const shoeRows = [
     foot_length_mm: 130,
     foot_length_tolerance_mm: 2,
     inner_length_mm: 142,
+    age_segment: "婴幼童（二段）",
+    reference_age: "21-24个月",
     general_mapping_text: "(脚长12.8-13.2/内长14.2)",
     douyin_mapping_text: "脚长12.8-13.2/内长14.2",
     vip_mapping_text: "21码(脚长13/内长14.2)",
@@ -18,6 +20,8 @@ const shoeRows = [
     foot_length_mm: 160,
     foot_length_tolerance_mm: 2,
     inner_length_mm: 170.32,
+    age_segment: "婴幼童（二段）",
+    reference_age: "4岁",
     general_mapping_text: "(脚长15.8-16.2/内长17)",
     douyin_mapping_text: "脚长15.8-16.2/内长17",
     vip_mapping_text: "26码(脚长16/内长17)",
@@ -29,6 +33,8 @@ const shoeRows = [
     foot_length_mm: 165,
     foot_length_tolerance_mm: 2,
     inner_length_mm: 176.98,
+    age_segment: "中小童（一段）",
+    reference_age: "4岁半",
     general_mapping_text: "(脚长16.3-16.7/内长17.7)",
     douyin_mapping_text: "脚长16.3-16.7/内长17.7",
     vip_mapping_text: "27码(脚长16.5/内长17.7)",
@@ -40,6 +46,8 @@ const shoeRows = [
     foot_length_mm: 240,
     foot_length_tolerance_mm: 2,
     inner_length_mm: 250.24,
+    age_segment: "中小童（二段）",
+    reference_age: "10岁",
     general_mapping_text: "(脚长23.8-24.2/内长25)",
     douyin_mapping_text: "脚长23.8-24.2/内长25",
     vip_mapping_text: "38码(脚长24/内长25)",
@@ -111,6 +119,8 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
       { fieldName: "尺码", fieldType: "MULTI_CHOICE", options: ["21", "26", "27", "38"] },
       { fieldName: "尺码.", fieldType: "TEXT", options: ["26码以下", "26-28码", "29-30码", "31-32码", "33-34码", "34码以上"] },
       { fieldName: "尺码类型", fieldType: "SINGLE_CHOICE", options: ["通用", "欧码(童鞋)", "中国码"] },
+      { fieldName: "适用年龄", fieldType: "SINGLE_CHOICE", options: ["1-3岁", "3-14岁", "7岁-14岁", "14岁以上"] },
+      { fieldName: "适用年龄(多选)", fieldType: "MULTI_CHOICE", options: ["1-3岁", "3-6岁", "6-9岁", "9-12岁", "10岁以上"] },
       { fieldName: "尺码表", fieldType: "MULTI_TEXT", options: ["适合脚长", "鞋内长", "脚长"] },
       { fieldName: "唯品会尺码表", fieldType: "MULTI_TEXT", options: ["中国码", "脚长", "鞋内长"] },
       { fieldName: "天猫尺码表", fieldType: "MULTI_TEXT", options: ["脚长", "鞋内长"] },
@@ -134,6 +144,8 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
   assert.deepEqual(result["尺码"], { valueText: "26;27;38", valueJson: {} });
   assert.deepEqual(result["尺码."], { valueText: "34码以上", valueJson: {} });
   assert.deepEqual(result["尺码类型"], { valueText: "欧码(童鞋)", valueJson: {} });
+  assert.deepEqual(result["适用年龄"], { valueText: "3-14岁", valueJson: {} });
+  assert.deepEqual(result["适用年龄(多选)"], { valueText: "3-6岁;6-9岁;9-12岁", valueJson: {} });
   assert.deepEqual(result["尺码表"].valueJson, {
     title: "适合脚长,鞋内长",
     "26码": "16,17",

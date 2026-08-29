@@ -5384,6 +5384,7 @@ test("product archive AI field strategies productize P0 P1 P2 field coverage", a
 
   assert.deepEqual(strategies.map((strategy) => strategy.priority), ["P0", "P1", "P1", "P2"]);
   assert.equal(service.productArchiveAiFieldStrategyForField("是否有腰带")?.priority, "P0");
+  assert.equal(service.productArchiveAiFieldStrategyForField("产品类别")?.priority, "P0");
   assert.equal(service.productArchiveAiFieldStrategyForField("淘宝天猫适用年龄")?.priority, "P1");
   assert.equal(service.productArchiveAiFieldStrategyForField("穿着方式")?.priority, "P0");
   assert.equal(service.productArchiveAiFieldStrategyForField("面料(多选)")?.priority, "P1");
@@ -5458,6 +5459,101 @@ test("product archive AI strategies allow selected skipped fields into conservat
     { fieldName: "图案(多选)", strategy: "P0" },
     { fieldName: "面料(多选)", strategy: "P1" },
     { fieldName: "详情页AI标注", strategy: "P2" },
+  ]);
+});
+
+test("product archive AI rules fill shoe product category and insole fallback inside template enums", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const shoeSpu = {
+    spu_code: "204426141014",
+    product_line_name: "鞋品",
+    subclass_name: "户外鞋",
+    spu_name: "童鞋户外鞋",
+  };
+
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("产品类别", "儿童户外鞋", [
+    { value: "板鞋" },
+    { value: "户外鞋" },
+  ]), "户外鞋");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("产品类别", {
+    spu: shoeSpu,
+    sourceRows: [],
+  }), "户外鞋");
+
+  const fills = service.buildProductArchiveEvidenceRuleFills({
+    draft: {
+      spu_code: "204426141014",
+      trade_path: "童鞋/亲子鞋 / 户外鞋",
+      source_snapshot_json: { spu: shoeSpu },
+    },
+    spu: shoeSpu,
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: { "里料材质": "短毛绒" },
+    }],
+    fields: [
+      {
+        id: 601,
+        field_name: "产品类别",
+        source_type: "skip",
+        value_text: "",
+        value_json: {},
+        validation_status: "missing",
+        validation_message: "必填字段缺失",
+        options_json: [{ value: "板鞋" }, { value: "户外鞋" }],
+      },
+      {
+        id: 602,
+        field_name: "鞋垫材质",
+        source_type: "skip",
+        value_text: "",
+        value_json: {},
+        validation_status: "missing",
+        validation_message: "必填字段缺失",
+        options_json: [{ value: "人造毛" }, { value: "其他" }],
+      },
+    ],
+  });
+
+  assert.deepEqual(fills.map((fill) => [
+    fill.field_name,
+    fill.field_value,
+    fill.source_type,
+    fill.source_ref,
+  ]), [
+    ["产品类别", "户外鞋", "source_rule", "深绘类目/来源类目"],
+    ["鞋垫材质", "其他", "ai_rule_fallback", "鞋垫材质兜底"],
+  ]);
+
+  const explicitInsoleFills = service.buildProductArchiveEvidenceRuleFills({
+    draft: {
+      spu_code: "204426141046",
+      trade_path: "童鞋/亲子鞋 / 板鞋",
+      source_snapshot_json: { spu: { ...shoeSpu, spu_code: "204426141046", subclass_name: "板鞋" } },
+    },
+    spu: { ...shoeSpu, spu_code: "204426141046", subclass_name: "板鞋" },
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: { "鞋垫材质": "织物" },
+    }],
+    fields: [{
+      id: 603,
+      field_name: "鞋垫材质",
+      source_type: "manual",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [{ value: "纺织布料" }, { value: "其他" }],
+    }],
+  });
+
+  assert.deepEqual(explicitInsoleFills.map((fill) => [
+    fill.field_name,
+    fill.field_value,
+    fill.source_type,
+  ]), [
+    ["鞋垫材质", "纺织布料", "source_rule"],
   ]);
 });
 
@@ -5930,7 +6026,7 @@ test("product archive service normalizes source values into DeepDraw enum option
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄多选", "2-7岁", [
     { value: "1-3岁" },
     { value: "2-7岁" },
-  ]), "2-7岁");
+  ]), "1-3岁;2-7岁");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄", "2-7岁", [
     { value: "新生儿(0~1岁，80cm及其以下)" },
     { value: "婴幼童(1~3岁，80~100cm)" },
@@ -5941,6 +6037,18 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "7岁-14岁" },
     { value: "8岁（含）—14岁（不含）" },
   ]), "7岁-14岁");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄", "4岁-12岁", [
+    { value: "3-14岁" },
+    { value: "7岁-14岁" },
+    { value: "8岁（含）—14岁（不含）" },
+  ]), "3-14岁");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄(多选)", "4岁-12岁", [
+    { value: "1-3岁" },
+    { value: "3-6岁" },
+    { value: "6-9岁" },
+    { value: "9-12岁" },
+    { value: "12岁以上" },
+  ]), "3-6岁;6-9岁;9-12岁");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄(多选)", "2-7岁", [
     { value: "1-3岁" },
     { value: "2岁" },
@@ -5950,7 +6058,7 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "6岁" },
     { value: "7岁" },
     { value: "6-9岁" },
-  ]), "2岁;3岁;4岁;5岁;6岁;7岁");
+  ]), "1-3岁;2岁;3岁;4岁;5岁;6岁;7岁;6-9岁");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄(多选)", "7岁-14岁", [
     { value: "1-3岁" },
     { value: "7岁" },

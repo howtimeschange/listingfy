@@ -670,8 +670,10 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftDetailPage, /MULTI_CHOICE_FIELD_TYPES/);
   assert.match(draftDetailPage, /type === "MULTI_TEXT"/);
   assert.doesNotMatch(draftDetailPage, /当前值/);
-  assert.match(draftDetailPage, /SelectTrigger/);
-  assert.match(draftDetailPage, /SelectItem/);
+  assert.match(draftDetailPage, /PopoverTrigger/);
+  assert.match(draftDetailPage, /role="combobox"/);
+  assert.match(draftDetailPage, /CommandInput placeholder=\{`搜索\$\{field\.field_name\}选项`\}/);
+  assert.match(draftDetailPage, /CommandItem/);
   assert.match(draftDetailPage, /选择深绘类目/);
   assert.match(draftDetailPage, /应用类目并生成字段/);
   assert.match(draftDetailPage, /待确认类目/);

@@ -18,6 +18,9 @@ interface ShoeSizeChartRow extends JsonRecord {
   foot_length_mm: unknown
   foot_length_tolerance_mm: unknown
   inner_length_mm: unknown
+  age_segment?: unknown
+  reference_age?: unknown
+  reference_stage?: unknown
 }
 
 interface ShoeFieldTemplate {
@@ -232,6 +235,128 @@ function scalarValue(value: string, template: ShoeFieldTemplate | undefined) {
   return matched ? { valueText: matched, valueJson: {} } : null
 }
 
+type AgeRangeMonths = { startMonths: number; endMonths: number }
+
+function uniqueTextValues(values: unknown[]) {
+  const seen = new Set<string>()
+  const output: string[] = []
+  for (const value of values) {
+    const text = stringValue(value)
+    if (!text || seen.has(text)) continue
+    seen.add(text)
+    output.push(text)
+  }
+  return output
+}
+
+function ageUnitMonths(value: number, unit: string) {
+  if (unit === "岁半") return Math.round((value + 0.5) * 12)
+  if (unit === "岁" || unit === "周岁") return Math.round(value * 12)
+  return Math.round(value)
+}
+
+function closedAgeRangeText(value: unknown) {
+  const text = stringValue(value)
+  if (!text) return ""
+  return /(?:周岁|岁|个月|月)\s*(?:以上|及以上|以后|起|以下|及以下|以内)/.test(text) ? "" : text
+}
+
+function parseClosedAgeRange(value: unknown): AgeRangeMonths | null {
+  const text = closedAgeRangeText(value)
+  if (!text) return null
+  const range = text.match(/(\d{1,2}(?:\.\d+)?)\s*(周岁|岁半|岁|个月|月)?\s*(?:[（(][^）)]*[）)])?\s*[-~～至—－]\s*(\d{1,2}(?:\.\d+)?)\s*(周岁|岁半|岁|个月|月)(?:\s*[（(][^）)]*[）)])?/)
+  if (range) {
+    const endUnit = range[4]
+    const startUnit = range[2] || endUnit
+    const start = ageUnitMonths(Number(range[1]), startUnit)
+    const end = ageUnitMonths(Number(range[3]), endUnit)
+    if (Number.isFinite(start) && Number.isFinite(end)) {
+      return start <= end ? { startMonths: start, endMonths: end } : { startMonths: end, endMonths: start }
+    }
+  }
+  const single = text.match(/(\d{1,2}(?:\.\d+)?)\s*(周岁|岁半|岁|个月|月)/)
+  if (!single) return null
+  const months = ageUnitMonths(Number(single[1]), single[2])
+  return Number.isFinite(months) ? { startMonths: months, endMonths: months } : null
+}
+
+function ageRangesFromText(value: unknown) {
+  return uniqueTextValues(stringValue(value).split(/[;；]/))
+    .map(parseClosedAgeRange)
+    .filter((range): range is AgeRangeMonths => Boolean(range))
+}
+
+function aggregateAgeRange(ranges: AgeRangeMonths[]): AgeRangeMonths | null {
+  if (!ranges.length) return null
+  return {
+    startMonths: Math.min(...ranges.map((range) => range.startMonths)),
+    endMonths: Math.max(...ranges.map((range) => range.endMonths)),
+  }
+}
+
+function ageRangesOverlap(left: AgeRangeMonths, right: AgeRangeMonths) {
+  return left.startMonths <= right.endMonths && left.endMonths >= right.startMonths
+}
+
+function ageRangeWidth(range: AgeRangeMonths) {
+  return range.endMonths - range.startMonths
+}
+
+function agePointText(months: number) {
+  if (months < 12) return `${months}个月`
+  if (months % 12 === 0) return `${months / 12}岁`
+  if (months % 6 === 0) return `${Math.floor(months / 12)}岁半`
+  return `${months}个月`
+}
+
+function ageRangeText(range: AgeRangeMonths) {
+  if (range.startMonths === range.endMonths) return agePointText(range.startMonths)
+  return `${agePointText(range.startMonths)}-${agePointText(range.endMonths)}`
+}
+
+export function shoeSizeChartRecommendedAgeText(rows: JsonRecord[]) {
+  const range = aggregateAgeRange(rows.flatMap((row) => ageRangesFromText(row.reference_age)))
+  return range ? ageRangeText(range) : ""
+}
+
+export function normalizeAgeFieldOptionValue(value: unknown, options: unknown[], multi: boolean) {
+  const sourceRange = aggregateAgeRange(ageRangesFromText(value))
+  if (!sourceRange) return ""
+  const candidates = (options ?? []).map(optionText).filter(Boolean).map((option, index) => ({
+    option,
+    index,
+    range: parseClosedAgeRange(option),
+  })).filter((candidate): candidate is { option: string; index: number; range: AgeRangeMonths } => Boolean(candidate.range))
+  if (multi) {
+    return uniqueTextValues(
+      candidates
+        .filter((candidate) => ageRangesOverlap(sourceRange, candidate.range))
+        .map((candidate) => candidate.option),
+    ).join(";")
+  }
+  const covering = candidates
+    .filter((candidate) => candidate.range.startMonths <= sourceRange.startMonths && candidate.range.endMonths >= sourceRange.endMonths)
+    .sort((left, right) => ageRangeWidth(left.range) - ageRangeWidth(right.range) || left.index - right.index)[0]
+  if (covering) return covering.option
+  const overlapping = candidates
+    .filter((candidate) => ageRangesOverlap(sourceRange, candidate.range))
+    .sort((left, right) => {
+      const leftOverlap = Math.min(left.range.endMonths, sourceRange.endMonths) - Math.max(left.range.startMonths, sourceRange.startMonths)
+      const rightOverlap = Math.min(right.range.endMonths, sourceRange.endMonths) - Math.max(right.range.startMonths, sourceRange.startMonths)
+      return rightOverlap - leftOverlap || ageRangeWidth(left.range) - ageRangeWidth(right.range) || left.index - right.index
+    })[0]
+  return overlapping?.option ?? ""
+}
+
+function isShoeAgeFieldName(value: unknown) {
+  const key = compact(value)
+  return key.includes("适用年龄") || key.includes("适合年龄段") || key === "年龄" || key === "年龄段"
+}
+
+function isMultiAgeFieldName(value: unknown) {
+  return compact(value).includes("多选")
+}
+
 export function buildShoeSizeChartFieldValues(input: {
   rows: ShoeSizeChartRow[]
   skuSizes: unknown[]
@@ -245,6 +370,18 @@ export function buildShoeSizeChartFieldValues(input: {
     .sort((left, right) => numberValue(left.size_value) - numberValue(right.size_value))
   const templates = templateMap(input.fieldTemplates)
   const output: Record<string, ShoeFieldValue> = {}
+
+  const recommendedAge = shoeSizeChartRecommendedAgeText(rows)
+  if (recommendedAge) {
+    for (const template of input.fieldTemplates) {
+      if (!isShoeAgeFieldName(template.fieldName)) continue
+      const options = template.options ?? []
+      const valueText = options.length > 0
+        ? normalizeAgeFieldOptionValue(recommendedAge, options, isMultiAgeFieldName(template.fieldName))
+        : recommendedAge
+      if (valueText) output[template.fieldName] = { valueText, valueJson: {} }
+    }
+  }
 
   const sizes = rows.map((row) => normalizeShoeSkuSize(row.size_value)).filter(Boolean)
   const sizeTemplate = templates.get("尺码")

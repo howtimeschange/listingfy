@@ -81,6 +81,85 @@ test("AI fill OCR evidence keeps the strongest duplicate document result", async
   ]);
 });
 
+test("AI fill OCR evidence only maps shoe insole material from explicit insole text", async () => {
+  const service = await import("../../web/server/services/product-archive-hangtag-ocr.ts");
+  const fields = [
+    {
+      id: 21,
+      field_name: "鞋垫材质",
+      value_text: "",
+      value_json: {},
+      source_type: "manual",
+      manual_override: false,
+      validation_status: "missing",
+      options_json: [{ value: "纺织品类" }, { value: "人造毛" }, { value: "其他" }],
+    },
+  ];
+
+  const genericMaterial = service.buildProductArchiveAiFillOcrEvidenceFills({
+    draftId: 918,
+    spuCode: "204426141046",
+    fields,
+    documents: [{
+      fileName: "204426141046洗唛.jpg",
+      sourceKind: "washlabel",
+      detectedSpuCode: "204426141046",
+      fields: [{
+        key: "materialComposition",
+        label: "材质成分",
+        value: "帮面材料：合成革\n里料材质：短毛绒\n鞋底材质：EVA",
+        confidence: "high",
+        sourceKind: "washlabel",
+      }],
+    }],
+  });
+  assert.deepEqual(genericMaterial, []);
+
+  const explicitInsole = service.buildProductArchiveAiFillOcrEvidenceFills({
+    draftId: 918,
+    spuCode: "204426141046",
+    fields,
+    documents: [{
+      fileName: "204426141046吊牌.jpg",
+      sourceKind: "hangtag",
+      detectedSpuCode: "204426141046",
+      fields: [{
+        key: "materialComposition",
+        label: "材质成分",
+        value: "鞋垫材质：织物",
+        confidence: "high",
+        sourceKind: "hangtag",
+      }],
+    }],
+  });
+
+  assert.deepEqual(explicitInsole.map((fill) => [fill.field_name, fill.field_value, fill.source_type]), [
+    ["鞋垫材质", "纺织品类", "hangtag_ocr"],
+  ]);
+
+  const explicitInsoleLabel = service.buildProductArchiveAiFillOcrEvidenceFills({
+    draftId: 918,
+    spuCode: "204426141046",
+    fields,
+    documents: [{
+      fileName: "204426141046吊牌.jpg",
+      sourceKind: "hangtag",
+      detectedSpuCode: "204426141046",
+      fields: [{
+        key: "materialComposition",
+        label: "鞋垫材质",
+        value: "织物",
+        confidence: "high",
+        sourceKind: "hangtag",
+      }],
+    }],
+  });
+
+  assert.deepEqual(explicitInsoleLabel.map((fill) => [fill.field_name, fill.field_value, fill.source_type]), [
+    ["鞋垫材质", "纺织品类", "hangtag_ocr"],
+  ]);
+});
+
 test("product archive hangtag OCR preview maps recognized compliance fields onto current draft fields", async () => {
   const service = await import("../../web/server/services/product-archive-hangtag-ocr.ts");
   const queries = [];
