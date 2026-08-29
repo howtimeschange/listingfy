@@ -805,6 +805,10 @@ function isProductArchiveSkuSizeFieldName(fieldName: unknown) {
   return key === "尺码" || key === "尺寸" || key === "规格" || key === "size"
 }
 
+function isProductArchiveSizeSegmentFieldName(fieldName: unknown) {
+  return /^尺码\s*[.。]$/.test(stringValue(fieldName))
+}
+
 function isProductArchiveMerchantSkuFieldName(fieldName: unknown) {
   return compactFieldKey(fieldName) === "商家sku"
 }
@@ -5215,6 +5219,58 @@ function pickOption(options: unknown[], predicates: Array<(value: string) => boo
   return ""
 }
 
+function productArchiveSizeNumberValue(value: unknown) {
+  const text = stringValue(value)
+  const normalized = deepdrawSizeValue(text)
+  const numberText = normalized.match(/^(\d{2,3})cm$/i)?.[1]
+    ?? text.match(/^0*(\d{2,3})(?:\s*(?:cm|厘米|码))?$/i)?.[1]
+  const size = Number(numberText)
+  return Number.isFinite(size) ? size : null
+}
+
+function productArchiveApparelSizeRangeOption(value: unknown) {
+  const option = stringValue(value).replace(/[－—–~～至到]/g, "-").replace(/\s+/g, "")
+  if (!option) return null
+  const below = option.match(/^(\d{2,3})(?:cm|厘米)?(?:以下|及以下|以内)$/i)
+  if (below) return { option: stringValue(value), min: Number.NEGATIVE_INFINITY, max: Number(below[1]) }
+  const above = option.match(/^(\d{2,3})(?:cm|厘米)?(?:以上|及以上|起)$/i)
+  if (above) return { option: stringValue(value), min: Number(above[1]), max: Number.POSITIVE_INFINITY }
+  const range = option.match(/^(\d{2,3})(?:cm|厘米)?-(\d{2,3})(?:cm|厘米)?$/i)
+  if (range) {
+    const left = Number(range[1])
+    const right = Number(range[2])
+    return { option: stringValue(value), min: Math.min(left, right), max: Math.max(left, right) }
+  }
+  return null
+}
+
+function productArchiveApparelSizeSegmentOption(value: unknown, options: unknown[]) {
+  const size = productArchiveSizeNumberValue(value)
+  if (size === null) return ""
+  const ranges = optionValues(options)
+    .map(productArchiveApparelSizeRangeOption)
+    .filter((range): range is { option: string; min: number; max: number } => Boolean(range))
+  for (const range of ranges) {
+    if (range.min === Number.NEGATIVE_INFINITY && size <= range.max) return range.option
+    if (range.max === Number.POSITIVE_INFINITY && size > range.min) return range.option
+    if (Number.isFinite(range.min) && Number.isFinite(range.max) && size > range.min && size <= range.max) {
+      return range.option
+    }
+  }
+  for (const range of ranges) {
+    if (size >= range.min && size <= range.max) return range.option
+  }
+  return ""
+}
+
+function productArchiveApparelSizeSegmentValue(value: unknown, options: unknown[]) {
+  const values = stringValue(value).split(/[;；,，]/).map((part) => part.trim()).filter(Boolean)
+  const normalized = values
+    .map((item) => productArchiveApparelSizeSegmentOption(item, options))
+    .filter(Boolean)
+  return normalized.length ? uniqueTextValues(normalized).join(";") : ""
+}
+
 function seasonFromMonth(month: number) {
   if (month >= 3 && month <= 5) return "春"
   if (month >= 6 && month <= 8) return "夏"
@@ -5648,7 +5704,9 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
     }).filter(Boolean)
     if (normalized.length) return uniqueTextValues(normalized).join(";")
   }
-  if (/^尺码\s*[.。]$/.test(stringValue(fieldName))) {
+  if (isProductArchiveSizeSegmentFieldName(fieldName)) {
+    const apparelSizeSegment = productArchiveApparelSizeSegmentValue(text, options)
+    if (apparelSizeSegment) return apparelSizeSegment
     const values = text.split(/[;；,，]/).map((part) => part.trim()).filter(Boolean)
     const normalized = values.map((value) => {
       const size = Number(deepdrawSizeValue(value).match(/^(\d+)cm$/i)?.[1] ?? stringValue(value).match(/^0*(\d{2,3})$/)?.[1])
@@ -7294,6 +7352,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     const originCountryField = isProductArchiveOriginCountryField(fieldName)
     const shoe1688OriginField = shoeProduct && compactFieldKey(fieldName) === "产地"
     const skuSizeField = isProductArchiveSkuSizeFieldName(fieldName)
+    const sizeSegmentField = isProductArchiveSizeSegmentFieldName(fieldName)
     const colorField = compactFieldKey(fieldName).includes("颜色")
     const categoryPlatformListPriceField = (shoeProduct || apparelProduct)
       && PRODUCT_ARCHIVE_PLATFORM_LIST_PRICE_KEYS.has(compactFieldKey(fieldName))
@@ -7377,7 +7436,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
         ? "shoe_size_chart"
         : hasSizeChartValue
         ? "size_chart"
-        : skuSizeField && mdmDerived.valueText
+        : (skuSizeField || sizeSegmentField) && mdmDerived.valueText
           ? "mdm"
           : apparelLiningSource
             ? "source_rule"

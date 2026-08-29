@@ -5832,6 +5832,14 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "22-24cm" },
     { value: "24-26cm" },
   ]), "18cm以下;18-20cm;20-22cm;22-24cm;24-26cm");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("尺码.", "110cm;120cm;130cm;140cm;150cm;160cm;165cm;170cm", [
+    { attrValueId: 2852214, attrValueName: "90cm以下" },
+    { attrValueId: 2852215, attrValueName: "90-110cm" },
+    { attrValueId: 2852216, attrValueName: "110-130cm" },
+    { attrValueId: 2852217, attrValueName: "130-150cm" },
+    { attrValueId: 2852219, attrValueName: "150-170cm" },
+    { attrValueId: 2852220, attrValueName: "170cm以上" },
+  ]), "90-110cm;110-130cm;130-150cm;150-170cm");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("抖音参考价格类型", "79.9", [
     { value: "厂商建议零售价" },
     { value: "吊牌价" },
