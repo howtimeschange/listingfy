@@ -758,6 +758,57 @@ test("OCR batch recognizer bounds file concurrency and reuses identical in-fligh
   }
 });
 
+test("OCR in-flight cache isolates cancellation between concurrent callers", async () => {
+  clearProductArchiveOcrRuntimeCache();
+  const workDir = await mkdtemp(path.join(os.tmpdir(), "listingify-ocr-cache-cancel-isolation-"));
+  try {
+    const filePath = path.join(workDir, "202426103105吊牌.jpg");
+    await writeFile(filePath, await simpleJpegBuffer());
+    let providerStartedResolve;
+    const providerStarted = new Promise((resolve) => {
+      providerStartedResolve = resolve;
+    });
+    let providerCalls = 0;
+    const provider = async () => {
+      providerCalls += 1;
+      providerStartedResolve();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return "产品名称：针织衫\n产品货号：202426103105\n执行标准：FZ/T 73018-2021\n安全技术类别：符合 GB 31701 B类";
+    };
+    const commonOptions = {
+      provider,
+      ocrCacheWithInjectedProvider: true,
+      preprocessWashlabel: false,
+      ocrQualityGate: false,
+      visionFallback: false,
+      env: {
+        LISTINGIFY_HANGTAG_OCR_AI_QUALITY_GATE: "false",
+        LISTINGIFY_HANGTAG_OCR_VISION_FALLBACK: "false",
+      },
+    };
+    const file = { filePath, fileName: "202426103105吊牌.jpg", fileType: "image" };
+    const firstController = new AbortController();
+    const first = recognizeProductArchiveOcrFiles([file], {
+      ...commonOptions,
+      signal: firstController.signal,
+    });
+    await providerStarted;
+    const second = recognizeProductArchiveOcrFiles([file], commonOptions);
+
+    firstController.abort(new Error("first caller cancelled"));
+    const [firstResult, secondResult] = await Promise.allSettled([first, second]);
+
+    assert.equal(firstResult.status, "rejected");
+    assert.match(firstResult.reason?.message ?? "", /first caller cancelled/);
+    assert.equal(secondResult.status, "fulfilled");
+    assert.equal(secondResult.value[0].fields.find((field) => field.key === "executionStandard")?.value, "FZ/T 73018-2021");
+    assert.equal(providerCalls, 1);
+  } finally {
+    clearProductArchiveOcrRuntimeCache();
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
 test("OCR vision fallback does not return a result after the AI fill task is cancelled", async () => {
   const workDir = await mkdtemp(path.join(os.tmpdir(), "listingify-ocr-vision-cancel-"));
   try {

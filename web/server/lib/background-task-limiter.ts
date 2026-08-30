@@ -49,7 +49,7 @@ export class BackgroundTaskTimeoutError extends Error {
   readonly code = "BACKGROUND_TASK_TIMEOUT"
 
   constructor(lane: BackgroundTaskLane, timeoutMs: number) {
-    super(`后台任务 ${lane} 执行超过 ${timeoutMs}ms，已中止并释放执行槽位`)
+    super(`后台任务 ${lane} 执行超过 ${timeoutMs}ms，已请求中止；执行槽位将在任务实际结束后释放`)
     this.name = "BackgroundTaskTimeoutError"
   }
 }
@@ -145,6 +145,14 @@ export async function withBackgroundTaskSlot<T>(
   const timeoutMs = backgroundTaskTimeoutMs(options.timeoutMs)
   let timer: ReturnType<typeof setTimeout> | null = null
   let removeCancellationListener: () => void = () => {}
+  let task: Promise<T> | null = null
+  let taskSettled = false
+  let slotReleased = false
+  const releaseOnce = () => {
+    if (slotReleased) return
+    slotReleased = true
+    release()
+  }
   const cancellation = new Promise<never>((_resolve, reject) => {
     const cancel = () => reject(controller.signal.reason ?? abortError("后台任务已取消"))
     if (controller.signal.aborted) cancel()
@@ -163,12 +171,25 @@ export async function withBackgroundTaskSlot<T>(
   })
   try {
     if (controller.signal.aborted) throw abortError("后台任务在开始执行前已取消")
-    return await Promise.race([Promise.resolve().then(() => run(controller.signal)), timeout, cancellation])
+    task = Promise.resolve()
+      .then(() => run(controller.signal))
+      .then(
+        (value) => {
+          taskSettled = true
+          return value
+        },
+        (error) => {
+          taskSettled = true
+          throw error
+        },
+      )
+    return await Promise.race([task, timeout, cancellation])
   } finally {
     if (timer) clearTimeout(timer)
     removeCancellationListener()
     unlinkAbort()
-    release()
+    if (!task || taskSettled) releaseOnce()
+    else void task.then(releaseOnce, releaseOnce)
   }
 }
 

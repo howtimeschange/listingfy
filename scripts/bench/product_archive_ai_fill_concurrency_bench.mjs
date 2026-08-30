@@ -34,6 +34,26 @@ function envEnabled(name, fallback = true) {
   return /^(1|true|yes|on)$/i.test(String(value).trim());
 }
 
+const BENCH_CONFIRMATION = "I_UNDERSTAND";
+
+function requireBenchConfirmation(name, reason) {
+  if (envText(name) === BENCH_CONFIRMATION) return;
+  throw new Error(`${name}=${BENCH_CONFIRMATION} is required because ${reason}.`);
+}
+
+function explicitDraftSelection() {
+  const rawIds = envList("AI_FILL_BENCH_DRAFT_IDS");
+  const ids = rawIds.map((value) => Number(value));
+  const invalidIds = rawIds.filter((_value, index) => !Number.isInteger(ids[index]) || ids[index] <= 0);
+  if (invalidIds.length > 0) {
+    throw new Error(`AI_FILL_BENCH_DRAFT_IDS contains invalid IDs: ${invalidIds.join(", ")}`);
+  }
+  return {
+    ids: Array.from(new Set(ids)),
+    codes: Array.from(new Set(envList("AI_FILL_BENCH_DRAFT_CODES"))),
+  };
+}
+
 function sleep(ms, signal) {
   if (signal?.aborted) return Promise.reject(signal.reason ?? new Error("aborted"));
   return new Promise((resolve, reject) => {
@@ -98,11 +118,8 @@ function normalizeRows(rows) {
   })).filter((row) => Number.isInteger(row.id) && row.id > 0 && row.spuCode);
 }
 
-function readExplicitDraftRows(db) {
-  const ids = envList("AI_FILL_BENCH_DRAFT_IDS")
-    .map((value) => Number(value))
-    .filter((value) => Number.isInteger(value) && value > 0);
-  const codes = envList("AI_FILL_BENCH_DRAFT_CODES");
+function readExplicitDraftRows(db, selection) {
+  const { ids, codes } = selection;
   if (ids.length === 0 && codes.length === 0) return [];
 
   const clauses = [];
@@ -142,44 +159,6 @@ function readExplicitDraftRows(db) {
   `).all(...params));
 }
 
-function readAutomaticDraftRows(db, limit) {
-  return normalizeRows(db.prepare(`
-    select
-      d.id,
-      d.spu_code,
-      d.title,
-      d.status,
-      d.trade_id,
-      d.trade_path,
-      d.updated_at,
-      count(f.id)::int as field_count,
-      sum(case
-        when coalesce(nullif(f.value_text, ''), '') = ''
-          and (f.value_json is null or f.value_json::text in ('{}', '[]', 'null'))
-          then 1
-        else 0
-      end)::int as blank_count
-    from product_archive_draft d
-    left join product_archive_draft_field f on f.draft_id = d.id
-    where d.submit_claim_token is null
-      and d.trade_id is not null
-      and d.status in ('missing_fields', 'manual_review', 'ready', 'duplicate_found')
-    group by d.id
-    having count(f.id) > 0
-    order by
-      case d.status
-        when 'manual_review' then 0
-        when 'missing_fields' then 1
-        when 'ready' then 2
-        else 3
-      end,
-      blank_count desc,
-      d.updated_at desc,
-      d.id desc
-    limit ?
-  `).all(limit));
-}
-
 function detailArray(detail, key) {
   const value = detail?.[key];
   return Array.isArray(value) ? value : [];
@@ -188,19 +167,34 @@ function detailArray(detail, key) {
 function selectDraftTargets({
   db,
   service,
-  needed,
-  scanLimit,
+  selection,
   allowNoAiCandidates,
 }) {
-  const explicit = readExplicitDraftRows(db);
-  const rows = explicit.length > 0
-    ? explicit
-    : readAutomaticDraftRows(db, scanLimit);
+  const rows = readExplicitDraftRows(db, selection);
+  const rowsById = new Map(rows.map((row) => [row.id, row]));
+  const targetRows = [];
+  for (const id of selection.ids) {
+    const row = rowsById.get(id);
+    if (!row) {
+      throw new Error(`Explicit benchmark draft ID ${id} was not found or is not runnable.`);
+    }
+    targetRows.push(row);
+  }
+  for (const code of selection.codes) {
+    const matches = rows.filter((row) => row.spuCode === code);
+    if (matches.length === 0) {
+      throw new Error(`Explicit benchmark draft code ${code} was not found or is not runnable.`);
+    }
+    if (matches.length > 1) {
+      throw new Error(`Explicit benchmark draft code ${code} is ambiguous; use AI_FILL_BENCH_DRAFT_IDS with one of: ${matches.map((row) => row.id).join(", ")}.`);
+    }
+    targetRows.push(matches[0]);
+  }
+
   const selected = [];
   const skipped = [];
 
-  for (const row of rows) {
-    if (selected.length >= needed) break;
+  for (const row of Array.from(new Map(targetRows.map((target) => [target.id, target])).values())) {
     try {
       const validation = service.validateProductArchiveDraft(db, row.id);
       const detail = validation.detail ?? {};
@@ -228,7 +222,7 @@ function selectDraftTargets({
     }
   }
 
-  return { selected, skipped, explicit: explicit.length > 0 };
+  return { selected, skipped, targetCount: new Set(targetRows.map((target) => target.id)).size };
 }
 
 function distributeTargets(targets, users) {
@@ -392,7 +386,6 @@ function firstSuccessfulAttempt(response) {
 
 async function main() {
   const users = envInteger("AI_FILL_BENCH_USERS", 2, { min: 1, max: 8 });
-  const draftsPerUser = envInteger("AI_FILL_BENCH_DRAFTS_PER_USER", 2, { min: 1, max: 20 });
   const perUserConcurrency = envInteger("LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY", 2, { min: 1, max: 10 });
   if (!process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY) {
     process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY = String(perUserConcurrency);
@@ -411,15 +404,30 @@ async function main() {
   }
 
   const timeoutMs = envInteger("AI_FILL_BENCH_TIMEOUT_MS", 30 * 60 * 1000, { min: 5000, max: 60 * 60 * 1000 });
-  const scanLimit = envInteger("AI_FILL_BENCH_SCAN_LIMIT", 80, { min: 1, max: 1000 });
-  const storeMode = envText("AI_FILL_BENCH_STORE", "postgres");
+  const storeMode = envText("AI_FILL_BENCH_STORE", "memory");
   const queueName = envText("AI_FILL_BENCH_QUEUE_NAME", "product_archive_ai_fill");
   const restoreAfter = envEnabled("AI_FILL_BENCH_RESTORE_AFTER", true);
   const allowNoAiCandidates = envEnabled("AI_FILL_BENCH_ALLOW_NO_AI_CANDIDATES", false);
-  const useRealAi = envEnabled("AI_FILL_BENCH_REAL_AI", true);
+  const useRealAi = envEnabled("AI_FILL_BENCH_REAL_AI", false);
   const mockAiLatencyMs = envInteger("AI_FILL_BENCH_MOCK_AI_LATENCY_MS", 250, { min: 1, max: 60000 });
-  const explicitCount = envList("AI_FILL_BENCH_DRAFT_IDS").length + envList("AI_FILL_BENCH_DRAFT_CODES").length;
-  const requestedDraftCount = explicitCount > 0 ? explicitCount : users * draftsPerUser;
+  const selection = explicitDraftSelection();
+  const explicitCount = selection.ids.length + selection.codes.length;
+  if (explicitCount === 0) {
+    throw new Error("AI_FILL_BENCH_DRAFT_IDS or AI_FILL_BENCH_DRAFT_CODES must explicitly select benchmark drafts.");
+  }
+  if (storeMode !== "memory" && storeMode !== "postgres") {
+    throw new Error("AI_FILL_BENCH_STORE must be memory or postgres.");
+  }
+  requireBenchConfirmation(
+    "AI_FILL_BENCH_CONFIRM_SIDE_EFFECTS",
+    "the benchmark validates and may update the selected PostgreSQL drafts and write operation logs",
+  );
+  if (useRealAi) {
+    requireBenchConfirmation(
+      "AI_FILL_BENCH_CONFIRM_REAL_AI",
+      "real AI calls can incur cost and external side effects",
+    );
+  }
 
   const [
     { createProductArchiveAiFillQueue },
@@ -441,11 +449,10 @@ async function main() {
   try {
     printAiRoute();
 
-    const { selected, skipped, explicit } = selectDraftTargets({
+    const { selected, skipped, targetCount } = selectDraftTargets({
       db,
       service,
-      needed: requestedDraftCount,
-      scanLimit,
+      selection,
       allowNoAiCandidates,
     });
     if (selected.length === 0) {
@@ -454,8 +461,8 @@ async function main() {
       process.exitCode = 1;
       return;
     }
-    if (!explicit && selected.length < requestedDraftCount) {
-      console.error(`Only found ${selected.length}/${requestedDraftCount} local drafts with AI-fill candidates.`);
+    if (selected.length < targetCount) {
+      console.error(`Only ${selected.length}/${targetCount} explicitly selected drafts are runnable.`);
       if (skipped.length > 0) console.error(`Skipped examples: ${JSON.stringify(skipped.slice(0, 10))}`);
       process.exitCode = 1;
       return;

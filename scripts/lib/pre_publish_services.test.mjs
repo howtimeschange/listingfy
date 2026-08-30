@@ -1539,6 +1539,24 @@ test("deployment writes AI routing and Semir gateway environment variables", asy
   }
 });
 
+test("deployment writes product archive background and OCR concurrency environment variables", async () => {
+  const deployScript = await readFile(path.join(PROJECT_ROOT, "ci/yunxiao-deploy.sh"), "utf8");
+  const envOutputBlock = deployScript.slice(
+    deployScript.indexOf("===== Write production env ====="),
+    deployScript.indexOf("} > .env.local"),
+  );
+
+  for (const name of [
+    "LISTINGIFY_BACKGROUND_MAX_ACTIVE",
+    "LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY",
+    "LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY",
+    "LISTINGIFY_HANGTAG_OCR_FILE_CONCURRENCY",
+    "LISTINGIFY_HANGTAG_OCR_CACHE_TTL_MS",
+  ]) {
+    assert.match(envOutputBlock, new RegExp(`\\b${name}\\b`));
+  }
+});
+
 test("deployment prepares a complete release before publishing to the live app directory", async () => {
   const deployScript = await readFile(path.join(PROJECT_ROOT, "ci/yunxiao-deploy.sh"), "utf8");
   const publishBlock = deployScript.slice(deployScript.indexOf("===== Publish prepared release ====="));

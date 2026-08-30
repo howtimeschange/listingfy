@@ -6,7 +6,7 @@ import {
   withBackgroundTaskSlot,
 } from "../../web/server/lib/background-task-limiter.ts";
 
-test("background limiter times out hung work and releases slots for queued tasks", async () => {
+test("background limiter times out cooperative work and releases slots after it settles", async () => {
   const previousMax = process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
   const previousTimeout = process.env.LISTINGIFY_BACKGROUND_TASK_TIMEOUT_MS;
   process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = "2";
@@ -15,8 +15,12 @@ test("background limiter times out hung work and releases slots for queued tasks
   try {
     let abortedCount = 0;
     const hung = () => withBackgroundTaskSlot("product_archive_draft", async (signal) => {
-      signal.addEventListener("abort", () => { abortedCount += 1; }, { once: true });
-      return new Promise(() => {});
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          abortedCount += 1;
+          reject(signal.reason);
+        }, { once: true });
+      });
     });
     const first = hung();
     const second = hung();
@@ -74,13 +78,15 @@ test("background limiter allows tested AI-fill isolation capacity up to the conf
   }
 });
 
-test("background limiter releases an active slot when the caller cancels hung work", async () => {
+test("background limiter releases an active slot when cancelled work settles", async () => {
   const controller = new AbortController();
   let markStarted;
   const started = new Promise((resolve) => { markStarted = resolve; });
-  const running = withBackgroundTaskSlot("product_archive_ocr", async () => {
+  const running = withBackgroundTaskSlot("product_archive_ocr", async (signal) => {
     markStarted();
-    return new Promise(() => {});
+    return new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
   }, {
     signal: controller.signal,
     timeoutMs: 1_000,
@@ -89,4 +95,46 @@ test("background limiter releases an active slot when the caller cancels hung wo
   controller.abort(new Error("caller cancelled"));
   await assert.rejects(running, /caller cancelled/);
   assert.equal(backgroundTaskLimiterSnapshot().activeCount, 0);
+});
+
+test("background limiter keeps a timed-out slot until the underlying task settles", async () => {
+  const previousMax = process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
+  process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = "1";
+  let settleTimedOutTask;
+  let queuedTaskStarted = false;
+  try {
+    const timedOut = withBackgroundTaskSlot(
+      "product_archive_ai_fill",
+      () => new Promise((resolve) => {
+        settleTimedOutTask = resolve;
+      }),
+      { timeoutMs: 20 },
+    );
+    const queued = withBackgroundTaskSlot(
+      "product_archive_ai_fill",
+      async () => {
+        queuedTaskStarted = true;
+        return "queued task completed";
+      },
+      { timeoutMs: 1_000 },
+    );
+
+    const timeoutAssertion = assert.rejects(timedOut, BackgroundTaskTimeoutError);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await timeoutAssertion;
+    const beforeUnderlyingSettlement = backgroundTaskLimiterSnapshot();
+    const startedBeforeUnderlyingSettlement = queuedTaskStarted;
+
+    settleTimedOutTask("late completion");
+    assert.equal(await queued, "queued task completed");
+
+    assert.equal(startedBeforeUnderlyingSettlement, false);
+    assert.equal(beforeUnderlyingSettlement.activeCount, 1);
+    assert.equal(beforeUnderlyingSettlement.queuedCount, 1);
+    assert.equal(backgroundTaskLimiterSnapshot().activeCount, 0);
+  } finally {
+    settleTimedOutTask?.("test cleanup");
+    if (previousMax == null) delete process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
+    else process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = previousMax;
+  }
 });

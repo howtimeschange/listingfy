@@ -434,6 +434,14 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
+function throwIfTaskAborted(signal?: AbortSignal) {
+  if (!signal?.aborted) return
+  if (signal.reason instanceof Error) throw signal.reason
+  const error = new Error(stringValue(signal.reason) || "后台任务已取消")
+  error.name = "AbortError"
+  throw error
+}
+
 function objectValue(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
@@ -662,6 +670,10 @@ export function createProductArchiveAiFillQueue({
     return stored ? cloneProductArchiveAiFillJob(stored) : null
   }
 
+  function itemIsFinished(item: ProductArchiveAiFillJobItem) {
+    return item.status === "completed" || item.status === "failed"
+  }
+
   function setItemFinished(
     job: ProductArchiveAiFillJob,
     item: ProductArchiveAiFillJobItem,
@@ -669,13 +681,15 @@ export function createProductArchiveAiFillQueue({
     result: Record<string, unknown> | null,
     error: string | null,
   ) {
+    if (itemIsFinished(item)) return false
     item.status = status
     item.result = result
     item.error = error
     item.finished_at = new Date(now()).toISOString()
-    if (status === "completed") job.completed_count += 1
-    if (status === "failed") job.failed_count += 1
+    job.completed_count = job.items.filter((current) => current.status === "completed").length
+    job.failed_count = job.items.filter((current) => current.status === "failed").length
     persist(job)
+    return true
   }
 
   async function processItem(job: ProductArchiveAiFillJob, item: ProductArchiveAiFillJobItem, signal?: AbortSignal) {
@@ -686,6 +700,8 @@ export function createProductArchiveAiFillQueue({
 
       const db = getDatabase()
       const result = await processDraftFieldsWithAi(db, item.draft_id, { signal })
+      throwIfTaskAborted(signal)
+      if (itemIsFinished(item)) return
       const detail = result.detail as { draft?: Record<string, unknown> }
       const draft = detail.draft ?? {}
       const validationSummary = draft.validation_summary_json && typeof draft.validation_summary_json === "object"

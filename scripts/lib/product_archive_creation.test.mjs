@@ -2729,6 +2729,148 @@ test("single and batch AI fill both propagate the bounded task cancellation sign
   assert.match(service, /ocr_fallback_unavailable/);
 });
 
+test("batch AI fill keeps a timeout failure terminal when underlying work ignores cancellation", async () => {
+  const [{ createProductArchiveAiFillQueue }, { withBackgroundTaskSlot }] = await Promise.all([
+    import("../../web/server/routes/product-archive-drafts.ts"),
+    import("../../web/server/lib/background-task-limiter.ts"),
+  ]);
+  const previousBackgroundMax = process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
+  const previousUserMax = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
+  process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = "1";
+  process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY = "1";
+  const savedJobs = new Map();
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const store = {
+    requiresLease: false,
+    save(job) {
+      savedJobs.set(job.id, structuredClone(job));
+      return true;
+    },
+    get(id) {
+      return savedJobs.get(id) ?? null;
+    },
+    recover() {
+      return [];
+    },
+  };
+
+  try {
+    const queue = createProductArchiveAiFillQueue({
+      store,
+      getDatabase: () => ({
+        prepare() {
+          return { run: () => ({ changes: 1 }) };
+        },
+      }),
+      runWithSlot: (run, options) => withBackgroundTaskSlot(
+        "product_archive_ai_fill",
+        run,
+        { ...options, timeoutMs: 10 },
+      ),
+      processDraftFieldsWithAi: async () => {
+        await wait(50);
+        return {
+          saved: [{ field_id: 1 }],
+          warnings: [],
+          detail: {
+            draft: {
+              status: "ready",
+              validation_summary_json: { blocker_count: 0, warning_count: 0 },
+            },
+          },
+        };
+      },
+    });
+    const job = queue.enqueue({
+      actor: { id: 1, username: "timeout-review" },
+      ipAddress: "127.0.0.1",
+      targets: [{ draftId: 1, spuCode: "TIMEOUT-1", title: null, status: "draft" }],
+    });
+
+    await wait(120);
+    const finalJob = queue.getJob(job.id);
+
+    assert.equal(finalJob?.status, "completed");
+    assert.equal(finalJob?.outcome, "failed");
+    assert.equal(finalJob?.items[0]?.status, "failed");
+    assert.equal(finalJob?.completed_count, 0);
+    assert.equal(finalJob?.failed_count, 1);
+  } finally {
+    if (previousBackgroundMax == null) delete process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
+    else process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = previousBackgroundMax;
+    if (previousUserMax == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
+    else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY = previousUserMax;
+  }
+});
+
+test("batch AI fill terminal write is idempotent when a runner reports failure before work settles", async () => {
+  const { createProductArchiveAiFillQueue } = await import("../../web/server/routes/product-archive-drafts.ts");
+  const savedJobs = new Map();
+  let operationLogWrites = 0;
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const store = {
+    requiresLease: false,
+    save(job) {
+      savedJobs.set(job.id, structuredClone(job));
+      return true;
+    },
+    get(id) {
+      return savedJobs.get(id) ?? null;
+    },
+    recover() {
+      return [];
+    },
+  };
+  const queue = createProductArchiveAiFillQueue({
+    store,
+    getDatabase: () => ({
+      prepare() {
+        return {
+          run() {
+            operationLogWrites += 1;
+            return { changes: 1 };
+          },
+        };
+      },
+    }),
+    runWithSlot: (run) => {
+      const work = Promise.resolve().then(() => run(new AbortController().signal));
+      const reportedFailure = new Promise((_resolve, reject) => {
+        setTimeout(() => reject(new Error("synthetic early failure")), 10);
+      });
+      return Promise.race([work, reportedFailure]);
+    },
+    processDraftFieldsWithAi: async () => {
+      await wait(50);
+      return {
+        saved: [{ field_id: 1 }],
+        warnings: [],
+        detail: {
+          draft: {
+            status: "ready",
+            validation_summary_json: { blocker_count: 0, warning_count: 0 },
+          },
+        },
+      };
+    },
+  });
+  const job = queue.enqueue({
+    actor: { id: 1, username: "idempotent-review" },
+    ipAddress: "127.0.0.1",
+    targets: [{ draftId: 1, spuCode: "IDEMPOTENT-1", title: null, status: "draft" }],
+  });
+
+  await wait(120);
+  const finalJob = queue.getJob(job.id);
+
+  assert.equal(finalJob?.status, "completed");
+  assert.equal(finalJob?.outcome, "failed");
+  assert.equal(finalJob?.items[0]?.status, "failed");
+  assert.equal(finalJob?.completed_count, 0);
+  assert.equal(finalJob?.failed_count, 1);
+  assert.equal(operationLogWrites, 0);
+});
+
 test("batch AI fill queue isolates user queues and runs style items concurrently", async () => {
   const { createProductArchiveAiFillQueue } = await import("../../web/server/routes/product-archive-drafts.ts");
   const previousConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY;

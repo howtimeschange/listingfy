@@ -86,6 +86,34 @@ function throwIfAborted(signal) {
   throw error;
 }
 
+function waitForOcrResultWithSignal(promise, signal) {
+  if (!signal) return promise;
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", abort);
+    const abort = () => {
+      cleanup();
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+    if (signal.aborted) abort();
+  });
+}
+
 function uniqueTextValues(values) {
   const seen = new Set();
   const output = [];
@@ -1700,16 +1728,21 @@ async function recognizeProductArchiveOcrFileCached(file, options = {}) {
   pruneOcrFileResultCache();
   const existing = ocrFileResultCache.get(cacheKey);
   if (existing && Date.now() - existing.savedAt <= ocrCacheTtlMs(options)) {
-    return cloneOcrDocument(await existing.promise);
+    return cloneOcrDocument(await waitForOcrResultWithSignal(existing.promise, options.signal));
   }
 
-  const promise = recognizeProductArchiveOcrFile(file, options)
+  throwIfAborted(options.signal);
+  const sharedOptions = { ...options };
+  delete sharedOptions.signal;
+  const promise = recognizeProductArchiveOcrFile(file, sharedOptions)
     .catch((error) => {
-      ocrFileResultCache.delete(cacheKey);
+      if (ocrFileResultCache.get(cacheKey)?.promise === promise) {
+        ocrFileResultCache.delete(cacheKey);
+      }
       throw error;
     });
   ocrFileResultCache.set(cacheKey, { savedAt: Date.now(), promise });
-  return cloneOcrDocument(await promise);
+  return cloneOcrDocument(await waitForOcrResultWithSignal(promise, options.signal));
 }
 
 export async function recognizeProductArchiveOcrFiles(files = [], options = {}) {
