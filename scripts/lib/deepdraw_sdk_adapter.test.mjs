@@ -815,9 +815,9 @@ test("buildDeepdrawSdkProductInput normalizes optional JD-only apparel multi-pla
         name: "多平台尺码",
         fieldType: "MULTI_TEXT",
         value: {
-          title: "京东,拼多多,小红书,微信视频小店",
-          "130cm": "130cm,130cm,130cm,130cm",
-          "140码": "140码,140码,140码,140码",
+          title: "天猫,京东,快手,微信视频小店,拼多多",
+          "130cm": "130cm,128cm,130cm,130cm,130cm",
+          "140码": "140码,,140码,140码,140码",
         },
       }],
     },
@@ -825,7 +825,7 @@ test("buildDeepdrawSdkProductInput normalizes optional JD-only apparel multi-pla
 
   assert.deepEqual(input.product.fields["多平台尺码"], {
     title: "JD",
-    "130cm": "130",
+    "130cm": "128",
     "140cm": "140",
   });
 });

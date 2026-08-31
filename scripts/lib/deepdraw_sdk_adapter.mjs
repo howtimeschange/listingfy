@@ -368,13 +368,20 @@ function bareMultiPlatformSizeValue(value) {
     : stripped;
 }
 
+function apparelMultiPlatformJdColumnIndex(title) {
+  return stringValue(title).split(/[,，]/)
+    .findIndex((column) => ["京东", "jd"].includes(compactKey(column)));
+}
+
 function normalizeMultiPlatformSizeField(value, sizeValues = []) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const output = { title: "JD" };
-  for (const size of Object.keys(value)) {
+  const jdColumnIndex = apparelMultiPlatformJdColumnIndex(value.title);
+  for (const [size, rowValue] of Object.entries(value)) {
     if (size === "title") continue;
     const normalizedSize = sdkSizeValue(size);
-    const jdSize = bareMultiPlatformSizeValue(size);
+    const cells = stringValue(rowValue).split(/[,，]/);
+    const jdSize = bareMultiPlatformSizeValue(cells[jdColumnIndex] || size);
     if (normalizedSize && jdSize) output[normalizedSize] = jdSize;
   }
   return output;
