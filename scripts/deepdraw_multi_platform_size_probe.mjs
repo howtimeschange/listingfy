@@ -284,10 +284,10 @@ function apparelMainSizeTable() {
 
 function apparelMultiPlatformTable() {
   return Object.fromEntries([
-    ["title", "京东,天猫,快手,微信视频,拼多多"],
+    ["title", "京东"],
     ...APPAREL_SIZES.map((size) => [
       size,
-      [size.replace(/cm$/i, ""), "", "", "", ""].join(","),
+      size.replace(/cm$/i, ""),
     ]),
   ]);
 }
