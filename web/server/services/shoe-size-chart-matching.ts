@@ -88,6 +88,22 @@ function parenthesizedShoeSizeRemark(value: unknown) {
   return `(${text})`
 }
 
+function shoeSizeRemarkSuffix(row: ShoeSizeChartRow) {
+  return stringValue(row.general_mapping_text)
+    || stringValue(row.douyin_mapping_text)
+    || `脚长${footRange(row)}/内长${innerLength(row)}`
+}
+
+function shoePlatformSizeRemark(row: ShoeSizeChartRow) {
+  const displaySize = shoeSizeDisplayLabel(row.size_value)
+  const existing = [
+    row.video_pdd_vip_mapping_text,
+    row.vip_mapping_text,
+    row.pinduoduo_mapping_text,
+  ].map(stringValue).find((value) => /\(.+\)|（.+）/.test(value))
+  return existing || `${displaySize}${parenthesizedShoeSizeRemark(shoeSizeRemarkSuffix(row))}`
+}
+
 export function buildShoeSizeRemarks(input: {
   rows: ShoeSizeChartRow[]
   skuSizes: unknown[]
@@ -574,13 +590,10 @@ export function buildShoeSizeChartFieldValues(input: {
     const columns = supportedColumns(multi, ["京东", "拼多多", "微信视频小店"], { 微信视频小店: ["微信视频", "微信视频号"] })
     const value = tableValue(rows, columns, (row, column) => {
       if (column === "京东") return normalizeShoeSkuSize(row.size_value)
-      if (column === "拼多多") {
-        return stringValue(row.pinduoduo_mapping_text)
-          || stringValue(row.video_pdd_vip_mapping_text)
-          || stringValue(row.vip_mapping_text)
+      if (column === "拼多多" || column === "微信视频小店" || column === "微信视频" || column === "微信视频号") {
+        return shoePlatformSizeRemark(row)
       }
-      return stringValue(row.video_pdd_vip_mapping_text)
-        || stringValue(row.vip_mapping_text)
+      return ""
     }, (row) => shoeSizeDisplayLabel(row.size_value))
     if (value && columns.length > 0) {
       output["多平台尺码"] = {
