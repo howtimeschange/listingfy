@@ -561,6 +561,23 @@ function legacyColorAliases(resource) {
   return lookup;
 }
 
+function legacySizeAliases(resource) {
+  const aliases = recordValue(recordValue(resource.sizes).optionAliases ?? recordValue(resource.sizes).option_aliases);
+  const lookup = new Map();
+  for (const [standard, alias] of Object.entries(aliases)) {
+    const standardText = stringValue(standard);
+    const aliasText = stringValue(alias);
+    if (standardText && aliasText) lookup.set(compactKey(standardText), aliasText);
+  }
+  return lookup;
+}
+
+function resourceSizeIdentityValue(value, sizeAliases = new Map(), { shoeSizes = false } = {}) {
+  const text = stringValue(value);
+  const aliased = shoeSizes ? sizeAliases.get(compactKey(text)) : "";
+  return payloadSizeIdentityValue(aliased || text, { shoeSizes });
+}
+
 function payloadSkuIdentity(color, size, colorAliases = new Map(), { shoeSizes = false } = {}) {
   const colorParts = stringValue(color).split(/[,，]/).map((part) => part.trim()).filter(Boolean);
   const standardColor = colorParts
@@ -568,6 +585,16 @@ function payloadSkuIdentity(color, size, colorAliases = new Map(), { shoeSizes =
     .find(Boolean)
     ?? stringValue(sdkColorValue(color)).split(/[,，]/)[0];
   const standardSize = payloadSizeIdentityValue(size, { shoeSizes });
+  return standardColor && standardSize ? JSON.stringify([standardColor, standardSize]) : "";
+}
+
+function resourceSkuIdentity(color, size, colorAliases = new Map(), sizeAliases = new Map(), { shoeSizes = false } = {}) {
+  const colorParts = stringValue(color).split(/[,，]/).map((part) => part.trim()).filter(Boolean);
+  const standardColor = colorParts
+    .map((part) => colorAliases.get(compactKey(part)))
+    .find(Boolean)
+    ?? stringValue(sdkColorValue(color)).split(/[,，]/)[0];
+  const standardSize = resourceSizeIdentityValue(size, sizeAliases, { shoeSizes });
   return standardColor && standardSize ? JSON.stringify([standardColor, standardSize]) : "";
 }
 
@@ -588,7 +615,7 @@ function legacyExpectedSizeTable(field, selectedSizes, { shoeSizes = false } = {
   return { name, rows };
 }
 
-function legacyActualSizeTables(resource, { shoeSizes = false } = {}) {
+function legacyActualSizeTables(resource, { shoeSizes = false, sizeAliases = new Map() } = {}) {
   const source = unwrapDeepdrawResourceBody(resource);
   const candidates = [
     source.sizeTable,
@@ -603,7 +630,7 @@ function legacyActualSizeTables(resource, { shoeSizes = false } = {}) {
     if (!name || tables.has(compactKey(name))) continue;
     const rows = Object.fromEntries(arrayValue(table.sizeTableItems ?? table.size_table_items)
       .map(recordValue)
-      .map((row) => [payloadSizeIdentityValue(row.size, { shoeSizes }), recordValue(row.values)])
+      .map((row) => [resourceSizeIdentityValue(row.size, sizeAliases, { shoeSizes }), recordValue(row.values)])
       .filter(([size, values]) => size && hasValue(values)));
     tables.set(compactKey(name), { name, rows });
   }
@@ -662,11 +689,12 @@ function compareLegacySizeTable(expected, actual, { shoeSizes = false } = {}) {
 export function compareDeepdrawProductPayloadToResource({ payload = {}, resourceBody, shoeSizes = Boolean(payload.shoeSizes) } = {}) {
   const source = unwrapDeepdrawResourceBody(resourceBody);
   const colorAliases = legacyColorAliases(source);
+  const sizeAliases = legacySizeAliases(source);
   const selectedSizes = payloadSizeValues(payload, { shoeSizes });
   const expectedSizes = sortedLegacyIdentityValues(selectedSizes);
   const resourceSizes = recordValue(source.sizes);
   const actualSizes = sortedLegacyIdentityValues(
-    arrayValue(resourceSizes.options ?? resourceSizes.Options).map((size) => payloadSizeIdentityValue(size, { shoeSizes })),
+    arrayValue(resourceSizes.options ?? resourceSizes.Options).map((size) => resourceSizeIdentityValue(size, sizeAliases, { shoeSizes })),
   );
   const missingSizes = expectedSizes.filter((size) => !actualSizes.includes(size));
   const unexpectedSizes = actualSizes.filter((size) => !expectedSizes.includes(size));
@@ -691,7 +719,7 @@ export function compareDeepdrawProductPayloadToResource({ payload = {}, resource
   const resourceSkus = recordValue(source.skus);
   const actualSkuIdentities = sortedLegacyIdentityValues(arrayValue(resourceSkus.skuItems ?? resourceSkus.sku_items).map((sku) => {
     const row = recordValue(sku);
-    return payloadSkuIdentity(row.color, row.size, colorAliases, { shoeSizes });
+    return resourceSkuIdentity(row.color, row.size, colorAliases, sizeAliases, { shoeSizes });
   }));
   const missingSkus = expectedSkuIdentities.filter((identity) => !actualSkuIdentities.includes(identity));
   const unexpectedSkus = actualSkuIdentities.filter((identity) => !expectedSkuIdentities.includes(identity));
@@ -714,7 +742,7 @@ export function compareDeepdrawProductPayloadToResource({ payload = {}, resource
     .filter((field) => isStructuredSizePayloadField(fieldName(field), fieldType(field)))
     .map((field) => legacyExpectedSizeTable(field, selectedSizes, { shoeSizes }))
     .filter((table) => table.name && hasValue(table.rows));
-  const actualTables = legacyActualSizeTables(source, { shoeSizes });
+  const actualTables = legacyActualSizeTables(source, { shoeSizes, sizeAliases });
   const tableSections = expectedTables.map((table) => (
     compareLegacySizeTable(table, actualTables.get(compactKey(table.name)), { shoeSizes })
   ));

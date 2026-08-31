@@ -1044,6 +1044,65 @@ test("legacy v1 shoe publish creates with the main table then updates the remain
   assert.doesNotMatch(JSON.stringify(skuMismatch), /\\u0000/);
 });
 
+test("compareDeepdrawLegacyShoePayloadToResource resolves DeepDraw standard sizes through aliases", () => {
+  const payload = {
+    shoeSizes: true,
+    fields: [
+      { name: "尺码", value: "26码;27码" },
+      {
+        name: "尺码表",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "尺码,适合脚长,鞋内长",
+          "26码": "26,16,17",
+          "27码": "27,16.5,17.7",
+        },
+      },
+    ],
+    legacyUpdateFields: [
+      {
+        name: "尺码表",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "尺码,适合脚长,鞋内长",
+          "26码": "26,16,17",
+          "27码": "27,16.5,17.7",
+        },
+      },
+    ],
+    skus: [
+      { color: "黑紫色调00397", size: "26码" },
+      { color: "黑紫色调00397", size: "27码" },
+    ],
+  };
+  const resourceBody = {
+    colors: { optionAliases: { 紫色: "黑紫色调00397" } },
+    sizes: {
+      options: ["26", "26.5"],
+      optionAliases: { "26": "26码", "26.5": "27码" },
+      texts: [],
+    },
+    skus: { skuItems: [{ color: "紫色", size: "26" }, { color: "紫色", size: "26.5" }] },
+    sizeTables: [
+      {
+        field: { name: "尺码表" },
+        sizeTableItems: [
+          { size: "26", values: { "鞋长": "26", "适合脚长": "16", "鞋内长": "17" } },
+          { size: "26.5", values: { "鞋长": "27", "适合脚长": "16.5", "鞋内长": "17.7" } },
+        ],
+      },
+    ],
+  };
+
+  const match = compareDeepdrawLegacyShoePayloadToResource({ payload, resourceBody });
+  assert.equal(match.ok, true);
+  assert.deepEqual(match.sections.map((section) => [section.name, section.ok, section.actualCount]), [
+    ["尺码", true, 2],
+    ["商家SKU", true, 2],
+    ["尺码表", true, 2],
+  ]);
+});
+
 test("compareDeepdrawProductPayloadToResource checks apparel sale sizes skus and sent size tables", () => {
   const payload = {
     fields: [
