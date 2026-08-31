@@ -11,17 +11,37 @@ types.setTypeParser(701, (value) => Number(value));
 types.setTypeParser(1700, (value) => Number(value));
 
 const state = new Int32Array(workerData.sharedBuffer);
-const client = new Client({
-  connectionString: workerData.databaseUrl,
-  connectionTimeoutMillis: Number(workerData.connectionTimeoutMillis ?? 3000),
-});
 
+function createClient() {
+  return new Client({
+    connectionString: workerData.databaseUrl,
+    connectionTimeoutMillis: Number(workerData.connectionTimeoutMillis ?? 3000),
+  });
+}
+
+let client = createClient();
 let connected = false;
+
+async function resetClient() {
+  const current = client;
+  client = createClient();
+  connected = false;
+  try {
+    await current.end();
+  } catch {
+    // A failed connection attempt can leave the pg Client unable to end cleanly.
+  }
+}
 
 async function ensureConnected() {
   if (connected) return;
-  await client.connect();
-  connected = true;
+  try {
+    await client.connect();
+    connected = true;
+  } catch (error) {
+    await resetClient();
+    throw error;
+  }
 }
 
 function readRequest() {
