@@ -5406,7 +5406,7 @@ function normalizeSkuSizeFieldToken(value: unknown, option: unknown) {
   const size = Number(match[1])
   const unit = stringValue(match[2]).toLowerCase()
   const normalizedNumber = String(size)
-  if (unit === "码" && size < 60) return `${normalizedNumber}码`
+  if (unit === "码" && size < 60) return optionText || normalizedNumber
   if (unit || size >= 60 || /(?:cm|厘米|公分)$/i.test(optionText)) return `${normalizedNumber}cm`
   if (/码$/i.test(optionText)) return optionText
   return optionText || text

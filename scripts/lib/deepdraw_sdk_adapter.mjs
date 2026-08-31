@@ -149,7 +149,7 @@ function bareShoeSizeValue(value) {
 
 function shoeSaleSizeValue(value) {
   const size = bareShoeSizeValue(value);
-  return size ? `${size}码` : "";
+  return size;
 }
 
 function sizeMatchKeys(value) {

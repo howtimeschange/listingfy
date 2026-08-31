@@ -6505,6 +6505,11 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "120" },
     { value: "140" },
   ]), "100cm;120cm;140cm");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("尺码", "26码;27;28码", [
+    { value: "26" },
+    { value: "27" },
+    { value: "28" },
+  ]), "26;27;28");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("尺码.", "100cm;120cm;140cm;160cm;170cm", [
     { value: "18cm以下" },
     { value: "18-20cm" },

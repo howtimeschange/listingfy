@@ -189,7 +189,7 @@ test("buildDeepdrawSdkProductInput normalizes existing merchant SKU launch dates
   });
 
   assert.equal(
-    input.product.fields["商家SKU"]["黑色调00399"]["26码"],
+    input.product.fields["商家SKU"]["黑色调00399"]["26"],
     "359,208426140203,2026-09,0,6914678080209,6914678080209,359,359",
   );
 });
@@ -308,8 +308,8 @@ test("buildDeepdrawSdkProductInput adds missing units without duplicating existi
     },
   });
 
-  assert.equal(shoeInput.product.fields["尺码"], "26码;27码");
-  assert.deepEqual(Object.keys(shoeInput.product.fields["商家SKU"]["黑色"]).sort(), ["26码", "27码"]);
+  assert.equal(shoeInput.product.fields["尺码"], "26;27");
+  assert.deepEqual(Object.keys(shoeInput.product.fields["商家SKU"]["黑色"]).sort(), ["26", "27"]);
   assert.equal(apparelInput.product.fields["尺码"], "80cm;90cm");
   assert.deepEqual(Object.keys(apparelInput.product.fields["商家SKU"]["藏青"]).sort(), ["80cm", "90cm"]);
 });
@@ -685,7 +685,7 @@ test("createDeepdrawProductWithSdk delegates mapped SDK input to runner", async 
   assert.equal(result.requestId, "8899");
 });
 
-test("buildDeepdrawProductFullUpdateInput keeps display shoe sizes and excludes unsupported multi-platform tables", () => {
+test("buildDeepdrawProductFullUpdateInput keeps shoe size enum values and excludes unsupported multi-platform tables", () => {
   const input = buildDeepdrawProductFullUpdateInput({
     config: {
       baseUrl: "http://open.deepdraw.cn",
@@ -726,11 +726,11 @@ test("buildDeepdrawProductFullUpdateInput keeps display shoe sizes and excludes 
   assert.equal(input.productId, "6509967");
   assert.equal(input.product.code, "208426140203");
   assert.equal(input.product.date, "2026-09-02");
-  assert.equal(input.product.fields["尺码"], "26码");
-  assert.deepEqual(input.product.fields["尺码表"], { title: "适合脚长,鞋内长", "26码": "16,17" });
-  assert.deepEqual(input.product.fields["唯品会尺码表"], { title: "欧洲码,脚长,鞋内长", "26码": "26码,160,170.32" });
-  assert.deepEqual(input.product.fields["天猫尺码表"], { title: "脚长,鞋内长", "26码": "16,17" });
-  assert.deepEqual(input.product.fields["抖音尺码表"], { title: "脚长(cm),备注", "26码": "16,脚长15.8-16.2/内长17" });
+  assert.equal(input.product.fields["尺码"], "26");
+  assert.deepEqual(input.product.fields["尺码表"], { title: "适合脚长,鞋内长", "26": "16,17" });
+  assert.deepEqual(input.product.fields["唯品会尺码表"], { title: "欧洲码,脚长,鞋内长", "26": "26码,160,170.32" });
+  assert.deepEqual(input.product.fields["天猫尺码表"], { title: "脚长,鞋内长", "26": "16,17" });
+  assert.deepEqual(input.product.fields["抖音尺码表"], { title: "脚长(cm),备注", "26": "16,脚长15.8-16.2/内长17" });
   assert.equal(Object.hasOwn(input.product.fields, "多平台尺码"), false);
   assert.equal(Object.hasOwn(input.product.fields, "淘宝尺码表"), false);
   assert.deepEqual(input.product.places, ["ALIBABA", "TMALL", "JD", "VIP", "YOUZAN", "PDD", "XIAOHONGSHU", "DOUYIN", "KUAISHOU", "WEIXINXIAODIAN"]);
@@ -758,7 +758,7 @@ test("buildDeepdrawSdkProductInput does not let unsupported shoe remarks change 
     },
   });
 
-  assert.equal(input.product.fields["尺码"], "26码;27码");
+  assert.equal(input.product.fields["尺码"], "26;27");
 });
 
 test("buildDeepdrawProductFullUpdateInput omits multi-platform sizes from isolated full updates", () => {
@@ -791,7 +791,7 @@ test("buildDeepdrawProductFullUpdateInput omits multi-platform sizes from isolat
     },
   });
 
-  assert.equal(input.product.fields["尺码"], "26码");
+  assert.equal(input.product.fields["尺码"], "26");
   assert.equal(Object.hasOwn(input.product.fields, "多平台尺码"), false);
 });
 
@@ -903,11 +903,11 @@ test("legacy v1 shoe publish creates with the main table then updates the remain
       fields: createFields,
     },
   });
-  assert.equal(createInput.product.fields["尺码"], "26码;27码");
+  assert.equal(createInput.product.fields["尺码"], "26;27");
   assert.deepEqual(createInput.product.fields["尺码表"], {
     title: "尺码,适合脚长,鞋内长",
-    "26码": "26,16,17",
-    "27码": "27,16.5,17.7",
+    "26": "26,16,17",
+    "27": "27,16.5,17.7",
   });
   assert.equal(Object.hasOwn(createInput.product.fields, "多平台尺码"), false);
 
@@ -922,8 +922,8 @@ test("legacy v1 shoe publish creates with the main table then updates the remain
   };
   const resourceBody = {
     colors: { optionAliases: { 紫色: "黑紫色调00397" } },
-    sizes: { options: ["26码", "27码"] },
-    skus: { skuItems: [{ color: "紫色", size: "26码" }, { color: "紫色", size: "27码" }] },
+    sizes: { options: ["26", "27"] },
+    skus: { skuItems: [{ color: "紫色", size: "26" }, { color: "紫色", size: "27" }] },
     sizeTables: legacyUpdateFields
       .filter((field) => /尺码表|多平台尺码/.test(field.name))
       .map((field) => ({
@@ -1073,7 +1073,7 @@ test("updateDeepdrawFullProductWithSdk delegates the numeric product id to the v
   });
 
   assert.equal(seen[0].productId, "6509967");
-  assert.equal(seen[0].product.fields["尺码"], "26码");
+  assert.equal(seen[0].product.fields["尺码"], "26");
   assert.equal(result.ok, true);
   await assert.rejects(
     updateDeepdrawFullProductWithSdk({ productId: "internal-id", runner: async () => "" }),
