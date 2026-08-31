@@ -117,8 +117,9 @@ test5 从 `204426140121` 完整复制，创建前检查结果：
 - 2026-09-01 获得用户 test 槽位授权后真实执行 typed `多平台尺码` 一次：`gpus.product.incremental.update` 返回 HTTP `200` 但业务码 `10401`，原因为`请求失败，未授权。`；随后补充资源回读拿到业务码 `10200`，销售尺码 15 个、SKU 30 个、主尺码表/唯品会/天猫/抖音各 15 行仍在，`多平台尺码` 仍不存在，`sizes.texts=[]`。证据文件：`.codex-tmp/gpus-typed-shoe-multi-live-20260901Tcurrent/report.json` 与 `post-readback-retry.json`。
 - 2026-09-01 继续按单变量真实执行 typed `sizes.texts` 尺码备注一次：执行前资源回读 `10200`，`gpus.product.incremental.update` 返回 HTTP `200` 但业务码 `10401 请求失败，未授权`；延迟资源回读 `10200`，核心指纹不变，`sizes.texts` 仍未写入。证据文件：`.codex-tmp/gpus-typed-shoe-remark-live-20260901Tcurrent-after-wait/report.json`。
 - 因该账号对 `gpus.product.incremental.update` 未授权，typed `sizes.texts` 尺码备注与 typed `fields[]` 多平台尺码目前都不能作为 Listingify 正常发布入口；保留脚本只用于未来账号权限变化后的验证。
+- 2026-09-01 继续只读排查 SDK PIM 线：`dop-sdk-1.6.24.jar` 含 `dp.pim.nsproduct.upload/update/incrementalUpdate` 与 `dp.pim.product.get`，`PimProduct` 可表达 `ValueNode.remark`、`props`、`sku`、`sizeTable` 等结构；但 96 页 PDF 全文没有 PIM 创建/更新示例，对 test5 执行只读 `dp.pim.product.get` 返回 HTTP `200`、业务码 `10401 请求失败，未授权`。当前账号下 PIM 不能作为多平台尺码或销售尺码备注的绕行通路。
 
-下一次不要再重复普通 `Product.addProductField` 表格对象，也不要在当前账号权限不变时重复 GPUS typed 请求。若深绘开通 GPUS/PIM typed 权限或提供新接口，再二选一执行一个变量：
+下一次不要再重复普通 `Product.addProductField` 表格对象，也不要在当前账号权限不变时重复 GPUS/PIM typed 请求。若深绘开通 GPUS/PIM typed 权限或提供新接口，再二选一执行一个变量：
 
 1. 只测 `sizes.texts` 尺码备注：预期影响仅为产品 `6516955` 的尺码备注；回滚候选是用执行前快照中的 `sizes.options/optionAliases/texts` 通过同一 typed 请求写回。执行后必须业务码 `10200`，并回读确认 15 个销售尺码、30 个 SKU、主表、唯品会、天猫、抖音均未变。
 2. 只测 typed `多平台尺码`：预期影响仅为新增或覆盖产品 `6516955` 的 `多平台尺码`。当前没有已证实的开放 API 删除接口，因此只应在 test5/test6/test7 这类测试款执行；若写入内容不符合预期，先用执行前快照对比，必要时通过深绘后台人工清理或放弃测试商品。
