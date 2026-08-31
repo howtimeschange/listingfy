@@ -419,7 +419,8 @@ async function readResource(config, args, label) {
   const result = await getDeepdrawProduct({
     config,
     productCode: args.productCode,
-    productId: args.productId || undefined,
+    // The update API needs the numeric v1 productId, but dp.product.resource
+    // treats that same query as productUid in this SDK path. Read back by code.
     resource: "form",
     timeoutMs: args.timeoutMs,
   });
