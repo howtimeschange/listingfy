@@ -405,20 +405,21 @@ function shoeMultiPlatformColumns(title) {
     .filter(Boolean);
 }
 
-function shoeDisplaySizeValue(value, sizeValues = []) {
+function shoeMultiPlatformRowSizeValue(value, sizeValues = [], options = {}) {
   const matched = sdkPayloadSizeValue(value, sizeValues);
   const bare = bareMultiPlatformSizeValue(matched || value);
-  return bare ? `${bare}码` : stringValue(value);
+  if (!bare) return stringValue(value);
+  return options.shoeMultiPlatformRowKey === "bare" ? bare : `${bare}码`;
 }
 
-function normalizeShoeMultiPlatformSizeField(value, sizeValues = []) {
+function normalizeShoeMultiPlatformSizeField(value, sizeValues = [], options = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const columns = shoeMultiPlatformColumns(value.title);
   if (columns.length === 0) return value;
   const output = { title: columns.map((column) => column.code).join(",") };
   for (const [size, rowValue] of Object.entries(value)) {
     if (size === "title") continue;
-    const normalizedSize = shoeDisplaySizeValue(size, sizeValues);
+    const normalizedSize = shoeMultiPlatformRowSizeValue(size, sizeValues, options);
     const cells = stringValue(rowValue).split(",");
     const normalizedRow = columns.map((column) => stringValue(cells[column.index])).join(",");
     if (normalizedSize && normalizedRow) output[normalizedSize] = normalizedRow;
@@ -431,7 +432,7 @@ function normalizeSizeTableField(value, sizeValues = [], name = "", options = {}
   const key = compactKey(name);
   if (key === compactKey("多平台尺码")) {
     return options.shoeSizes
-      ? normalizeShoeMultiPlatformSizeField(value, sizeValues)
+      ? normalizeShoeMultiPlatformSizeField(value, sizeValues, options)
       : normalizeMultiPlatformSizeField(value, sizeValues);
   }
   const output = {};
@@ -755,7 +756,10 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
       : key === "商家sku"
       ? normalizeMerchantSkuField(value, selectedSizeValues)
       : isStructuredSizePayloadField(name, type)
-        ? normalizeSizeTableField(value, selectedSizeValues, name, { shoeSizes })
+        ? normalizeSizeTableField(value, selectedSizeValues, name, {
+            shoeSizes,
+            shoeMultiPlatformRowKey: payload.shoeMultiPlatformRowKey,
+          })
         : key === compactKey("所在地")
           ? normalizeDeepdrawLocation(value)
         : key === compactKey("售后服务承诺")

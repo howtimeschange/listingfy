@@ -187,6 +187,7 @@
 - v1 使用 `26码` 会返回 `10200` 但底层半码错配；`26,26码`、`26,26码(备注)`、`*` 扩展语法、枚举 ID 或结构化 GPUS 对象未取得可回读的成功证据，常见表现是本地 `checkSizeTable=false`、服务端 `10499` 或不落库。裸 `26;27;...;40` 可稳定得到底层 15 个整数尺码和正确 SKU。
 - 多平台尺码使用中文表头、平台 code、单列/多列、v1 完整更新或 v2 增量更新的既有鞋品探针都返回 `10499`；当前代码按用户最新假设将鞋品重新接入创建后完整更新，发送最小表头 `JD,PDD,WEIXINXIAODIAN`，但只有业务码 `10200` 且资源回读一致才算成功。服饰多平台按图 1 发送 `JD` 单列、行键 `XXcm`，京东值为京东列裸数字或行键裸数字；独立`淘宝尺码表`仍不发送。
 - 开放平台文档的 2024-11-18 修订说明只明确为 v1 `dp.product.create`、`dp.product.update` 增加多平台尺码，示例仅列 `MIAOJIE,JD,DEWU`；同一文档的 v1 update 示例把 `createSizeTable()` 与 `createMultiPlatformSizes()` 方法体写反，不能照抄。v2 `dp.product.incremental.update` 需要内部字符串 UUID，且结构表必须连同销售尺码发送。
+- SDK 1.6.24 反编译证据：v1 create、v1 update、v2 incremental update 的请求对象都只接受写入实体 `Product`；`Product` 只有基础字段、`places`、`productFields` 与 `addProductField/setProductFields`，没有 `setSizes/setTexts/setOptionAliases`。`sizes.texts/optionAliases` 只能作为资源回读证据，不能反推为当前公开 API 可写入销售尺码备注。
 - 2026-08-31 对测试商品 `6516163 / 204426140121-test2` 的最小探针：v2 使用内部 UUID `cbacdff6f86147e2a49f84d6d0142e3b`，分别发送单列 `JD`、单列`京东`、当前五平台列及文档原样 `MIAOJIE,JD,DEWU` 三列，均返回 `10499`；v1 使用数值 ID、完整稳定 payload，仅把多平台表替换为同一文档三列，仍返回 `10499`。最终 `resource=form` 回读业务码 `10200`，只有主表、唯品会、天猫、抖音四张表，多平台尺码不存在。因此当前账号/类目下，公开文档没有得到可回读的多平台更新方法，需要深绘确认服务端能力开关或修复泛化 `10499`。
 - 2026-08-31 对测试商品 `6517054 / 204426140121-test7` 的三段式探针：创建主表 `10200`，随后 `dp.product.update` 只补 `尺码/唯品会尺码表/天猫尺码表/抖音尺码表` 为 `10200`，再在同一完整 payload 增加 `多平台尺码` 返回 `10499`；即时和延迟资源回读仍无多平台尺码，且主表、唯品会、天猫、抖音各 15 行未被破坏。
 - 当前账号无 GPUS/PIM typed 写权限，已按用户确认放弃该路径；正常发布、回读和成功判定均不再调用或依赖 typed 接口。

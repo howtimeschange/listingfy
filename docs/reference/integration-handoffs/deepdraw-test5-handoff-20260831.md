@@ -33,6 +33,8 @@ test5 从 `204426140121` 完整复制，创建前检查结果：
 - `售后服务承诺` 格式是 `选项索引_天数`，本轮发送 `2_90`。
 - PDF 仅在资源回读中说明 `sizes.optionAliases` 和 `sizes.texts`；创建/更新示例没有尺码别名或尺码备注写入方法。
 - SDK 1.6.24 的创建 `Product` 仅公开基础属性、`places`、`productFields` 和 `addProductField`，没有写入 `sizes.optionAliases/texts` 的方法。
+- 2026-09-01 用本地 JDK 8 `javap` 复核 SDK 1.6.24：`ProductPostCreateProductRequest`、`ProductPostUpdateProductByIdRequest`、`ProductIncrementalUpdateRequest` 均只接收 `cn.deepdraw.api.rest.entity.Product`；写入实体 `Product` 不存在 `setSizes/setTexts/setOptionAliases`，只有 `setProductFields/addProductField`。`AllInOneProduct/DpFieldValue` 虽有 `setSizes/setTexts`，但属于资源/模型对象，不是当前 v1/v2 写入请求对象。
+- SDK `Product.checkSizeTable()` / `checkVipSizeTable()` 的字节码显示，它们通过 `sizeSalePropFields` 找 `尺码/尺码规格/规格尺码/规格/尺寸规格/商品规格/尺寸/规格尺码/含量/产品规格` 等销售尺码字段，再逐个校验尺码表行键是否包含在销售尺码集合中；因此 `checkSizeTable=false` 是本地 SDK 校验结果，不等于深绘服务端业务码。
 
 实时调用 `dp.trade.fields` 拉取 tradeId 546：
 
@@ -85,6 +87,18 @@ test5 从 `204426140121` 完整复制，创建前检查结果：
 - 鞋品创建阶段只携带主尺码表；创建后完整更新阶段可发送主表、唯品会、天猫、抖音和最小三列多平台尺码。服饰按图 1 规则生成并发布京东裸尺码多平台表：行键带 `cm/码`，京东单元格不带单位。
 - 主尺码表回读比较兼容本地列名“尺码”与深绘回读列名“鞋长”。
 - SDK 从 1.6.0 更新为 1.6.24，并让 Java 编译缓存感知 JAR 修改时间。
+
+## 2026-09-01 最小请求干跑
+
+新增只读优先探针脚本：`scripts/deepdraw_multi_platform_size_probe.mjs`。
+
+- 默认模式为 dry-run，只设置 `DEEPDRAW_SDK_DUMP_REQUEST=1`，不调用深绘。
+- 线上写入必须同时满足 `--execute` 和 `DEEPDRAW_LIVE_WRITE=1`，且款号必须为 `-test` 后缀。
+- 鞋品 update 最小请求：`dp.product.update` v1，query 携带数值产品 ID；`productFields` 仅包含 `尺码` 与 `多平台尺码`。SDK 默认发送 `尺码=26;27;...;40`，`多平台尺码.title=JD,PDD,WEIXINXIAODIAN`，15 行行键为 `26码` 到 `40码`，JD 单元格为裸数字，PDD/微信视频小店单元格保留括号备注。
+- 历史成功产品 `208426140203/6513943` 与 `208426140204/6511943` 的当前资源回读中，`多平台尺码` 行键为裸 `26` 到 `40`，PDD/小红书/微信视频小店单元格才带 `26码(...)` 文案。因此脚本支持 `--shoe-multi-row-key bare`，用于只改变行键一个变量的后续 A/B。
+- 服饰 create 干跑请求：`dp.product.create`，query 携带 tradeId；`productFields` 包含 `尺码`、`尺码表`、`多平台尺码`。SDK 实际发送 `尺码=130cm;140cm;150cm;160cm;165cm;170cm`，`多平台尺码.title=JD`，行键为 `130cm` 等带单位尺码，JD 单元格为裸数字。
+- 当前只完成本地/SDK dry-run 证据，没有新的线上请求成功、没有资源回读新增多平台尺码。
+- 若获得新的线上写入授权，执行前先回读目标产品并保存快照；执行后必须要求业务码 `10200`，再资源回读 `多平台尺码` 行数和值，并确认销售尺码、SKU、主尺码表、唯品会尺码表、天猫尺码表、抖音尺码表指纹不变。若新增的 `多平台尺码` 内容不符合预期，当前公开 API 尚无已证实的删除接口，只能在测试商品上继续用已保存快照做对照，并通过深绘后台人工清理或放弃测试商品。
 
 ## 安全续跑边界
 

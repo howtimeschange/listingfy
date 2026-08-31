@@ -863,6 +863,40 @@ test("buildDeepdrawSdkProductInput keeps shoe multi-platform rows display-sized 
   });
 });
 
+test("buildDeepdrawSdkProductInput can emit bare shoe multi-platform row keys for probes", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      shoeSizes: true,
+      shoeMultiPlatformRowKey: "bare",
+      fields: [
+        { name: "尺码", value: "26码;27码" },
+        {
+          name: "多平台尺码",
+          fieldType: "MULTI_TEXT",
+          value: {
+            title: "京东,拼多多,微信视频小店",
+            "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
+            "27码": "27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
+          },
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(input.product.fields["多平台尺码"], {
+    title: "JD,PDD,WEIXINXIAODIAN",
+    "26": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
+    "27": "27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
+  });
+});
+
 test("legacy v1 shoe publish creates with the main table then updates the remaining supported platform tables", () => {
   const fields = [
     { name: "尺码", value: "26码;27码" },
