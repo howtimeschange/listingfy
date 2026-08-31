@@ -189,7 +189,7 @@ test("buildDeepdrawSdkProductInput normalizes existing merchant SKU launch dates
   });
 
   assert.equal(
-    input.product.fields["商家SKU"]["黑色调00399"]["26"],
+    input.product.fields["商家SKU"]["黑色调00399"]["26码"],
     "359,208426140203,2026-09,0,6914678080209,6914678080209,359,359",
   );
 });
@@ -308,8 +308,8 @@ test("buildDeepdrawSdkProductInput adds missing units without duplicating existi
     },
   });
 
-  assert.equal(shoeInput.product.fields["尺码"], "26;27");
-  assert.deepEqual(Object.keys(shoeInput.product.fields["商家SKU"]["黑色"]).sort(), ["26", "27"]);
+  assert.equal(shoeInput.product.fields["尺码"], "26码;27码");
+  assert.deepEqual(Object.keys(shoeInput.product.fields["商家SKU"]["黑色"]).sort(), ["26码", "27码"]);
   assert.equal(apparelInput.product.fields["尺码"], "80cm;90cm");
   assert.deepEqual(Object.keys(apparelInput.product.fields["商家SKU"]["藏青"]).sort(), ["80cm", "90cm"]);
 });
@@ -726,11 +726,11 @@ test("buildDeepdrawProductFullUpdateInput keeps shoe size enum values and includ
   assert.equal(input.productId, "6509967");
   assert.equal(input.product.code, "208426140203");
   assert.equal(input.product.date, "2026-09-02");
-  assert.equal(input.product.fields["尺码"], "26");
-  assert.deepEqual(input.product.fields["尺码表"], { title: "适合脚长,鞋内长", "26": "16,17" });
-  assert.deepEqual(input.product.fields["唯品会尺码表"], { title: "欧洲码,脚长,鞋内长", "26": "26码,160,170.32" });
-  assert.deepEqual(input.product.fields["天猫尺码表"], { title: "脚长,鞋内长", "26": "16,17" });
-  assert.deepEqual(input.product.fields["抖音尺码表"], { title: "脚长(cm),备注", "26": "16,脚长15.8-16.2/内长17" });
+  assert.equal(input.product.fields["尺码"], "26码");
+  assert.deepEqual(input.product.fields["尺码表"], { title: "适合脚长,鞋内长", "26码": "16,17" });
+  assert.deepEqual(input.product.fields["唯品会尺码表"], { title: "欧洲码,脚长,鞋内长", "26码": "26码,160,170.32" });
+  assert.deepEqual(input.product.fields["天猫尺码表"], { title: "脚长,鞋内长", "26码": "16,17" });
+  assert.deepEqual(input.product.fields["抖音尺码表"], { title: "脚长(cm),备注", "26码": "16,脚长15.8-16.2/内长17" });
   assert.deepEqual(input.product.fields["多平台尺码"], {
     title: "JD,PDD,WEIXINXIAODIAN",
     "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
@@ -761,7 +761,7 @@ test("buildDeepdrawSdkProductInput does not let unsupported shoe remarks change 
     },
   });
 
-  assert.equal(input.product.fields["尺码"], "26;27");
+  assert.equal(input.product.fields["尺码"], "26码;27码");
 });
 
 test("buildDeepdrawProductFullUpdateInput includes isolated supported multi-platform size updates", () => {
@@ -794,11 +794,40 @@ test("buildDeepdrawProductFullUpdateInput includes isolated supported multi-plat
     },
   });
 
-  assert.equal(input.product.fields["尺码"], "26");
+  assert.equal(input.product.fields["尺码"], "26码");
   assert.deepEqual(input.product.fields["多平台尺码"], {
     title: "JD,PDD,WEIXINXIAODIAN",
     "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
   });
+});
+
+test("buildDeepdrawSdkProductInput can emit bare shoe sale-size identities for probes", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      shoeSizes: true,
+      shoeSaleSizeUnitMode: "bare",
+      fields: [
+        { name: "尺码", value: "26码;27码" },
+        { name: "尺码表", fieldType: "MULTI_TEXT", value: { title: "尺码,适合脚长", "26码": "26,16", "27码": "27,16.5" } },
+      ],
+      skus: [{ color: "黑色", size: "26码" }],
+    },
+  });
+
+  assert.equal(input.product.fields["尺码"], "26;27");
+  assert.deepEqual(input.product.fields["尺码表"], {
+    title: "尺码,适合脚长",
+    "26": "26,16",
+    "27": "27,16.5",
+  });
+  assert.deepEqual(Object.keys(input.product.fields["商家SKU"]["黑色"]), ["26"]);
 });
 
 test("buildDeepdrawSdkProductInput normalizes optional JD-only apparel multi-platform sizes", () => {
@@ -943,11 +972,11 @@ test("legacy v1 shoe publish creates with the main table then updates the remain
       fields: createFields,
     },
   });
-  assert.equal(createInput.product.fields["尺码"], "26;27");
+  assert.equal(createInput.product.fields["尺码"], "26码;27码");
   assert.deepEqual(createInput.product.fields["尺码表"], {
     title: "尺码,适合脚长,鞋内长",
-    "26": "26,16,17",
-    "27": "27,16.5,17.7",
+    "26码": "26,16,17",
+    "27码": "27,16.5,17.7",
   });
   assert.equal(Object.hasOwn(createInput.product.fields, "多平台尺码"), false);
 
@@ -1114,7 +1143,7 @@ test("updateDeepdrawFullProductWithSdk delegates the numeric product id to the v
   });
 
   assert.equal(seen[0].productId, "6509967");
-  assert.equal(seen[0].product.fields["尺码"], "26");
+  assert.equal(seen[0].product.fields["尺码"], "26码");
   assert.equal(result.ok, true);
   await assert.rejects(
     updateDeepdrawFullProductWithSdk({ productId: "internal-id", runner: async () => "" }),

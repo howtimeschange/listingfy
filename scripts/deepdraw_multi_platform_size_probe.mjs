@@ -95,11 +95,12 @@ Options:
   --delay-ms <n>                 Delayed readback wait in execute mode. Default: 3000.
   --timeout-ms <n>               Per SDK/API call timeout. Default: 30000.
   --shoe-multi-row-key <mode>    Shoe multi-platform row key. display=26码, bare=26. Default: display.
+  --shoe-sale-size <mode>        Shoe sale size identity. display=26码, bare=26. Default: display.
   --execute                      Perform the live create/update after safety checks.
 
 Examples:
   node scripts/deepdraw_multi_platform_size_probe.mjs --scenario shoe --operation update --product-code 204426140121-test5 --product-id 6516955
-  node scripts/deepdraw_multi_platform_size_probe.mjs --scenario shoe --operation update --shoe-multi-row-key bare --product-code 204426140121-test5 --product-id 6516955
+  node scripts/deepdraw_multi_platform_size_probe.mjs --scenario shoe --operation update --shoe-sale-size bare --shoe-multi-row-key bare --product-code 204426140121-test5 --product-id 6516955
   DEEPDRAW_LIVE_WRITE=1 node scripts/deepdraw_multi_platform_size_probe.mjs --execute --scenario shoe --operation update --product-code 204426140121-test5 --product-id 6516955
   node scripts/deepdraw_multi_platform_size_probe.mjs --scenario apparel --operation create --product-code 202426107033-test6
 `);
@@ -159,6 +160,7 @@ function parseArgs(argv) {
     delayMs: Number(process.env.DEEPDRAW_PROBE_DELAY_MS || 3000),
     timeoutMs: Number(process.env.DEEPDRAW_TIMEOUT_MS || 30000),
     shoeMultiRowKey: process.env.DEEPDRAW_SHOE_MULTI_ROW_KEY || "display",
+    shoeSaleSize: process.env.DEEPDRAW_SHOE_SALE_SIZE || "display",
     execute: false,
     help: false,
   };
@@ -181,6 +183,7 @@ function parseArgs(argv) {
     else if (arg === "--delay-ms") args.delayMs = Number(next());
     else if (arg === "--timeout-ms") args.timeoutMs = Number(next());
     else if (arg === "--shoe-multi-row-key") args.shoeMultiRowKey = next();
+    else if (arg === "--shoe-sale-size") args.shoeSaleSize = next();
     else if (arg === "--execute") args.execute = true;
     else if (arg === "--help" || arg === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
@@ -208,6 +211,9 @@ function parseArgs(argv) {
   }
   if (!["display", "bare"].includes(args.shoeMultiRowKey)) {
     throw new Error("--shoe-multi-row-key must be display or bare");
+  }
+  if (!["display", "bare"].includes(args.shoeSaleSize)) {
+    throw new Error("--shoe-sale-size must be display or bare");
   }
   if (args.execute && process.env.DEEPDRAW_LIVE_WRITE !== "1") {
     throw new Error("Refusing live write: set DEEPDRAW_LIVE_WRITE=1 together with --execute");
@@ -285,6 +291,7 @@ function probePayload(args) {
       date: "2026-09-01",
       shoeSizes: true,
       shoeMultiPlatformRowKey: args.shoeMultiRowKey,
+      shoeSaleSizeUnitMode: args.shoeSaleSize,
       fields,
       legacyUpdateFields: fields.filter((field) => field.name !== "尺码表"),
     };
@@ -445,6 +452,7 @@ async function dryRun(args, payload) {
       productCode: args.productCode,
       productId: args.productId || null,
       shoeMultiRowKey: args.scenario === "shoe" ? args.shoeMultiRowKey : null,
+      shoeSaleSize: args.scenario === "shoe" ? args.shoeSaleSize : null,
       fieldNames: Object.keys(dump.productFields),
       sizeField: dump.productFields["尺码"] ?? null,
       mainSizeTable: dump.productFields["尺码表"] ?? null,
@@ -475,6 +483,7 @@ async function execute(args, payload) {
     productCode: args.productCode,
     productId: args.productId || null,
     shoeMultiRowKey: args.scenario === "shoe" ? args.shoeMultiRowKey : null,
+    shoeSaleSize: args.scenario === "shoe" ? args.shoeSaleSize : null,
     update: sanitize({
       httpStatus: result.status,
       responseCode: business.code ?? null,
@@ -510,6 +519,7 @@ async function main() {
     productCode: report.productCode,
     productId: report.productId,
     shoeMultiRowKey: report.shoeMultiRowKey,
+    shoeSaleSize: report.shoeSaleSize,
     output: path.relative(projectRoot, path.join(args.outDir, "report.json")),
     sizeField: report.sizeField ?? report.update?.responseCode ?? null,
     multiPlatformSize: report.multiPlatformSize ?? null,

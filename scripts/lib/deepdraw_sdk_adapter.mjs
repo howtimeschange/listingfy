@@ -147,9 +147,11 @@ function bareShoeSizeValue(value) {
   return stringValue(value).replace(/\s*(?:cm|厘米|公分|码)$/i, "");
 }
 
-function shoeSaleSizeValue(value) {
+function shoeSaleSizeValue(value, options = {}) {
   const size = bareShoeSizeValue(value);
-  return size;
+  if (!size) return "";
+  if (options.shoeSaleSizeUnitMode === "bare") return size;
+  return /^0*\d+(?:\.\d+)?$/.test(size) ? `${Number(size)}码` : size;
 }
 
 function sizeMatchKeys(value) {
@@ -732,11 +734,14 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
   const skus = Array.isArray(payload.skus) ? payload.skus : [];
   const shoeSizes = Boolean(payload.shoeSizes);
   const declaredSizeValues = saleSizeValues(findPayloadFieldValue(payloadFields, ["尺码", "尺寸", "规格", "size"]));
+  const shoeSaleSizeOptions = {
+    shoeSaleSizeUnitMode: payload.shoeSaleSizeUnitMode === "bare" ? "bare" : "display",
+  };
   const selectedSizeValues = declaredSizeValues.length > 0
-    ? declaredSizeValues.map((size) => shoeSizes ? shoeSaleSizeValue(size) : sdkSizeValue(size))
+    ? declaredSizeValues.map((size) => shoeSizes ? shoeSaleSizeValue(size, shoeSaleSizeOptions) : sdkSizeValue(size))
     : uniqueValues(skus.map((sku) => (
         shoeSizes
-          ? shoeSaleSizeValue(sku.size ?? sku.sizeName ?? sku.size_name)
+          ? shoeSaleSizeValue(sku.size ?? sku.sizeName ?? sku.size_name, shoeSaleSizeOptions)
           : sdkSizeValue(sku.size ?? sku.sizeName ?? sku.size_name)
       )).filter(Boolean));
   // DeepDraw's public create/update API has no documented size-remark input.
