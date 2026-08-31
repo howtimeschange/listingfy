@@ -3675,7 +3675,8 @@ test("product archive create payload omits scalar size-chart fields", async () =
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const serviceSource = await readText(files.draftService);
 
-  assert.match(serviceSource, /\.filter\(shouldIncludeProductArchivePayloadField\)/);
+  assert.match(serviceSource, /shouldSubmitProductArchivePayloadField\(field/);
+  assert.match(serviceSource, /includeMultiPlatformSizeField:\s*includeOptionalStructuredSizeFields/);
   assert.equal(service.shouldIncludeProductArchivePayloadField({
     source_type: "skip",
     required: false,
@@ -3700,6 +3701,25 @@ test("product archive create payload omits scalar size-chart fields", async () =
     blocking: true,
     validation_status: "invalid",
   }), true);
+  assert.equal(service.shouldSubmitProductArchivePayloadField({
+    field_name: "多平台尺码",
+    required: true,
+    blocking: true,
+    validation_status: "valid",
+  }), false);
+  assert.equal(service.shouldSubmitProductArchivePayloadField({
+    field_name: "多平台尺码",
+    required: true,
+    blocking: true,
+    validation_status: "valid",
+  }, { includeMultiPlatformSizeField: true }), true);
+  assert.equal(service.shouldSubmitProductArchivePayloadField({
+    field_name: "抖音尺码表",
+    source_type: "skip",
+    required: false,
+    blocking: false,
+    validation_status: "skipped",
+  }, { includeMultiPlatformSizeField: true }), false);
   assert.equal(service.productArchivePayloadFieldValue({
     field_name: "抖音尺码表",
     field_type: "MULTI_TEXT",

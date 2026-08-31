@@ -10387,6 +10387,17 @@ export function shouldIncludeProductArchivePayloadField(field: JsonRecord) {
   return true
 }
 
+export function shouldSubmitProductArchivePayloadField(field: JsonRecord, options: {
+  includeMultiPlatformSizeField?: boolean
+} = {}) {
+  if (!shouldIncludeProductArchivePayloadField(field)) return false
+  if (
+    compactFieldKey(field.field_name) === compactFieldKey("多平台尺码")
+    && !options.includeMultiPlatformSizeField
+  ) return false
+  return true
+}
+
 export function productArchivePayloadTemplateFieldId(field: JsonRecord) {
   return stringValue(field.template_field_id)
 }
@@ -10474,7 +10485,9 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
   const omittedTemplateFieldNames: string[] = []
   const detailFields = detail.fields as JsonRecord[]
   const payloadFieldsFromDetail = (includeOptionalStructuredSizeFields = false) => detailFields
-    .filter(shouldIncludeProductArchivePayloadField)
+    .filter((field) => shouldSubmitProductArchivePayloadField(field, {
+      includeMultiPlatformSizeField: includeOptionalStructuredSizeFields,
+    }))
     .flatMap((field) => {
       const value = productArchivePayloadFieldValue(field, { includeOptionalStructuredSizeFields })
       if (!hasValue(value)) return []
