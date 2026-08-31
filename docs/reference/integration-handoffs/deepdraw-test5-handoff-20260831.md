@@ -100,6 +100,29 @@ test5 从 `204426140121` 完整复制，创建前检查结果：
 - 2026-09-01 新增线上 test5 证据：`display/display`、`display/bare-row-key`、`display/size-table-body` 三种 v1 update 均为 HTTP `200` 但业务码 `10499`；延迟资源回读为业务码 `10200`，销售尺码 15 个、SKU 30 个、主表/唯品会/天猫/抖音各 15 行保持不变，多平台尺码仍不存在。
 - 若获得新的线上写入授权，执行前先回读目标产品并保存快照；执行后必须要求业务码 `10200`，再资源回读 `多平台尺码` 行数和值，并确认销售尺码、SKU、主尺码表、唯品会尺码表、天猫尺码表、抖音尺码表指纹不变。若新增的 `多平台尺码` 内容不符合预期，当前公开 API 尚无已证实的删除接口，只能在测试商品上继续用已保存快照做对照，并通过深绘后台人工清理或放弃测试商品。
 
+## 2026-09-01 GPUS typed 增量实测
+
+新增只读优先 typed 探针：`scripts/deepdraw_gpus_typed_size_probe.mjs`，并新增 SDK CLI `scripts/java/DeepdrawGpusProductIncrementalUpdateCli.java`。
+
+- 公开 PDF 的 create/update 示例仍只展示普通 `Product.addProductField("多平台尺码", ...)`；PDF 没有明确写出 `gpus.product.incremental.update` 或 `sizes.texts` 的创建/更新示例。
+- SDK 1.6.24 里普通 `Product` 没有 `setSizes/setTexts/setOptionAliases`；`GpusProductIncrementalUpdateRequest` 接收 `GpusProduct`，而 `GpusProduct` 有 `setSizes(DpFieldValue)` 和 `addField(DpFieldValue)`，`DpFieldValue` 有 `options/optionAliases/texts`。
+- `DpFieldValue.check()` 字节码显示：`MULTI_TEXT` 本地只要求 `texts` 非空，不要求 `options` 必须属于字段枚举；这与资源模型里 `多平台尺码.field.options=平台`、`多平台尺码.options=尺码行键`、`texts=尺码选项ID,平台选项ID,单元格值` 的形状一致。
+- `docs/reference/interface-docs/深绘同步结果.txt` 的历史资源样例中，`多平台尺码` typed 字段形如：`field.id=88971`、`field.type=MULTI_TEXT`、`field.options` 为平台、`options` 为 `120cm/100cm/...`、`texts` 包含 `8379,192902,100` 这类三元组。因此新的单一假设是：普通 `Product.productFields` 的对象表格会被深绘服务端按 `10499` 拒绝，而可写形态可能是 GPUS typed `fields[]` 里的 `DpFieldValue.texts` 三元组。
+- 已 dry-run 且未联网写入：
+  - 鞋品多平台：`/rest/v2?type=gpus.product.incremental.update&productId=3b6023ce4e844e138c25f92e9af1e227`，`fields[]` 仅含 `多平台尺码`。字段 `88059`，平台仅 `京东/拼多多/微信视频小店`；`options` 为 `26码...40码`；`texts` 为 45 条三元组，如 `11623,188799,26`、`11623,201404,26码(脚长15.8-16.2/内长17)`、`11623,202942,26码(脚长15.8-16.2/内长17)`。SDK `productCheck/sizeCheck/fieldsCheck` 均为 `true`。
+  - 鞋品尺码备注：同一 GPUS update，`sizes` 仅含尺码字段 `2398`；`options=26...40`，`optionAliases=26->26码...40->40码`，`texts` 为 15 条二元组，如 `11623,脚长15.8-16.2/内长17`。SDK `productCheck/sizeCheck/fieldsCheck` 均为 `true`。
+  - 服饰多平台：字段 `88964`，仅京东；`options=130cm,140cm,150cm,160cm,165cm,170cm`；`texts` 如 `7999,192894,130`。SDK `productCheck/sizeCheck/fieldsCheck` 均为 `true`。
+- 新脚本 live 写入保护：默认 dry-run；线上写入必须同时给 `--execute` 与 `DEEPDRAW_LIVE_WRITE=1`，且款号必须是 `-test` 后缀。未设置 `DEEPDRAW_LIVE_WRITE=1` 时，脚本已实测拒绝执行。
+- 2026-09-01 新鲜回读 test5：`dp.product.resource` 返回业务码 `10200`，内部 UID `3b6023ce4e844e138c25f92e9af1e227`，销售尺码 15 个、SKU 30 个、主尺码表/唯品会/天猫/抖音各 15 行；`fields[]` 中仍无 `多平台尺码`，`sizes.texts=[]`。
+- 2026-09-01 获得用户 test 槽位授权后真实执行 typed `多平台尺码` 一次：`gpus.product.incremental.update` 返回 HTTP `200` 但业务码 `10401`，原因为`请求失败，未授权。`；随后补充资源回读拿到业务码 `10200`，销售尺码 15 个、SKU 30 个、主尺码表/唯品会/天猫/抖音各 15 行仍在，`多平台尺码` 仍不存在，`sizes.texts=[]`。证据文件：`.codex-tmp/gpus-typed-shoe-multi-live-20260901Tcurrent/report.json` 与 `post-readback-retry.json`。
+- 2026-09-01 继续按单变量真实执行 typed `sizes.texts` 尺码备注一次：执行前资源回读 `10200`，`gpus.product.incremental.update` 返回 HTTP `200` 但业务码 `10401 请求失败，未授权`；延迟资源回读 `10200`，核心指纹不变，`sizes.texts` 仍未写入。证据文件：`.codex-tmp/gpus-typed-shoe-remark-live-20260901Tcurrent-after-wait/report.json`。
+- 因该账号对 `gpus.product.incremental.update` 未授权，typed `sizes.texts` 尺码备注与 typed `fields[]` 多平台尺码目前都不能作为 Listingify 正常发布入口；保留脚本只用于未来账号权限变化后的验证。
+
+下一次不要再重复普通 `Product.addProductField` 表格对象，也不要在当前账号权限不变时重复 GPUS typed 请求。若深绘开通 GPUS/PIM typed 权限或提供新接口，再二选一执行一个变量：
+
+1. 只测 `sizes.texts` 尺码备注：预期影响仅为产品 `6516955` 的尺码备注；回滚候选是用执行前快照中的 `sizes.options/optionAliases/texts` 通过同一 typed 请求写回。执行后必须业务码 `10200`，并回读确认 15 个销售尺码、30 个 SKU、主表、唯品会、天猫、抖音均未变。
+2. 只测 typed `多平台尺码`：预期影响仅为新增或覆盖产品 `6516955` 的 `多平台尺码`。当前没有已证实的开放 API 删除接口，因此只应在 test5/test6/test7 这类测试款执行；若写入内容不符合预期，先用执行前快照对比，必要时通过深绘后台人工清理或放弃测试商品。
+
 ## 安全续跑边界
 
 - 不要再创建 `204426140121-test5`：该款号已经存在，产品 ID 为 `6516955`。

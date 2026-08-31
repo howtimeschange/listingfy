@@ -10,6 +10,8 @@ const SDK_UPDATE_SOURCE = path.resolve(import.meta.dirname, "../java/DeepdrawPro
 const SDK_UPDATE_CLASS_NAME = "DeepdrawProductUpdateCli";
 const SDK_RESOURCE_SOURCE = path.resolve(import.meta.dirname, "../java/DeepdrawProductResourceCli.java");
 const SDK_RESOURCE_CLASS_NAME = "DeepdrawProductResourceCli";
+const SDK_GPUS_INCREMENTAL_UPDATE_SOURCE = path.resolve(import.meta.dirname, "../java/DeepdrawGpusProductIncrementalUpdateCli.java");
+const SDK_GPUS_INCREMENTAL_UPDATE_CLASS_NAME = "DeepdrawGpusProductIncrementalUpdateCli";
 const SKU_TITLE = "价格,货号,上市时间,数量,商家编码,条形码,零售价,供货价,唯品会货号,唯品会条形码";
 const JAVA_UTF8_ARGS = [
   "-Dfile.encoding=UTF-8",
@@ -58,6 +60,11 @@ function arrayValue(value) {
 
 function recordValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function optionText(value) {
+  const record = recordValue(value);
+  return stringValue(record.value ?? record.name ?? record.label ?? value);
 }
 
 function uniqueValues(values) {
@@ -505,6 +512,29 @@ function unwrapDeepdrawResourceBody(value) {
   return source;
 }
 
+function stringRecord(value) {
+  return Object.fromEntries(Object.entries(recordValue(value))
+    .map(([key, child]) => [stringValue(key), stringValue(child)])
+    .filter(([key, child]) => key && child));
+}
+
+function normalizeGpusFieldValue(value) {
+  const source = recordValue(value);
+  const nestedField = recordValue(source.field);
+  const fieldOptions = arrayValue(source.fieldOptions ?? source.field_options ?? nestedField.options)
+    .map(optionText)
+    .filter(Boolean);
+  return {
+    fieldId: stringValue(source.fieldId ?? source.field_id ?? nestedField.id),
+    fieldName: stringValue(source.fieldName ?? source.field_name ?? nestedField.name),
+    fieldType: stringValue(source.fieldType ?? source.field_type ?? nestedField.type).toUpperCase(),
+    fieldOptions: uniqueValues(fieldOptions),
+    optionAliases: stringRecord(source.optionAliases ?? source.option_aliases),
+    options: uniqueValues(arrayValue(source.options).map(optionText)),
+    texts: uniqueValues(arrayValue(source.texts).map(stringValue)),
+  };
+}
+
 export function buildDeepdrawProductFullUpdateInput({ config, productId, payload = {} } = {}) {
   const candidateFields = Array.isArray(payload.legacyUpdateFields)
     ? payload.legacyUpdateFields
@@ -874,6 +904,32 @@ export function buildDeepdrawSdkResourceInput({ config, productCode, productId, 
   };
 }
 
+export function buildDeepdrawGpusProductIncrementalUpdateInput({ config, productId, payload = {} } = {}) {
+  const typedFields = arrayValue(payload.gpusFields ?? payload.typedFields)
+    .map(normalizeGpusFieldValue)
+    .filter((field) => field.fieldId && field.fieldName && field.fieldType);
+  const sizes = payload.sizes ? normalizeGpusFieldValue(payload.sizes) : null;
+  return {
+    config: {
+      appKey: stringValue(config?.appKey),
+      appSecret: stringValue(config?.appSecret),
+      dopKey: stringValue(config?.dopKey),
+      host: hostValue(config?.baseUrl ?? config?.host),
+      merchantId: stringValue(config?.merchantId),
+    },
+    productId: stringValue(productId),
+    product: {
+      code: stringValue(payload.code),
+      title: stringValue(payload.title),
+      retailPrice: asMoneyText(payload.retailPrice),
+      date: normalizeSdkDateText(payload.date),
+      sites: normalizeDeepdrawSites(payload.sites ?? payload.places ?? payload.compatiblePlatforms),
+      ...(sizes && sizes.fieldId && sizes.fieldName && sizes.fieldType ? { sizes } : {}),
+      fields: typedFields,
+    },
+  };
+}
+
 function existingJar(m2Repository, candidates) {
   for (const candidate of candidates) {
     const fullPath = path.join(m2Repository, candidate);
@@ -1044,6 +1100,14 @@ export async function runDeepdrawProductUpdateCli(input, options = {}) {
   });
 }
 
+export async function runDeepdrawGpusProductIncrementalUpdateCli(input, options = {}) {
+  return runDeepdrawSdkCli(input, {
+    ...options,
+    sourceFile: SDK_GPUS_INCREMENTAL_UPDATE_SOURCE,
+    className: SDK_GPUS_INCREMENTAL_UPDATE_CLASS_NAME,
+  });
+}
+
 function extractJsonObject(text) {
   const lines = stringValue(text).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -1092,6 +1156,22 @@ export async function updateDeepdrawFullProductWithSdk({
     throw new Error("DeepDraw numeric productId is required for full product update.");
   }
   const input = buildDeepdrawProductFullUpdateInput({ config, productId, payload });
+  const output = await runner(input, { timeoutMs, projectRoot });
+  return parseDeepdrawSdkOutput(output);
+}
+
+export async function updateDeepdrawGpusProductIncrementallyWithSdk({
+  config,
+  payload = {},
+  productId,
+  timeoutMs = 30000,
+  projectRoot,
+  runner = runDeepdrawGpusProductIncrementalUpdateCli,
+} = {}) {
+  if (!stringValue(productId)) {
+    throw new Error("DeepDraw product UID is required for GPUS incremental update.");
+  }
+  const input = buildDeepdrawGpusProductIncrementalUpdateInput({ config, productId, payload });
   const output = await runner(input, { timeoutMs, projectRoot });
   return parseDeepdrawSdkOutput(output);
 }
