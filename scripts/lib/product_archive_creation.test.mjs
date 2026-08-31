@@ -3527,8 +3527,8 @@ test("product archive service derives DeepDraw size-chart fields from PLM source
   });
 
   assert.deepEqual(value.valueJson, {
-    title: "肩宽,袖长,胸围,衣长",
-    "80cm": "26.5,24.5,66,38",
+    title: "尺码,肩宽,袖长,胸围,衣长",
+    "80cm": "80,26.5,24.5,66,38",
   });
   assert.equal(value.sourceType, "size_chart");
   assert.equal(value.mappings.find((item) => item.targetField === "袖长")?.confidence, "medium");
@@ -3546,8 +3546,8 @@ test("product archive service derives DeepDraw size-chart fields from PLM source
   });
 
   assert.deepEqual(genericValue.valueJson, {
-    title: "身高,衣长,胸围,袖长",
-    "80cm": "80,33,64,26",
+    title: "尺码,身高,衣长,胸围,袖长",
+    "80cm": "80,80,33,64,26",
   });
   assert.equal(genericValue.sourceType, "size_chart");
 

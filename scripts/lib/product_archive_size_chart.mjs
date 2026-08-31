@@ -108,6 +108,7 @@ export const HIGH_CONFIDENCE_SIZE_CHART_RULES = [
   ["脚口", ["1/2脚口（平量）"]],
   ["裤口围", ["1/2脚口（平量）"]],
   ["下摆围", ["下摆围（平量）", "下摆围（弧量）", "裙摆围"]],
+  ["下摆", ["下摆围（平量）", "下摆围（弧量）", "裙摆围"]],
   ["体重", ["体重", "建议体重", "适合体重", "体重(斤)"]],
 ];
 
@@ -143,6 +144,14 @@ function compactKey(value) {
     .replace(/[：:]/g, ":")
     .replace(/(?:cm|厘米|kg|公斤|斤|g|克)$/i, "")
     .toLowerCase();
+}
+
+function isMainSizeTableFieldName(value) {
+  const key = compactKey(value);
+  if (!key.includes("尺码表")) return false;
+  if (key === compactKey("多平台尺码")) return false;
+  if (/^(?:22q4|25)鞋子尺码表$/.test(key)) return false;
+  return !/(?:唯品会|抖音|天猫|淘宝|京东|拼多多|小红书|快手|微信视频|好衣库|爱库存|1688|平台)/.test(key);
 }
 
 function firstValue(row, keys) {
@@ -324,6 +333,15 @@ function pointLookup(rows) {
 function resolveMapping(targetField, rows) {
   const targetKey = compactKey(targetField);
   const points = pointLookup(rows);
+  if (targetKey === compactKey("尺码") || targetKey === compactKey("尺寸")) {
+    return {
+      targetField,
+      sourcePoint: "尺码",
+      confidence: "high",
+      source: "rule",
+      reason: "尺码表行尺码展示可带单位，表内尺码列填裸数字",
+    };
+  }
   if (targetKey === compactKey("身高")) {
     const matchedPoint = points.get(compactKey("身高"));
     if (matchedPoint) {
@@ -434,17 +452,22 @@ function sizeMatchKeys(value) {
 
 function derivedValueForMapping(mapping, size, context = {}) {
   const referenceRow = balabalaReferenceRow(size);
+  const targetKey = compactKey(mapping?.targetField);
+  const sourceKey = compactKey(mapping?.sourcePoint);
   if (mapping?.sourcePoint === "balabala:age") return referenceRow?.age ?? "";
   if (mapping?.sourcePoint === "balabala:weight") return referenceRow ? numberText(referenceRow.weightKg) : "";
   if (mapping?.sourcePoint === "balabala:douyin_weight") return referenceRow ? numberText(referenceRow.douyinWeightJin) : "";
   if (mapping?.sourcePoint === "balabala:recommended_size") {
     return balabalaApparelRecommendedSize({ size, gender: context.gender, garmentType: context.garmentType });
   }
-  if (compactKey(mapping?.targetField) === compactKey("身高") && compactKey(mapping?.sourcePoint) === compactKey("尺码")) {
+  if (["尺码", "尺寸"].some((field) => targetKey === compactKey(field))) {
     return sizeLabelNumber(size) || "0";
   }
-  if (compactKey(mapping?.sourcePoint) === compactKey("尺码")) {
-    const platform = compactKey(mapping?.targetField);
+  if (targetKey === compactKey("身高") && sourceKey === compactKey("尺码")) {
+    return sizeLabelNumber(size) || "0";
+  }
+  if (sourceKey === compactKey("尺码")) {
+    const platform = targetKey;
     if (["京东", "jd"].includes(platform)) return sizeLabelNumber(size) || "0";
     if (["天猫", "快手", "微信视频", "微信视频小店", "拼多多", "小红书", "抖音", "唯品会", "有赞", "1688"].includes(platform)) {
       return normalizeDeepdrawSize(size);
@@ -489,8 +512,13 @@ export function buildSizeChartForTemplate({
     .filter((row) => !spuCode || row.spuCode === stringValue(spuCode))
     .filter((row) => allowedSizeKeys.size === 0 || sizeMatchKeys(row.size).some((key) => allowedSizeKeys.has(key)));
   const mappingOverrides = explicitMappingLookup(explicitMappings, normalizedRows);
+  const mainSizeTableField = isMainSizeTableFieldName(template.fieldName);
   const multiPlatformSizeField = compactKey(template.fieldName) === compactKey("多平台尺码");
-  const targetFields = templateTargetFields(template).filter((targetField) => (
+  const rawTargetFields = templateTargetFields(template);
+  const targetFieldsWithSize = mainSizeTableField && !rawTargetFields.some((targetField) => compactKey(targetField) === compactKey("尺码"))
+    ? ["尺码", ...rawTargetFields]
+    : rawTargetFields;
+  const targetFields = targetFieldsWithSize.filter((targetField) => (
     !multiPlatformSizeField || ["京东", "jd"].includes(compactKey(targetField))
   ));
   const mappings = targetFields.map((targetField) => {
@@ -549,9 +577,10 @@ export function buildSizeChartForTemplate({
   }
 
   const activeMappings = mappings.filter((_, index) => activeMappingIndexes.has(index));
+  const activeNonSizeMappings = activeMappings.filter((mapping) => !["尺码", "尺寸"].some((field) => compactKey(mapping.targetField) === compactKey(field)));
   const valueJson = {};
   if (mappings.length > 0 && sizes.size > 0) {
-    if (activeMappings.length > 0) {
+    if (activeMappings.length > 0 && (!mainSizeTableField || activeNonSizeMappings.length > 0)) {
       valueJson.title = activeMappings.map((mapping) => mapping.targetField).join(",");
       for (const size of sortSizes(sizes)) {
         const values = valuesBySize.get(size) ?? [];

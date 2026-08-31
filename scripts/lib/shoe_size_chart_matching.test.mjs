@@ -147,10 +147,10 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
   assert.deepEqual(result["适用年龄"], { valueText: "3-14岁", valueJson: {} });
   assert.deepEqual(result["适用年龄(多选)"], { valueText: "3-6岁;6-9岁;9-12岁", valueJson: {} });
   assert.deepEqual(result["尺码表"].valueJson, {
-    title: "适合脚长,鞋内长",
-    "26码": "16,17",
-    "27码": "16.5,17.7",
-    "38码": "24,25",
+    title: "尺码,适合脚长,鞋内长",
+    "26码": "26,16,17",
+    "27码": "27,16.5,17.7",
+    "38码": "38,24,25",
   });
   assert.deepEqual(result["唯品会尺码表"].valueJson, {
     title: "欧洲码,脚长,鞋内长",
@@ -187,8 +187,8 @@ test("shoe chart builder refuses clothing placeholders and unsupported live colu
     match: { status: "matched", chartCode: "sport_leisure", templateType: "运动", shoeSizeTableType: "", legacyShoeType: "", reason: "test" },
   });
 
-  assert.equal(result["尺码表"].valueJson.title, "适合脚长,鞋内长");
-  assert.equal(result["尺码表"].valueJson["26码"], "16,17");
+  assert.equal(result["尺码表"].valueJson.title, "尺码,适合脚长,鞋内长");
+  assert.equal(result["尺码表"].valueJson["26码"], "26,16,17");
   assert.doesNotMatch(JSON.stringify(result), /身高|衣长|胸围|袖长/);
 });
 

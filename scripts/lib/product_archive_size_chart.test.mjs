@@ -60,8 +60,8 @@ test("normalizes PLM long-table rows and builds a high-confidence top size chart
   const result = buildSizeChartForTemplate({ rows, spuCode: "208326100020", template });
 
   assert.deepEqual(result.valueJson, {
-    title: "肩宽,袖长,胸围,衣长,下摆围",
-    "80cm": "26.5,24.5,66,38,80",
+    title: "尺码,肩宽,袖长,胸围,衣长,下摆围",
+    "80cm": "80,26.5,24.5,66,38,80",
   });
   assert.equal(result.mappings.find((item) => item.targetField === "袖长")?.sourcePoint, "里：袖长");
   assert.equal(result.mappings.find((item) => item.targetField === "袖长")?.confidence, "medium");
@@ -82,8 +82,8 @@ test("omits unmapped DeepDraw size-chart fields instead of filling zero values",
   });
 
   assert.deepEqual(result.valueJson, {
-    title: "胸围,衣长",
-    "80cm": "66,38",
+    title: "尺码,胸围,衣长",
+    "80cm": "80,66,38",
   });
   assert.equal(result.unmatchedTargets.includes("领口"), true);
 });
@@ -162,8 +162,8 @@ test("maps collar sleeve and weight when the PLM source provides them", () => {
   });
 
   assert.deepEqual(result.valueJson, {
-    title: "领口,袖长,体重",
-    "130cm": "34,45,50",
+    title: "尺码,领口,袖长,体重",
+    "130cm": "130,34,45,50",
   });
   assert.equal(result.mappings.find((item) => item.targetField === "袖长")?.sourcePoint, "袖长肩点量");
 });
@@ -182,9 +182,28 @@ test("doubles half-width chest waist hip and leg-opening measurements and omits 
   });
 
   assert.deepEqual(result.valueJson, {
-    title: "胸围,腰围,臀围,脚口",
-    "90cm": "60,42,74,16",
+    title: "尺码,胸围,腰围,臀围,脚口",
+    "90cm": "90,60,42,74,16",
   });
+});
+
+test("maps skirt hem target alias 下摆 from PLM hem circumference points", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [
+      { "款号": "202426107205", "测量点": "裙长", "尺码": "090", "尺码值": "44" },
+      { "款号": "202426107205", "测量点": "1/2腰围（平量）", "尺码": "090", "尺码值": "21" },
+      { "款号": "202426107205", "测量点": "臀围", "尺码": "090", "尺码值": "70" },
+      { "款号": "202426107205", "测量点": "裙摆围", "尺码": "090", "尺码值": "88" },
+    ],
+    spuCode: "202426107205",
+    template: { fieldName: "尺码表", options: ["裙长", "腰围", "臀围", "下摆"] },
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "尺码,裙长,腰围,臀围,下摆",
+    "90cm": "90,44,42,70,88",
+  });
+  assert.equal(result.mappings.find((item) => item.targetField === "下摆")?.sourcePoint, "裙摆围");
 });
 
 test("derives height from the size label while filling PLM mapped size-chart values", () => {
@@ -201,8 +220,8 @@ test("derives height from the size label while filling PLM mapped size-chart val
   });
 
   assert.deepEqual(result.valueJson, {
-    title: "身高,衣长,胸围,袖长",
-    "80cm": "80,33,64,26",
+    title: "尺码,身高,衣长,胸围,袖长",
+    "80cm": "80,80,33,64,26",
   });
   assert.equal(result.mappings.find((item) => item.targetField === "身高")?.sourcePoint, "尺码");
   assert.equal(result.unmatchedTargets.includes("身高"), false);
@@ -224,8 +243,8 @@ test("clips PLM size-chart rows to authoritative draft sizes", () => {
   });
 
   assert.deepEqual(result.valueJson, {
-    title: "身高,裤长",
-    "80cm": "80,44",
+    title: "尺码,身高,裤长",
+    "80cm": "80,80,44",
   });
 });
 
@@ -282,8 +301,8 @@ test("builds separate size charts for set templates using field-specific source 
     template: { fieldName: "裤子尺码表", options: ["裤长", "腰围", "臀围"] },
   });
 
-  assert.deepEqual(top.valueJson, { title: "衣长,胸围,腰围", "80cm": "36,72,42" });
-  assert.deepEqual(pants.valueJson, { title: "裤长,腰围", "80cm": "49,42" });
+  assert.deepEqual(top.valueJson, { title: "尺码,衣长,胸围,腰围", "80cm": "80,36,72,42" });
+  assert.deepEqual(pants.valueJson, { title: "尺码,裤长,腰围", "80cm": "80,49,42" });
   assert.equal(pants.unmatchedTargets.includes("臀围"), true);
 });
 
@@ -309,8 +328,8 @@ test("uses reviewed AI mappings to fill unmatched size-chart target fields", () 
   });
 
   assert.deepEqual(result.valueJson, {
-    title: "领口,衣长",
-    "80cm": "14,38",
+    title: "尺码,领口,衣长",
+    "80cm": "80,14,38",
   });
   assert.equal(result.mappings.find((item) => item.targetField === "领口")?.source, "ai");
   assert.equal(result.unmatchedTargets.includes("领口"), false);
@@ -327,8 +346,8 @@ test("keeps the first duplicate PLM value so newer source rows win", () => {
   });
 
   assert.deepEqual(result.valueJson, {
-    title: "衣长",
-    "80cm": "40",
+    title: "尺码,衣长",
+    "80cm": "80,40",
   });
 });
 

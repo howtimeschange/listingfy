@@ -490,14 +490,18 @@ export function buildShoeSizeChartFieldValues(input: {
 
   const generic = templates.get("尺码表")
   if (generic) {
-    const columns = supportedColumns(generic, ["适合脚长", "鞋内长"], { 鞋内长: ["内长", "鞋长"] })
+    const measurementColumns = supportedColumns(generic, ["适合脚长", "鞋内长"], { 鞋内长: ["内长", "鞋长"] })
+    const columns = measurementColumns.length > 0 ? ["尺码", ...measurementColumns] : []
     const value = tableValue(
       rows,
       columns,
-      (row, column) => column === "适合脚长" || column === "脚长" ? baselineFoot(row) : innerLength(row),
+      (row, column) => {
+        if (column === "尺码") return normalizeShoeSkuSize(row.size_value)
+        return column === "适合脚长" || column === "脚长" ? baselineFoot(row) : innerLength(row)
+      },
       (row) => `${normalizeShoeSkuSize(row.size_value)}码`,
     )
-    if (value && columns.length === 2) output["尺码表"] = value
+    if (value && measurementColumns.length === 2) output["尺码表"] = value
   }
 
   const vip = templates.get("唯品会尺码表")
