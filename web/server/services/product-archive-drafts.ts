@@ -716,6 +716,8 @@ const PRODUCT_ARCHIVE_MERCHANT_SKU_BASE_COLUMNS = [
 
 const PRODUCT_ARCHIVE_MERCHANT_SKU_RULE_COLUMNS = [
   ...PRODUCT_ARCHIVE_MERCHANT_SKU_BASE_COLUMNS,
+  "京东价",
+  "划线价",
   "拼多多单买价",
   "拼多多团购价",
   "天猫特卖折扣价",
@@ -788,6 +790,8 @@ function merchantSkuFieldValue(spu: JsonRecord, skus: JsonRecord[], input: {
       供货价: price,
       唯品会货号: skcCode,
       唯品会条形码: barcode,
+      京东价: retailPrice || price,
+      划线价: retailPrice || price,
       拼多多单买价: productArchiveOffsetPriceText(retailPrice || price, -1),
       拼多多团购价: productArchiveOffsetPriceText(retailPrice || price, -2),
       天猫特卖折扣价: retailPrice || price,
@@ -3887,13 +3891,20 @@ function sourceAgeContextTerms(value: unknown) {
   return [text]
 }
 
-function launchPlanTradeContextTerms(sourceRows: JsonRecord[], categories: Array<{ field: string; value: string }>) {
+function launchPlanTradeContextTerms(
+  sourceRows: JsonRecord[],
+  categories: Array<{ field: string; value: string }>,
+  input: { allowShoeGender?: boolean } = {},
+) {
   const terms: WeightedTradeContextTerm[] = []
   const seen = new Set<string>()
   const genderValues: unknown[] = []
+  const shoeCategory = categories.some((category) => normalizeOfficialTradeSearchText(category.value).includes("鞋"))
+  const suppressShoeGender = shoeCategory && input.allowShoeGender !== true
   for (const category of categories) {
     const weight = category.field.includes("官方") ? 90 : category.field.includes("唯品四级") ? 70 : 55
     for (const term of categoryPathContextTerms(category.value)) {
+      if (suppressShoeGender && /^(?:男童鞋|女童鞋)$/.test(normalizeOfficialTradeSearchText(term))) continue
       addWeightedTradeContextTerm(terms, seen, term, weight)
     }
   }
@@ -3912,10 +3923,17 @@ function launchPlanTradeContextTerms(sourceRows: JsonRecord[], categories: Array
       addWeightedTradeContextTerm(terms, seen, term, 30)
     }
   }
-  for (const term of sourceGenderContextTermsForValues(genderValues)) {
-    addWeightedTradeContextTerm(terms, seen, term, 35)
+  if (!suppressShoeGender) {
+    for (const term of sourceGenderContextTermsForValues(genderValues)) {
+      addWeightedTradeContextTerm(terms, seen, term, 35)
+    }
   }
   return terms
+}
+
+function isGenderSegmentedShoeTrade(trade: JsonRecord) {
+  const path = normalizeOfficialTradeSearchText(stringValue(trade.trade_path) || stringValue(trade.trade_name))
+  return path.includes("男童鞋") || path.includes("女童鞋")
 }
 
 function tradeContextMatchScore(trade: JsonRecord, terms: WeightedTradeContextTerm[]) {
@@ -4504,7 +4522,6 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
   const sourceConflict = launchPlanCategorySourceConflict(sourceRows)
   const platformGroups = requiredLaunchPlanPlatformGroups(categories)
   const requiredPlatforms = platformGroups.map((group) => group.join("|"))
-  const contextTerms = launchPlanTradeContextTerms(sourceRows, categories)
   if (categories.length === 0) {
     return manualTradeSelectionDecision({
       reasonCode: "missing_source_category",
@@ -4515,11 +4532,33 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
       evaluatedAt,
     })
   }
-  const candidateTiers = deepdrawTradePriorityTiers(stringValue(input.tenantName), trades)
-  const selectableCandidates = candidateTiers.flatMap((tier) => tier.candidates)
-  const hasPlatformMetadata = selectableCandidates.some((candidate) => hasTradePlatformMetadata(candidate.trade))
+  const shoeCategory = categories.some((category) => normalizeOfficialTradeSearchText(category.value).includes("鞋"))
+  const rawCandidateTiers = deepdrawTradePriorityTiers(stringValue(input.tenantName), trades)
+  const rawSelectableCandidates = rawCandidateTiers.flatMap((tier) => tier.candidates)
+  const hasPlatformMetadata = rawSelectableCandidates.some((candidate) => hasTradePlatformMetadata(candidate.trade))
   const allowUnspecifiedPlatformMetadata = input.allowUnspecifiedPlatformMetadata === true && !hasPlatformMetadata
   const requiredSizes = skuSizeRequirements(input.skus ?? [])
+  const directShoeLeafAvailable = shoeCategory && rawSelectableCandidates.some((candidate) => {
+    if (isGenderSegmentedShoeTrade(candidate.trade) || tradePathDepth(candidate.trade) < 2) return false
+    const semanticMatch = categories.some((category) => (
+      scoreTradeMatch(candidate.trade, category) >= 700
+      || scoreOfficialCategoryLeafSearch(candidate.trade, category) > 0
+    ))
+    if (!semanticMatch || !tradeMatchesRequiredSizes(candidate.trade, requiredSizes)) return false
+    if (allowUnspecifiedPlatformMetadata) return true
+    return hasPlatformMetadata
+      && hasTradePlatformMetadata(candidate.trade)
+      && tradeCoversPlatformGroups(candidate.trade, platformGroups)
+  })
+  const contextTerms = launchPlanTradeContextTerms(sourceRows, categories, {
+    allowShoeGender: shoeCategory && !directShoeLeafAvailable,
+  })
+  const candidateTiers = rawCandidateTiers.map((tier) => ({
+    ...tier,
+    candidates: shoeCategory && directShoeLeafAvailable
+      ? tier.candidates.filter((candidate) => !isGenderSegmentedShoeTrade(candidate.trade))
+      : tier.candidates,
+  }))
   let selected: {
     tier: DeepdrawTradePriorityTier
     best: NonNullable<ReturnType<typeof bestDeepdrawTradeMatch>["best"]>

@@ -739,7 +739,7 @@ test("Bala DeepDraw priority uses official category context to break generic lea
   assert.equal(decision.matchedField, "官方发布类目");
 });
 
-test("Bala DeepDraw priority uses source context when same leaf candidates remain otherwise tied", async () => {
+test("Bala DeepDraw priority uses product gender when only gendered shoe branches are available", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
     {
@@ -761,7 +761,36 @@ test("Bala DeepDraw priority uses source context when same leaf candidates remai
   });
 
   assert.equal(decision.recommendedTrade?.tradeId, "53102");
-  assert.notEqual(decision.reasonCode, "ambiguous_match");
+  assert.equal(decision.status, "auto_applied");
+});
+
+test("Bala shoe trade selection ignores gender branches when a direct kids-shoe leaf exists", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    {
+      source_type: "launch_plan",
+      row_json: {
+        "官方发布类目": "童鞋/亲子鞋>女童鞋>运动鞋",
+        "品类": "运动鞋",
+        "性别": "女",
+      },
+    },
+  ], [
+    deepdrawRoot("531", "童鞋/亲子鞋"),
+    deepdrawChild("53100", "531", "运动鞋", "童鞋/亲子鞋 / 运动鞋"),
+    deepdrawChild("53101", "531", "运动鞋", "童鞋/亲子鞋 / 男童鞋 / 运动鞋"),
+    deepdrawChild("53102", "531", "运动鞋", "童鞋/亲子鞋 / 女童鞋 / 运动鞋"),
+  ].map((trade) => ({
+    ...trade,
+    third_platforms: BALA_TRADE_TEST_PLATFORMS,
+  })), {
+    tenantName: "电商巴拉巴拉",
+    evaluatedAt: "2026-08-31T00:00:00.000Z",
+  });
+
+  assert.equal(decision.recommendedTrade?.tradeId, "53100");
+  assert.equal(decision.recommendedTrade?.tradePath, "童鞋/亲子鞋 / 运动鞋");
+  assert.equal(decision.status, "auto_applied");
 });
 
 test("Bala DeepDraw priority prefers the more specific leaf contained by an official category", async () => {
@@ -858,7 +887,7 @@ test("Bala DeepDraw priority allows only the approved children under sports root
   assert.equal(excluded.recommendedTrade, null);
 });
 
-test("Bala DeepDraw priority allows only male and female kids shoes under root 891", async () => {
+test("Bala DeepDraw priority uses an approved gendered shoe branch when no direct leaf exists", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const approved = evaluateBalaTrade(service, "男童鞋 > 运动鞋", [
     deepdrawRoot("891", "运动中性鞋"),
@@ -923,15 +952,6 @@ test("Bala DeepDraw priority includes every remaining approved root and narrow b
         deepdrawRoot("888", "运动/瑜伽/健身/球迷用品"),
         deepdrawChild("461", "888", "游泳", "运动/瑜伽/健身/球迷用品 / 游泳"),
         deepdrawChild("6741", "461", "亲子家庭装", "运动/瑜伽/健身/球迷用品 / 游泳 / 亲子家庭装"),
-      ],
-    },
-    {
-      expectedTradeId: "905",
-      expectedPriority: "第一优先级",
-      category: "女童鞋",
-      trades: [
-        deepdrawRoot("891", "运动中性鞋"),
-        deepdrawChild("905", "891", "女童鞋", "运动中性鞋 / 女童鞋"),
       ],
     },
   ];
@@ -1197,7 +1217,7 @@ test("trade selection falls back to older non-empty platform categories when the
   ]);
 });
 
-test("trade selection can recommend from generic launch-plan category and gender context", async () => {
+test("trade selection recommends the direct kids-shoe leaf from a generic category without gender context", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const sourceRows = [
     {
@@ -1211,6 +1231,7 @@ test("trade selection can recommend from generic launch-plan category and gender
   ];
   const trades = [
     deepdrawRoot("531", "童鞋/亲子鞋"),
+    deepdrawChild("10150", "531", "运动鞋", "童鞋/亲子鞋 / 运动鞋"),
     deepdrawChild("10167", "531", "运动鞋", "童鞋/亲子鞋 / 男童鞋 / 运动鞋"),
     deepdrawChild("10183", "531", "运动鞋", "童鞋/亲子鞋 / 女童鞋 / 运动鞋"),
   ].map((trade) => ({
@@ -1222,7 +1243,7 @@ test("trade selection can recommend from generic launch-plan category and gender
     evaluatedAt: "2026-08-21T00:00:00.000Z",
   });
 
-  assert.equal(decision.recommendedTrade?.tradeId, "10183");
+  assert.equal(decision.recommendedTrade?.tradeId, "10150");
   assert.equal(decision.reasonCode, "medium_confidence");
   assert.equal(decision.matchedField, "上市计划品类");
   assert.equal(decision.matchedValue, "运动鞋");
@@ -4681,6 +4702,31 @@ test("shared platform list-price allowlist also fills Merchant SKU columns", asy
     const values = result.valueJson["黑色90001"][productLineName === "鞋品" ? "130" : "130cm"].split(",");
     assert.deepEqual(values, listPriceColumns.map(() => "299"));
     assert.doesNotMatch(result.valueJson.title, /成本价|特殊专柜价/);
+  }
+});
+
+test("Merchant SKU fills JD price and strike-through price from tag price for every product line", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  for (const productLineName of ["鞋品", "童装服饰", "儿童用品"]) {
+    const result = service.buildProductArchiveMdmDerivedFieldValue("商家SKU", {
+      spu: { spu_code: "208426121101", product_line_name: productLineName, price_tag: 359 },
+      sourceRows: [],
+      templateOptions: ["京东价", "划线价"],
+      skus: [{
+        sku_code: "SKU-130",
+        skc_code: "SKC-130",
+        inner_code: "INNER-130",
+        ean_code: "6900000000130",
+        color_name: "烟灰银20301",
+        size_name: "130",
+        price_tag: 359,
+      }],
+    });
+
+    assert.equal(result.valueJson.title, "京东价,划线价");
+    const size = productLineName === "鞋品" ? "130" : "130cm";
+    assert.equal(result.valueJson["烟灰银20301"][size], "359,359");
   }
 });
 
