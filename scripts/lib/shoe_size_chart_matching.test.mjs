@@ -122,11 +122,11 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
       { fieldName: "适用年龄", fieldType: "SINGLE_CHOICE", options: ["1-3岁", "3-14岁", "7岁-14岁", "14岁以上"] },
       { fieldName: "适用年龄(多选)", fieldType: "MULTI_CHOICE", options: ["1-3岁", "3-6岁", "6-9岁", "9-12岁", "10岁以上"] },
       { fieldName: "尺码表", fieldType: "MULTI_TEXT", options: ["适合脚长", "鞋内长", "脚长"] },
-      { fieldName: "唯品会尺码表", fieldType: "MULTI_TEXT", options: ["中国码", "脚长", "鞋内长"] },
+      { fieldName: "唯品会尺码表", fieldType: "MULTI_TEXT", options: ["欧洲码", "脚长", "鞋内长", "中国码"] },
       { fieldName: "天猫尺码表", fieldType: "MULTI_TEXT", options: ["脚长", "鞋内长"] },
       { fieldName: "抖音尺码表", fieldType: "MULTI_TEXT", options: ["脚长(cm)", "备注"] },
       { fieldName: "淘宝尺码表", fieldType: "MULTI_TEXT", options: ["脚长"] },
-      { fieldName: "多平台尺码", fieldType: "MULTI_TEXT", options: ["京东", "拼多多", "小红书", "微信视频小店"] },
+      { fieldName: "多平台尺码", fieldType: "MULTI_TEXT", options: ["京东", "拼多多", "小红书", "快手", "微信视频小店"] },
       { fieldName: "25鞋子模板类型", fieldType: "SINGLE_CHOICE", options: ["运动", "休闲", "雪地靴", "婴童"] },
       { fieldName: "25鞋子尺码表", fieldType: "SINGLE_CHOICE", options: ["包头凉鞋", "镂空凉鞋", "运动公主鞋", "凉鞋"] },
       { fieldName: "22Q4-童鞋尺码表", fieldType: "SINGLE_CHOICE", options: ["轻跑鞋", "雪地靴", "学步鞋"] },
@@ -153,10 +153,10 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
     "38码": "24,25",
   });
   assert.deepEqual(result["唯品会尺码表"].valueJson, {
-    title: "中国码,脚长,鞋内长",
-    "26": "26,16,17",
-    "27": "27,16.5,17.7",
-    "38": "38,24,25",
+    title: "欧洲码,脚长,鞋内长",
+    "26": "26,160,170.32",
+    "27": "27,165,176.98",
+    "38": "38,240,250.24",
   });
   assert.deepEqual(result["抖音尺码表"].valueJson, {
     title: "脚长(cm),备注",
@@ -165,10 +165,10 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
     "38": "24,脚长23.8-24.2/内长25",
   });
   assert.deepEqual(result["多平台尺码"].valueJson, {
-    title: "京东,拼多多,小红书,微信视频小店",
-    "26": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
-    "27": "27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
-    "38": "38,38码(脚长23.8-24.2/内长25),38码(脚长23.8-24.2/内长25),38码(脚长23.8-24.2/内长25)",
+    title: "京东,拼多多,小红书,快手,微信视频小店",
+    "26": "26,26码脚长15.8-16.2/内长17,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
+    "27": "27,27码脚长16.3-16.7/内长17.7,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
+    "38": "38,38码脚长23.8-24.2/内长25,38码(脚长23.8-24.2/内长25),38码(脚长23.8-24.2/内长25),38码(脚长23.8-24.2/内长25)",
   });
   assert.deepEqual(result["25鞋子模板类型"], { valueText: "运动", valueJson: {} });
   assert.deepEqual(result["22Q4-童鞋尺码表"], { valueText: "轻跑鞋", valueJson: {} });
@@ -205,7 +205,7 @@ test("shoe video-channel size range uses the maximum actual shoe size", async ()
   assert.deepEqual(result["尺码."], { valueText: "14-16cm", valueJson: {} });
 });
 
-test("shoe multi-platform charts fall back to the Vipshop mapping when compatible channel columns are absent", async () => {
+test("shoe multi-platform charts fall back to the Vipshop mapping when channel mappings are absent", async () => {
   const service = await import("../../web/server/services/shoe-size-chart-matching.ts");
   const result = service.buildShoeSizeChartFieldValues({
     rows: [{

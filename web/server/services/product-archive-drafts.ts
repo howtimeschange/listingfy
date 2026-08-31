@@ -20,6 +20,7 @@ import {
 } from "../../../scripts/lib/deepdraw_client.mjs"
 import {
   compareDeepdrawLegacyShoePayloadToResource,
+  deepdrawLegacyShoePostCreateUpdateRequired,
   selectDeepdrawLegacyShoeCreateFields,
   selectDeepdrawLegacyShoeUpdateFields,
 } from "../../../scripts/lib/deepdraw_sdk_adapter.mjs"
@@ -10456,6 +10457,7 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
     ...(shoeProduct ? {
       shoeSizes: true,
       legacyUpdateFields,
+      postCreateUpdateRequired: deepdrawLegacyShoePostCreateUpdateRequired(createFields, legacyUpdateFields),
     } : {}),
     fields: createFields,
     skus: (detail.skus as JsonRecord[]).map((sku) => ({
@@ -11120,7 +11122,7 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
     )
   })()
   if (createError) throw createError
-  if ((payload as JsonRecord).shoeSizes) {
+  if ((payload as JsonRecord).shoeSizes && (payload as JsonRecord).postCreateUpdateRequired) {
     await runAndRecordLegacyUpdate(productId, "post_create")
   }
   return await readbackProductArchiveDraft(db, draftId, { ...options, claimToken })

@@ -502,8 +502,12 @@ export function buildShoeSizeChartFieldValues(input: {
 
   const vip = templates.get("唯品会尺码表")
   if (vip) {
-    const columns = supportedColumns(vip, ["中国码", "脚长", "鞋内长"], { 鞋内长: ["鞋长"] })
-    const value = tableValue(rows, columns, (row, column) => column === "中国码" ? normalizeShoeSkuSize(row.size_value) : column === "脚长" ? baselineFoot(row) : innerLength(row))
+    const columns = supportedColumns(vip, ["欧洲码", "脚长", "鞋内长"], { 鞋内长: ["鞋长"] })
+    const value = tableValue(rows, columns, (row, column) => {
+      if (column === "欧洲码") return normalizeShoeSkuSize(row.size_value)
+      if (column === "脚长") return stringValue(row.foot_length_mm)
+      return stringValue(row.inner_length_mm)
+    })
     if (value && columns.includes("脚长")) output["唯品会尺码表"] = value
   }
 
@@ -530,11 +534,15 @@ export function buildShoeSizeChartFieldValues(input: {
 
   const multi = templates.get("多平台尺码")
   if (multi) {
-    const columns = supportedColumns(multi, ["京东", "拼多多", "小红书", "微信视频小店"])
+    const columns = supportedColumns(multi, ["京东", "拼多多", "小红书", "快手", "微信视频小店"])
     const value = tableValue(rows, columns, (row, column) => {
       if (column === "京东") return normalizeShoeSkuSize(row.size_value)
+      if (column === "拼多多") {
+        return stringValue(row.pinduoduo_mapping_text)
+          || stringValue(row.video_pdd_vip_mapping_text)
+          || stringValue(row.vip_mapping_text)
+      }
       return stringValue(row.video_pdd_vip_mapping_text)
-        || stringValue(row.pinduoduo_mapping_text)
         || stringValue(row.vip_mapping_text)
     })
     if (value && columns.length > 0) output["多平台尺码"] = value

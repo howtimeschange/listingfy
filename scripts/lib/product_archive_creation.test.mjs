@@ -3561,9 +3561,9 @@ test("product archive service derives DeepDraw size-chart fields from PLM source
     templateOptions: [],
   });
   assert.deepEqual(multiPlatform.valueJson, {
-    title: "京东,拼多多,小红书,微信视频小店",
-    "130cm": "130,130cm,130cm,130cm",
-    "170cm": "170,170cm,170cm,170cm",
+    title: "京东",
+    "130cm": "130",
+    "170cm": "170",
   });
   assert.equal(service.isStructuredProductPayloadField({ field_name: "多平台尺码", field_type: "" }), true);
 });

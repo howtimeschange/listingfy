@@ -255,6 +255,7 @@ const DEEPDRAW_MULTI_PLATFORM_SIZE_CODES = new Map([
   ["京东", "JD"],
   ["拼多多", "PDD"],
   ["小红书", "XIAOHONGSHU"],
+  ["快手", "KUAISHOU"],
   ["微信视频小店", "WEIXINXIAODIAN"],
 ]);
 
@@ -292,8 +293,7 @@ export function selectDeepdrawLegacyShoeCreateFields(fields = []) {
     const value = fieldValue(field);
     const type = fieldType(field);
     if (!name || !hasValue(value)) return false;
-    if (!isStructuredSizePayloadField(name, type)) return true;
-    return compactKey(name) === compactKey("尺码表");
+    return !isStructuredSizePayloadField(name, type) || !isUnsupportedLegacyShoeSizeField(name);
   });
 }
 
@@ -307,23 +307,65 @@ export function selectDeepdrawLegacyShoeUpdateFields(fields = []) {
   });
 }
 
-function normalizeMultiPlatformSizeTitle(value) {
-  return stringValue(value)
-    .split(/[,，]/)
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .map((part) => DEEPDRAW_MULTI_PLATFORM_SIZE_CODES.get(part) ?? part)
-    .join(",");
+export function deepdrawLegacyShoePostCreateUpdateRequired(createFields = [], updateFields = []) {
+  const createNames = new Set(arrayValue(createFields)
+    .map((field) => compactKey(normalizeSdkFieldName(fieldName(field))))
+    .filter(Boolean));
+  return arrayValue(updateFields).some((field) => {
+    const name = compactKey(normalizeSdkFieldName(fieldName(field)));
+    return Boolean(name) && !createNames.has(name);
+  });
 }
 
-function normalizeSizeTableField(value, sizeValues = [], name = "") {
+function bareMultiPlatformSizeValue(value) {
+  const text = stringValue(value).replace(/\s+/g, "");
+  const stripped = text.replace(/(?:cm|厘米|码)$/i, "");
+  return /^0*\d+(?:\.\d+)?$/.test(stripped)
+    ? String(Number(stripped))
+    : stripped;
+}
+
+function normalizeMultiPlatformSizeField(value, sizeValues = []) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const output = { title: "JD" };
+  for (const size of Object.keys(value)) {
+    if (size === "title") continue;
+    const normalizedSize = sdkPayloadSizeValue(size, sizeValues);
+    const jdSize = bareMultiPlatformSizeValue(size);
+    if (normalizedSize && jdSize) output[normalizedSize] = jdSize;
+  }
+  return output;
+}
+
+function normalizeShoeMultiPlatformSizeField(value, sizeValues = []) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const output = {};
   for (const [size, rowValue] of Object.entries(value)) {
     if (size === "title") {
-      output[size] = compactKey(name) === compactKey("多平台尺码")
-        ? normalizeMultiPlatformSizeTitle(rowValue)
-        : rowValue;
+      output.title = stringValue(rowValue)
+        .split(/[,，]/)
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((part) => DEEPDRAW_MULTI_PLATFORM_SIZE_CODES.get(part) ?? part)
+        .join(",");
+      continue;
+    }
+    output[sdkPayloadSizeValue(size, sizeValues)] = rowValue;
+  }
+  return output;
+}
+
+function normalizeSizeTableField(value, sizeValues = [], name = "", options = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  if (compactKey(name) === compactKey("多平台尺码")) {
+    return options.shoeSizes
+      ? normalizeShoeMultiPlatformSizeField(value, sizeValues)
+      : normalizeMultiPlatformSizeField(value, sizeValues);
+  }
+  const output = {};
+  for (const [size, rowValue] of Object.entries(value)) {
+    if (size === "title") {
+      output[size] = rowValue;
       continue;
     }
     output[sdkPayloadSizeValue(size, sizeValues)] = rowValue;
@@ -446,7 +488,7 @@ function legacyShoeSkuIdentity(color, size, colorAliases = new Map()) {
 
 function legacyExpectedSizeTable(field, selectedSizes) {
   const name = normalizeSdkFieldName(fieldName(field));
-  const normalized = recordValue(normalizeSizeTableField(fieldValue(field), selectedSizes, name));
+  const normalized = recordValue(normalizeSizeTableField(fieldValue(field), selectedSizes, name, { shoeSizes: true }));
   const columns = stringValue(normalized.title).split(",").map((column) => column.trim()).filter(Boolean);
   const rows = Object.fromEntries(Object.entries(normalized)
     .filter(([size]) => size !== "title")
@@ -608,7 +650,7 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
       : key === "商家sku"
       ? normalizeMerchantSkuField(value, selectedSizeValues)
       : isStructuredSizePayloadField(name, type)
-        ? normalizeSizeTableField(value, selectedSizeValues, name)
+        ? normalizeSizeTableField(value, selectedSizeValues, name, { shoeSizes })
         : value;
   }
 

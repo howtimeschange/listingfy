@@ -488,9 +488,11 @@ export function buildSizeChartForTemplate({
   const normalizedRows = normalizePlmSizeChartRows(rows)
     .filter((row) => !spuCode || row.spuCode === stringValue(spuCode))
     .filter((row) => allowedSizeKeys.size === 0 || sizeMatchKeys(row.size).some((key) => allowedSizeKeys.has(key)));
-  const targetFields = templateTargetFields(template);
   const mappingOverrides = explicitMappingLookup(explicitMappings, normalizedRows);
   const multiPlatformSizeField = compactKey(template.fieldName) === compactKey("多平台尺码");
+  const targetFields = templateTargetFields(template).filter((targetField) => (
+    !multiPlatformSizeField || ["京东", "jd"].includes(compactKey(targetField))
+  ));
   const mappings = targetFields.map((targetField) => {
     const explicit = mappingOverrides.get(compactKey(targetField));
     if (explicit) return explicit;
@@ -500,7 +502,7 @@ export function buildSizeChartForTemplate({
         sourcePoint: "尺码",
         confidence: "high",
         source: "rule",
-        reason: "多平台尺码按销售尺码生成，京东去 cm，其他平台保留标准尺码标签",
+        reason: "多平台尺码只发送京东，数值尺码去掉 cm/码",
       };
     }
     const resolved = resolveMapping(targetField, normalizedRows);
