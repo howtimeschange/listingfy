@@ -3981,7 +3981,7 @@ test("product archive create payload keeps only current DeepDraw template fields
   assert.match(payloadImplementation, /omittedTemplateFieldNames\.push/);
   assert.match(payloadImplementation, /id:\s*templateFieldId/);
   assert.match(payloadImplementation, /payloadFieldsFromDetail\(true\)/);
-  assert.match(payloadImplementation, /if \(isProductArchiveMultiPlatformSizeFieldName\(field\.field_name\)\) return \[\]/);
+  assert.doesNotMatch(payloadImplementation, /isProductArchiveMultiPlatformSizeFieldName\(field\.field_name\)/);
   assert.match(payloadImplementation, /selectDeepdrawLegacyShoeCreateFields\(alignedAllFields\)/);
   assert.match(payloadImplementation, /selectDeepdrawLegacyShoeUpdateFields\(alignedAllFields\)/);
   assert.match(payloadImplementation, /legacyUpdateFields/);

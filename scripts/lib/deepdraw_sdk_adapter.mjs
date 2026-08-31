@@ -321,7 +321,7 @@ function normalizeDeepdrawLocation(value) {
 
 function isUnsupportedLegacyShoeUpdateSizeField(name) {
   const key = compactKey(name);
-  return key === compactKey("多平台尺码") || key === compactKey("淘宝尺码表");
+  return key === compactKey("淘宝尺码表");
 }
 
 function isUnsupportedLegacyShoeSdkField(name) {

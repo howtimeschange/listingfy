@@ -820,10 +820,6 @@ function isProductArchiveStructuredSizeFieldName(fieldName: unknown) {
   return key === "多平台尺码" || key.includes("尺码表")
 }
 
-function isProductArchiveMultiPlatformSizeFieldName(fieldName: unknown) {
-  return compactFieldKey(fieldName) === "多平台尺码"
-}
-
 function isProductArchiveSkuSizeTemplateFieldName(fieldName: unknown) {
   const text = stringValue(fieldName)
   return /尺码|尺寸|规格|size/i.test(text) && !isProductArchiveStructuredSizeFieldName(text)
@@ -10480,8 +10476,6 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
   const payloadFieldsFromDetail = (includeOptionalStructuredSizeFields = false) => detailFields
     .filter(shouldIncludeProductArchivePayloadField)
     .flatMap((field) => {
-      // Keep this out until DeepDraw confirms a writable API shape; live probes return 10499.
-      if (isProductArchiveMultiPlatformSizeFieldName(field.field_name)) return []
       const value = productArchivePayloadFieldValue(field, { includeOptionalStructuredSizeFields })
       if (!hasValue(value)) return []
       const templateFieldId = productArchivePayloadTemplateFieldId(field)
