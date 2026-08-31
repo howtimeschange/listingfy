@@ -7,6 +7,7 @@ import {
   buildDeepdrawSdkClasspath,
   buildDeepdrawProductFullUpdateInput,
   buildDeepdrawSdkProductInput,
+  compareDeepdrawProductPayloadToResource,
   compareDeepdrawLegacyShoePayloadToResource,
   createDeepdrawProductWithSdk,
   deepdrawLegacyShoePostCreateUpdateRequired,
@@ -794,7 +795,7 @@ test("buildDeepdrawProductFullUpdateInput omits multi-platform sizes from isolat
   assert.equal(Object.hasOwn(input.product.fields, "多平台尺码"), false);
 });
 
-test("buildDeepdrawSdkProductInput applies JD-only bare numeric multi-platform sizes to apparel", () => {
+test("buildDeepdrawSdkProductInput normalizes optional JD-only apparel multi-platform sizes", () => {
   const input = buildDeepdrawSdkProductInput({
     config: {
       baseUrl: "http://open.deepdraw.cn",
@@ -819,7 +820,40 @@ test("buildDeepdrawSdkProductInput applies JD-only bare numeric multi-platform s
   assert.deepEqual(input.product.fields["多平台尺码"], {
     title: "JD",
     "130cm": "130",
-    "140码": "140",
+    "140cm": "140",
+  });
+});
+
+test("buildDeepdrawSdkProductInput keeps shoe multi-platform rows display-sized with platform remarks", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      shoeSizes: true,
+      fields: [
+        { name: "尺码", value: "26码;27码" },
+        {
+          name: "多平台尺码",
+          fieldType: "MULTI_TEXT",
+          value: {
+            title: "天猫,京东,拼多多,微信视频小店,小红书,快手",
+            "26码": "26码,26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码,26码",
+            "27码": "27码,27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),27码,27码",
+          },
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(input.product.fields["多平台尺码"], {
+    title: "JD,PDD,WEIXINXIAODIAN",
+    "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
+    "27码": "27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
   });
 });
 
@@ -932,6 +966,78 @@ test("legacy v1 shoe publish creates with the main table then updates the remain
     ['["紫色","27"]'],
   );
   assert.doesNotMatch(JSON.stringify(skuMismatch), /\\u0000/);
+});
+
+test("compareDeepdrawProductPayloadToResource checks apparel sale sizes skus and sent size tables", () => {
+  const payload = {
+    fields: [
+      { name: "尺码", value: "130cm;140cm" },
+      {
+        name: "尺码表",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "尺码,身高,胸围",
+          "130cm": "130,130,70",
+          "140cm": "140,140,74",
+        },
+      },
+      {
+        name: "唯品会尺码表",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "号型,身高,胸围",
+          "130cm": "130/64,130,70",
+          "140cm": "140/68,140,74",
+        },
+      },
+    ],
+    skus: [
+      { color: "红色", size: "130", skuCode: "sku-130" },
+      { color: "红色", size: "140cm", skuCode: "sku-140" },
+    ],
+  };
+  const resourceBody = {
+    sizes: { options: ["130cm", "140cm"] },
+    colors: { optionAliases: { "红色": "红色" } },
+    skus: {
+      skuItems: [
+        { color: "红色", size: "130cm" },
+        { color: "红色", size: "140cm" },
+      ],
+    },
+    sizeTables: [
+      {
+        field: { name: "尺码表" },
+        sizeTableItems: [
+          { size: "130cm", values: { "尺码": "130", "身高": "130", "胸围": "70" } },
+          { size: "140cm", values: { "尺码": "140", "身高": "140", "胸围": "74" } },
+        ],
+      },
+      {
+        field: { name: "唯品会尺码表" },
+        sizeTableItems: [
+          { size: "130cm", values: { "号型": "130/64", "身高": "130", "胸围": "70" } },
+          { size: "140cm", values: { "号型": "140/68", "身高": "140", "胸围": "74" } },
+        ],
+      },
+    ],
+  };
+
+  const match = compareDeepdrawProductPayloadToResource({ payload, resourceBody });
+  assert.equal(match.ok, true);
+  assert.deepEqual(match.sections.map((section) => [section.name, section.ok, section.actualCount]), [
+    ["尺码", true, 2],
+    ["商家SKU", true, 2],
+    ["尺码表", true, 2],
+    ["唯品会尺码表", true, 2],
+  ]);
+
+  resourceBody.sizeTables[0].sizeTableItems[1].values["胸围"] = "0";
+  const mismatch = compareDeepdrawProductPayloadToResource({ payload, resourceBody });
+  assert.equal(mismatch.ok, false);
+  assert.deepEqual(mismatch.sections.find((section) => section.name === "尺码表").mismatchedCells, [
+    { size: "140cm", column: "胸围", expected: "74", actual: "0" },
+  ]);
 });
 
 test("updateDeepdrawFullProductWithSdk delegates the numeric product id to the v1 adapter", async () => {

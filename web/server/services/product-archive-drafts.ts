@@ -19,6 +19,7 @@ import {
   updateDeepdrawProduct,
 } from "../../../scripts/lib/deepdraw_client.mjs"
 import {
+  compareDeepdrawProductPayloadToResource,
   compareDeepdrawLegacyShoePayloadToResource,
   deepdrawLegacyShoePostCreateUpdateRequired,
   selectDeepdrawLegacyShoeCreateFields,
@@ -992,8 +993,7 @@ function deepdrawColorValue(value: unknown) {
 function deepdrawSizeValue(value: unknown) {
   const text = stringValue(value)
   if (!text) return ""
-  if (/cm$/i.test(text)) return text
-  const match = text.match(/^0*(\d{2,3})$/)
+  const match = text.match(/^0*(\d{2,3})(?:\s*(?:cm|厘米|公分|码))?$/i)
   return match ? `${Number(match[1])}cm` : text
 }
 
@@ -1497,21 +1497,41 @@ function isShoeProduct(spu: JsonRecord = {}, sourceRows: JsonRecord[] = []) {
   return productTextIncludesAny(productCategoryText(spu, sourceRows), ["鞋", "靴"])
 }
 
+const APPAREL_PRODUCT_KEYWORDS = [
+  "服装",
+  "服饰",
+  "童装",
+  "羽绒服",
+  "外套",
+  "上衣",
+  "裤",
+  "裙",
+  "衫",
+  "连体衣",
+  "内衣",
+]
+
+function isApparelProductContext(input: {
+  tradeId?: unknown
+  tradePath?: unknown
+  productLineName?: unknown
+  title?: unknown
+}) {
+  if (isShoeProductContext(input)) return false
+  const categoryText = uniqueTextValues([
+    input.tradePath,
+    input.productLineName,
+  ]).join(" ")
+  if (!categoryText) return false
+  return productTextIncludesAny(uniqueTextValues([
+    categoryText,
+    input.title,
+  ]).join(" "), APPAREL_PRODUCT_KEYWORDS)
+}
+
 function isApparelProduct(spu: JsonRecord = {}, sourceRows: JsonRecord[] = []) {
   if (isShoeProduct(spu, sourceRows)) return false
-  return productTextIncludesAny(productCategoryText(spu, sourceRows), [
-    "服装",
-    "服饰",
-    "童装",
-    "羽绒服",
-    "外套",
-    "上衣",
-    "裤",
-    "裙",
-    "衫",
-    "连体衣",
-    "内衣",
-  ])
+  return isApparelProductContext({ productLineName: productCategoryText(spu, sourceRows) })
 }
 
 function isCupProduct(spu: JsonRecord = {}, sourceRows: JsonRecord[] = []) {
@@ -5353,10 +5373,6 @@ function optionValues(options: unknown[]) {
   return uniqueTextValues(options.map((option, index) => visibleOptionText(option, options, index)))
 }
 
-function skuSizeTokenHasDisplayUnit(value: unknown) {
-  return /(?:cm|厘米|公分|码)\s*$/i.test(stringValue(value))
-}
-
 function pickOption(options: unknown[], predicates: Array<(value: string) => boolean>) {
   const values = optionValues(options)
   for (const predicate of predicates) {
@@ -5377,6 +5393,23 @@ function productArchiveSizeNumberValue(value: unknown) {
     ?? text.match(/^0*(\d{2,3})(?:\s*(?:cm|厘米|码))?$/i)?.[1]
   const size = Number(numberText)
   return Number.isFinite(size) ? size : null
+}
+
+function normalizeSkuSizeFieldToken(value: unknown, option: unknown) {
+  const text = stringValue(value)
+  const optionText = stringValue(option)
+  const match = text.match(/^0*(\d{2,3})(?:\s*(cm|厘米|公分|码))?$/i)
+  if (!match) {
+    const optionSize = deepdrawSizeValue(optionText)
+    return optionSize || optionText || text
+  }
+  const size = Number(match[1])
+  const unit = stringValue(match[2]).toLowerCase()
+  const normalizedNumber = String(size)
+  if (unit === "码" && size < 60) return `${normalizedNumber}码`
+  if (unit || size >= 60 || /(?:cm|厘米|公分)$/i.test(optionText)) return `${normalizedNumber}cm`
+  if (/码$/i.test(optionText)) return optionText
+  return optionText || text
 }
 
 function productArchiveApparelSizeRangeOption(value: unknown) {
@@ -5907,7 +5940,7 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
     const normalized = values.map((value) => {
       for (const key of sizeMatchKeys(value)) {
         const option = optionByKey.get(key)
-        if (option) return skuSizeTokenHasDisplayUnit(value) ? value : option
+        if (option) return normalizeSkuSizeFieldToken(value, option)
       }
       return ""
     }).filter(Boolean)
@@ -10447,6 +10480,7 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
   const payloadFieldsFromDetail = (includeOptionalStructuredSizeFields = false) => detailFields
     .filter(shouldIncludeProductArchivePayloadField)
     .flatMap((field) => {
+      // Keep this out until DeepDraw confirms a writable API shape; live probes return 10499.
       if (isProductArchiveMultiPlatformSizeFieldName(field.field_name)) return []
       const value = productArchivePayloadFieldValue(field, { includeOptionalStructuredSizeFields })
       if (!hasValue(value)) return []
@@ -11247,6 +11281,11 @@ export async function readbackProductArchiveDraft(db: SyncPostgresDatabase, draf
   }
   const body = deepdrawBusinessResult(result.payload).body
   const titleMatches = !stringValue(draft.title) || !stringValue(body.title) || stringValue(draft.title) === stringValue(body.title)
+  let deepdrawPayloadComparison: ReturnType<typeof compareDeepdrawProductPayloadToResource> | {
+    ok: false
+    sections: Array<{ name: string; ok: false }>
+    error: string
+  } | null = null
   let legacyShoeComparison: ReturnType<typeof compareDeepdrawLegacyShoePayloadToResource> | {
     ok: false
     sections: Array<{ name: string; ok: false }>
@@ -11256,21 +11295,38 @@ export async function readbackProductArchiveDraft(db: SyncPostgresDatabase, draf
     tradeId: draft.trade_id,
     tradePath: draft.trade_path,
   })
-  if (shouldCompareLegacyShoePayload) {
+  const shouldCompareDeepdrawPayload = shouldCompareLegacyShoePayload || isApparelProductContext({
+    tradeId: draft.trade_id,
+    tradePath: draft.trade_path,
+    title: draft.title,
+  })
+  if (shouldCompareDeepdrawPayload) {
     try {
-      legacyShoeComparison = compareDeepdrawLegacyShoePayloadToResource({
-        payload: productPayload(db, draftId),
-        resourceBody: result.payload,
-      })
+      const payload = productPayload(db, draftId)
+      deepdrawPayloadComparison = shouldCompareLegacyShoePayload
+        ? compareDeepdrawLegacyShoePayloadToResource({
+            payload,
+            resourceBody: result.payload,
+          })
+        : compareDeepdrawProductPayloadToResource({
+            payload,
+            resourceBody: result.payload,
+          })
+      if (shouldCompareLegacyShoePayload) legacyShoeComparison = deepdrawPayloadComparison
     } catch (error) {
-      legacyShoeComparison = {
+      deepdrawPayloadComparison = {
+        ok: false,
+        sections: [{ name: shouldCompareLegacyShoePayload ? "v1_shoe_payload" : "product_payload", ok: false }],
+        error: error instanceof Error ? error.message : String(error),
+      }
+      if (shouldCompareLegacyShoePayload) legacyShoeComparison = {
         ok: false,
         sections: [{ name: "v1_shoe_payload", ok: false }],
         error: error instanceof Error ? error.message : String(error),
       }
     }
   }
-  const payloadMatches = legacyShoeComparison?.ok ?? true
+  const payloadMatches = deepdrawPayloadComparison?.ok ?? true
   const status = result.ok && titleMatches && payloadMatches ? "readback_verified" : "readback_mismatch"
   db.transaction(() => {
     writeSubmitLog(db, draftId, "resource", {
@@ -11283,6 +11339,13 @@ export async function readbackProductArchiveDraft(db: SyncPostgresDatabase, draf
               ok: legacyShoeComparison.ok,
               sections: legacyShoeComparison.sections,
               ...(legacyShoeComparison && "error" in legacyShoeComparison ? { error: legacyShoeComparison.error } : {}),
+            }
+          : null,
+        deepdrawPayloadComparison: deepdrawPayloadComparison
+          ? {
+              ok: deepdrawPayloadComparison.ok,
+              sections: deepdrawPayloadComparison.sections,
+              ...(deepdrawPayloadComparison && "error" in deepdrawPayloadComparison ? { error: deepdrawPayloadComparison.error } : {}),
             }
           : null,
       },
@@ -11311,7 +11374,7 @@ export async function readbackProductArchiveDraft(db: SyncPostgresDatabase, draf
       if (!updated) throw new Error("草稿正在由其他请求提交，回读结果未写入")
     }
   })()
-  return { ok: result.ok, status, result, titleMatches, legacyShoeComparison }
+  return { ok: result.ok, status, result, titleMatches, legacyShoeComparison, deepdrawPayloadComparison }
 }
 
 export function listProductArchiveSubmitLogs(db: SyncPostgresDatabase, draftId: number) {

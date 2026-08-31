@@ -3950,7 +3950,9 @@ test("product archive submit routes surface DeepDraw service failures instead of
   assert.match(service, /productArchiveFailureReasonWithDiagnostics/);
   assert.match(service, /omittedTemplateFieldCount/);
   assert.match(service, /payloadIssues/);
+  assert.match(service, /compareDeepdrawProductPayloadToResource/);
   assert.match(service, /compareDeepdrawLegacyShoePayloadToResource/);
+  assert.match(service, /deepdrawPayloadComparison/);
   assert.match(service, /runAndRecordLegacyUpdate/);
   assert.match(service, /"post_create"/);
   assert.doesNotMatch(service, /deepdrawLegacyShoePublishCapabilityBlockers/);
@@ -3979,6 +3981,7 @@ test("product archive create payload keeps only current DeepDraw template fields
   assert.match(payloadImplementation, /omittedTemplateFieldNames\.push/);
   assert.match(payloadImplementation, /id:\s*templateFieldId/);
   assert.match(payloadImplementation, /payloadFieldsFromDetail\(true\)/);
+  assert.match(payloadImplementation, /if \(isProductArchiveMultiPlatformSizeFieldName\(field\.field_name\)\) return \[\]/);
   assert.match(payloadImplementation, /selectDeepdrawLegacyShoeCreateFields\(alignedAllFields\)/);
   assert.match(payloadImplementation, /selectDeepdrawLegacyShoeUpdateFields\(alignedAllFields\)/);
   assert.match(payloadImplementation, /legacyUpdateFields/);
@@ -6497,6 +6500,11 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "160" },
     { value: "170" },
   ]), "100cm;120cm;140cm;160cm;170cm");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("尺码", "100码;120;140cm", [
+    { value: "100" },
+    { value: "120" },
+    { value: "140" },
+  ]), "100cm;120cm;140cm");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("尺码.", "100cm;120cm;140cm;160cm;170cm", [
     { value: "18cm以下" },
     { value: "18-20cm" },

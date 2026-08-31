@@ -193,7 +193,7 @@ function isSizeColumnName(value) {
 export function normalizeDeepdrawSize(value) {
   const text = stringValue(value).replace(/\/+$/, "");
   if (!text) return "";
-  const match = text.match(/^0*(\d{2,3})(?:cm)?$/i);
+  const match = text.match(/^0*(\d{2,3})(?:\s*(?:cm|厘米|公分|码))?$/i);
   return match ? `${Number(match[1])}cm` : text;
 }
 

@@ -134,7 +134,7 @@ test("normalizes platform size-chart unit suffixes and pants aliases", () => {
 test("fills apparel multi-platform sizes with only bare JD values", () => {
   const rows = [
     { "款号": "208426121101", "测量点": "衣长", "尺码": "130", "尺码值": "50.5" },
-    { "款号": "208426121101", "测量点": "衣长", "尺码": "140", "尺码值": "54" },
+    { "款号": "208426121101", "测量点": "衣长", "尺码": "140码", "尺码值": "54" },
   ];
 
   const result = buildSizeChartForTemplate({

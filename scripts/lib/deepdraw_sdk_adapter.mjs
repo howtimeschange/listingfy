@@ -139,8 +139,7 @@ function sdkColorValue(value) {
 function sdkSizeValue(value) {
   const text = stringValue(value);
   if (!text) return "";
-  if (/cm$/i.test(text)) return text;
-  const match = text.match(/^0*(\d{2,3})$/);
+  const match = text.match(/^0*(\d{2,3})(?:\s*(?:cm|厘米|公分|码))?$/i);
   return match ? `${Number(match[1])}cm` : text;
 }
 
@@ -515,7 +514,11 @@ export function buildDeepdrawProductFullUpdateInput({ config, productId, payload
   };
 }
 
-function legacyShoeSizeValues(payload) {
+function payloadSizeIdentityValue(value, { shoeSizes = false } = {}) {
+  return shoeSizes ? bareShoeSizeValue(value) : sdkSizeValue(value);
+}
+
+function payloadSizeValues(payload, { shoeSizes = false } = {}) {
   const fields = arrayValue(payload.fields).map(recordValue);
   const declared = saleSizeValues(findPayloadFieldValue(fields, ["尺码", "尺寸", "规格", "size"]));
   const source = declared.length > 0
@@ -524,7 +527,7 @@ function legacyShoeSizeValues(payload) {
         const row = recordValue(sku);
         return row.size ?? row.sizeName ?? row.size_name;
       });
-  return uniqueValues(source.map(bareShoeSizeValue).filter(Boolean));
+  return uniqueValues(source.map((value) => payloadSizeIdentityValue(value, { shoeSizes })).filter(Boolean));
 }
 
 function sortedLegacyIdentityValues(values) {
@@ -545,25 +548,25 @@ function legacyColorAliases(resource) {
   return lookup;
 }
 
-function legacyShoeSkuIdentity(color, size, colorAliases = new Map()) {
+function payloadSkuIdentity(color, size, colorAliases = new Map(), { shoeSizes = false } = {}) {
   const colorParts = stringValue(color).split(/[,，]/).map((part) => part.trim()).filter(Boolean);
   const standardColor = colorParts
     .map((part) => colorAliases.get(compactKey(part)))
     .find(Boolean)
     ?? stringValue(sdkColorValue(color)).split(/[,，]/)[0];
-  const standardSize = bareShoeSizeValue(size);
+  const standardSize = payloadSizeIdentityValue(size, { shoeSizes });
   return standardColor && standardSize ? JSON.stringify([standardColor, standardSize]) : "";
 }
 
-function legacyExpectedSizeTable(field, selectedSizes) {
+function legacyExpectedSizeTable(field, selectedSizes, { shoeSizes = false } = {}) {
   const name = normalizeSdkFieldName(fieldName(field));
-  const normalized = recordValue(normalizeSizeTableField(fieldValue(field), selectedSizes, name, { shoeSizes: true }));
+  const normalized = recordValue(normalizeSizeTableField(fieldValue(field), selectedSizes, name, { shoeSizes }));
   const columns = stringValue(normalized.title).split(",").map((column) => column.trim()).filter(Boolean);
   const rows = Object.fromEntries(Object.entries(normalized)
     .filter(([size]) => size !== "title")
     .map(([size, value]) => {
       const cells = stringValue(value).split(",");
-      return [bareShoeSizeValue(size), Object.fromEntries(columns.flatMap((column, index) => {
+      return [payloadSizeIdentityValue(size, { shoeSizes }), Object.fromEntries(columns.flatMap((column, index) => {
         const cell = stringValue(cells[index]);
         return cell ? [[column, cell]] : [];
       }))];
@@ -572,7 +575,7 @@ function legacyExpectedSizeTable(field, selectedSizes) {
   return { name, rows };
 }
 
-function legacyActualSizeTables(resource) {
+function legacyActualSizeTables(resource, { shoeSizes = false } = {}) {
   const source = unwrapDeepdrawResourceBody(resource);
   const candidates = [
     source.sizeTable,
@@ -587,14 +590,28 @@ function legacyActualSizeTables(resource) {
     if (!name || tables.has(compactKey(name))) continue;
     const rows = Object.fromEntries(arrayValue(table.sizeTableItems ?? table.size_table_items)
       .map(recordValue)
-      .map((row) => [bareShoeSizeValue(row.size), recordValue(row.values)])
+      .map((row) => [payloadSizeIdentityValue(row.size, { shoeSizes }), recordValue(row.values)])
       .filter(([size, values]) => size && hasValue(values)));
     tables.set(compactKey(name), { name, rows });
   }
   return tables;
 }
 
-function compareLegacySizeTable(expected, actual) {
+function actualSizeTableCellValue(actualValues, column, expectedName, { shoeSizes = false } = {}) {
+  const candidates = compactKey(expectedName) === compactKey("尺码表")
+    && shoeSizes
+    && compactKey(column) === compactKey("尺码")
+    ? [column, "鞋长"]
+    : [column];
+  for (const candidate of candidates) {
+    if (Object.prototype.hasOwnProperty.call(actualValues, candidate)) return actualValues[candidate];
+    const normalizedColumn = Object.keys(actualValues).find((actualColumn) => compactKey(actualColumn) === compactKey(candidate));
+    if (normalizedColumn) return actualValues[normalizedColumn];
+  }
+  return undefined;
+}
+
+function compareLegacySizeTable(expected, actual, { shoeSizes = false } = {}) {
   const expectedSizes = sortedLegacyIdentityValues(Object.keys(expected.rows));
   const actualSizes = sortedLegacyIdentityValues(Object.keys(actual?.rows ?? {}));
   const missingSizes = expectedSizes.filter((size) => !Object.prototype.hasOwnProperty.call(actual?.rows ?? {}, size));
@@ -604,14 +621,7 @@ function compareLegacySizeTable(expected, actual) {
     const expectedValues = recordValue(expected.rows[size]);
     const actualValues = recordValue(actual?.rows?.[size]);
     for (const [column, expectedValue] of Object.entries(expectedValues)) {
-      const candidateColumns = compactKey(expected.name) === compactKey("尺码表")
-        && compactKey(column) === compactKey("尺码")
-        ? [column, "鞋长"]
-        : [column];
-      const actualColumn = candidateColumns.find((candidate) => (
-        Object.prototype.hasOwnProperty.call(actualValues, candidate)
-      ));
-      const actualValue = actualColumn ? actualValues[actualColumn] : undefined;
+      const actualValue = actualSizeTableCellValue(actualValues, column, expected.name, { shoeSizes });
       if (stringValue(actualValue) !== stringValue(expectedValue)) {
         mismatchedCells.push({
           size,
@@ -636,13 +646,14 @@ function compareLegacySizeTable(expected, actual) {
   };
 }
 
-export function compareDeepdrawLegacyShoePayloadToResource({ payload = {}, resourceBody } = {}) {
+export function compareDeepdrawProductPayloadToResource({ payload = {}, resourceBody, shoeSizes = Boolean(payload.shoeSizes) } = {}) {
   const source = unwrapDeepdrawResourceBody(resourceBody);
   const colorAliases = legacyColorAliases(source);
-  const selectedSizes = legacyShoeSizeValues(payload);
+  const selectedSizes = payloadSizeValues(payload, { shoeSizes });
   const expectedSizes = sortedLegacyIdentityValues(selectedSizes);
+  const resourceSizes = recordValue(source.sizes);
   const actualSizes = sortedLegacyIdentityValues(
-    arrayValue(recordValue(source.sizes).options).map(bareShoeSizeValue),
+    arrayValue(resourceSizes.options ?? resourceSizes.Options).map((size) => payloadSizeIdentityValue(size, { shoeSizes })),
   );
   const missingSizes = expectedSizes.filter((size) => !actualSizes.includes(size));
   const unexpectedSizes = actualSizes.filter((size) => !expectedSizes.includes(size));
@@ -657,15 +668,17 @@ export function compareDeepdrawLegacyShoePayloadToResource({ payload = {}, resou
 
   const expectedSkuIdentities = sortedLegacyIdentityValues(arrayValue(payload.skus).map((sku) => {
     const row = recordValue(sku);
-    return legacyShoeSkuIdentity(
+    return payloadSkuIdentity(
       row.color ?? row.colorName ?? row.color_name,
       row.size ?? row.sizeName ?? row.size_name,
       colorAliases,
+      { shoeSizes },
     );
   }));
-  const actualSkuIdentities = sortedLegacyIdentityValues(arrayValue(recordValue(source.skus).skuItems).map((sku) => {
+  const resourceSkus = recordValue(source.skus);
+  const actualSkuIdentities = sortedLegacyIdentityValues(arrayValue(resourceSkus.skuItems ?? resourceSkus.sku_items).map((sku) => {
     const row = recordValue(sku);
-    return legacyShoeSkuIdentity(row.color, row.size, colorAliases);
+    return payloadSkuIdentity(row.color, row.size, colorAliases, { shoeSizes });
   }));
   const missingSkus = expectedSkuIdentities.filter((identity) => !actualSkuIdentities.includes(identity));
   const unexpectedSkus = actualSkuIdentities.filter((identity) => !expectedSkuIdentities.includes(identity));
@@ -678,24 +691,31 @@ export function compareDeepdrawLegacyShoePayloadToResource({ payload = {}, resou
     unexpectedSkus,
   };
 
-  const updateFields = selectDeepdrawLegacyShoeUpdateFields(
-    Array.isArray(payload.legacyUpdateFields) ? payload.legacyUpdateFields : payload.fields,
-  );
+  const payloadFields = Array.isArray(payload.legacyUpdateFields) ? payload.legacyUpdateFields : payload.fields;
+  const updateFields = shoeSizes ? selectDeepdrawLegacyShoeUpdateFields(payloadFields) : arrayValue(payloadFields);
   const expectedTables = updateFields
     .filter((field) => isStructuredSizePayloadField(fieldName(field), fieldType(field)))
-    .map((field) => legacyExpectedSizeTable(field, selectedSizes))
+    .map((field) => legacyExpectedSizeTable(field, selectedSizes, { shoeSizes }))
     .filter((table) => table.name && hasValue(table.rows));
-  const actualTables = legacyActualSizeTables(source);
+  const actualTables = legacyActualSizeTables(source, { shoeSizes });
   const tableSections = expectedTables.map((table) => (
-    compareLegacySizeTable(table, actualTables.get(compactKey(table.name)))
+    compareLegacySizeTable(table, actualTables.get(compactKey(table.name)), { shoeSizes })
   ));
   const sections = [sizeSection, skuSection, ...tableSections];
   return {
     ok: sections.length > 0 && sections.every((section) => section.ok),
     sections,
     supportedSizeTables: tableSections.map((section) => section.name),
-    omittedUnsupportedSizeTables: ["淘宝尺码表"],
+    omittedUnsupportedSizeTables: shoeSizes ? ["淘宝尺码表"] : [],
   };
+}
+
+export function compareDeepdrawLegacyShoePayloadToResource({ payload = {}, resourceBody } = {}) {
+  return compareDeepdrawProductPayloadToResource({
+    payload: { ...payload, shoeSizes: true },
+    resourceBody,
+    shoeSizes: true,
+  });
 }
 
 export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
