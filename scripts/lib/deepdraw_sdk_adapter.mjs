@@ -282,9 +282,43 @@ function normalizeDeepdrawSites(value) {
     .map((site) => DEEPDRAW_SITE_CODES.get(site) ?? site.toUpperCase()));
 }
 
-function isUnsupportedLegacyShoeSizeField(name) {
+function normalizeAfterSalesServiceCommitment(value) {
+  const text = stringValue(value).replace(/\s+/g, "");
+  if (!text) return text;
+  if (/^(?:0|[12]_\d+)$/.test(text)) return text;
+  if (text === "不设置") return "0";
+
+  const kind = text.startsWith("寄修") ? "1" : text.startsWith("延保") ? "2" : "";
+  if (!kind) return text;
+  const duration = text.slice(2).replace(/^[;；,_-]+/, "");
+  const dayMatch = duration.match(/^(\d+)天$/);
+  if (dayMatch) return `${kind}_${dayMatch[1]}`;
+  const yearMatch = duration.match(/^(\d+)年$/);
+  if (yearMatch) return `${kind}_${Number(yearMatch[1]) * 365}`;
+  const chineseYears = new Map([
+    ["一年", 1], ["二年", 2], ["两年", 2], ["三年", 3], ["四年", 4],
+    ["五年", 5], ["六年", 6], ["七年", 7], ["八年", 8], ["九年", 9], ["十年", 10],
+  ]);
+  const years = chineseYears.get(duration);
+  return years ? `${kind}_${years * 365}` : text;
+}
+
+function normalizeDeepdrawLocation(value) {
+  const text = stringValue(value);
+  if (!text) return text;
+  const parts = text.split(/[;,，；]/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length === 2) return parts.join(",");
+  if (text === "浙江杭州") return "浙江,杭州";
+  return text;
+}
+
+function isUnsupportedLegacyShoeUpdateSizeField(name) {
   const key = compactKey(name);
   return key === compactKey("多平台尺码") || key === compactKey("淘宝尺码表");
+}
+
+function isUnsupportedLegacyShoeSdkField(name) {
+  return compactKey(name) === compactKey("淘宝尺码表");
 }
 
 export function selectDeepdrawLegacyShoeCreateFields(fields = []) {
@@ -294,7 +328,8 @@ export function selectDeepdrawLegacyShoeCreateFields(fields = []) {
     const type = fieldType(field);
     if (!name || !hasValue(value)) return false;
     if (!isStructuredSizePayloadField(name, type)) return true;
-    return compactKey(name) === compactKey("尺码表");
+    const key = compactKey(name);
+    return key === compactKey("尺码表") || key === compactKey("多平台尺码");
   });
 }
 
@@ -304,7 +339,7 @@ export function selectDeepdrawLegacyShoeUpdateFields(fields = []) {
     const value = fieldValue(field);
     const type = fieldType(field);
     if (!name || !hasValue(value)) return false;
-    return !isStructuredSizePayloadField(name, type) || !isUnsupportedLegacyShoeSizeField(name);
+    return !isStructuredSizePayloadField(name, type) || !isUnsupportedLegacyShoeUpdateSizeField(name);
   });
 }
 
@@ -431,13 +466,16 @@ function unwrapDeepdrawResourceBody(value) {
 }
 
 export function buildDeepdrawProductFullUpdateInput({ config, productId, payload = {} } = {}) {
+  const candidateFields = Array.isArray(payload.legacyUpdateFields)
+    ? payload.legacyUpdateFields
+    : payload.fields;
   const input = buildDeepdrawSdkProductInput({
     config,
     payload: {
       ...payload,
-      fields: Array.isArray(payload.legacyUpdateFields)
-        ? payload.legacyUpdateFields
-        : payload.fields,
+      fields: payload.shoeSizes
+        ? selectDeepdrawLegacyShoeUpdateFields(candidateFields)
+        : candidateFields,
     },
   });
   return {
@@ -536,12 +574,20 @@ function compareLegacySizeTable(expected, actual) {
     const expectedValues = recordValue(expected.rows[size]);
     const actualValues = recordValue(actual?.rows?.[size]);
     for (const [column, expectedValue] of Object.entries(expectedValues)) {
-      if (stringValue(actualValues[column]) !== stringValue(expectedValue)) {
+      const candidateColumns = compactKey(expected.name) === compactKey("尺码表")
+        && compactKey(column) === compactKey("尺码")
+        ? [column, "鞋长"]
+        : [column];
+      const actualColumn = candidateColumns.find((candidate) => (
+        Object.prototype.hasOwnProperty.call(actualValues, candidate)
+      ));
+      const actualValue = actualColumn ? actualValues[actualColumn] : undefined;
+      if (stringValue(actualValue) !== stringValue(expectedValue)) {
         mismatchedCells.push({
           size,
           column,
           expected: stringValue(expectedValue),
-          actual: stringValue(actualValues[column]),
+          actual: stringValue(actualValue),
         });
       }
     }
@@ -635,15 +681,16 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
           ? bareShoeSizeValue(sku.size ?? sku.sizeName ?? sku.size_name)
           : sdkSizeValue(sku.size ?? sku.sizeName ?? sku.size_name)
       )).filter(Boolean));
-  // The authorized v1 Product API treats aliases and remarks as new enum
-  // values, so preserve the provider's bare size identity here.
+  // DeepDraw's public create/update API has no documented size-remark input.
+  // Sending `26,26码(备注)` is parsed as a different size identity and can
+  // clear existing size tables, so keep the sale-size identity bare.
   const publishedSizeValue = selectedSizeValues.join(";");
   for (const field of payloadFields) {
     const name = normalizeSdkFieldName(fieldName(field));
     const value = fieldValue(field);
     const type = fieldType(field);
     if (!name || !hasValue(value)) continue;
-    if (shoeSizes && isUnsupportedLegacyShoeSizeField(name)) continue;
+    if (shoeSizes && isUnsupportedLegacyShoeSdkField(name)) continue;
     if (isUnsupportedScalarSdkField(name, value, type)) continue;
     const key = compactKey(name);
     fields[name] = shoeSizes && ["尺码", "尺寸", "规格", "size"].includes(key)
@@ -652,7 +699,11 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
       ? normalizeMerchantSkuField(value, selectedSizeValues)
       : isStructuredSizePayloadField(name, type)
         ? normalizeSizeTableField(value, selectedSizeValues, name, { shoeSizes })
-        : value;
+        : key === compactKey("所在地")
+          ? normalizeDeepdrawLocation(value)
+        : key === compactKey("售后服务承诺")
+          ? normalizeAfterSalesServiceCommitment(value)
+          : value;
   }
 
   const dateText = normalizeSdkDateText(
@@ -732,7 +783,7 @@ export function buildDeepdrawSdkClasspath({
 } = {}) {
   const entries = [
     buildDir,
-    path.join(projectRoot, "vendor/deepdraw-sdk/dop-sdk-1.6.0.jar"),
+    path.join(projectRoot, "vendor/deepdraw-sdk/dop-sdk-1.6.24.jar"),
     path.join(projectRoot, "vendor/deepdraw-sdk/sdk-core-java-1.1.0.jar"),
   ];
   const missing = [];
@@ -842,9 +893,11 @@ export async function compileDeepdrawSdkCli({
 } = {}) {
   const classpath = buildDeepdrawSdkClasspath({ projectRoot });
   const classFile = path.join(classpath.buildDir, `${className}.class`);
-  const sourceMtime = fs.statSync(sourceFile).mtimeMs;
+  const compileInputMtime = [sourceFile, ...classpath.entries]
+    .filter((entry) => entry !== classpath.buildDir && fs.existsSync(entry))
+    .reduce((latest, entry) => Math.max(latest, fs.statSync(entry).mtimeMs), 0);
   const classMtime = fs.existsSync(classFile) ? fs.statSync(classFile).mtimeMs : 0;
-  if (classMtime >= sourceMtime) return { ...classpath, classFile };
+  if (classMtime >= compileInputMtime) return { ...classpath, classFile };
 
   fs.mkdirSync(classpath.buildDir, { recursive: true });
   const javac = javaTool("javac");

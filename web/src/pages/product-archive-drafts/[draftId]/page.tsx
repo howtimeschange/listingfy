@@ -582,6 +582,10 @@ function isProductArchiveSizeChartField(field: DraftField) {
   return fieldType === "MULTI_TEXT" || !fieldType
 }
 
+function isProductArchiveMultiPlatformSizeField(field: DraftField) {
+  return compactFieldKey(field.field_name) === compactFieldKey("多平台尺码")
+}
+
 function deepdrawSizeValue(value: unknown) {
   const text = String(value ?? "").trim()
   if (!text) return ""
@@ -902,6 +906,69 @@ function MultiChoiceFieldEditor({
         </div>
       ) : (
         <div className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">未选择</div>
+      )}
+    </div>
+  )
+}
+
+function MultiPlatformSizeTablePreview({ field, selectedValue }: { field: DraftField; selectedValue: string }) {
+  const parsed = sizeChartRows(field.value_json)
+  const selectedPlatforms = splitMultiFieldValue(selectedValue)
+  const visiblePlatforms = selectedPlatforms.length > 0 ? selectedPlatforms : parsed.titles
+  const columnIndexes = visiblePlatforms.map((platform) => (
+    parsed.titles.findIndex((title) => compactFieldKey(title) === compactFieldKey(platform))
+  ))
+  const filledCellCount = parsed.rows.reduce((count, row) => (
+    count + columnIndexes.filter((index) => index >= 0 && Boolean(row.values[index])).length
+  ), 0)
+
+  return (
+    <div className="min-w-[720px] overflow-hidden rounded-md border bg-background">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b bg-muted/30 px-3 py-2">
+        <div>
+          <div className="text-xs font-medium text-foreground">多平台尺码填值明细</div>
+          <div className="mt-1 text-[11px] leading-4 text-muted-foreground">
+            表格列与上方平台选择对应；未单独填值时，深绘按销售尺码值处理。
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          <Badge variant="outline">{formatNumber(visiblePlatforms.length)} 个平台</Badge>
+          <Badge variant="outline">{formatNumber(parsed.rows.length)} 个尺码</Badge>
+          <Badge variant="outline">已填 {formatNumber(filledCellCount)} 项</Badge>
+        </div>
+      </div>
+      {parsed.rows.length > 0 && visiblePlatforms.length > 0 ? (
+        <div className="max-h-80 overflow-auto">
+          <Table className="w-max min-w-full text-xs">
+            <TableHeader>
+              <TableRow>
+                <TableHead className="sticky left-0 z-10 min-w-24 bg-background">尺码</TableHead>
+                {visiblePlatforms.map((platform) => (
+                  <TableHead key={platform} className="min-w-[190px] normal-case tracking-normal">{platform}</TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {parsed.rows.map((row) => (
+                <TableRow key={row.size}>
+                  <TableCell className="sticky left-0 z-10 bg-background font-mono font-medium">{row.size}</TableCell>
+                  {visiblePlatforms.map((platform, index) => {
+                    const cell = columnIndexes[index] >= 0 ? row.values[columnIndexes[index]] ?? "" : ""
+                    return (
+                      <TableCell key={`${row.size}-${platform}`} className="max-w-[320px] whitespace-normal break-words">
+                        {cell || <span className="text-muted-foreground">沿用尺码：{row.size}</span>}
+                      </TableCell>
+                    )
+                  })}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      ) : (
+        <div className="px-3 py-5 text-xs text-muted-foreground">
+          当前还没有多平台尺码表数据；先选择平台并生成尺码映射后，这里会逐行回显。
+        </div>
       )}
     </div>
   )
@@ -2287,6 +2354,7 @@ export default function ProductArchiveDraftDetailPage() {
                               const options = fieldOptions(field)
                               const value = fieldValues[field.id] ?? field.value_text ?? ""
                               const isSizeChartField = isProductArchiveSizeChartField(field)
+                              const isMultiPlatformSizeField = isProductArchiveMultiPlatformSizeField(field)
                               const hasPersistedSizeChart = hasStructuredSizeChartValue(field.value_json)
                               const isChoiceField = isChoiceFieldType(field)
                               const isMultiChoiceField = isMultiChoiceFieldType(field, value)
@@ -2340,8 +2408,19 @@ export default function ProductArchiveDraftDetailPage() {
                                         {field.validation_status}
                                       </Badge>
                                     </TableCell>
-                                    <TableCell className="min-w-[220px]">
-                                      {isSizeChartField ? (
+                                    <TableCell className={cn("min-w-[220px] align-top", isMultiPlatformSizeField && "min-w-[760px]")}>
+                                      {isMultiPlatformSizeField && options.length > 0 ? (
+                                        <div className="space-y-3">
+                                          <MultiChoiceFieldEditor
+                                            field={field}
+                                            value={value}
+                                            options={options}
+                                            disabled={!canWrite}
+                                            onChange={(nextValue) => setFieldValues((current) => ({ ...current, [field.id]: nextValue }))}
+                                          />
+                                          <MultiPlatformSizeTablePreview field={field} selectedValue={value} />
+                                        </div>
+                                      ) : isSizeChartField ? (
                                         <Button
                                           type="button"
                                           variant="outline"

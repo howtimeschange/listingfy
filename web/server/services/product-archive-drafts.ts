@@ -31,6 +31,7 @@ import {
 import { recognizeProductArchiveOcrFiles } from "../../../scripts/lib/product_archive_hangtag_ocr.mjs"
 import { extractDeepdrawTradeFieldRows } from "./deepdraw-metadata"
 import {
+  buildShoeSizeRemarks,
   buildShoeSizeChartFieldValues,
   isShoeProductContext,
   loadShoeSizeChartRows,
@@ -2488,7 +2489,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (apparelProduct && key === "报价方式") return "按产品数量报价"
   if (apparelProduct && key === "件重尺") return "按规格设置"
   if (apparelProduct && (key === "1688供货方式" || key === "供货方式1688")) return "现货"
-  if ((shoeProduct || apparelProduct) && key === "所在地") return "浙江;杭州"
+  if ((shoeProduct || apparelProduct) && key === "所在地") return "浙江,杭州"
   if (key === "材质成分") return materialCompositionValue(sourceRows)
   if (key === "京东材质成分") return materialCompositionValue(sourceRows, true)
   if (key === "面料多选" || key === "材质多选" || key === "材质成分多选") return materialChoiceValue(sourceRows)
@@ -2827,10 +2828,13 @@ export function buildProductArchiveSizeChartFieldValue(input: {
     gender,
     garmentType,
   })
+  const valueJson = recordValue(result.valueJson)
   return {
-    valueText: "",
-    valueJson: recordValue(result.valueJson),
-    sourceType: hasValue(recordValue(result.valueJson)) ? "size_chart" : "",
+    valueText: compactFieldKey(input.fieldName) === compactFieldKey("多平台尺码")
+      ? sizeChartTitleOptions(valueJson).join(";")
+      : "",
+    valueJson,
+    sourceType: hasValue(valueJson) ? "size_chart" : "",
     mappings: result.mappings.map((mapping: JsonRecord) => ({ fieldName: input.fieldName, ...mapping })),
     unmatchedTargets: result.unmatchedTargets,
   }
@@ -7777,7 +7781,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
       : hasShoeDerivedValue
         ? shoeDerived
         : hasSizeChartValue
-        ? { valueText: "", valueJson: sizeChartDerived.valueJson }
+        ? { valueText: sizeChartDerived.valueText, valueJson: sizeChartDerived.valueJson }
         : buildProductArchiveMdmDerivedFieldValue(fieldName, {
             spu,
             skus: mdmSkus,
@@ -7793,8 +7797,8 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
         : stringValue(existing.value_text)
       : hasShoeDerivedValue
         ? stringValue(shoeDerived?.valueText)
-        : hasSizeChartValue
-        ? ""
+      : hasSizeChartValue
+        ? stringValue(sizeChartDerived.valueText)
       : skuSizeField
         ? mdmDerived.valueText || sourceValueText
       : colorField
@@ -10447,6 +10451,22 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
   const compatiblePlatforms = stringValue(detailFields.find((field) => (
     stringValue(field.field_name) === "兼容平台"
   ))?.value_text)
+  const persistedSandalClassification = stringValue(detailFields.find((field) => (
+    stringValue(field.field_name) === "25鞋子尺码表"
+  ))?.value_text) || stringValue(recordValue(draft.source_snapshot_json).shoeSandalClassification)
+  const shoeMatch = shoeProduct ? resolveShoeSizeChartMatch({
+    tradeId: draft.trade_id,
+    tradePath: draft.trade_path,
+    productLineName: spu.product_line_name,
+    subclassName: spu.subclass_name,
+    sandalClassification: persistedSandalClassification,
+  }) : null
+  const sizeRemarks = shoeProduct && shoeMatch?.status === "matched"
+    ? buildShoeSizeRemarks({
+        rows: loadShoeSizeChartRows(db, shoeMatch.chartCode),
+        skuSizes: (detail.skus as JsonRecord[]).map((sku) => sku.size_name),
+      })
+    : {}
   const payload = {
     code: stringValue(draft.spu_code),
     title: stringValue(draft.title),
@@ -10456,6 +10476,7 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
     ...(compatiblePlatforms ? { places: compatiblePlatforms } : {}),
     ...(shoeProduct ? {
       shoeSizes: true,
+      sizeRemarks,
       legacyUpdateFields,
       postCreateUpdateRequired: deepdrawLegacyShoePostCreateUpdateRequired(createFields, legacyUpdateFields),
     } : {}),

@@ -79,6 +79,33 @@ test("buildDeepdrawSdkProductInput maps Listingify payload into SDK product and 
   assert.equal(Object.hasOwn(input.product.fields, "商家 SKU"), false);
 });
 
+test("buildDeepdrawSdkProductInput encodes documented location and after-sales commitment values", () => {
+  const build = (commitment) => buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      code: "204426140121-test4",
+      title: "童鞋字段编码探针",
+      tradeId: "546",
+      fields: [
+        { name: "所在地", value: "浙江杭州" },
+        { name: "售后服务承诺", value: commitment },
+      ],
+    },
+  }).product.fields;
+
+  assert.equal(build("延保90天")["所在地"], "浙江,杭州");
+  assert.equal(build("延保90天")["售后服务承诺"], "2_90");
+  assert.equal(build("不设置")["售后服务承诺"], "0");
+  assert.equal(build("寄修;五年")["售后服务承诺"], "1_1825");
+  assert.equal(build("2_180")["售后服务承诺"], "2_180");
+});
+
 test("buildDeepdrawSdkProductInput keeps color aliases and SKU bucket keys aligned with SDK checks", () => {
   const input = buildDeepdrawSdkProductInput({
     config: {
@@ -439,7 +466,7 @@ test("buildDeepdrawSdkProductInput omits unsupported scalar size payload fields"
 test("buildDeepdrawSdkClasspath includes vendored SDK jars and Maven runtime jars", () => {
   const classpath = buildDeepdrawSdkClasspath({ projectRoot: PROJECT_ROOT });
 
-  assert.ok(classpath.entries.some((entry) => entry.endsWith("vendor/deepdraw-sdk/dop-sdk-1.6.0.jar")));
+  assert.ok(classpath.entries.some((entry) => entry.endsWith("vendor/deepdraw-sdk/dop-sdk-1.6.24.jar")));
   assert.ok(classpath.entries.some((entry) => entry.endsWith("vendor/deepdraw-sdk/sdk-core-java-1.1.0.jar")));
   assert.ok(classpath.entries.some((entry) => entry.includes("fastjson")));
   assert.ok(classpath.entries.some((entry) => entry.includes("httpclient")));
@@ -620,7 +647,7 @@ test("createDeepdrawProductWithSdk delegates mapped SDK input to runner", async 
   assert.equal(result.requestId, "8899");
 });
 
-test("buildDeepdrawProductFullUpdateInput uses safe bare shoe sizes and excludes unsupported multi-platform tables", () => {
+test("buildDeepdrawProductFullUpdateInput keeps bare shoe sizes and excludes unsupported multi-platform tables", () => {
   const input = buildDeepdrawProductFullUpdateInput({
     config: {
       baseUrl: "http://open.deepdraw.cn",
@@ -669,6 +696,31 @@ test("buildDeepdrawProductFullUpdateInput uses safe bare shoe sizes and excludes
   assert.equal(Object.hasOwn(input.product.fields, "多平台尺码"), false);
   assert.equal(Object.hasOwn(input.product.fields, "淘宝尺码表"), false);
   assert.deepEqual(input.product.places, ["ALIBABA", "TMALL", "JD", "VIP", "YOUZAN", "PDD", "XIAOHONGSHU", "DOUYIN", "KUAISHOU", "WEIXINXIAODIAN"]);
+});
+
+test("buildDeepdrawSdkProductInput does not let unsupported shoe remarks change sale-size identity", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      code: "204426140121-test4",
+      title: "童鞋尺码备注创建探针",
+      tradeId: "546",
+      shoeSizes: true,
+      sizeRemarks: {
+        "26码": "(脚长15.8-16.2/内长17)",
+        "27": "脚长16.3-16.7/内长17.7",
+      },
+      fields: [{ name: "尺码", value: "26;27" }],
+    },
+  });
+
+  assert.equal(input.product.fields["尺码"], "26;27");
 });
 
 test("buildDeepdrawProductFullUpdateInput omits multi-platform sizes from isolated full updates", () => {
@@ -734,10 +786,10 @@ test("buildDeepdrawSdkProductInput applies JD-only bare numeric multi-platform s
   });
 });
 
-test("legacy v1 shoe publish creates with the main table then updates supported platform tables without multi-platform sizes", () => {
+test("legacy v1 shoe publish creates with the main and multi-platform tables then updates the remaining platform tables", () => {
   const fields = [
     { name: "尺码", value: "26;27" },
-    { name: "尺码表", fieldType: "MULTI_TEXT", value: { title: "适合脚长,鞋内长", "26": "16,17", "27": "16.5,17.7" } },
+    { name: "尺码表", fieldType: "MULTI_TEXT", value: { title: "尺码,适合脚长,鞋内长", "26": "26,16,17", "27": "27,16.5,17.7" } },
     { name: "唯品会尺码表", fieldType: "MULTI_TEXT", value: { title: "中国码,脚长", "26": "26,16", "27": "27,16.5" } },
     { name: "天猫尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长", "26": "16", "27": "16.5" } },
     { name: "抖音尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长(cm),备注", "26": "15.8-16.2,脚长15.8-16.2/内长17", "27": "16.3-16.7,脚长16.3-16.7/内长17.7" } },
@@ -756,13 +808,35 @@ test("legacy v1 shoe publish creates with the main table then updates supported 
   const createFields = selectDeepdrawLegacyShoeCreateFields(fields);
   assert.deepEqual(
     createFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
-    ["尺码表"],
+    ["尺码表", "多平台尺码"],
   );
   assert.deepEqual(
     legacyUpdateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
     ["尺码表", "唯品会尺码表", "天猫尺码表", "抖音尺码表"],
   );
   assert.equal(deepdrawLegacyShoePostCreateUpdateRequired(createFields, legacyUpdateFields), true);
+
+  const createInput = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      code: "204426140121-create-probe",
+      title: "童鞋创建探针",
+      tradeId: "546",
+      shoeSizes: true,
+      fields: createFields,
+    },
+  });
+  assert.deepEqual(createInput.product.fields["多平台尺码"], {
+    title: "JD,PDD,XIAOHONGSHU,WEIXINXIAODIAN",
+    "26": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
+    "27": "27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
+  });
 
   const payload = {
     shoeSizes: true,
@@ -788,7 +862,10 @@ test("legacy v1 shoe publish creates with the main table then updates supported 
             values: Object.fromEntries((field.name === "多平台尺码"
               ? "JD,PDD,XIAOHONGSHU,WEIXINXIAODIAN"
               : field.value.title
-            ).split(",").map((column, index) => [column, value.split(",")[index]])),
+            ).split(",").map((column, index) => [
+              field.name === "尺码表" && column === "尺码" ? "鞋长" : column,
+              value.split(",")[index],
+            ])),
           })),
       })),
   };

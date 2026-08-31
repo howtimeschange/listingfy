@@ -70,6 +70,26 @@ export function normalizeShoeSkuSize(value: unknown) {
   return Number.isFinite(parsed) ? String(parsed) : ""
 }
 
+function parenthesizedShoeSizeRemark(value: unknown) {
+  const text = stringValue(value)
+  if (!text) return ""
+  if (/^[（(].*[）)]$/.test(text)) return `(${text.slice(1, -1)})`
+  return `(${text})`
+}
+
+export function buildShoeSizeRemarks(input: {
+  rows: ShoeSizeChartRow[]
+  skuSizes: unknown[]
+}) {
+  const allowed = new Set(input.skuSizes.map(normalizeShoeSkuSize).filter(Boolean))
+  return Object.fromEntries(input.rows
+    .map((row) => [
+      normalizeShoeSkuSize(row.size_value),
+      parenthesizedShoeSizeRemark(row.general_mapping_text),
+    ])
+    .filter(([size, remark]) => allowed.has(size) && Boolean(remark)))
+}
+
 function sandalMatch(classification: unknown): ShoeSizeChartMatch | null {
   const text = compact(classification)
   if (!text) return null
@@ -549,7 +569,12 @@ export function buildShoeSizeChartFieldValues(input: {
       return stringValue(row.video_pdd_vip_mapping_text)
         || stringValue(row.vip_mapping_text)
     })
-    if (value && columns.length > 0) output["多平台尺码"] = value
+    if (value && columns.length > 0) {
+      output["多平台尺码"] = {
+        ...value,
+        valueText: columns.join(";"),
+      }
+    }
   }
 
   const templateType = scalarValue(input.match.templateType, templates.get("25鞋子模板类型"))

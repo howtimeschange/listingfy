@@ -363,6 +363,11 @@ test("draft detail field fill tab highlights validation issues and can jump betw
   assert.match(draftDetailPage, /isLongTextFieldType/);
   assert.match(draftDetailPage, /deepdrawFieldType/);
   assert.match(draftDetailPage, /MultiChoiceFieldEditor/);
+  assert.match(draftDetailPage, /isProductArchiveMultiPlatformSizeField/);
+  assert.match(draftDetailPage, /MultiPlatformSizeTablePreview/);
+  assert.match(draftDetailPage, /多平台尺码填值明细/);
+  assert.match(draftDetailPage, /表格列与上方平台选择对应/);
+  assert.match(draftDetailPage, /沿用尺码：\{row\.size\}/);
   assert.match(draftDetailPage, /CommandInput/);
   assert.match(draftDetailPage, /添加选项/);
   assert.match(draftDetailPage, /当前已选/);

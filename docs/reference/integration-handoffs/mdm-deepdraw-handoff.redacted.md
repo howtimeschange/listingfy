@@ -122,16 +122,16 @@ vendor/deepdraw-sdk/
 
 包含：
 
-- `dop-sdk-1.6.0.jar`
+- `dop-sdk-1.6.24.jar`
 - `sdk-core-java-1.1.0.jar`
 
-原始文档给出的 Maven 坐标：
+当前深绘 SDK 对应的 Maven 坐标：
 
 ```xml
 <dependency>
   <groupId>com.dop</groupId>
   <artifactId>dop-sdk</artifactId>
-  <version>1.6.0</version>
+  <version>1.6.24</version>
   <scope>compile</scope>
 </dependency>
 <dependency>

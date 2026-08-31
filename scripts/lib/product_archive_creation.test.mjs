@@ -2184,6 +2184,12 @@ test("mutable draft writes keep the row lock and mutation in one transaction", a
   );
   assert.match(dryRun, /return db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)[\s\S]*productPayload\(db, draftId\)/);
 
+  const productPayload = section(
+    "function productPayload",
+    "function deepdrawBusinessResult",
+  );
+  assert.match(productPayload, /buildShoeSizeRemarks\(\{[\s\S]*loadShoeSizeChartRows\(db, shoeMatch\.chartCode\)[\s\S]*skuSizes:[\s\S]*sizeRemarks,/);
+
   const patchFields = section(
     "export function patchProductArchiveDraftFields",
     "export async function fillProductArchiveDraftFieldsWithAi",
@@ -2357,7 +2363,7 @@ test("product archive AI fill skips fields that already have JSON values", async
   assert.match(service, /fillProductArchiveDraftFieldsWithAi/);
   assert.match(service, /isStaleUnsupportedAiFillField/);
   assert.match(service, /Boolean\(existing\.manual_override\)[\s\S]*!isStaleUnsupportedAiFillField\(fieldName, existing\)[\s\S]*!isStaleMaterialAiRuleFallbackField\(fieldName, existing\)[\s\S]*!isStaleSizeChartScalarOverride\(fieldName, existing\)/);
-  assert.match(service, /hasSizeChartValue\s*\?\s*""[\s\S]*skuSizeField/);
+  assert.match(service, /hasSizeChartValue[\s\S]*stringValue\(sizeChartDerived\.valueText\)[\s\S]*skuSizeField/);
 });
 
 test("AI fill skips a field changed during provider wait but saves an unchanged field", async () => {
@@ -3565,6 +3571,7 @@ test("product archive service derives DeepDraw size-chart fields from PLM source
     "130cm": "130",
     "170cm": "170",
   });
+  assert.equal(multiPlatform.valueText, "京东");
   assert.equal(service.isStructuredProductPayloadField({ field_name: "多平台尺码", field_type: "" }), true);
 });
 
@@ -5456,6 +5463,7 @@ test("product archive shoe required fields derive from trusted launch and brand 
   assert.equal(derive("京东发货地"), "杭州");
   assert.equal(derive("京东商品重量"), "1");
   assert.equal(derive("售后服务承诺"), "延保90天");
+  assert.equal(derive("所在地"), "浙江,杭州");
   assert.equal(derive("balaone仅专供新品勾选"), "");
   assert.equal(derive("产地"), "浙江杭州");
   assert.equal(derive("产地", [

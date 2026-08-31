@@ -170,10 +170,23 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
     "27": "27,27码脚长16.3-16.7/内长17.7,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
     "38": "38,38码脚长23.8-24.2/内长25,38码(脚长23.8-24.2/内长25),38码(脚长23.8-24.2/内长25),38码(脚长23.8-24.2/内长25)",
   });
+  assert.equal(result["多平台尺码"].valueText, "京东;拼多多;小红书;快手;微信视频小店");
   assert.deepEqual(result["25鞋子模板类型"], { valueText: "运动", valueJson: {} });
   assert.deepEqual(result["22Q4-童鞋尺码表"], { valueText: "轻跑鞋", valueJson: {} });
   assert.equal(result["25鞋子尺码表"], undefined);
   assert.deepEqual(Object.keys(result["尺码表"].valueJson), ["26码", "27码", "38码", "title"]);
+});
+
+test("shoe size remarks preserve the template foot-length and inner-length parentheses", async () => {
+  const service = await import("../../web/server/services/shoe-size-chart-matching.ts");
+  assert.deepEqual(service.buildShoeSizeRemarks({
+    rows: shoeRows,
+    skuSizes: ["21码", "26", "38cm"],
+  }), {
+    "21": "(脚长12.8-13.2/内长14.2)",
+    "26": "(脚长15.8-16.2/内长17)",
+    "38": "(脚长23.8-24.2/内长25)",
+  });
 });
 
 test("shoe chart builder refuses clothing placeholders and unsupported live columns", async () => {
@@ -237,6 +250,7 @@ test("shoe multi-platform charts fall back to the Vipshop mapping when channel m
     title: "拼多多,微信视频小店",
     "26": "26码(脚长16/内长17),26码(脚长16/内长17)",
   });
+  assert.equal(result["多平台尺码"].valueText, "拼多多;微信视频小店");
 });
 
 test("shoe structured chart is emitted in the create payload", async () => {
