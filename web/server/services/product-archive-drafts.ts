@@ -10402,7 +10402,8 @@ export function productArchivePayloadIncludesMultiPlatformSizeField(options: {
   shoeProduct?: boolean
   includeOptionalStructuredSizeFields?: boolean
 } = {}) {
-  return Boolean(options.includeOptionalStructuredSizeFields) || !options.shoeProduct
+  void options
+  return false
 }
 
 export function productArchivePayloadTemplateFieldId(field: JsonRecord) {

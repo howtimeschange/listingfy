@@ -96,6 +96,7 @@ Options:
   --timeout-ms <n>               Per SDK/API call timeout. Default: 30000.
   --shoe-multi-row-key <mode>    Shoe multi-platform row key. display=26码, bare=26. Default: display.
   --shoe-sale-size <mode>        Shoe sale size identity. display=26码, bare=26. Default: display.
+  --shoe-multi-shape <shape>     Shoe multi-platform field body. platform=current platform table, size-table-body=PDF page-24 literal swapped body. Default: platform.
   --execute                      Perform the live create/update after safety checks.
 
 Examples:
@@ -161,6 +162,7 @@ function parseArgs(argv) {
     timeoutMs: Number(process.env.DEEPDRAW_TIMEOUT_MS || 30000),
     shoeMultiRowKey: process.env.DEEPDRAW_SHOE_MULTI_ROW_KEY || "display",
     shoeSaleSize: process.env.DEEPDRAW_SHOE_SALE_SIZE || "display",
+    shoeMultiShape: process.env.DEEPDRAW_SHOE_MULTI_SHAPE || "platform",
     execute: false,
     help: false,
   };
@@ -184,6 +186,7 @@ function parseArgs(argv) {
     else if (arg === "--timeout-ms") args.timeoutMs = Number(next());
     else if (arg === "--shoe-multi-row-key") args.shoeMultiRowKey = next();
     else if (arg === "--shoe-sale-size") args.shoeSaleSize = next();
+    else if (arg === "--shoe-multi-shape") args.shoeMultiShape = next();
     else if (arg === "--execute") args.execute = true;
     else if (arg === "--help" || arg === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
@@ -214,6 +217,9 @@ function parseArgs(argv) {
   }
   if (!["display", "bare"].includes(args.shoeSaleSize)) {
     throw new Error("--shoe-sale-size must be display or bare");
+  }
+  if (!["platform", "size-table-body"].includes(args.shoeMultiShape)) {
+    throw new Error("--shoe-multi-shape must be platform or size-table-body");
   }
   if (args.execute && process.env.DEEPDRAW_LIVE_WRITE !== "1") {
     throw new Error("Refusing live write: set DEEPDRAW_LIVE_WRITE=1 together with --execute");
@@ -256,6 +262,16 @@ function shoeMultiPlatformTable() {
   ]);
 }
 
+function shoeDocLiteralMultiPlatformTable() {
+  return Object.fromEntries([
+    ["title", "尺码,适合脚长,鞋内长"],
+    ...SHOE_SIZES.map((size, index) => [
+      displayShoeSize(size),
+      [size, FOOT_RANGES[index], INNER_LENGTHS[index]].join(","),
+    ]),
+  ]);
+}
+
 function apparelMainSizeTable() {
   return Object.fromEntries([
     ["title", "尺码,衣长"],
@@ -281,7 +297,13 @@ function probePayload(args) {
     const fields = [
       { name: "尺码", value: SHOE_SIZES.map(displayShoeSize).join(";") },
       { name: "尺码表", fieldType: "MULTI_TEXT", value: shoeMainSizeTable() },
-      { name: "多平台尺码", fieldType: "MULTI_TEXT", value: shoeMultiPlatformTable() },
+      {
+        name: "多平台尺码",
+        fieldType: "MULTI_TEXT",
+        value: args.shoeMultiShape === "size-table-body"
+          ? shoeDocLiteralMultiPlatformTable()
+          : shoeMultiPlatformTable(),
+      },
     ];
     return {
       code: args.productCode,
@@ -292,6 +314,7 @@ function probePayload(args) {
       shoeSizes: true,
       shoeMultiPlatformRowKey: args.shoeMultiRowKey,
       shoeSaleSizeUnitMode: args.shoeSaleSize,
+      includeMultiPlatformSizeField: true,
       fields,
       legacyUpdateFields: fields.filter((field) => field.name !== "尺码表"),
     };
@@ -454,6 +477,7 @@ async function dryRun(args, payload) {
       productId: args.productId || null,
       shoeMultiRowKey: args.scenario === "shoe" ? args.shoeMultiRowKey : null,
       shoeSaleSize: args.scenario === "shoe" ? args.shoeSaleSize : null,
+      shoeMultiShape: args.scenario === "shoe" ? args.shoeMultiShape : null,
       fieldNames: Object.keys(dump.productFields),
       sizeField: dump.productFields["尺码"] ?? null,
       mainSizeTable: dump.productFields["尺码表"] ?? null,
@@ -485,6 +509,7 @@ async function execute(args, payload) {
     productId: args.productId || null,
     shoeMultiRowKey: args.scenario === "shoe" ? args.shoeMultiRowKey : null,
     shoeSaleSize: args.scenario === "shoe" ? args.shoeSaleSize : null,
+    shoeMultiShape: args.scenario === "shoe" ? args.shoeMultiShape : null,
     update: sanitize({
       httpStatus: result.status,
       responseCode: business.code ?? null,
@@ -521,6 +546,7 @@ async function main() {
     productId: report.productId,
     shoeMultiRowKey: report.shoeMultiRowKey,
     shoeSaleSize: report.shoeSaleSize,
+    shoeMultiShape: report.shoeMultiShape,
     output: path.relative(projectRoot, path.join(args.outDir, "report.json")),
     sizeField: report.sizeField ?? report.update?.responseCode ?? null,
     multiPlatformSize: report.multiPlatformSize ?? null,

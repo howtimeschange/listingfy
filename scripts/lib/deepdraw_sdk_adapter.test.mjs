@@ -685,7 +685,7 @@ test("createDeepdrawProductWithSdk delegates mapped SDK input to runner", async 
   assert.equal(result.requestId, "8899");
 });
 
-test("buildDeepdrawProductFullUpdateInput keeps shoe size enum values and includes supported multi-platform tables", () => {
+test("buildDeepdrawProductFullUpdateInput keeps shoe size enum values and only includes multi-platform tables when explicitly enabled", () => {
   const input = buildDeepdrawProductFullUpdateInput({
     config: {
       baseUrl: "http://open.deepdraw.cn",
@@ -701,6 +701,7 @@ test("buildDeepdrawProductFullUpdateInput keeps shoe size enum values and includ
       retailPrice: 359,
       date: "2026-09-02",
       shoeSizes: true,
+      includeMultiPlatformSizeField: true,
       sizeRemarks: { "26": "脚长15.8-16.2/内长17" },
       places: "1688、天猫、京东、唯品会、有赞、拼多多、小红书、抖音、快手、微信视频小店",
       fields: [{ name: "尺码", value: "26码" }],
@@ -764,7 +765,7 @@ test("buildDeepdrawSdkProductInput does not let unsupported shoe remarks change 
   assert.equal(input.product.fields["尺码"], "26码;27码");
 });
 
-test("buildDeepdrawProductFullUpdateInput includes isolated supported multi-platform size updates", () => {
+test("buildDeepdrawProductFullUpdateInput includes isolated multi-platform size updates only for probes", () => {
   const input = buildDeepdrawProductFullUpdateInput({
     config: {
       baseUrl: "http://open.deepdraw.cn",
@@ -780,6 +781,7 @@ test("buildDeepdrawProductFullUpdateInput includes isolated supported multi-plat
       retailPrice: 359,
       date: "2026-09-02",
       shoeSizes: true,
+      includeMultiPlatformSizeField: true,
       legacyUpdateFields: [
         { name: "尺码", value: "26码" },
         {
@@ -945,6 +947,7 @@ test("legacy v1 shoe publish creates with the main table then updates the remain
     { name: "淘宝尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长", "26码": "16", "27码": "16.5" } },
   ];
   const legacyUpdateFields = selectDeepdrawLegacyShoeUpdateFields(fields);
+  const probeUpdateFields = selectDeepdrawLegacyShoeUpdateFields(fields, { includeMultiPlatformSizeField: true });
   const createFields = selectDeepdrawLegacyShoeCreateFields(fields);
   assert.deepEqual(
     createFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
@@ -952,6 +955,10 @@ test("legacy v1 shoe publish creates with the main table then updates the remain
   );
   assert.deepEqual(
     legacyUpdateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
+    ["尺码表", "唯品会尺码表", "天猫尺码表", "抖音尺码表"],
+  );
+  assert.deepEqual(
+    probeUpdateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
     ["尺码表", "唯品会尺码表", "天猫尺码表", "抖音尺码表", "多平台尺码"],
   );
   assert.equal(deepdrawLegacyShoePostCreateUpdateRequired(createFields, legacyUpdateFields), true);
@@ -1021,7 +1028,6 @@ test("legacy v1 shoe publish creates with the main table then updates the remain
     ["唯品会尺码表", true, 2],
     ["天猫尺码表", true, 2],
     ["抖音尺码表", true, 2],
-    ["多平台尺码", true, 2],
   ]);
 
   resourceBody.sizeTables.find((table) => table.field.name === "天猫尺码表").sizeTableItems.pop();

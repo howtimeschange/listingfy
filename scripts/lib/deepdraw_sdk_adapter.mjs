@@ -321,9 +321,10 @@ function normalizeDeepdrawLocation(value) {
   return text;
 }
 
-function isUnsupportedLegacyShoeUpdateSizeField(name) {
+function isUnsupportedLegacyShoeUpdateSizeField(name, options = {}) {
   const key = compactKey(name);
-  return key === compactKey("淘宝尺码表");
+  return key === compactKey("淘宝尺码表")
+    || (key === compactKey("多平台尺码") && !options.includeMultiPlatformSizeField);
 }
 
 function isUnsupportedLegacyShoeSdkField(name) {
@@ -342,13 +343,13 @@ export function selectDeepdrawLegacyShoeCreateFields(fields = []) {
   });
 }
 
-export function selectDeepdrawLegacyShoeUpdateFields(fields = []) {
+export function selectDeepdrawLegacyShoeUpdateFields(fields = [], options = {}) {
   return arrayValue(fields).filter((field) => {
     const name = normalizeSdkFieldName(fieldName(field));
     const value = fieldValue(field);
     const type = fieldType(field);
     if (!name || !hasValue(value)) return false;
-    return !isStructuredSizePayloadField(name, type) || !isUnsupportedLegacyShoeUpdateSizeField(name);
+    return !isStructuredSizePayloadField(name, type) || !isUnsupportedLegacyShoeUpdateSizeField(name, options);
   });
 }
 
@@ -513,7 +514,9 @@ export function buildDeepdrawProductFullUpdateInput({ config, productId, payload
     payload: {
       ...payload,
       fields: payload.shoeSizes
-        ? selectDeepdrawLegacyShoeUpdateFields(candidateFields)
+        ? selectDeepdrawLegacyShoeUpdateFields(candidateFields, {
+            includeMultiPlatformSizeField: payload.includeMultiPlatformSizeField === true,
+          })
         : candidateFields,
     },
   });
@@ -702,7 +705,11 @@ export function compareDeepdrawProductPayloadToResource({ payload = {}, resource
   };
 
   const payloadFields = Array.isArray(payload.legacyUpdateFields) ? payload.legacyUpdateFields : payload.fields;
-  const updateFields = shoeSizes ? selectDeepdrawLegacyShoeUpdateFields(payloadFields) : arrayValue(payloadFields);
+  const updateFields = shoeSizes
+    ? selectDeepdrawLegacyShoeUpdateFields(payloadFields, {
+        includeMultiPlatformSizeField: payload.includeMultiPlatformSizeField === true,
+      })
+    : arrayValue(payloadFields);
   const expectedTables = updateFields
     .filter((field) => isStructuredSizePayloadField(fieldName(field), fieldType(field)))
     .map((field) => legacyExpectedSizeTable(field, selectedSizes, { shoeSizes }))
@@ -716,7 +723,12 @@ export function compareDeepdrawProductPayloadToResource({ payload = {}, resource
     ok: sections.length > 0 && sections.every((section) => section.ok),
     sections,
     supportedSizeTables: tableSections.map((section) => section.name),
-    omittedUnsupportedSizeTables: shoeSizes ? ["淘宝尺码表"] : [],
+    omittedUnsupportedSizeTables: shoeSizes
+      ? [
+          "淘宝尺码表",
+          ...(payload.includeMultiPlatformSizeField === true ? [] : ["多平台尺码"]),
+        ]
+      : [],
   };
 }
 
