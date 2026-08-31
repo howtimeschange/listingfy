@@ -10398,6 +10398,13 @@ export function shouldSubmitProductArchivePayloadField(field: JsonRecord, option
   return true
 }
 
+export function productArchivePayloadIncludesMultiPlatformSizeField(options: {
+  shoeProduct?: boolean
+  includeOptionalStructuredSizeFields?: boolean
+} = {}) {
+  return Boolean(options.includeOptionalStructuredSizeFields) || !options.shoeProduct
+}
+
 export function productArchivePayloadTemplateFieldId(field: JsonRecord) {
   return stringValue(field.template_field_id)
 }
@@ -10486,7 +10493,10 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
   const detailFields = detail.fields as JsonRecord[]
   const payloadFieldsFromDetail = (includeOptionalStructuredSizeFields = false) => detailFields
     .filter((field) => shouldSubmitProductArchivePayloadField(field, {
-      includeMultiPlatformSizeField: includeOptionalStructuredSizeFields,
+      includeMultiPlatformSizeField: productArchivePayloadIncludesMultiPlatformSizeField({
+        shoeProduct,
+        includeOptionalStructuredSizeFields,
+      }),
     }))
     .flatMap((field) => {
       const value = productArchivePayloadFieldValue(field, { includeOptionalStructuredSizeFields })

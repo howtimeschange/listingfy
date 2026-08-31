@@ -3676,7 +3676,19 @@ test("product archive create payload omits scalar size-chart fields", async () =
   const serviceSource = await readText(files.draftService);
 
   assert.match(serviceSource, /shouldSubmitProductArchivePayloadField\(field/);
-  assert.match(serviceSource, /includeMultiPlatformSizeField:\s*includeOptionalStructuredSizeFields/);
+  assert.match(serviceSource, /productArchivePayloadIncludesMultiPlatformSizeField\(\{/);
+  assert.equal(service.productArchivePayloadIncludesMultiPlatformSizeField({
+    shoeProduct: true,
+    includeOptionalStructuredSizeFields: false,
+  }), false);
+  assert.equal(service.productArchivePayloadIncludesMultiPlatformSizeField({
+    shoeProduct: true,
+    includeOptionalStructuredSizeFields: true,
+  }), true);
+  assert.equal(service.productArchivePayloadIncludesMultiPlatformSizeField({
+    shoeProduct: false,
+    includeOptionalStructuredSizeFields: false,
+  }), true);
   assert.equal(service.shouldIncludeProductArchivePayloadField({
     source_type: "skip",
     required: false,
