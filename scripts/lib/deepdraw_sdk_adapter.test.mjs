@@ -161,14 +161,15 @@ test("buildDeepdrawSdkProductInput normalizes existing merchant SKU launch dates
       title: "儿童户外鞋",
       tradeId: "16608",
       retailPrice: 359,
+      shoeSizes: true,
       fields: [
-        { name: "尺码", value: "26" },
+        { name: "尺码", value: "26码" },
         {
           name: "商家SKU",
           value: {
             title: "价格,货号,上市时间,数量,商家编码,条形码,零售价,供货价",
             黑色调00399: {
-              "26": "359,208426140203,2026-09-02,0,6914678080209,6914678080209,359,359",
+              "26码": "359,208426140203,2026-09-02,0,6914678080209,6914678080209,359,359",
             },
           },
         },
@@ -187,12 +188,12 @@ test("buildDeepdrawSdkProductInput normalizes existing merchant SKU launch dates
   });
 
   assert.equal(
-    input.product.fields["商家SKU"]["黑色调00399"]["26"],
+    input.product.fields["商家SKU"]["黑色调00399"]["26码"],
     "359,208426140203,2026-09,0,6914678080209,6914678080209,359,359",
   );
 });
 
-test("buildDeepdrawSdkProductInput aligns structured size rows to selected bare size values", () => {
+test("buildDeepdrawSdkProductInput aligns structured size rows to selected unit-bearing size values", () => {
   const input = buildDeepdrawSdkProductInput({
     config: {
       baseUrl: "http://open.deepdraw.cn",
@@ -224,18 +225,18 @@ test("buildDeepdrawSdkProductInput aligns structured size rows to selected bare 
     },
   });
 
-  assert.equal(input.product.fields["尺码"], "100;120;140;160;170");
+  assert.equal(input.product.fields["尺码"], "100cm;120cm;140cm;160cm;170cm");
   assert.deepEqual(input.product.fields["商家SKU"], {
     title: "价格,货号",
     蓝色调00388: {
-      "100": "39.9,code",
-      "120": "39.9,code",
+      "100cm": "39.9,code",
+      "120cm": "39.9,code",
     },
   });
   assert.deepEqual(input.product.fields["尺码表"], {
     title: "身高",
-    "100": "100",
-    "120": "120",
+    "100cm": "100",
+    "120cm": "120",
   });
 });
 
@@ -270,10 +271,46 @@ test("buildDeepdrawSdkProductInput generated merchant SKUs follow selected size 
   });
 
   assert.equal(
-    input.product.fields["商家SKU"]["蓝色调00388"]["100"],
+    input.product.fields["商家SKU"]["蓝色调00388"]["100cm"],
     "39.9,206426172201,,0,6914678733341,6914678733341,39.9,39.9,20642617220100388100,6914678733341",
   );
-  assert.equal(Object.hasOwn(input.product.fields["商家SKU"]["蓝色调00388"], "100cm"), false);
+  assert.equal(Object.hasOwn(input.product.fields["商家SKU"]["蓝色调00388"], "100"), false);
+});
+
+test("buildDeepdrawSdkProductInput adds missing units without duplicating existing sale-size units", () => {
+  const config = {
+    baseUrl: "http://open.deepdraw.cn",
+    appKey: "app-key",
+    appSecret: "app-secret",
+    dopKey: "dop-key",
+    merchantId: "1162",
+  };
+  const shoeInput = buildDeepdrawSdkProductInput({
+    config,
+    payload: {
+      code: "204426140121-unit-compat",
+      title: "童鞋单位兼容",
+      tradeId: "546",
+      shoeSizes: true,
+      fields: [{ name: "尺码", value: "26码;27" }],
+      skus: [{ color: "黑色", size: "26码" }, { color: "黑色", size: "27" }],
+    },
+  });
+  const apparelInput = buildDeepdrawSdkProductInput({
+    config,
+    payload: {
+      code: "208326105214-unit-compat",
+      title: "童装单位兼容",
+      tradeId: "12390",
+      fields: [{ name: "尺码", value: "80cm;90" }],
+      skus: [{ color: "藏青", size: "80cm" }, { color: "藏青", size: "90" }],
+    },
+  });
+
+  assert.equal(shoeInput.product.fields["尺码"], "26码;27码");
+  assert.deepEqual(Object.keys(shoeInput.product.fields["商家SKU"]["黑色"]).sort(), ["26码", "27码"]);
+  assert.equal(apparelInput.product.fields["尺码"], "80cm;90cm");
+  assert.deepEqual(Object.keys(apparelInput.product.fields["商家SKU"]["藏青"]).sort(), ["80cm", "90cm"]);
 });
 
 test("buildDeepdrawSdkProductInput maps khaki business color names to DeepDraw standard color aliases", () => {
@@ -647,7 +684,7 @@ test("createDeepdrawProductWithSdk delegates mapped SDK input to runner", async 
   assert.equal(result.requestId, "8899");
 });
 
-test("buildDeepdrawProductFullUpdateInput keeps bare shoe sizes and excludes unsupported multi-platform tables", () => {
+test("buildDeepdrawProductFullUpdateInput keeps display shoe sizes and excludes unsupported multi-platform tables", () => {
   const input = buildDeepdrawProductFullUpdateInput({
     config: {
       baseUrl: "http://open.deepdraw.cn",
@@ -665,22 +702,22 @@ test("buildDeepdrawProductFullUpdateInput keeps bare shoe sizes and excludes uns
       shoeSizes: true,
       sizeRemarks: { "26": "脚长15.8-16.2/内长17" },
       places: "1688、天猫、京东、唯品会、有赞、拼多多、小红书、抖音、快手、微信视频小店",
-      fields: [{ name: "尺码", value: "26" }],
+      fields: [{ name: "尺码", value: "26码" }],
       legacyUpdateFields: [
-        { name: "尺码", value: "26" },
-        { name: "尺码表", fieldType: "MULTI_TEXT", value: { title: "适合脚长,鞋内长", "26": "16,17" } },
-        { name: "唯品会尺码表", fieldType: "MULTI_TEXT", value: { title: "欧洲码,脚长,鞋内长", "26": "26,160,170.32" } },
-        { name: "天猫尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长,鞋内长", "26": "16,17" } },
-        { name: "抖音尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长(cm),备注", "26": "16,脚长15.8-16.2/内长17" } },
+        { name: "尺码", value: "26码" },
+        { name: "尺码表", fieldType: "MULTI_TEXT", value: { title: "适合脚长,鞋内长", "26码": "16,17" } },
+        { name: "唯品会尺码表", fieldType: "MULTI_TEXT", value: { title: "欧洲码,脚长,鞋内长", "26码": "26码,160,170.32" } },
+        { name: "天猫尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长,鞋内长", "26码": "16,17" } },
+        { name: "抖音尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长(cm),备注", "26码": "16,脚长15.8-16.2/内长17" } },
         {
           name: "多平台尺码",
           fieldType: "MULTI_TEXT",
           value: {
             title: "京东,拼多多,小红书,微信视频小店",
-            "26": "26,26码脚长15.8-16.2/内长17,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
+            "26码": "26,26码脚长15.8-16.2/内长17,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
           },
         },
-        { name: "淘宝尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长", "26": "15.8-16.2" } },
+        { name: "淘宝尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长", "26码": "15.8-16.2" } },
       ],
     },
   });
@@ -688,11 +725,11 @@ test("buildDeepdrawProductFullUpdateInput keeps bare shoe sizes and excludes uns
   assert.equal(input.productId, "6509967");
   assert.equal(input.product.code, "208426140203");
   assert.equal(input.product.date, "2026-09-02");
-  assert.equal(input.product.fields["尺码"], "26");
-  assert.deepEqual(input.product.fields["尺码表"], { title: "适合脚长,鞋内长", "26": "16,17" });
-  assert.deepEqual(input.product.fields["唯品会尺码表"], { title: "欧洲码,脚长,鞋内长", "26": "26,160,170.32" });
-  assert.deepEqual(input.product.fields["天猫尺码表"], { title: "脚长,鞋内长", "26": "16,17" });
-  assert.deepEqual(input.product.fields["抖音尺码表"], { title: "脚长(cm),备注", "26": "16,脚长15.8-16.2/内长17" });
+  assert.equal(input.product.fields["尺码"], "26码");
+  assert.deepEqual(input.product.fields["尺码表"], { title: "适合脚长,鞋内长", "26码": "16,17" });
+  assert.deepEqual(input.product.fields["唯品会尺码表"], { title: "欧洲码,脚长,鞋内长", "26码": "26码,160,170.32" });
+  assert.deepEqual(input.product.fields["天猫尺码表"], { title: "脚长,鞋内长", "26码": "16,17" });
+  assert.deepEqual(input.product.fields["抖音尺码表"], { title: "脚长(cm),备注", "26码": "16,脚长15.8-16.2/内长17" });
   assert.equal(Object.hasOwn(input.product.fields, "多平台尺码"), false);
   assert.equal(Object.hasOwn(input.product.fields, "淘宝尺码表"), false);
   assert.deepEqual(input.product.places, ["ALIBABA", "TMALL", "JD", "VIP", "YOUZAN", "PDD", "XIAOHONGSHU", "DOUYIN", "KUAISHOU", "WEIXINXIAODIAN"]);
@@ -720,7 +757,7 @@ test("buildDeepdrawSdkProductInput does not let unsupported shoe remarks change 
     },
   });
 
-  assert.equal(input.product.fields["尺码"], "26;27");
+  assert.equal(input.product.fields["尺码"], "26码;27码");
 });
 
 test("buildDeepdrawProductFullUpdateInput omits multi-platform sizes from isolated full updates", () => {
@@ -740,20 +777,20 @@ test("buildDeepdrawProductFullUpdateInput omits multi-platform sizes from isolat
       date: "2026-09-02",
       shoeSizes: true,
       legacyUpdateFields: [
-        { name: "尺码", value: "26" },
+        { name: "尺码", value: "26码" },
         {
           name: "多平台尺码",
           fieldType: "MULTI_TEXT",
           value: {
             title: "京东,拼多多,小红书,微信视频小店",
-            "26": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
+            "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
           },
         },
       ],
     },
   });
 
-  assert.equal(input.product.fields["尺码"], "26");
+  assert.equal(input.product.fields["尺码"], "26码");
   assert.equal(Object.hasOwn(input.product.fields, "多平台尺码"), false);
 });
 
@@ -786,29 +823,29 @@ test("buildDeepdrawSdkProductInput applies JD-only bare numeric multi-platform s
   });
 });
 
-test("legacy v1 shoe publish creates with the main and multi-platform tables then updates the remaining platform tables", () => {
+test("legacy v1 shoe publish creates with the main table then updates the remaining supported platform tables", () => {
   const fields = [
-    { name: "尺码", value: "26;27" },
-    { name: "尺码表", fieldType: "MULTI_TEXT", value: { title: "尺码,适合脚长,鞋内长", "26": "26,16,17", "27": "27,16.5,17.7" } },
-    { name: "唯品会尺码表", fieldType: "MULTI_TEXT", value: { title: "中国码,脚长", "26": "26,16", "27": "27,16.5" } },
-    { name: "天猫尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长", "26": "16", "27": "16.5" } },
-    { name: "抖音尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长(cm),备注", "26": "15.8-16.2,脚长15.8-16.2/内长17", "27": "16.3-16.7,脚长16.3-16.7/内长17.7" } },
+    { name: "尺码", value: "26码;27码" },
+    { name: "尺码表", fieldType: "MULTI_TEXT", value: { title: "尺码,适合脚长,鞋内长", "26码": "26,16,17", "27码": "27,16.5,17.7" } },
+    { name: "唯品会尺码表", fieldType: "MULTI_TEXT", value: { title: "中国码,脚长", "26码": "26码,16", "27码": "27码,16.5" } },
+    { name: "天猫尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长", "26码": "16", "27码": "16.5" } },
+    { name: "抖音尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长(cm),备注", "26码": "15.8-16.2,脚长15.8-16.2/内长17", "27码": "16.3-16.7,脚长16.3-16.7/内长17.7" } },
     {
       name: "多平台尺码",
       fieldType: "MULTI_TEXT",
       value: {
         title: "京东,拼多多,小红书,微信视频小店",
-        "26": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
-        "27": "27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
+        "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
+        "27码": "27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
       },
     },
-    { name: "淘宝尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长", "26": "16", "27": "16.5" } },
+    { name: "淘宝尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长", "26码": "16", "27码": "16.5" } },
   ];
   const legacyUpdateFields = selectDeepdrawLegacyShoeUpdateFields(fields);
   const createFields = selectDeepdrawLegacyShoeCreateFields(fields);
   assert.deepEqual(
     createFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
-    ["尺码表", "多平台尺码"],
+    ["尺码表"],
   );
   assert.deepEqual(
     legacyUpdateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
@@ -832,25 +869,27 @@ test("legacy v1 shoe publish creates with the main and multi-platform tables the
       fields: createFields,
     },
   });
-  assert.deepEqual(createInput.product.fields["多平台尺码"], {
-    title: "JD,PDD,XIAOHONGSHU,WEIXINXIAODIAN",
-    "26": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
-    "27": "27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
+  assert.equal(createInput.product.fields["尺码"], "26码;27码");
+  assert.deepEqual(createInput.product.fields["尺码表"], {
+    title: "尺码,适合脚长,鞋内长",
+    "26码": "26,16,17",
+    "27码": "27,16.5,17.7",
   });
+  assert.equal(Object.hasOwn(createInput.product.fields, "多平台尺码"), false);
 
   const payload = {
     shoeSizes: true,
     fields: fields.slice(0, 2),
     legacyUpdateFields,
     skus: [
-      { color: "黑紫色调00397", size: "26" },
-      { color: "黑紫色调00397", size: "27" },
+      { color: "黑紫色调00397", size: "26码" },
+      { color: "黑紫色调00397", size: "27码" },
     ],
   };
   const resourceBody = {
     colors: { optionAliases: { 紫色: "黑紫色调00397" } },
-    sizes: { options: ["26", "27"] },
-    skus: { skuItems: [{ color: "紫色", size: "26" }, { color: "紫色", size: "27" }] },
+    sizes: { options: ["26码", "27码"] },
+    skus: { skuItems: [{ color: "紫色", size: "26码" }, { color: "紫色", size: "27码" }] },
     sizeTables: legacyUpdateFields
       .filter((field) => /尺码表|多平台尺码/.test(field.name))
       .map((field) => ({
@@ -928,7 +967,7 @@ test("updateDeepdrawFullProductWithSdk delegates the numeric product id to the v
   });
 
   assert.equal(seen[0].productId, "6509967");
-  assert.equal(seen[0].product.fields["尺码"], "26");
+  assert.equal(seen[0].product.fields["尺码"], "26码");
   assert.equal(result.ok, true);
   await assert.rejects(
     updateDeepdrawFullProductWithSdk({ productId: "internal-id", runner: async () => "" }),

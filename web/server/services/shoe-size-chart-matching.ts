@@ -70,6 +70,17 @@ export function normalizeShoeSkuSize(value: unknown) {
   return Number.isFinite(parsed) ? String(parsed) : ""
 }
 
+function shoeSizeDisplayLabel(value: unknown) {
+  const size = normalizeShoeSkuSize(value)
+  return size ? `${size}码` : ""
+}
+
+function shoeSizeTemplateSupportsValue(options: Set<string>, value: unknown) {
+  const size = normalizeShoeSkuSize(value)
+  if (!size) return false
+  return options.has(size) || options.has(`${size}码`) || options.has(`${size}cm`)
+}
+
 function parenthesizedShoeSizeRemark(value: unknown) {
   const text = stringValue(value)
   if (!text) return ""
@@ -471,8 +482,10 @@ export function buildShoeSizeChartFieldValues(input: {
   const sizeTemplate = templates.get("尺码")
   if (sizeTemplate && sizes.length > 0) {
     const supported = templateOptions(sizeTemplate)
-    const values = sizes.filter((size) => supported.has(size))
-    if (values.length === sizes.length) output["尺码"] = { valueText: values.join(";"), valueJson: {} }
+    const values = sizes.filter((size) => shoeSizeTemplateSupportsValue(supported, size))
+    if (values.length === sizes.length) {
+      output["尺码"] = { valueText: values.map((size) => `${size}码`).join(";"), valueJson: {} }
+    }
   }
   const videoSizeTemplate = templates.get("尺码.")
   if (videoSizeTemplate && sizes.length > 0) {
@@ -528,10 +541,10 @@ export function buildShoeSizeChartFieldValues(input: {
   if (vip) {
     const columns = supportedColumns(vip, ["欧洲码", "脚长", "鞋内长"], { 鞋内长: ["鞋长"] })
     const value = tableValue(rows, columns, (row, column) => {
-      if (column === "欧洲码") return normalizeShoeSkuSize(row.size_value)
+      if (column === "欧洲码") return shoeSizeDisplayLabel(row.size_value)
       if (column === "脚长") return stringValue(row.foot_length_mm)
       return stringValue(row.inner_length_mm)
-    })
+    }, (row) => shoeSizeDisplayLabel(row.size_value))
     if (value && columns.includes("脚长")) output["唯品会尺码表"] = value
   }
 
@@ -558,7 +571,7 @@ export function buildShoeSizeChartFieldValues(input: {
 
   const multi = templates.get("多平台尺码")
   if (multi) {
-    const columns = supportedColumns(multi, ["京东", "拼多多", "小红书", "快手", "微信视频小店"])
+    const columns = supportedColumns(multi, ["京东", "拼多多", "微信视频小店"], { 微信视频小店: ["微信视频", "微信视频号"] })
     const value = tableValue(rows, columns, (row, column) => {
       if (column === "京东") return normalizeShoeSkuSize(row.size_value)
       if (column === "拼多多") {
@@ -568,7 +581,7 @@ export function buildShoeSizeChartFieldValues(input: {
       }
       return stringValue(row.video_pdd_vip_mapping_text)
         || stringValue(row.vip_mapping_text)
-    })
+    }, (row) => shoeSizeDisplayLabel(row.size_value))
     if (value && columns.length > 0) {
       output["多平台尺码"] = {
         ...value,

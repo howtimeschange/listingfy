@@ -141,7 +141,7 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
     },
   });
 
-  assert.deepEqual(result["尺码"], { valueText: "26;27;38", valueJson: {} });
+  assert.deepEqual(result["尺码"], { valueText: "26码;27码;38码", valueJson: {} });
   assert.deepEqual(result["尺码."], { valueText: "34码以上", valueJson: {} });
   assert.deepEqual(result["尺码类型"], { valueText: "欧码(童鞋)", valueJson: {} });
   assert.deepEqual(result["适用年龄"], { valueText: "3-14岁", valueJson: {} });
@@ -154,9 +154,9 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
   });
   assert.deepEqual(result["唯品会尺码表"].valueJson, {
     title: "欧洲码,脚长,鞋内长",
-    "26": "26,160,170.32",
-    "27": "27,165,176.98",
-    "38": "38,240,250.24",
+    "26码": "26码,160,170.32",
+    "27码": "27码,165,176.98",
+    "38码": "38码,240,250.24",
   });
   assert.deepEqual(result["抖音尺码表"].valueJson, {
     title: "脚长(cm),备注",
@@ -165,12 +165,12 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
     "38": "24,脚长23.8-24.2/内长25",
   });
   assert.deepEqual(result["多平台尺码"].valueJson, {
-    title: "京东,拼多多,小红书,快手,微信视频小店",
-    "26": "26,26码脚长15.8-16.2/内长17,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
-    "27": "27,27码脚长16.3-16.7/内长17.7,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
-    "38": "38,38码脚长23.8-24.2/内长25,38码(脚长23.8-24.2/内长25),38码(脚长23.8-24.2/内长25),38码(脚长23.8-24.2/内长25)",
+    title: "京东,拼多多,微信视频小店",
+    "26码": "26,26码脚长15.8-16.2/内长17,26码(脚长15.8-16.2/内长17)",
+    "27码": "27,27码脚长16.3-16.7/内长17.7,27码(脚长16.3-16.7/内长17.7)",
+    "38码": "38,38码脚长23.8-24.2/内长25,38码(脚长23.8-24.2/内长25)",
   });
-  assert.equal(result["多平台尺码"].valueText, "京东;拼多多;小红书;快手;微信视频小店");
+  assert.equal(result["多平台尺码"].valueText, "京东;拼多多;微信视频小店");
   assert.deepEqual(result["25鞋子模板类型"], { valueText: "运动", valueJson: {} });
   assert.deepEqual(result["22Q4-童鞋尺码表"], { valueText: "轻跑鞋", valueJson: {} });
   assert.equal(result["25鞋子尺码表"], undefined);
@@ -248,7 +248,7 @@ test("shoe multi-platform charts fall back to the Vipshop mapping when channel m
 
   assert.deepEqual(result["多平台尺码"].valueJson, {
     title: "拼多多,微信视频小店",
-    "26": "26码(脚长16/内长17),26码(脚长16/内长17)",
+    "26码": "26码(脚长16/内长17),26码(脚长16/内长17)",
   });
   assert.equal(result["多平台尺码"].valueText, "拼多多;微信视频小店");
 });
@@ -277,7 +277,7 @@ test("shoe MDM derivation never creates clothing size placeholders or cm enum va
   };
 
   assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("尺码", input), {
-    valueText: "26;27",
+    valueText: "26码;27码",
     valueJson: {},
   });
   assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("尺码表", input), {

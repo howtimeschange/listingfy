@@ -773,7 +773,7 @@ function merchantSkuFieldValue(spu: JsonRecord, skus: JsonRecord[], input: {
   for (const sku of skus) {
     const color = stringValue(sku.color_name)
     const size = shoeProduct
-      ? normalizeShoeSkuSize(sku.size_name ?? sku.size_code)
+      ? shoeSizeDisplayLabel(sku.size_name ?? sku.size_code)
       : deepdrawSizeValue(sku.size_name ?? sku.size_code)
     if (!color || !size) continue
     const price = moneyText(sku.price_tag) || retailPrice
@@ -817,6 +817,10 @@ function merchantSkuFieldValue(spu: JsonRecord, skus: JsonRecord[], input: {
 function isProductArchiveStructuredSizeFieldName(fieldName: unknown) {
   const key = compactFieldKey(fieldName)
   return key === "多平台尺码" || key.includes("尺码表")
+}
+
+function isProductArchiveMultiPlatformSizeFieldName(fieldName: unknown) {
+  return compactFieldKey(fieldName) === "多平台尺码"
 }
 
 function isProductArchiveSkuSizeTemplateFieldName(fieldName: unknown) {
@@ -867,13 +871,31 @@ function shouldAlignProductArchiveStructuredSizeKey(value: unknown) {
   return !SIZE_CHART_METADATA_KEYS.has(compactFieldKey(text))
 }
 
-function alignProductArchiveFlatSizeRows(value: unknown, saleSizeLookup: Map<string, string>) {
+function shouldPreserveProductArchiveDisplaySizeKey(
+  fieldName: unknown,
+  value: unknown,
+  saleSizeLookup: Map<string, string>,
+) {
+  const fieldKey = compactFieldKey(fieldName)
+  if (fieldKey !== compactFieldKey("多平台尺码") && !fieldKey.includes("尺码表")) return false
+  const text = stringValue(value)
+  if (!/(?:cm|厘米|公分|码)\s*$/i.test(text)) return false
+  return sizeMatchKeys(text).some((key) => saleSizeLookup.has(key))
+}
+
+function alignProductArchiveFlatSizeRows(
+  fieldName: unknown,
+  value: unknown,
+  saleSizeLookup: Map<string, string>,
+) {
   const record = recordValue(value)
   if (!hasValue(record) || saleSizeLookup.size === 0) return value
   const output: JsonRecord = {}
   for (const [rawKey, rawValue] of Object.entries(record)) {
     const key = shouldAlignProductArchiveStructuredSizeKey(rawKey)
-      ? productArchiveSizeValueAlignedToSaleSize(rawKey, saleSizeLookup)
+      ? shouldPreserveProductArchiveDisplaySizeKey(fieldName, rawKey, saleSizeLookup)
+        ? rawKey
+        : productArchiveSizeValueAlignedToSaleSize(rawKey, saleSizeLookup)
       : rawKey
     output[key] = rawValue
   }
@@ -905,7 +927,7 @@ export function alignProductArchivePayloadSizeFieldValue(fieldName: unknown, val
     return alignProductArchiveMerchantSkuSizeRows(value, saleSizeLookup)
   }
   if (isProductArchiveStructuredSizeFieldName(fieldName)) {
-    return alignProductArchiveFlatSizeRows(value, saleSizeLookup)
+    return alignProductArchiveFlatSizeRows(fieldName, value, saleSizeLookup)
   }
   return value
 }
@@ -973,6 +995,11 @@ function deepdrawSizeValue(value: unknown) {
   if (/cm$/i.test(text)) return text
   const match = text.match(/^0*(\d{2,3})$/)
   return match ? `${Number(match[1])}cm` : text
+}
+
+function shoeSizeDisplayLabel(value: unknown) {
+  const size = normalizeShoeSkuSize(value)
+  return size ? `${size}码` : ""
 }
 
 function sourceAliases(sourceField: string) {
@@ -1544,7 +1571,7 @@ export function isProductArchiveFieldLocallyRequired(fieldName: string, input: {
   apparelProduct?: unknown
 } = {}) {
   const apparelRequiredSizeChart = Boolean(input.apparelProduct)
-    && ["尺码表", "唯品会尺码表", "抖音尺码表", "多平台尺码"].includes(compactFieldKey(fieldName))
+    && ["尺码表", "唯品会尺码表", "抖音尺码表"].includes(compactFieldKey(fieldName))
   if (Boolean(input.shoeProduct) && isProductArchiveShoeBusinessBlankField(fieldName)) return false
   if (Object.prototype.hasOwnProperty.call(input, "templatePresent")) {
     if (!input.templatePresent) return false
@@ -2680,7 +2707,7 @@ export function buildProductArchiveMdmDerivedFieldValue(fieldName: string, input
   }
   if (key === "尺码" || key === "尺寸") {
     const values = input.skus.map((sku) => shoeProduct
-      ? normalizeShoeSkuSize(sku.size_name ?? sku.size_code)
+      ? shoeSizeDisplayLabel(sku.size_name ?? sku.size_code)
       : deepdrawSizeValue(sku.size_name ?? sku.size_code))
     return { valueText: uniqueTextValues(values).join(";"), valueJson: {} }
   }
@@ -5299,6 +5326,15 @@ export function productArchiveFieldValueMatchesOptions(value: unknown, options: 
     return (aliases.length ? aliases : [item]).some((alias) => allowed.has(alias))
   })
   if (matched) return true
+  if (isProductArchiveSkuSizeFieldName(fieldName)) {
+    const optionKeys = new Set(optionValues(options).flatMap(sizeMatchKeys))
+    return values.every((item) => {
+      const aliases = item.split(/[,，]/).map((part) => part.trim()).filter(Boolean)
+      return (aliases.length ? aliases : [item]).some((alias) => (
+        sizeMatchKeys(alias).some((key) => optionKeys.has(key))
+      ))
+    })
+  }
   if (!isProductArchiveGenderFieldName(fieldName)) return false
   const normalized = normalizeProductArchiveGenderOptionValue(value, options)
   if (!normalized || normalized === text) return false
@@ -5315,6 +5351,10 @@ function productArchiveFieldOptionValidationMessage(value: unknown, options: unk
 
 function optionValues(options: unknown[]) {
   return uniqueTextValues(options.map((option, index) => visibleOptionText(option, options, index)))
+}
+
+function skuSizeTokenHasDisplayUnit(value: unknown) {
+  return /(?:cm|厘米|公分|码)\s*$/i.test(stringValue(value))
 }
 
 function pickOption(options: unknown[], predicates: Array<(value: string) => boolean>) {
@@ -5867,7 +5907,7 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
     const normalized = values.map((value) => {
       for (const key of sizeMatchKeys(value)) {
         const option = optionByKey.get(key)
-        if (option) return option
+        if (option) return skuSizeTokenHasDisplayUnit(value) ? value : option
       }
       return ""
     }).filter(Boolean)
@@ -10407,6 +10447,7 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
   const payloadFieldsFromDetail = (includeOptionalStructuredSizeFields = false) => detailFields
     .filter(shouldIncludeProductArchivePayloadField)
     .flatMap((field) => {
+      if (isProductArchiveMultiPlatformSizeFieldName(field.field_name)) return []
       const value = productArchivePayloadFieldValue(field, { includeOptionalStructuredSizeFields })
       if (!hasValue(value)) return []
       const templateFieldId = productArchivePayloadTemplateFieldId(field)

@@ -3762,10 +3762,10 @@ test("product archive create payload omits scalar size-chart fields", async () =
     field_name: "多平台尺码",
     field_type: "MULTI_TEXT",
     value_text: "",
-    value_json: { title: "拼多多,微信视频小店", "26": "26码脚长15.8-16.2/内长17,26码(脚长15.8-16.2/内长17)" },
+    value_json: { title: "拼多多,微信视频小店", "26码": "26码脚长15.8-16.2/内长17,26码(脚长15.8-16.2/内长17)" },
   }, { includeOptionalStructuredSizeFields: true }), {
     title: "拼多多,微信视频小店",
-    "26": "26码脚长15.8-16.2/内长17,26码(脚长15.8-16.2/内长17)",
+    "26码": "26码脚长15.8-16.2/内长17,26码(脚长15.8-16.2/内长17)",
   });
   assert.equal(service.productArchivePayloadFieldValue({
     field_name: "颜色",
@@ -3828,7 +3828,7 @@ test("product archive payload aligns structured size rows with selected size fie
       { value: "100" },
       { value: "120" },
     ]),
-    "100;120",
+    "100cm;120cm",
   );
   assert.equal(
     service.normalizeProductArchiveDeepdrawFieldValue("尺码", "080;090", [
@@ -3843,7 +3843,7 @@ test("product archive payload aligns structured size rows with selected size fie
       { title: "身高", "100cm": "100", "120cm": "120" },
       "100;120",
     ),
-    { title: "身高", "100": "100", "120": "120" },
+    { title: "身高", "100cm": "100", "120cm": "120" },
   );
   assert.deepEqual(
     service.alignProductArchivePayloadSizeFieldValue(
@@ -4005,7 +4005,7 @@ test("product archive create payload keeps only current DeepDraw template fields
     "尺码表",
     { title: "适合脚长,鞋内长", "21码": "12,13", "22码": "13,14" },
     "21;22",
-  ), { title: "适合脚长,鞋内长", "21": "12,13", "22": "13,14" });
+  ), { title: "适合脚长,鞋内长", "21码": "12,13", "22码": "13,14" });
   assert.deepEqual(service.alignProductArchivePayloadSizeFieldValue(
     "商家SKU",
     { title: "价格,货号", 红色: { "21码": "99,SPU" } },
@@ -4706,7 +4706,7 @@ test("shared platform list-price allowlist also fills Merchant SKU columns", asy
       }],
     });
     assert.equal(result.valueJson.title, listPriceColumns.join(","));
-    const values = result.valueJson["黑色90001"][productLineName === "鞋品" ? "130" : "130cm"].split(",");
+    const values = result.valueJson["黑色90001"][productLineName === "鞋品" ? "130码" : "130cm"].split(",");
     assert.deepEqual(values, listPriceColumns.map(() => "299"));
     assert.doesNotMatch(result.valueJson.title, /成本价|特殊专柜价/);
   }
@@ -4732,7 +4732,7 @@ test("Merchant SKU fills JD price and strike-through price from tag price for ev
     });
 
     assert.equal(result.valueJson.title, "京东价,划线价");
-    const size = productLineName === "鞋品" ? "130" : "130cm";
+    const size = productLineName === "鞋品" ? "130码" : "130cm";
     assert.equal(result.valueJson["烟灰银20301"][size], "359,359");
   }
 });
@@ -5497,7 +5497,7 @@ test("product archive shoe required fields derive from trusted launch and brand 
     }],
   });
   assert.equal(
-    merchantSku.valueJson["黑色001"]["36"],
+    merchantSku.valueJson["黑色001"]["36码"],
     [
       "359", "208426140203", "2026-08", "0", "INNER-SHOE-36", "", "359", "359",
       "208426140203001", "6900000000036", "358", "357", "6900000000036",
@@ -5681,6 +5681,12 @@ test("product archive local requirement follows the DeepDraw template when prese
   assert.equal(service.isProductArchiveFieldLocallyRequired("适用年龄", { templateRequired: true }), true);
   assert.equal(service.isProductArchiveFieldLocallyRequired("尺码表", { templatePresent: true, templateRequired: true, ruleBlocking: true }), true);
   assert.equal(service.isProductArchiveFieldLocallyRequired("多平台尺码", { templatePresent: true, templateRequired: true, ruleBlocking: true }), true);
+  assert.equal(service.isProductArchiveFieldLocallyRequired("多平台尺码", {
+    templatePresent: true,
+    templateRequired: false,
+    ruleBlocking: false,
+    apparelProduct: true,
+  }), false);
   assert.equal(service.isProductArchiveBusinessBlankField("鞋垫材质", { product_line_name: "鞋品" }), false);
   assert.equal(
     service.isProductArchiveFieldLocallyRequired("鞋垫材质", {
@@ -5700,7 +5706,7 @@ test("product archive local requirement follows the DeepDraw template when prese
     }),
     false,
   );
-  for (const fieldName of ["尺码表", "唯品会尺码表", "抖音尺码表", "多平台尺码"]) {
+  for (const fieldName of ["尺码表", "唯品会尺码表", "抖音尺码表"]) {
     assert.equal(
       service.isProductArchiveFieldLocallyRequired(fieldName, {
         templatePresent: true,
@@ -6490,7 +6496,7 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "140" },
     { value: "160" },
     { value: "170" },
-  ]), "100;120;140;160;170");
+  ]), "100cm;120cm;140cm;160cm;170cm");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("尺码.", "100cm;120cm;140cm;160cm;170cm", [
     { value: "18cm以下" },
     { value: "18-20cm" },
