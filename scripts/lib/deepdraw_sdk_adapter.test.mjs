@@ -18,6 +18,8 @@ import {
   runDeepdrawSdkCli,
   selectDeepdrawLegacyShoeCreateFields,
   selectDeepdrawLegacyShoeUpdateFields,
+  selectDeepdrawStableSizeCreateFields,
+  selectDeepdrawStableSizeUpdateFields,
   updateDeepdrawGpusProductIncrementallyWithSdk,
   updateDeepdrawFullProductWithSdk,
 } from "./deepdraw_sdk_adapter.mjs";
@@ -1290,6 +1292,77 @@ test("compareDeepdrawLegacyShoePayloadToResource resolves DeepDraw standard size
     ["商家SKU", true, 2],
     ["尺码表", true, 2],
   ]);
+});
+
+test("apparel staged size publish creates with the main table then updates stable platform tables", () => {
+  const fields = [
+    { name: "尺码", value: "130cm;140cm" },
+    { name: "尺码表", fieldType: "MULTI_TEXT", value: { title: "尺码,身高,胸围", "130cm": "130,130,70", "140cm": "140,140,74" } },
+    { name: "唯品会尺码表", fieldType: "MULTI_TEXT", value: { title: "号型,身高,胸围", "130cm": "130/64,130,70", "140cm": "140/68,140,74" } },
+    { name: "天猫尺码表", fieldType: "MULTI_TEXT", value: { title: "身高,胸围", "130cm": "130,70", "140cm": "140,74" } },
+    { name: "抖音尺码表", fieldType: "MULTI_TEXT", value: { title: "身高(cm),胸围(cm)", "130cm": "130,70", "140cm": "140,74" } },
+    { name: "淘宝尺码表", fieldType: "MULTI_TEXT", value: { title: "身高,胸围", "130cm": "130,70", "140cm": "140,74" } },
+    { name: "好衣库尺码表", fieldType: "MULTI_TEXT", value: { title: "身高(cm),胸围(cm)", "130cm": "130,70", "140cm": "140,74" } },
+    { name: "多平台尺码", fieldType: "MULTI_TEXT", value: { title: "京东", "130cm": "130", "140cm": "140" } },
+  ];
+  const createFields = selectDeepdrawStableSizeCreateFields(fields);
+  const updateFields = selectDeepdrawStableSizeUpdateFields(fields);
+
+  assert.deepEqual(
+    createFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
+    ["尺码表"],
+  );
+  assert.deepEqual(
+    updateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
+    ["尺码表", "唯品会尺码表", "天猫尺码表", "抖音尺码表"],
+  );
+  assert.equal(deepdrawLegacyShoePostCreateUpdateRequired(createFields, updateFields), true);
+
+  const createInput = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      code: "202426107033-test-apparel",
+      title: "童装创建探针",
+      tradeId: "9652",
+      fields: createFields,
+    },
+  });
+  assert.equal(createInput.product.fields["尺码"], "130cm;140cm");
+  assert.deepEqual(createInput.product.fields["尺码表"], {
+    title: "尺码,身高,胸围",
+    "130cm": "130,130,70",
+    "140cm": "140,140,74",
+  });
+  assert.equal(Object.hasOwn(createInput.product.fields, "唯品会尺码表"), false);
+  assert.equal(Object.hasOwn(createInput.product.fields, "多平台尺码"), false);
+
+  const updateInput = buildDeepdrawProductFullUpdateInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    productId: "6514511",
+    payload: {
+      code: "202426107033-test-apparel",
+      title: "童装创建探针",
+      tradeId: "9652",
+      fields: createFields,
+      legacyUpdateFields: updateFields,
+    },
+  });
+  assert.deepEqual(
+    Object.keys(updateInput.product.fields).filter((name) => /尺码表|多平台尺码/.test(name)),
+    ["尺码表", "唯品会尺码表", "天猫尺码表", "抖音尺码表"],
+  );
 });
 
 test("compareDeepdrawProductPayloadToResource checks apparel sale sizes skus and sent size tables", () => {

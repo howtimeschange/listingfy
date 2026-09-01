@@ -154,6 +154,18 @@ function isMainSizeTableFieldName(value) {
   return !/(?:唯品会|抖音|天猫|淘宝|京东|拼多多|小红书|快手|微信视频|好衣库|爱库存|1688|平台)/.test(key);
 }
 
+function isVipSizeTableFieldName(value) {
+  return compactKey(value) === compactKey("唯品会尺码表");
+}
+
+function isGenericBareSizeTargetFieldName(value) {
+  return ["尺码", "尺寸"].some((field) => compactKey(value) === compactKey(field));
+}
+
+function isVipBareSizeTargetFieldName(value) {
+  return ["尺码", "尺寸", "号型", "身高"].some((field) => compactKey(value) === compactKey(field));
+}
+
 function firstValue(row, keys) {
   for (const key of keys) {
     const value = stringValue(row?.[key]);
@@ -463,6 +475,9 @@ function derivedValueForMapping(mapping, size, context = {}) {
   if (["尺码", "尺寸"].some((field) => targetKey === compactKey(field))) {
     return sizeLabelNumber(size) || "0";
   }
+  if (context.vipSizeTableField && targetKey === compactKey("号型") && sourceKey === compactKey("尺码")) {
+    return sizeLabelNumber(size) || "0";
+  }
   if (targetKey === compactKey("身高") && sourceKey === compactKey("尺码")) {
     return sizeLabelNumber(size) || "0";
   }
@@ -513,9 +528,13 @@ export function buildSizeChartForTemplate({
     .filter((row) => allowedSizeKeys.size === 0 || sizeMatchKeys(row.size).some((key) => allowedSizeKeys.has(key)));
   const mappingOverrides = explicitMappingLookup(explicitMappings, normalizedRows);
   const mainSizeTableField = isMainSizeTableFieldName(template.fieldName);
+  const vipSizeTableField = isVipSizeTableFieldName(template.fieldName);
   const multiPlatformSizeField = compactKey(template.fieldName) === compactKey("多平台尺码");
   const rawTargetFields = templateTargetFields(template);
-  const targetFieldsWithSize = mainSizeTableField && !rawTargetFields.some((targetField) => compactKey(targetField) === compactKey("尺码"))
+  const targetFieldsWithSize = (
+    (mainSizeTableField && !rawTargetFields.some(isGenericBareSizeTargetFieldName))
+    || (vipSizeTableField && !rawTargetFields.some(isVipBareSizeTargetFieldName))
+  )
     ? ["尺码", ...rawTargetFields]
     : rawTargetFields;
   const targetFields = targetFieldsWithSize.filter((targetField) => (
@@ -531,6 +550,15 @@ export function buildSizeChartForTemplate({
         confidence: "high",
         source: "rule",
         reason: "多平台尺码只发送京东，数值尺码去掉 cm/码",
+      };
+    }
+    if (vipSizeTableField && compactKey(targetField) === compactKey("号型")) {
+      return {
+        targetField,
+        sourcePoint: "尺码",
+        confidence: "high",
+        source: "rule",
+        reason: "唯品会尺码表行尺码展示带单位，号型列填裸尺码值",
       };
     }
     const resolved = resolveMapping(targetField, normalizedRows);
@@ -560,7 +588,7 @@ export function buildSizeChartForTemplate({
   const valuesBySize = new Map();
   for (const size of sortSizes(sizes)) {
     const values = mappings.map((mapping) => {
-      const derivedValue = derivedValueForMapping(mapping, size, { gender, garmentType });
+      const derivedValue = derivedValueForMapping(mapping, size, { gender, garmentType, vipSizeTableField });
       if (derivedValue != null) return derivedValue;
       return mapping.sourcePoint
         ? mappedSizeChartValue(mapping, valueByPointAndSize.get(`${compactKey(mapping.sourcePoint)}\u0000${size}`) ?? "0")

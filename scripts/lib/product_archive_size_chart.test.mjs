@@ -123,12 +123,31 @@ test("normalizes platform size-chart unit suffixes and pants aliases", () => {
     "80cm": "80,9.5,41,74,43",
   });
   assert.deepEqual(vip.valueJson, {
-    title: "适合年龄,身高,腰围,臀围,裤长,前浪,后浪,大腿围",
-    "80cm": "12-18月,80,41,74,43,21.8,27.1,22",
+    title: "号型,适合年龄,身高,腰围,臀围,裤长,前浪,后浪,大腿围",
+    "80cm": "80,12-18月,80,41,74,43,21.8,27.1,22",
   });
   assert.deepEqual(douyin.unmatchedTargets, ["备注"]);
   assert.deepEqual(haoyiku.unmatchedTargets, []);
-  assert.deepEqual(vip.unmatchedTargets, ["号型"]);
+  assert.deepEqual(vip.unmatchedTargets, []);
+});
+
+test("fills VIP apparel size-chart model column with bare size values", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [
+      { "款号": "208426121101", "测量点": "衣长", "尺码": "130cm", "尺码值": "50.5" },
+      { "款号": "208426121101", "测量点": "衣长", "尺码": "140", "尺码值": "54" },
+    ],
+    spuCode: "208426121101",
+    template: { fieldName: "唯品会尺码表", options: ["号型", "衣长"] },
+    gender: "女童",
+    garmentType: "上衣",
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "号型,衣长",
+    "130cm": "130,50.5",
+    "140cm": "140,54",
+  });
 });
 
 test("fills apparel multi-platform sizes with only bare JD values", () => {

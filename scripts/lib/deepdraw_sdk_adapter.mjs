@@ -338,6 +338,38 @@ function isUnsupportedLegacyShoeSdkField(name) {
   return compactKey(name) === compactKey("淘宝尺码表");
 }
 
+const DEEPDRAW_STABLE_POST_CREATE_SIZE_TABLE_KEYS = new Set([
+  compactKey("尺码表"),
+  compactKey("唯品会尺码表"),
+  compactKey("天猫尺码表"),
+  compactKey("抖音尺码表"),
+]);
+
+function isStablePostCreateSizeTable(name) {
+  return DEEPDRAW_STABLE_POST_CREATE_SIZE_TABLE_KEYS.has(compactKey(name));
+}
+
+export function selectDeepdrawStableSizeCreateFields(fields = []) {
+  return arrayValue(fields).filter((field) => {
+    const name = normalizeSdkFieldName(fieldName(field));
+    const value = fieldValue(field);
+    const type = fieldType(field);
+    if (!name || !hasValue(value)) return false;
+    if (!isStructuredSizePayloadField(name, type)) return true;
+    return compactKey(name) === compactKey("尺码表");
+  });
+}
+
+export function selectDeepdrawStableSizeUpdateFields(fields = []) {
+  return arrayValue(fields).filter((field) => {
+    const name = normalizeSdkFieldName(fieldName(field));
+    const value = fieldValue(field);
+    const type = fieldType(field);
+    if (!name || !hasValue(value)) return false;
+    return !isStructuredSizePayloadField(name, type) || isStablePostCreateSizeTable(name);
+  });
+}
+
 export function selectDeepdrawLegacyShoeCreateFields(fields = []) {
   return arrayValue(fields).filter((field) => {
     const name = normalizeSdkFieldName(fieldName(field));

@@ -24,6 +24,8 @@ import {
   deepdrawLegacyShoePostCreateUpdateRequired,
   selectDeepdrawLegacyShoeCreateFields,
   selectDeepdrawLegacyShoeUpdateFields,
+  selectDeepdrawStableSizeCreateFields,
+  selectDeepdrawStableSizeUpdateFields,
 } from "../../../scripts/lib/deepdraw_sdk_adapter.mjs"
 import {
   getDefaultAiScenarioRouter,
@@ -10490,6 +10492,8 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
   const spu = resolveProductArchiveDraftSpu(db, draft)
   const sourceRows = sourceRowsForDraft(db, draft)
   const shoeProduct = isShoeProduct(spu, sourceRows)
+  const apparelProduct = isApparelProduct(spu, sourceRows)
+  const stagedSizeTablePublish = shoeProduct || apparelProduct
   const omittedTemplateFieldNames: string[] = []
   const detailFields = detail.fields as JsonRecord[]
   const payloadFieldsFromDetail = (includeOptionalStructuredSizeFields = false) => detailFields
@@ -10518,7 +10522,7 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
     })
     .filter((field) => hasValue(field.value))
   const fields = payloadFieldsFromDetail(false)
-  const allFields = shoeProduct ? payloadFieldsFromDetail(true) : fields
+  const allFields = stagedSizeTablePublish ? payloadFieldsFromDetail(true) : fields
   const saleSizeValueText = stringValue(fields.find((field) => (
     isProductArchiveSkuSizeFieldName(field.name)
     && typeof field.value === "string"
@@ -10537,9 +10541,13 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
     : allFields
   const legacyUpdateFields = shoeProduct
     ? selectDeepdrawLegacyShoeUpdateFields(alignedAllFields)
+    : apparelProduct
+    ? selectDeepdrawStableSizeUpdateFields(alignedAllFields)
     : alignedFields
   const createFields = shoeProduct
     ? selectDeepdrawLegacyShoeCreateFields(alignedAllFields)
+    : apparelProduct
+    ? selectDeepdrawStableSizeCreateFields(alignedAllFields)
     : alignedFields
   const compatiblePlatforms = stringValue(detailFields.find((field) => (
     stringValue(field.field_name) === "兼容平台"
@@ -10570,6 +10578,8 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
     ...(shoeProduct ? {
       shoeSizes: true,
       sizeRemarks,
+    } : {}),
+    ...(stagedSizeTablePublish ? {
       legacyUpdateFields,
       postCreateUpdateRequired: deepdrawLegacyShoePostCreateUpdateRequired(createFields, legacyUpdateFields),
     } : {}),
@@ -11236,7 +11246,7 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
     )
   })()
   if (createError) throw createError
-  if ((payload as JsonRecord).shoeSizes && (payload as JsonRecord).postCreateUpdateRequired) {
+  if ((payload as JsonRecord).postCreateUpdateRequired) {
     await runAndRecordLegacyUpdate(productId, "post_create")
   }
   return await readbackProductArchiveDraft(db, draftId, { ...options, claimToken })
