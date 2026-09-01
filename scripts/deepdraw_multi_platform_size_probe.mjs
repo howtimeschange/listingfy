@@ -97,6 +97,7 @@ Options:
   --shoe-multi-row-key <mode>    Shoe multi-platform row key. display=26码, bare=26. Default: display.
   --shoe-sale-size <mode>        Shoe sale size identity. display=26码, bare=26. Default: display.
   --shoe-multi-shape <shape>     Shoe multi-platform field body. platform=current platform table, size-table-body=PDF page-24 literal swapped body. Default: platform.
+  --with-size-remarks            Put shoe size remarks into the sale-size field as 尺码*备注.
   --execute                      Perform the live create/update after safety checks.
 
 Examples:
@@ -163,6 +164,7 @@ function parseArgs(argv) {
     shoeMultiRowKey: process.env.DEEPDRAW_SHOE_MULTI_ROW_KEY || "display",
     shoeSaleSize: process.env.DEEPDRAW_SHOE_SALE_SIZE || "display",
     shoeMultiShape: process.env.DEEPDRAW_SHOE_MULTI_SHAPE || "platform",
+    withSizeRemarks: false,
     execute: false,
     help: false,
   };
@@ -187,6 +189,7 @@ function parseArgs(argv) {
     else if (arg === "--shoe-multi-row-key") args.shoeMultiRowKey = next();
     else if (arg === "--shoe-sale-size") args.shoeSaleSize = next();
     else if (arg === "--shoe-multi-shape") args.shoeMultiShape = next();
+    else if (arg === "--with-size-remarks") args.withSizeRemarks = true;
     else if (arg === "--execute") args.execute = true;
     else if (arg === "--help" || arg === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
@@ -294,6 +297,10 @@ function apparelMultiPlatformTable() {
 
 function probePayload(args) {
   if (args.scenario === "shoe") {
+    const sizeRemarks = Object.fromEntries(SHOE_SIZES.map((size, index) => [
+      displayShoeSize(size),
+      shoeRemark(size, index),
+    ]));
     const fields = [
       { name: "尺码", value: SHOE_SIZES.map(displayShoeSize).join(";") },
       { name: "尺码表", fieldType: "MULTI_TEXT", value: shoeMainSizeTable() },
@@ -311,10 +318,12 @@ function probePayload(args) {
       tradeId: "546",
       retailPrice: 359,
       date: "2026-09-01",
+      places: "京东、拼多多、微信视频小店",
       shoeSizes: true,
       shoeMultiPlatformRowKey: args.shoeMultiRowKey,
       shoeSaleSizeUnitMode: args.shoeSaleSize,
       includeMultiPlatformSizeField: true,
+      ...(args.withSizeRemarks ? { sizeRemarks, inlineSizeRemarksForProbe: true } : {}),
       fields,
       legacyUpdateFields: fields.filter((field) => field.name !== "尺码表"),
     };
@@ -326,6 +335,7 @@ function probePayload(args) {
     tradeId: "12390",
     retailPrice: 199,
     date: "2026-09-01",
+    places: "京东",
     fields: [
       { name: "尺码", value: APPAREL_SIZES.join(";") },
       { name: "尺码表", fieldType: "MULTI_TEXT", value: apparelMainSizeTable() },
@@ -478,6 +488,7 @@ async function dryRun(args, payload) {
       shoeMultiRowKey: args.scenario === "shoe" ? args.shoeMultiRowKey : null,
       shoeSaleSize: args.scenario === "shoe" ? args.shoeSaleSize : null,
       shoeMultiShape: args.scenario === "shoe" ? args.shoeMultiShape : null,
+      withSizeRemarks: args.scenario === "shoe" ? args.withSizeRemarks : false,
       fieldNames: Object.keys(dump.productFields),
       sizeField: dump.productFields["尺码"] ?? null,
       mainSizeTable: dump.productFields["尺码表"] ?? null,
@@ -510,6 +521,7 @@ async function execute(args, payload) {
     shoeMultiRowKey: args.scenario === "shoe" ? args.shoeMultiRowKey : null,
     shoeSaleSize: args.scenario === "shoe" ? args.shoeSaleSize : null,
     shoeMultiShape: args.scenario === "shoe" ? args.shoeMultiShape : null,
+    withSizeRemarks: args.scenario === "shoe" ? args.withSizeRemarks : false,
     update: sanitize({
       httpStatus: result.status,
       responseCode: business.code ?? null,
@@ -547,6 +559,7 @@ async function main() {
     shoeMultiRowKey: report.shoeMultiRowKey,
     shoeSaleSize: report.shoeSaleSize,
     shoeMultiShape: report.shoeMultiShape,
+    withSizeRemarks: report.withSizeRemarks,
     output: path.relative(projectRoot, path.join(args.outDir, "report.json")),
     sizeField: report.sizeField ?? report.update?.responseCode ?? null,
     multiPlatformSize: report.multiPlatformSize ?? null,

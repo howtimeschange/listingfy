@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
-  buildDeepdrawGpusProductIncrementalUpdateInput,
   buildDeepdrawSdkClasspath,
   buildDeepdrawProductFullUpdateInput,
   buildDeepdrawSdkProductInput,
@@ -14,13 +13,11 @@ import {
   deepdrawLegacyShoePostCreateUpdateRequired,
   getDeepdrawProductWithSdk,
   parseDeepdrawSdkOutput,
-  runDeepdrawGpusProductIncrementalUpdateCli,
   runDeepdrawSdkCli,
   selectDeepdrawLegacyShoeCreateFields,
   selectDeepdrawLegacyShoeUpdateFields,
   selectDeepdrawStableSizeCreateFields,
   selectDeepdrawStableSizeUpdateFields,
-  updateDeepdrawGpusProductIncrementallyWithSdk,
   updateDeepdrawFullProductWithSdk,
 } from "./deepdraw_sdk_adapter.mjs";
 
@@ -652,53 +649,6 @@ test("runDeepdrawSdkCli returns control without blocking the Node event loop", a
   }
 });
 
-test("runDeepdrawGpusProductIncrementalUpdateCli dumps the typed GPUS incremental request without executing it", async () => {
-  const previousDump = process.env.DEEPDRAW_SDK_DUMP_REQUEST;
-  process.env.DEEPDRAW_SDK_DUMP_REQUEST = "1";
-  try {
-    const output = await runDeepdrawGpusProductIncrementalUpdateCli({
-      config: {
-        appKey: "app-key",
-        appSecret: "app-secret",
-        dopKey: "dop-key",
-        host: "http://open.deepdraw.cn",
-      },
-      productId: "3b6023ce4e844e138c25f92e9af1e227",
-      product: {
-        code: "204426140121-test5",
-        title: "童鞋typed多平台尺码探针",
-        retailPrice: "359",
-        date: "2026-09-01",
-        sites: ["JD", "PDD", "WEIXINXIAODIAN"],
-        fields: [{
-          fieldId: "88059",
-          fieldName: "多平台尺码",
-          fieldType: "MULTI_TEXT",
-          fieldOptions: ["京东", "拼多多", "微信视频小店"],
-          options: ["26码"],
-          optionAliases: { "京东": "京东", "拼多多": "拼多多", "微信视频小店": "微信视频小店" },
-          texts: ["11623,188799,26"],
-        }],
-      },
-    }, { projectRoot: PROJECT_ROOT, timeoutMs: 30000 });
-    const dump = JSON.parse(output.trim());
-    const body = JSON.parse(dump.body);
-
-    assert.equal(dump.path, "/rest/v2");
-    assert.equal(dump.query.type, "gpus.product.incremental.update");
-    assert.equal(dump.query.productId, "3b6023ce4e844e138c25f92e9af1e227");
-    assert.equal(dump.productCheck, true);
-    assert.equal(dump.fieldsCheck, true);
-    assert.deepEqual(dump.fieldCheckErrors, []);
-    assert.equal(body.product.fields[0].field.name, "多平台尺码");
-    assert.deepEqual(body.product.fields[0].options, ["26码"]);
-    assert.deepEqual(body.product.fields[0].texts, ["11623,188799,26"]);
-  } finally {
-    if (previousDump === undefined) delete process.env.DEEPDRAW_SDK_DUMP_REQUEST;
-    else process.env.DEEPDRAW_SDK_DUMP_REQUEST = previousDump;
-  }
-});
-
 test("createDeepdrawProductWithSdk delegates mapped SDK input to runner", async () => {
   const seen = [];
   const result = await createDeepdrawProductWithSdk({
@@ -785,14 +735,14 @@ test("buildDeepdrawProductFullUpdateInput keeps shoe size enum values and only i
   assert.deepEqual(input.product.fields["天猫尺码表"], { title: "脚长,鞋内长", "26码": "16,17" });
   assert.deepEqual(input.product.fields["抖音尺码表"], { title: "脚长(cm),备注", "26码": "16,脚长15.8-16.2/内长17" });
   assert.deepEqual(input.product.fields["多平台尺码"], {
-    title: "JD,PDD,WEIXINXIAODIAN",
+    title: "京东,拼多多,微信视频小店",
     "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
   });
   assert.equal(Object.hasOwn(input.product.fields, "淘宝尺码表"), false);
   assert.deepEqual(input.product.places, ["ALIBABA", "TMALL", "JD", "VIP", "YOUZAN", "PDD", "XIAOHONGSHU", "DOUYIN", "KUAISHOU", "WEIXINXIAODIAN"]);
 });
 
-test("buildDeepdrawSdkProductInput does not let unsupported shoe remarks change sale-size identity", () => {
+test("buildDeepdrawSdkProductInput keeps shoe size remarks out of the public Product sale-size field by default", () => {
   const input = buildDeepdrawSdkProductInput({
     config: {
       baseUrl: "http://open.deepdraw.cn",
@@ -810,15 +760,25 @@ test("buildDeepdrawSdkProductInput does not let unsupported shoe remarks change 
         "26码": "(脚长15.8-16.2/内长17)",
         "27": "脚长16.3-16.7/内长17.7",
       },
-      fields: [{ name: "尺码", value: "26;27" }],
+      fields: [
+        { name: "尺码", value: "26;27" },
+        { name: "尺码表", fieldType: "MULTI_TEXT", value: { title: "尺码,适合脚长", "26码": "26,16", "27码": "27,16.5" } },
+      ],
+      skus: [{ color: "黑色", size: "26" }, { color: "黑色", size: "27" }],
     },
   });
 
   assert.equal(input.product.fields["尺码"], "26码;27码");
+  assert.deepEqual(input.product.fields["尺码表"], {
+    title: "尺码,适合脚长",
+    "26码": "26,16",
+    "27码": "27,16.5",
+  });
+  assert.deepEqual(Object.keys(input.product.fields["商家SKU"]["黑色"]), ["26码", "27码"]);
 });
 
-test("buildDeepdrawGpusProductIncrementalUpdateInput encodes typed shoe size remarks separately from sale-size identity", () => {
-  const input = buildDeepdrawGpusProductIncrementalUpdateInput({
+test("buildDeepdrawSdkProductInput can inline shoe size remarks only for explicit probes", () => {
+  const input = buildDeepdrawSdkProductInput({
     config: {
       baseUrl: "http://open.deepdraw.cn",
       appKey: "app-key",
@@ -826,134 +786,22 @@ test("buildDeepdrawGpusProductIncrementalUpdateInput encodes typed shoe size rem
       dopKey: "dop-key",
       merchantId: "1162",
     },
-    productId: "3b6023ce4e844e138c25f92e9af1e227",
     payload: {
-      code: "204426140121-test5",
-      title: "童鞋typed尺码备注探针",
-      retailPrice: 359,
-      date: "2026-09-01",
-      sites: ["京东", "拼多多", "微信视频小店"],
-      sizes: {
-        fieldId: "2398",
-        fieldName: "尺码",
-        fieldType: "MULTI_CHOICE",
-        fieldOptions: [{ id: 11623, value: "26" }, { id: 11624, value: "27" }],
-        options: ["26", "27"],
-        optionAliases: { "26": "26码", "27": "27码" },
-        texts: ["11623,脚长15.8-16.2/内长17", "11624,脚长16.3-16.7/内长17.7"],
+      code: "204426140121-test4",
+      title: "童鞋尺码备注创建探针",
+      tradeId: "546",
+      shoeSizes: true,
+      inlineSizeRemarksForProbe: true,
+      sizeRemarks: {
+        "26码": "(脚长15.8-16.2/内长17)",
+        "27": "脚长16.3-16.7/内长17.7",
       },
+      fields: [{ name: "尺码", value: "26;27" }],
+      skus: [],
     },
   });
 
-  assert.equal(input.productId, "3b6023ce4e844e138c25f92e9af1e227");
-  assert.deepEqual(input.product.sites, ["JD", "PDD", "WEIXINXIAODIAN"]);
-  assert.deepEqual(input.product.sizes, {
-    fieldId: "2398",
-    fieldName: "尺码",
-    fieldType: "MULTI_CHOICE",
-    fieldOptions: ["26", "27"],
-    options: ["26", "27"],
-    optionAliases: { "26": "26码", "27": "27码" },
-    texts: ["11623,脚长15.8-16.2/内长17", "11624,脚长16.3-16.7/内长17.7"],
-  });
-  assert.deepEqual(input.product.fields, []);
-});
-
-test("buildDeepdrawGpusProductIncrementalUpdateInput encodes typed shoe multi-platform cells as size platform value triples", () => {
-  const input = buildDeepdrawGpusProductIncrementalUpdateInput({
-    config: {
-      baseUrl: "http://open.deepdraw.cn",
-      appKey: "app-key",
-      appSecret: "app-secret",
-      dopKey: "dop-key",
-      merchantId: "1162",
-    },
-    productId: "3b6023ce4e844e138c25f92e9af1e227",
-    payload: {
-      code: "204426140121-test5",
-      title: "童鞋typed多平台尺码探针",
-      retailPrice: 359,
-      date: "2026-09-01",
-      sites: ["京东", "拼多多", "微信视频小店"],
-      gpusFields: [{
-        fieldId: "88059",
-        fieldName: "多平台尺码",
-        fieldType: "MULTI_TEXT",
-        fieldOptions: ["京东", "拼多多", "微信视频小店"],
-        options: ["26码", "27码"],
-        optionAliases: { "京东": "京东", "拼多多": "拼多多", "微信视频小店": "微信视频小店" },
-        texts: [
-          "11623,188799,26",
-          "11623,201404,26码(脚长15.8-16.2/内长17)",
-          "11623,202942,26码(脚长15.8-16.2/内长17)",
-          "11624,188799,27",
-          "11624,201404,27码(脚长16.3-16.7/内长17.7)",
-          "11624,202942,27码(脚长16.3-16.7/内长17.7)",
-        ],
-      }],
-    },
-  });
-
-  assert.equal(input.product.fields.length, 1);
-  assert.deepEqual(input.product.fields[0], {
-    fieldId: "88059",
-    fieldName: "多平台尺码",
-    fieldType: "MULTI_TEXT",
-    fieldOptions: ["京东", "拼多多", "微信视频小店"],
-    options: ["26码", "27码"],
-    optionAliases: { "京东": "京东", "拼多多": "拼多多", "微信视频小店": "微信视频小店" },
-    texts: [
-      "11623,188799,26",
-      "11623,201404,26码(脚长15.8-16.2/内长17)",
-      "11623,202942,26码(脚长15.8-16.2/内长17)",
-      "11624,188799,27",
-      "11624,201404,27码(脚长16.3-16.7/内长17.7)",
-      "11624,202942,27码(脚长16.3-16.7/内长17.7)",
-    ],
-  });
-  assert.equal(JSON.stringify(input).includes("小红书"), false);
-  assert.equal(JSON.stringify(input).includes("快手"), false);
-  assert.equal(Object.hasOwn(input.product, "sizes"), false);
-});
-
-test("buildDeepdrawGpusProductIncrementalUpdateInput encodes typed apparel JD-only multi-platform cells", () => {
-  const input = buildDeepdrawGpusProductIncrementalUpdateInput({
-    config: {
-      baseUrl: "http://open.deepdraw.cn",
-      appKey: "app-key",
-      appSecret: "app-secret",
-      dopKey: "dop-key",
-      merchantId: "1162",
-    },
-    productId: "apparel-product-uid",
-    payload: {
-      code: "202426107033-test6",
-      title: "服饰typed多平台尺码探针",
-      retailPrice: 199,
-      date: "2026-09-01",
-      sites: ["京东"],
-      gpusFields: [{
-        fieldId: "88964",
-        fieldName: "多平台尺码",
-        fieldType: "MULTI_TEXT",
-        fieldOptions: ["京东"],
-        options: ["130cm", "140cm"],
-        optionAliases: { "京东": "京东" },
-        texts: ["7999,192894,130", "8001,192894,140"],
-      }],
-    },
-  });
-
-  assert.deepEqual(input.product.sites, ["JD"]);
-  assert.deepEqual(input.product.fields[0], {
-    fieldId: "88964",
-    fieldName: "多平台尺码",
-    fieldType: "MULTI_TEXT",
-    fieldOptions: ["京东"],
-    options: ["130cm", "140cm"],
-    optionAliases: { "京东": "京东" },
-    texts: ["7999,192894,130", "8001,192894,140"],
-  });
+  assert.equal(input.product.fields["尺码"], "26码*脚长15.8-16.2/内长17;27码*脚长16.3-16.7/内长17.7");
 });
 
 test("buildDeepdrawProductFullUpdateInput includes isolated multi-platform size updates only for probes", () => {
@@ -989,7 +837,7 @@ test("buildDeepdrawProductFullUpdateInput includes isolated multi-platform size 
 
   assert.equal(input.product.fields["尺码"], "26码");
   assert.deepEqual(input.product.fields["多平台尺码"], {
-    title: "JD,PDD,WEIXINXIAODIAN",
+    title: "京东,拼多多,微信视频小店",
     "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
   });
 });
@@ -1046,10 +894,32 @@ test("buildDeepdrawSdkProductInput normalizes optional JD-only apparel multi-pla
   });
 
   assert.deepEqual(input.product.fields["多平台尺码"], {
-    title: "JD",
+    title: "京东",
     "130cm": "128",
     "140cm": "140",
   });
+});
+
+test("buildDeepdrawSdkProductInput can emit an explicit multi-platform size disable object", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      includeMultiPlatformSizeField: true,
+      fields: [{
+        name: "多平台尺码",
+        fieldType: "MULTI_TEXT",
+        value: {},
+      }],
+    },
+  });
+
+  assert.deepEqual(input.product.fields["多平台尺码"], {});
 });
 
 test("buildDeepdrawSdkProductInput keeps shoe multi-platform rows display-sized with platform remarks", () => {
@@ -1079,7 +949,7 @@ test("buildDeepdrawSdkProductInput keeps shoe multi-platform rows display-sized 
   });
 
   assert.deepEqual(input.product.fields["多平台尺码"], {
-    title: "JD,PDD,WEIXINXIAODIAN",
+    title: "京东,拼多多,微信视频小店",
     "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
     "27码": "27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
   });
@@ -1113,7 +983,7 @@ test("buildDeepdrawSdkProductInput can emit bare shoe multi-platform row keys fo
   });
 
   assert.deepEqual(input.product.fields["多平台尺码"], {
-    title: "JD,PDD,WEIXINXIAODIAN",
+    title: "京东,拼多多,微信视频小店",
     "26": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
     "27": "27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
   });
@@ -1475,56 +1345,6 @@ test("updateDeepdrawFullProductWithSdk delegates the numeric product id to the v
   await assert.rejects(
     updateDeepdrawFullProductWithSdk({ productId: "internal-id", runner: async () => "" }),
     /numeric productId/,
-  );
-});
-
-test("updateDeepdrawGpusProductIncrementallyWithSdk delegates the internal product UID to the GPUS adapter", async () => {
-  const seen = [];
-  const result = await updateDeepdrawGpusProductIncrementallyWithSdk({
-    config: {
-      baseUrl: "http://open.deepdraw.cn",
-      appKey: "app-key",
-      appSecret: "app-secret",
-      dopKey: "dop-key",
-      merchantId: "1162",
-    },
-    productId: "3b6023ce4e844e138c25f92e9af1e227",
-    payload: {
-      code: "204426140121-test5",
-      title: "童鞋typed多平台尺码探针",
-      retailPrice: 359,
-      date: "2026-09-01",
-      gpusFields: [{
-        fieldId: "88059",
-        fieldName: "多平台尺码",
-        fieldType: "MULTI_TEXT",
-        fieldOptions: ["京东"],
-        options: ["26码"],
-        optionAliases: { "京东": "京东" },
-        texts: ["11623,188799,26"],
-      }],
-    },
-    runner: async (input) => {
-      seen.push(input);
-      return JSON.stringify({
-        status: 200,
-        response: {
-          code: 10200,
-          response: "success",
-          requestId: 9905,
-          body: { id: "3b6023ce4e844e138c25f92e9af1e227", updates: ["多平台尺码"] },
-        },
-      });
-    },
-  });
-
-  assert.equal(seen[0].productId, "3b6023ce4e844e138c25f92e9af1e227");
-  assert.equal(seen[0].product.fields[0].fieldName, "多平台尺码");
-  assert.equal(seen[0].product.fields[0].texts[0], "11623,188799,26");
-  assert.equal(result.ok, true);
-  await assert.rejects(
-    updateDeepdrawGpusProductIncrementallyWithSdk({ productId: "", runner: async () => "" }),
-    /product UID/,
   );
 });
 

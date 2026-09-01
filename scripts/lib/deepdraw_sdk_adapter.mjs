@@ -10,8 +10,6 @@ const SDK_UPDATE_SOURCE = path.resolve(import.meta.dirname, "../java/DeepdrawPro
 const SDK_UPDATE_CLASS_NAME = "DeepdrawProductUpdateCli";
 const SDK_RESOURCE_SOURCE = path.resolve(import.meta.dirname, "../java/DeepdrawProductResourceCli.java");
 const SDK_RESOURCE_CLASS_NAME = "DeepdrawProductResourceCli";
-const SDK_GPUS_INCREMENTAL_UPDATE_SOURCE = path.resolve(import.meta.dirname, "../java/DeepdrawGpusProductIncrementalUpdateCli.java");
-const SDK_GPUS_INCREMENTAL_UPDATE_CLASS_NAME = "DeepdrawGpusProductIncrementalUpdateCli";
 const SKU_TITLE = "价格,货号,上市时间,数量,商家编码,条形码,零售价,供货价,唯品会货号,唯品会条形码";
 const JAVA_UTF8_ARGS = [
   "-Dfile.encoding=UTF-8",
@@ -60,11 +58,6 @@ function arrayValue(value) {
 
 function recordValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-}
-
-function optionText(value) {
-  const record = recordValue(value);
-  return stringValue(record.value ?? record.name ?? record.label ?? value);
 }
 
 function uniqueValues(values) {
@@ -178,7 +171,34 @@ function sizeMatchKeys(value) {
 }
 
 function saleSizeValues(value) {
-  return stringValue(value).split(/[;；]/).map((part) => part.trim()).filter(Boolean);
+  return saleSizeEntries(value).map((entry) => entry.size);
+}
+
+function saleSizeEntries(value) {
+  return stringValue(value).split(/[;；]/)
+    .map((part) => {
+      const [size, ...remarkParts] = part.split("*");
+      return {
+        size: stringValue(size),
+        remark: normalizeSizeRemarkText(remarkParts.join("*")),
+      };
+    })
+    .filter((entry) => entry.size);
+}
+
+function saleSizeInlineRemarks(value) {
+  return Object.fromEntries(saleSizeEntries(value)
+    .filter((entry) => entry.remark)
+    .map((entry) => [entry.size, entry.remark]));
+}
+
+function normalizeSizeRemarkText(value) {
+  const text = stringValue(value);
+  if (!text) return "";
+  const bracketed = text.match(/^[（(]\s*(.*?)\s*[）)]$/);
+  return stringValue(bracketed ? bracketed[1] : text)
+    .replace(/[;；]+/g, "/")
+    .replace(/\*/g, "");
 }
 
 function saleSizeLookup(sizeValues = []) {
@@ -198,6 +218,27 @@ function sdkPayloadSizeValue(value, sizeValues = []) {
     if (matched) return matched;
   }
   return sdkSizeValue(value);
+}
+
+function sizeRemarkForPayload(size, sizeRemarks = {}) {
+  const sizeKeys = new Set(sizeMatchKeys(size));
+  for (const [remarkSize, remarkValue] of Object.entries(recordValue(sizeRemarks))) {
+    if (sizeMatchKeys(remarkSize).some((key) => sizeKeys.has(key))) {
+      return normalizeSizeRemarkText(remarkValue);
+    }
+  }
+  return "";
+}
+
+function saleSizePayloadValue(sizeValues = [], sizeRemarks = {}) {
+  return uniqueValues(sizeValues).map((size) => {
+    const remark = sizeRemarkForPayload(size, sizeRemarks);
+    return remark ? `${size}*${remark}` : size;
+  }).join(";");
+}
+
+function shouldInlineSizeRemarks(payload = {}) {
+  return payload.inlineSizeRemarksForProbe === true || payload.withSizeRemarks === true;
 }
 
 function normalizeSdkDateText(value) {
@@ -264,16 +305,29 @@ function normalizeMerchantSkuField(value, sizeValues = []) {
   return output;
 }
 
-const DEEPDRAW_MULTI_PLATFORM_SIZE_CODES = new Map([
-  ["京东", "JD"],
-  ["拼多多", "PDD"],
-  ["小红书", "XIAOHONGSHU"],
-  ["快手", "KUAISHOU"],
-  ["微信视频小店", "WEIXINXIAODIAN"],
-  ["微信视频", "WEIXINXIAODIAN"],
-  ["微信视频号", "WEIXINXIAODIAN"],
+const DEEPDRAW_MULTI_PLATFORM_SIZE_NAMES = new Map([
+  ["京东", "京东"],
+  ["jd", "京东"],
+  ["拼多多", "拼多多"],
+  ["pdd", "拼多多"],
+  ["微信视频小店", "微信视频小店"],
+  ["微信视频", "微信视频小店"],
+  ["微信视频号", "微信视频小店"],
+  ["weixinxiaodian", "微信视频小店"],
+  ["小红书", "小红书"],
+  ["xiaohongshu", "小红书"],
+  ["快手", "快手"],
+  ["kuaishou", "快手"],
+  ["天猫", "天猫"],
+  ["tmall", "天猫"],
+  ["淘宝", "淘宝"],
+  ["taobao", "淘宝"],
+  ["得物", "得物"],
+  ["dewu", "得物"],
+  ["喵街", "喵街"],
+  ["miaojie", "喵街"],
 ]);
-const DEEPDRAW_SHOE_MULTI_PLATFORM_SIZE_CODE_ORDER = ["JD", "PDD", "WEIXINXIAODIAN"];
+const DEEPDRAW_SHOE_MULTI_PLATFORM_SIZE_NAME_ORDER = ["京东", "拼多多", "微信视频小店"];
 
 const DEEPDRAW_SITE_CODES = new Map([
   ["1688", "ALIBABA"],
@@ -412,38 +466,36 @@ function bareMultiPlatformSizeValue(value) {
 
 function apparelMultiPlatformJdColumnIndex(title) {
   return stringValue(title).split(/[,，]/)
-    .findIndex((column) => ["京东", "jd"].includes(compactKey(column)));
+    .findIndex((column) => deepdrawMultiPlatformSizeName(column) === "京东");
 }
 
 function normalizeMultiPlatformSizeField(value, sizeValues = []) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const output = { title: "JD" };
+  const output = { title: "京东" };
   const jdColumnIndex = apparelMultiPlatformJdColumnIndex(value.title);
   for (const [size, rowValue] of Object.entries(value)) {
     if (size === "title") continue;
-    const normalizedSize = sdkSizeValue(size);
+    const normalizedSize = sdkPayloadSizeValue(size, sizeValues);
     const cells = stringValue(rowValue).split(/[,，]/);
-    const jdSize = bareMultiPlatformSizeValue(cells[jdColumnIndex] || size);
+    const jdCandidate = jdColumnIndex >= 0 ? cells[jdColumnIndex] : "";
+    const jdSize = bareMultiPlatformSizeValue(jdCandidate || size);
     if (normalizedSize && jdSize) output[normalizedSize] = jdSize;
   }
   return output;
 }
 
-function deepdrawMultiPlatformSizeCode(value) {
+function deepdrawMultiPlatformSizeName(value) {
   const text = stringValue(value);
   if (!text) return "";
-  const mapped = DEEPDRAW_MULTI_PLATFORM_SIZE_CODES.get(text);
-  if (mapped) return mapped;
-  const upper = text.toUpperCase();
-  return DEEPDRAW_SHOE_MULTI_PLATFORM_SIZE_CODE_ORDER.includes(upper) ? upper : "";
+  return DEEPDRAW_MULTI_PLATFORM_SIZE_NAMES.get(compactKey(text)) || "";
 }
 
 function shoeMultiPlatformColumns(title) {
   const sourceColumns = stringValue(title).split(/[,，]/)
-    .map((part, index) => ({ code: deepdrawMultiPlatformSizeCode(part), index }))
-    .filter((column) => column.code);
-  return DEEPDRAW_SHOE_MULTI_PLATFORM_SIZE_CODE_ORDER
-    .map((code) => sourceColumns.find((column) => column.code === code))
+    .map((part, index) => ({ name: deepdrawMultiPlatformSizeName(part), index }))
+    .filter((column) => column.name);
+  return DEEPDRAW_SHOE_MULTI_PLATFORM_SIZE_NAME_ORDER
+    .map((name) => sourceColumns.find((column) => column.name === name))
     .filter(Boolean);
 }
 
@@ -458,7 +510,7 @@ function normalizeShoeMultiPlatformSizeField(value, sizeValues = [], options = {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const columns = shoeMultiPlatformColumns(value.title);
   if (columns.length === 0) return value;
-  const output = { title: columns.map((column) => column.code).join(",") };
+  const output = { title: columns.map((column) => column.name).join(",") };
   for (const [size, rowValue] of Object.entries(value)) {
     if (size === "title") continue;
     const normalizedSize = shoeMultiPlatformRowSizeValue(size, sizeValues, options);
@@ -471,6 +523,7 @@ function normalizeShoeMultiPlatformSizeField(value, sizeValues = [], options = {
 
 function normalizeSizeTableField(value, sizeValues = [], name = "", options = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  if (Object.keys(value).length === 0) return {};
   const key = compactKey(name);
   if (key === compactKey("多平台尺码")) {
     return options.shoeSizes
@@ -542,29 +595,6 @@ function unwrapDeepdrawResourceBody(value) {
   const body = recordValue(source.body);
   if (hasValue(body) && (source.code != null || source.response != null || source.requestId != null)) return body;
   return source;
-}
-
-function stringRecord(value) {
-  return Object.fromEntries(Object.entries(recordValue(value))
-    .map(([key, child]) => [stringValue(key), stringValue(child)])
-    .filter(([key, child]) => key && child));
-}
-
-function normalizeGpusFieldValue(value) {
-  const source = recordValue(value);
-  const nestedField = recordValue(source.field);
-  const fieldOptions = arrayValue(source.fieldOptions ?? source.field_options ?? nestedField.options)
-    .map(optionText)
-    .filter(Boolean);
-  return {
-    fieldId: stringValue(source.fieldId ?? source.field_id ?? nestedField.id),
-    fieldName: stringValue(source.fieldName ?? source.field_name ?? nestedField.name),
-    fieldType: stringValue(source.fieldType ?? source.field_type ?? nestedField.type).toUpperCase(),
-    fieldOptions: uniqueValues(fieldOptions),
-    optionAliases: stringRecord(source.optionAliases ?? source.option_aliases),
-    options: uniqueValues(arrayValue(source.options).map(optionText)),
-    texts: uniqueValues(arrayValue(source.texts).map(stringValue)),
-  };
 }
 
 export function buildDeepdrawProductFullUpdateInput({ config, productId, payload = {} } = {}) {
@@ -835,7 +865,8 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
   const payloadFields = Array.isArray(payload.fields) ? payload.fields : [];
   const skus = Array.isArray(payload.skus) ? payload.skus : [];
   const shoeSizes = Boolean(payload.shoeSizes);
-  const declaredSizeValues = saleSizeValues(findPayloadFieldValue(payloadFields, ["尺码", "尺寸", "规格", "size"]));
+  const declaredSizeFieldValue = findPayloadFieldValue(payloadFields, ["尺码", "尺寸", "规格", "size"]);
+  const declaredSizeValues = saleSizeValues(declaredSizeFieldValue);
   const shoeSaleSizeOptions = {
     shoeSaleSizeUnitMode: payload.shoeSaleSizeUnitMode === "bare" ? "bare" : "display",
   };
@@ -846,18 +877,29 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
           ? shoeSaleSizeValue(sku.size ?? sku.sizeName ?? sku.size_name, shoeSaleSizeOptions)
           : sdkSizeValue(sku.size ?? sku.sizeName ?? sku.size_name)
       )).filter(Boolean));
-  // DeepDraw's public create/update API has no documented size-remark input.
-  // Sending `26,26码(备注)` is parsed as a different size identity and can
-  // clear existing size tables, so keep remarks out of the sale-size identity.
-  const publishedSizeValue = selectedSizeValues.join(";");
+  const sizeRemarks = shouldInlineSizeRemarks(payload)
+    ? {
+        ...saleSizeInlineRemarks(declaredSizeFieldValue),
+        ...recordValue(payload.sizeRemarks),
+      }
+    : {};
+  const publishedSizeValue = shouldInlineSizeRemarks(payload)
+    ? saleSizePayloadValue(selectedSizeValues, sizeRemarks)
+    : uniqueValues(selectedSizeValues).join(";");
   for (const field of payloadFields) {
     const name = normalizeSdkFieldName(fieldName(field));
     const value = fieldValue(field);
     const type = fieldType(field);
-    if (!name || !hasValue(value)) continue;
-    if (shoeSizes && isUnsupportedLegacyShoeSdkField(name)) continue;
-    if (isUnsupportedScalarSdkField(name, value, type)) continue;
     const key = compactKey(name);
+    const explicitMultiPlatformDisable = key === compactKey("多平台尺码")
+      && payload.includeMultiPlatformSizeField === true
+      && value
+      && typeof value === "object"
+      && !Array.isArray(value)
+      && Object.keys(value).length === 0;
+    if (!name || (!hasValue(value) && !explicitMultiPlatformDisable)) continue;
+    if (shoeSizes && isUnsupportedLegacyShoeSdkField(name)) continue;
+    if (isUnsupportedScalarSdkField(name, value, type) && !explicitMultiPlatformDisable) continue;
     fields[name] = ["尺码", "尺寸", "规格", "size"].includes(key)
       ? publishedSizeValue
       : key === "商家sku"
@@ -932,32 +974,6 @@ export function buildDeepdrawSdkResourceInput({ config, productCode, productId, 
       productCode: stringValue(productCode),
       ...(stringValue(productId) ? { productId: stringValue(productId) } : {}),
       ...(normalizedResource ? { resource: normalizedResource } : {}),
-    },
-  };
-}
-
-export function buildDeepdrawGpusProductIncrementalUpdateInput({ config, productId, payload = {} } = {}) {
-  const typedFields = arrayValue(payload.gpusFields ?? payload.typedFields)
-    .map(normalizeGpusFieldValue)
-    .filter((field) => field.fieldId && field.fieldName && field.fieldType);
-  const sizes = payload.sizes ? normalizeGpusFieldValue(payload.sizes) : null;
-  return {
-    config: {
-      appKey: stringValue(config?.appKey),
-      appSecret: stringValue(config?.appSecret),
-      dopKey: stringValue(config?.dopKey),
-      host: hostValue(config?.baseUrl ?? config?.host),
-      merchantId: stringValue(config?.merchantId),
-    },
-    productId: stringValue(productId),
-    product: {
-      code: stringValue(payload.code),
-      title: stringValue(payload.title),
-      retailPrice: asMoneyText(payload.retailPrice),
-      date: normalizeSdkDateText(payload.date),
-      sites: normalizeDeepdrawSites(payload.sites ?? payload.places ?? payload.compatiblePlatforms),
-      ...(sizes && sizes.fieldId && sizes.fieldName && sizes.fieldType ? { sizes } : {}),
-      fields: typedFields,
     },
   };
 }
@@ -1132,14 +1148,6 @@ export async function runDeepdrawProductUpdateCli(input, options = {}) {
   });
 }
 
-export async function runDeepdrawGpusProductIncrementalUpdateCli(input, options = {}) {
-  return runDeepdrawSdkCli(input, {
-    ...options,
-    sourceFile: SDK_GPUS_INCREMENTAL_UPDATE_SOURCE,
-    className: SDK_GPUS_INCREMENTAL_UPDATE_CLASS_NAME,
-  });
-}
-
 function extractJsonObject(text) {
   const lines = stringValue(text).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -1188,22 +1196,6 @@ export async function updateDeepdrawFullProductWithSdk({
     throw new Error("DeepDraw numeric productId is required for full product update.");
   }
   const input = buildDeepdrawProductFullUpdateInput({ config, productId, payload });
-  const output = await runner(input, { timeoutMs, projectRoot });
-  return parseDeepdrawSdkOutput(output);
-}
-
-export async function updateDeepdrawGpusProductIncrementallyWithSdk({
-  config,
-  payload = {},
-  productId,
-  timeoutMs = 30000,
-  projectRoot,
-  runner = runDeepdrawGpusProductIncrementalUpdateCli,
-} = {}) {
-  if (!stringValue(productId)) {
-    throw new Error("DeepDraw product UID is required for GPUS incremental update.");
-  }
-  const input = buildDeepdrawGpusProductIncrementalUpdateInput({ config, productId, payload });
   const output = await runner(input, { timeoutMs, projectRoot });
   return parseDeepdrawSdkOutput(output);
 }
