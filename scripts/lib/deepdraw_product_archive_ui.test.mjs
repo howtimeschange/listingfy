@@ -562,7 +562,12 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /\/product-archive-drafts\/publish-jobs/);
   assert.match(draftListPage, /batchPublishToDeepdraw/);
   assert.match(draftListPage, /refreshedPublishJobIds/);
-  assert.match(draftListPage, /提交后台发布任务/);
+  assert.match(draftListPage, /submitMode/);
+  assert.match(draftListPage, /updateExisting: submitMode === "full_update"/);
+  assert.match(draftListPage, /批量发布\/更新/);
+  assert.match(draftListPage, /全量更新/);
+  assert.match(draftListPage, /增量更新（待启用）/);
+  assert.match(draftListPage, /提交后台\{draftSubmitModeLabel\(batchSubmitMode\)\}任务/);
   assert.match(draftListPage, /提交后台识别/);
   assert.match(draftListPage, /table-fixed/);
   assert.match(draftListPage, /line-clamp-2/);
@@ -633,6 +638,7 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.doesNotMatch(draftListPage, /批量提交预览/);
   assert.match(draftListPage, /批量 AI 填充字段/);
   assert.match(draftListPage, /批量发布到深绘/);
+  assert.match(draftListPage, /批量全量更新深绘商品/);
   assert.match(draftListPage, /api\.post<AsyncTaskJob>\("\/product-archive-drafts\/publish-jobs"/);
   assert.doesNotMatch(draftListPage, /submit_publish/);
   assert.doesNotMatch(draftListPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/submit`, \{ dryRun: false \}\)/s);
@@ -746,10 +752,12 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftDetailPage, /AI 推荐补齐空字段/);
   assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/submit`/s);
   assert.match(draftDetailPage, /确认发布到深绘/);
-  assert.match(draftDetailPage, /更新深绘已有商品/);
-  assert.match(draftDetailPage, /updateExistingProduct/);
+  assert.match(draftDetailPage, /全量更新深绘商品/);
+  assert.match(draftDetailPage, /增量更新深绘商品/);
+  assert.match(draftDetailPage, /深绘增量更新待接口回读验证后启用/);
+  assert.match(draftDetailPage, /publishSubmitMode/);
   assert.match(draftDetailPage, /publishSubmit/);
-  assert.match(draftDetailPage, /api\.post<.*>\(`\/product-archive-drafts\/\$\{draftId\}\/submit`, \{ dryRun: false, updateExisting \}\)/s);
+  assert.match(draftDetailPage, /submitMode,\s+updateExisting: submitMode === "full_update"/s);
 
   assert.match(metadataPage, /深绘类目字段/);
   assert.match(metadataPage, /api\.get<.*>\(`\/deepdraw-metadata\/trades\?/s);

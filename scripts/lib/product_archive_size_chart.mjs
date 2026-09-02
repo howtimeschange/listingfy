@@ -90,7 +90,7 @@ function apparelGenderKey(value) {
 function apparelGarmentKey(value) {
   const text = stringValue(value).replace(/\s+/g, "");
   if (/下装|裤|裙/.test(text)) return "bottom";
-  if (/上装|衣|衫|外套|卫衣|夹克|大衣|马甲|背心/.test(text)) return "top";
+  if (/上装|衣|衫|外套|卫衣|夹克|大衣|马甲|背心|羽绒服|棉服|冲锋衣|防晒服|功能中间层/.test(text)) return "top";
   return "";
 }
 
@@ -132,7 +132,7 @@ export const HIGH_CONFIDENCE_SIZE_CHART_RULES = [
 ];
 
 export const MEDIUM_CONFIDENCE_SIZE_CHART_RULES = [
-  ["袖长", ["袖长", "袖长肩点量", "内袖长", "里：袖长"]],
+  ["袖长", ["袖长（三点量）插肩/落肩", "袖长（三点量）", "袖长", "袖长肩点量", "内袖长", "里：袖长"]],
   ["前浪", ["前浪（弯量）"]],
   ["前档", ["前浪（弯量）"]],
   ["前裆", ["前浪（弯量）"]],
@@ -353,9 +353,16 @@ function multiPlatformSizeTargetFieldName(value) {
   return MULTI_PLATFORM_SIZE_TARGET_FIELD_NAMES.get(compactKey(text)) || "";
 }
 
-function multiPlatformSizeTargetFields(rawTargetFields = []) {
-  const source = rawTargetFields.length > 0 ? rawTargetFields : DEFAULT_MULTI_PLATFORM_SIZE_TARGET_FIELDS;
-  return uniqueTextValues(source.map(multiPlatformSizeTargetFieldName).filter(Boolean));
+function multiPlatformSizeTargetFields() {
+  return DEFAULT_MULTI_PLATFORM_SIZE_TARGET_FIELDS;
+}
+
+function mainSizeChartTargetFields(rawTargetFields = [], garmentType = "") {
+  const garmentKey = apparelGarmentKey(garmentType);
+  const text = stringValue(garmentType).replace(/\s+/g, "");
+  if (/牛仔(?:裤|长裤|短裤|中裤)/.test(text)) return ["尺码", "尺码", "裤长", "腰围", "臀围", "脚口", "身高", "体重"];
+  if (garmentKey === "top") return ["尺码", "尺码", "衣长", "肩宽", "胸围", "袖长", "身高", "体重"];
+  return rawTargetFields;
 }
 
 function multiPlatformSizeCellValue(size, targetField) {
@@ -519,17 +526,17 @@ function derivedValueForMapping(mapping, size, context = {}) {
     return balabalaApparelRecommendedSize({ size, gender: context.gender, garmentType: context.garmentType });
   }
   if (["尺码", "尺寸"].some((field) => targetKey === compactKey(field))) {
-    return sizeLabelNumber(size) || "0";
+    return sizeLabelNumber(size);
   }
   if (context.vipSizeTableField && targetKey === compactKey("号型") && sourceKey === compactKey("尺码")) {
-    return sizeLabelNumber(size) || "0";
+    return sizeLabelNumber(size);
   }
   if (targetKey === compactKey("身高") && sourceKey === compactKey("尺码")) {
-    return sizeLabelNumber(size) || "0";
+    return sizeLabelNumber(size);
   }
   if (sourceKey === compactKey("尺码")) {
     const platform = targetKey;
-    if (["京东", "jd"].includes(platform)) return sizeLabelNumber(size) || "0";
+    if (["京东", "jd"].includes(platform)) return sizeLabelNumber(size);
     if (["天猫", "快手", "微信视频", "微信视频小店", "拼多多", "小红书", "抖音", "唯品会", "有赞", "1688"].includes(platform)) {
       return normalizeDeepdrawSize(size);
     }
@@ -551,9 +558,7 @@ function mappedSizeChartValue(mapping, value) {
 
 function isBlankSizeChartValue(value) {
   const text = stringValue(value);
-  if (!text) return true;
-  const numeric = Number(text);
-  return Number.isFinite(numeric) && numeric === 0;
+  return !text;
 }
 
 export function buildSizeChartForTemplate({
@@ -577,12 +582,16 @@ export function buildSizeChartForTemplate({
   const vipSizeTableField = isVipSizeTableFieldName(template.fieldName);
   const multiPlatformSizeField = compactKey(template.fieldName) === compactKey("多平台尺码");
   const rawTargetFields = templateTargetFields(template);
-  const targetFieldsWithSize = (
-    (mainSizeTableField && !rawTargetFields.some(isGenericBareSizeTargetFieldName))
-    || (vipSizeTableField && !rawTargetFields.some(isVipBareSizeTargetFieldName))
-  )
-    ? ["尺码", ...rawTargetFields]
+  const businessTargetFields = mainSizeTableField
+    ? mainSizeChartTargetFields(rawTargetFields, garmentType)
     : rawTargetFields;
+  const forceMainSizeColumns = mainSizeTableField && businessTargetFields !== rawTargetFields;
+  const targetFieldsWithSize = (
+    (mainSizeTableField && !businessTargetFields.some(isGenericBareSizeTargetFieldName))
+    || (vipSizeTableField && !businessTargetFields.some(isVipBareSizeTargetFieldName))
+  )
+    ? ["尺码", ...businessTargetFields]
+    : businessTargetFields;
   const targetFields = multiPlatformSizeField
     ? multiPlatformSizeTargetFields(rawTargetFields)
     : targetFieldsWithSize;
@@ -640,9 +649,11 @@ export function buildSizeChartForTemplate({
       if (multiPlatformSizeField) return multiPlatformSizeCellValue(size, mapping.targetField);
       const derivedValue = derivedValueForMapping(mapping, size, { gender, garmentType, vipSizeTableField });
       if (derivedValue != null) return derivedValue;
-      return mapping.sourcePoint
-        ? mappedSizeChartValue(mapping, valueByPointAndSize.get(`${compactKey(mapping.sourcePoint)}\u0000${size}`) ?? "0")
-        : "0";
+      if (!mapping.sourcePoint) return "";
+      const valueKey = `${compactKey(mapping.sourcePoint)}\u0000${size}`;
+      return valueByPointAndSize.has(valueKey)
+        ? mappedSizeChartValue(mapping, valueByPointAndSize.get(valueKey))
+        : "";
     });
     valuesBySize.set(size, values);
   }
@@ -652,7 +663,7 @@ export function buildSizeChartForTemplate({
     if (
       multiPlatformSizeField
         ? values.length > 0
-        : values.length > 0 && values.every((value) => !isBlankSizeChartValue(value))
+        : forceMainSizeColumns || (values.length > 0 && values.every((value) => !isBlankSizeChartValue(value)))
     ) {
       activeMappingIndexes.add(index);
     }

@@ -121,7 +121,7 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
       { fieldName: "尺码类型", fieldType: "SINGLE_CHOICE", options: ["通用", "欧码(童鞋)", "中国码"] },
       { fieldName: "适用年龄", fieldType: "SINGLE_CHOICE", options: ["1-3岁", "3-14岁", "7岁-14岁", "14岁以上"] },
       { fieldName: "适用年龄(多选)", fieldType: "MULTI_CHOICE", options: ["1-3岁", "3-6岁", "6-9岁", "9-12岁", "10岁以上"] },
-      { fieldName: "尺码表", fieldType: "MULTI_TEXT", options: ["适合脚长", "鞋内长", "脚长"] },
+      { fieldName: "尺码表", fieldType: "MULTI_TEXT", options: ["适合脚长", "尺码", "鞋内长", "脚长"] },
       { fieldName: "唯品会尺码表", fieldType: "MULTI_TEXT", options: ["欧洲码", "脚长", "鞋内长", "中国码"] },
       { fieldName: "天猫尺码表", fieldType: "MULTI_TEXT", options: ["脚长", "鞋内长"] },
       { fieldName: "抖音尺码表", fieldType: "MULTI_TEXT", options: ["脚长(cm)", "备注"] },
@@ -147,11 +147,12 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
   assert.deepEqual(result["适用年龄"], { valueText: "3-14岁", valueJson: {} });
   assert.deepEqual(result["适用年龄(多选)"], { valueText: "3-6岁;6-9岁;9-12岁", valueJson: {} });
   assert.deepEqual(result["尺码表"].valueJson, {
-    title: "尺码,适合脚长,鞋内长",
+    title: "尺码,脚长,鞋内长",
     "26码": "26,16,17",
     "27码": "27,16.5,17.7",
     "38码": "38,24,25",
   });
+  assert.doesNotMatch(result["尺码表"].valueJson.title, /适合脚长/);
   assert.deepEqual(result["唯品会尺码表"].valueJson, {
     title: "欧洲码,脚长,鞋内长",
     "26码": "26码,160,170.32",
@@ -200,8 +201,7 @@ test("shoe chart builder refuses clothing placeholders and unsupported live colu
     match: { status: "matched", chartCode: "sport_leisure", templateType: "运动", shoeSizeTableType: "", legacyShoeType: "", reason: "test" },
   });
 
-  assert.equal(result["尺码表"].valueJson.title, "尺码,适合脚长,鞋内长");
-  assert.equal(result["尺码表"].valueJson["26码"], "26,16,17");
+  assert.equal(result["尺码表"], undefined);
   assert.doesNotMatch(JSON.stringify(result), /身高|衣长|胸围|袖长/);
 });
 
@@ -348,7 +348,8 @@ test("shoe launch-plan evidence deterministically fills required material, age, 
   };
 
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("抖音参考价格类型", input), "吊牌价");
-  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("是否商场同款", input), "");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("是否商场同款", input), "否");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("销售渠道类型", input), "纯电商");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("帮面材质(多选)", input), "织物");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("材质(1688)", input), "织物");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("材质功能", input), "防渗水");

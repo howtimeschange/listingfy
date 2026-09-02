@@ -159,13 +159,13 @@ test("fills apparel multi-platform sizes with full platform columns and only bar
   const result = buildSizeChartForTemplate({
     rows,
     spuCode: "208426121101",
-    template: { fieldName: "多平台尺码", options: ["京东", "天猫", "快手", "微信视频小店", "拼多多"] },
+    template: { fieldName: "多平台尺码", options: ["得物", "京东", "天猫", "快手", "微信视频小店", "拼多多"] },
   });
 
   assert.deepEqual(result.valueJson, {
-    title: "京东,天猫,快手,微信视频小店,拼多多",
-    "130cm": "130,,,,",
-    "140cm": "140,,,,",
+    title: "天猫,京东,拼多多,微信视频小店,小红书,快手",
+    "130cm": ",130,,,,",
+    "140cm": ",140,,,,",
   });
 });
 
@@ -203,6 +203,89 @@ test("doubles half-width chest waist hip and leg-opening measurements and omits 
   assert.deepEqual(result.valueJson, {
     title: "尺码,胸围,腰围,臀围,脚口",
     "90cm": "90,60,42,74,16",
+  });
+});
+
+test("forces denim pants main size chart to the eight business columns", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [
+      { "款号": "202426108035", "测量点": "裤长", "尺码": "140/", "尺码值": "82.0" },
+      { "款号": "202426108035", "测量点": "脚口翻折高", "尺码": "140/", "尺码值": "8.0" },
+      { "款号": "202426108035", "测量点": "全腰围（平量）", "尺码": "140/", "尺码值": "55.0" },
+      { "款号": "202426108035", "测量点": "全腰围（拉量）", "尺码": "140/", "尺码值": "74.0" },
+      { "款号": "202426108035", "测量点": "臀围", "尺码": "140/", "尺码值": "80.0" },
+      { "款号": "202426108035", "测量点": "1/2脚口（平量）", "尺码": "140/", "尺码值": "23.2" },
+      { "款号": "202426108035", "测量点": "后袋宽", "尺码": "140/", "尺码值": "12.5" },
+    ],
+    spuCode: "202426108035",
+    template: { fieldName: "尺码表", options: ["裤长", "脚口翻折高", "腰围", "全腰围（拉量）", "臀围", "脚口", "后袋宽"] },
+    garmentType: "牛仔长裤",
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "尺码,尺码,裤长,腰围,臀围,脚口,身高,体重",
+    "140cm": "140,140,82,55,80,46.4,140,31",
+  });
+  assert.equal(result.unmatchedTargets.includes("脚口翻折高"), false);
+});
+
+test("forces apparel top main size chart to fixed columns and prefers three-point sleeve length", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [
+      { "款号": "202426108104", "测量点": "衣长", "尺码": "130", "尺码值": "52" },
+      { "款号": "202426108104", "测量点": "肩宽", "尺码": "130", "尺码值": "36" },
+      { "款号": "202426108104", "测量点": "胸围", "尺码": "130", "尺码值": "84" },
+      { "款号": "202426108104", "测量点": "袖长", "尺码": "130", "尺码值": "41" },
+      { "款号": "202426108104", "测量点": "袖长（三点量）插肩/落肩", "尺码": "130", "尺码值": "57" },
+    ],
+    spuCode: "202426108104",
+    template: { fieldName: "尺码表", options: ["领口", "衣长", "肩宽", "胸围", "袖长", "下摆围"] },
+    gender: "女童",
+    garmentType: "卫衣",
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
+    "130cm": "130,130,52,36,84,57,130,25",
+  });
+  assert.equal(result.mappings.find((item) => item.targetField === "袖长")?.sourcePoint, "袖长（三点量）插肩/落肩");
+});
+
+test("keeps fixed apparel top size-chart columns when a source point is absent", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [
+      { "款号": "202426121024", "测量点": "衣长", "尺码": "130", "尺码值": "43" },
+      { "款号": "202426121024", "测量点": "胸围", "尺码": "130", "尺码值": "85" },
+      { "款号": "202426121024", "测量点": "袖长（三点量） 插肩/落肩", "尺码": "130", "尺码值": "61" },
+    ],
+    spuCode: "202426121024",
+    template: { fieldName: "尺码表", options: ["衣长", "胸围", "袖长"] },
+    gender: "女童",
+    garmentType: "圆领卫衣",
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
+    "130cm": "130,130,43,,85,61,130,25",
+  });
+});
+
+test("does not fabricate zero values when a size label cannot be parsed", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [
+      { "款号": "202426121024", "测量点": "衣长", "尺码": "试穿码", "尺码值": "43" },
+      { "款号": "202426121024", "测量点": "胸围", "尺码": "试穿码", "尺码值": "85" },
+      { "款号": "202426121024", "测量点": "袖长（三点量）插肩/落肩", "尺码": "试穿码", "尺码值": "61" },
+    ],
+    spuCode: "202426121024",
+    template: { fieldName: "尺码表", options: ["衣长", "胸围", "袖长"] },
+    gender: "女童",
+    garmentType: "圆领卫衣",
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
+    "试穿码": ",,43,,85,61,,",
   });
 });
 

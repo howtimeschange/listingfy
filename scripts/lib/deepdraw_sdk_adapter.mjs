@@ -155,7 +155,10 @@ function shoeSaleSizeValue(value, options = {}) {
 }
 
 function sizeMatchKeys(value) {
-  const text = stringValue(value).split("*")[0].trim();
+  const text = stringValue(value)
+    .split("*")[0]
+    .replace(/[（(]\s*充绒量[^）)]*[）)]/g, "")
+    .trim();
   if (!text) return [];
   const normalized = sdkSizeValue(text);
   const numberText = normalized.match(/^(\d+)cm$/i)?.[1] ?? "";

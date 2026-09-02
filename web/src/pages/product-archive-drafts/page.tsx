@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FocusEvent, type PointerEven
 import { createPortal } from "react-dom"
 import { Link } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ChevronDown, ChevronRight, ChevronUp, CircleHelp, Download, ExternalLink, FileSpreadsheet, FileText, ListTree, Loader2, Maximize2, PackagePlus, RefreshCw, Save, Search, Send, ShieldCheck, Sparkles, Trash2, Upload, X } from "lucide-react"
+import { AlertTriangle, ChevronDown, ChevronRight, ChevronUp, CircleHelp, Download, ExternalLink, FileSpreadsheet, FileText, ListTree, Loader2, Maximize2, PackagePlus, RefreshCw, Save, Search, Send, ShieldCheck, Sparkles, Trash2, Upload, X } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { useAuth } from "@/lib/auth-context"
@@ -410,6 +410,20 @@ const statusLabels: Record<string, string> = {
   readback_verified: "回读通过",
   readback_mismatch: "回读不一致",
   failed: "失败",
+}
+
+type DraftSubmitMode = "create" | "full_update" | "incremental_update"
+
+function draftSubmitModeLabel(mode: DraftSubmitMode) {
+  if (mode === "full_update") return "全量更新"
+  if (mode === "incremental_update") return "增量更新"
+  return "发布"
+}
+
+function draftSubmitModeTaskTitle(mode: DraftSubmitMode) {
+  if (mode === "full_update") return "批量全量更新深绘商品"
+  if (mode === "incremental_update") return "批量增量更新深绘商品"
+  return "批量发布到深绘"
 }
 
 function statusClass(status: string) {
@@ -2347,6 +2361,7 @@ export default function ProductArchiveDraftsPage() {
   const [skipLaunchPlan, setSkipLaunchPlan] = useState(false)
   const [workflowResult, setWorkflowResult] = useState<ProductArchiveWorkflowResponse | null>(null)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
+  const [batchSubmitMode, setBatchSubmitMode] = useState<DraftSubmitMode>("create")
   const [batchJobId, setBatchJobId] = useState<string | null>(null)
   const [selectedDraftIds, setSelectedDraftIds] = useState<Set<number>>(new Set())
   const [imagePreviewTarget, setImagePreviewTarget] = useState<ImagePreviewDialogTarget | null>(null)
@@ -2739,24 +2754,26 @@ export default function ProductArchiveDraftsPage() {
   })
 
   const batchPublishToDeepdraw = useMutation({
-    mutationFn: async (draftIds: number[]) => api.post<AsyncTaskJob>("/product-archive-drafts/publish-jobs", {
+    mutationFn: async ({ draftIds, submitMode }: { draftIds: number[]; submitMode: DraftSubmitMode }) => api.post<AsyncTaskJob>("/product-archive-drafts/publish-jobs", {
       draftIds,
+      submitMode,
+      updateExisting: submitMode === "full_update",
     }),
-    onSuccess: (job) => {
+    onSuccess: (job, variables) => {
       addTask({
         job,
         type: "product_archive_publish",
-        title: "批量发布到深绘",
-        description: `待逐条发布 ${formatNumber(job.total_count)} 个深绘建档草稿，接口繁忙会自动延迟重试`,
+        title: draftSubmitModeTaskTitle(variables.submitMode),
+        description: `待逐条${draftSubmitModeLabel(variables.submitMode)} ${formatNumber(job.total_count)} 个深绘建档草稿，接口繁忙会自动延迟重试`,
         endpoint: `/product-archive-drafts/publish-jobs/${job.id}`,
       })
       setPublishDialogOpen(false)
       setSelectedDraftIds(new Set())
-      toast.success("已加入任务中心：批量发布到深绘")
+      toast.success(`已加入任务中心：${draftSubmitModeTaskTitle(variables.submitMode)}`)
       openTaskCenter()
     },
-    onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "提交批量发布任务失败")
+    onError: (error, variables) => {
+      toast.error(error instanceof Error ? error.message : `提交批量${draftSubmitModeLabel(variables.submitMode)}任务失败`)
     },
   })
 
@@ -2874,7 +2891,14 @@ export default function ProductArchiveDraftsPage() {
       toast.info("请先选择草稿")
       return
     }
-    batchPublishToDeepdraw.mutate(selectedDrafts.map((item) => item.id))
+    if (batchSubmitMode === "incremental_update") {
+      toast.info("深绘增量更新待接口回读验证后启用")
+      return
+    }
+    batchPublishToDeepdraw.mutate({
+      draftIds: selectedDrafts.map((item) => item.id),
+      submitMode: batchSubmitMode,
+    })
   }
 
   function openTradeEditor(item: ProductArchiveDraftRow) {
@@ -2983,27 +3007,48 @@ export default function ProductArchiveDraftsPage() {
                   disabled={!canSubmit || selectedDrafts.length === 0 || batchPublishToDeepdraw.isPending}
                 >
                   {batchPublishToDeepdraw.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-                  批量发布到深绘{selectedDrafts.length ? ` ${selectedDrafts.length}` : ""}
+                  批量发布/更新{selectedDrafts.length ? ` ${selectedDrafts.length}` : ""}
                 </Button>
               </DialogTrigger>
               <DialogContent className="sm:max-w-md">
                 <DialogHeader>
-                  <DialogTitle>批量发布到深绘</DialogTitle>
+                  <DialogTitle>{draftSubmitModeTaskTitle(batchSubmitMode)}</DialogTitle>
                   <DialogDescription>
-                    将对已选择的 {formatNumber(selectedDrafts.length)} 个草稿提交后台发布任务。系统会逐个查重、提交并回读校验；接口繁忙会自动延迟重试，单款失败不会中断整批。
+                    将对已选择的 {formatNumber(selectedDrafts.length)} 个草稿提交后台{draftSubmitModeLabel(batchSubmitMode)}任务。系统会逐个查重、提交并回读校验；接口繁忙会自动延迟重试，单款失败不会中断整批。
                   </DialogDescription>
                 </DialogHeader>
+                <div className="grid gap-2">
+                  <div className="text-xs font-medium text-muted-foreground">提交模式</div>
+                  <Select value={batchSubmitMode} onValueChange={(value) => setBatchSubmitMode(value as DraftSubmitMode)}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="create">发布到深绘</SelectItem>
+                      <SelectItem value="full_update">全量更新</SelectItem>
+                      <SelectItem value="incremental_update" disabled>
+                        增量更新（待启用）
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {batchSubmitMode === "incremental_update" ? (
+                    <div className="flex items-center gap-2 rounded-md border border-[#f4ddb3] bg-[#fffaf0] px-3 py-2 text-xs text-[#9a6500]">
+                      <AlertTriangle className="size-4 shrink-0" />
+                      深绘增量更新待接口回读验证后启用
+                    </div>
+                  ) : null}
+                </div>
                 <DialogFooter>
                   <Button type="button" variant="outline" onClick={() => setPublishDialogOpen(false)}>
                     取消
                   </Button>
                   <Button
                     type="button"
-                    disabled={!canSubmit || selectedDrafts.length === 0 || batchPublishToDeepdraw.isPending}
+                    disabled={!canSubmit || selectedDrafts.length === 0 || batchPublishToDeepdraw.isPending || batchSubmitMode === "incremental_update"}
                     onClick={runBatchPublishToDeepdraw}
                   >
-                    {batchPublishToDeepdraw.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-                    提交后台发布任务
+                    {batchPublishToDeepdraw.isPending ? <Loader2 className="size-4 animate-spin" /> : batchSubmitMode === "full_update" ? <RefreshCw className="size-4" /> : <Send className="size-4" />}
+                    提交后台{draftSubmitModeLabel(batchSubmitMode)}任务
                   </Button>
                 </DialogFooter>
               </DialogContent>

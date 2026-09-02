@@ -79,6 +79,7 @@ import { readSpreadsheetSheetsFromFileInWorker } from "../services/spreadsheet-w
 import { readPlmSizeChartWorkbook } from "../../../scripts/lib/product_archive_size_chart.mjs"
 import { getDefaultAiScenarioRouter } from "../../../scripts/lib/ai_routing_context.mjs"
 import { backgroundTaskMaxActive, withBackgroundTaskSlot } from "../lib/background-task-limiter"
+import type { ProductArchiveSubmitMode } from "../services/product-archive-drafts"
 
 const productArchiveDrafts = new Hono()
 const PROJECT_ROOT =
@@ -88,6 +89,36 @@ const PROJECT_ROOT =
 const UPLOAD_DIR = path.join(os.tmpdir(), "listingify-upload")
 const TEMPLATE_DIR = path.join(PROJECT_ROOT, "data", "product-archive-templates")
 const DRAFT_IMAGE_DIR = path.join(PROJECT_ROOT, "data", "product-archive-draft-images")
+
+function productArchiveCompressedImageName(fileName: string) {
+  const extension = path.extname(fileName)
+  const baseName = extension ? fileName.slice(0, -extension.length) : fileName
+  return `${baseName}.compressed.jpg`
+}
+
+async function writeCompressedProductArchiveDraftImage(input: {
+  imageDir: string
+  fileName: string
+  buffer: Buffer
+}) {
+  const fileName = productArchiveCompressedImageName(input.fileName)
+  const localPath = path.join(input.imageDir, `${randomUUID()}-${fileName}`)
+  const buffer = await sharp(input.buffer)
+    .rotate()
+    .resize(1000, 1000, { fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 84, mozjpeg: true })
+    .toBuffer()
+  const dimensions = readImageDimensions(buffer)
+  await writeFile(localPath, buffer, { flag: "wx" })
+  return {
+    localPath,
+    fileName,
+    mimeType: "image/jpeg",
+    size: buffer.length,
+    width: dimensions.width,
+    height: dimensions.height,
+  }
+}
 const MB = 1024 * 1024
 const SPREADSHEET_MULTIPART_OVERHEAD_BYTES = MB
 
@@ -425,6 +456,7 @@ type ProductArchivePublishJob = {
     actor: AuditActor | null
     ipAddress: string | null
     retryDelayMs: number
+    submitMode: ProductArchiveSubmitMode
   }
   items: ProductArchivePublishJobItem[]
   result: Record<string, unknown> | null
@@ -444,6 +476,28 @@ function throwIfTaskAborted(signal?: AbortSignal) {
 
 function objectValue(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function productArchiveSubmitModeFromBody(body: Record<string, unknown>): ProductArchiveSubmitMode {
+  const rawMode = stringValue(body.submitMode ?? body.submit_mode ?? body.updateMode ?? body.update_mode).toLowerCase()
+  if (!rawMode) return body.updateExisting === true ? "full_update" : "create"
+  if (rawMode === "create" || rawMode === "publish") return "create"
+  if (rawMode === "full_update" || rawMode === "full-update" || rawMode === "update_existing") return "full_update"
+  if (rawMode === "incremental_update" || rawMode === "incremental-update") return "incremental_update"
+  throw new HTTPException(400, { message: "不支持的深绘提交模式" })
+}
+
+function productArchiveSubmitModeLabel(mode: ProductArchiveSubmitMode) {
+  if (mode === "full_update") return "全量更新"
+  if (mode === "incremental_update") return "增量更新"
+  return "提交"
+}
+
+function assertExecutableProductArchiveSubmitMode(mode: ProductArchiveSubmitMode) {
+  if (mode !== "incremental_update") return
+  throw new HTTPException(400, {
+    message: "深绘增量更新暂未启用：当前没有经过业务码和资源回读验证的安全增量写入路径，请先使用全量更新",
+  })
 }
 
 function scheduleProductArchiveBackgroundWorker(run: () => void) {
@@ -1435,8 +1489,14 @@ function publishRetrySafety(db: ReturnType<typeof getDb>, draftId: number) {
   return { retryable: true, reason: "" }
 }
 
-function publishItemResultFromSubmitResult(result: unknown, draftId: number, spuCode: string) {
+function publishItemResultFromSubmitResult(
+  result: unknown,
+  draftId: number,
+  spuCode: string,
+  submitMode: ProductArchiveSubmitMode = "create",
+) {
   const record = objectValue(result)
+  const fullUpdate = submitMode === "full_update"
   if (record.alreadySubmitting === true) {
     const message = "草稿正在提交中，请先在详情页回读确认后再重试"
     return {
@@ -1448,6 +1508,7 @@ function publishItemResultFromSubmitResult(result: unknown, draftId: number, spu
         resultKind: "already_submitting",
         status: stringValue(record.status),
         message,
+        submitMode,
       },
     }
   }
@@ -1461,16 +1522,17 @@ function publishItemResultFromSubmitResult(result: unknown, draftId: number, spu
         resultKind: "duplicate_found",
         status: "duplicate_found",
         message,
+        submitMode,
       },
     }
   }
   const status = stringValue(record.status) || "submitted"
   const resultKind = status === "readback_verified" ? "published" : status === "readback_mismatch" ? "readback_mismatch" : "submitted"
   const message = resultKind === "published"
-    ? "已发布并回读一致"
+    ? fullUpdate ? "已全量更新并回读一致" : "已发布并回读一致"
     : resultKind === "readback_mismatch"
-      ? "已创建，但深绘回读不一致，请进详情复核"
-      : `已提交到深绘，状态：${status}`
+      ? fullUpdate ? "已全量更新，但深绘回读不一致，请进详情复核" : "已创建，但深绘回读不一致，请进详情复核"
+      : fullUpdate ? `已提交全量更新到深绘，状态：${status}` : `已提交到深绘，状态：${status}`
   return {
     ok: true,
     result: {
@@ -1479,6 +1541,7 @@ function publishItemResultFromSubmitResult(result: unknown, draftId: number, spu
       resultKind,
       status,
       message,
+      submitMode,
       ok: record.ok === false ? false : true,
     },
   }
@@ -1491,6 +1554,7 @@ function cloneProductArchivePublishJob(job: ProductArchivePublishJob) {
     options: {
       ...job.options,
       actor: job.options.actor ? { ...job.options.actor } : null,
+      submitMode: job.options.submitMode ?? "create",
     },
     items: job.items.map((item) => ({ ...item, result: item.result ? { ...item.result } : null })),
     current_item: currentItem ? { ...currentItem } : null,
@@ -1572,9 +1636,13 @@ function createProductArchivePublishQueue({
       try {
         const submitResult = await withBackgroundTaskSlot(
           "product_archive_publish",
-          () => submitProductArchiveDraft(getDb(), item.draft_id, { dryRun: false }),
+          () => submitProductArchiveDraft(getDb(), item.draft_id, {
+            dryRun: false,
+            submitMode: job.options.submitMode,
+            updateExisting: job.options.submitMode === "full_update",
+          }),
         )
-        const finished = publishItemResultFromSubmitResult(submitResult, item.draft_id, item.spu_code)
+        const finished = publishItemResultFromSubmitResult(submitResult, item.draft_id, item.spu_code, job.options.submitMode)
         if (!finished.ok) {
           setItemFinished(job, item, "failed", finished.result, finished.error)
           return
@@ -1585,11 +1653,12 @@ function createProductArchivePublishQueue({
             module: "PRODUCT_ARCHIVE_DRAFT",
             entityType: "product_archive_draft",
             entityId: item.draft_id,
-            summary: `后台批量发布深绘建档草稿 ${item.spu_code}`,
+            summary: `后台批量${productArchiveSubmitModeLabel(job.options.submitMode)}深绘建档草稿 ${item.spu_code}`,
             metadata: {
               jobId: job.id,
               draftId: item.draft_id,
               spuCode: item.spu_code,
+              submitMode: job.options.submitMode,
               attemptCount: item.attempt_count,
               result: finished.result,
             },
@@ -1631,9 +1700,11 @@ function createProductArchivePublishQueue({
     const completedItems = job.items.filter((item) => item.status === "completed")
     const results = completedItems.map((item) => objectValue(item.result))
     job.result = {
+      submitMode: job.options.submitMode,
       processedDraftCount: completedItems.length,
       failedDraftCount: job.items.filter((item) => item.status === "failed").length,
-      publishedCount: results.filter((result) => stringValue(result.resultKind) === "published").length,
+      publishedCount: results.filter((result) => stringValue(result.resultKind) === "published" && stringValue(result.submitMode) !== "full_update").length,
+      fullUpdatedCount: results.filter((result) => stringValue(result.resultKind) === "published" && stringValue(result.submitMode) === "full_update").length,
       duplicateCount: results.filter((result) => stringValue(result.resultKind) === "duplicate_found").length,
       readbackMismatchCount: results.filter((result) => stringValue(result.resultKind) === "readback_mismatch").length,
       retryAttemptCount: job.items.reduce((sum, item) => sum + Math.max(0, item.attempt_count - 1), 0),
@@ -1717,12 +1788,14 @@ function createProductArchivePublishQueue({
     ipAddress,
     maxAttempts,
     retryDelayMs,
+    submitMode = "create",
   }: {
     targets: ProductArchiveDraftBatchTarget[]
     actor: AuditActor | null
     ipAddress: string | null
     maxAttempts?: unknown
     retryDelayMs?: unknown
+    submitMode?: ProductArchiveSubmitMode
   }) {
     if (targets.length === 0) throw new Error("请先选择需要发布的草稿")
     const nowText = new Date(now()).toISOString()
@@ -1739,7 +1812,7 @@ function createProductArchivePublishQueue({
       created_at: nowText,
       started_at: null,
       finished_at: null,
-      options: { actor, ipAddress, retryDelayMs: delayMs },
+      options: { actor, ipAddress, retryDelayMs: delayMs, submitMode },
       items: targets.map((target) => ({
         draft_id: target.draftId,
         spu_code: target.spuCode,
@@ -1766,6 +1839,7 @@ function createProductArchivePublishQueue({
       .filter((job) => job?.source === "publish")
     for (const storedJob of recovered) {
       const job = storedJob
+      job.options.submitMode ??= "create"
       job.status = "queued"
       job.started_at = null
       job.finished_at = null
@@ -2462,6 +2536,7 @@ export function requeueProductArchiveDraftAsyncTask(input: {
       targets,
       maxAttempts: original.items[0]?.max_attempts,
       retryDelayMs: original.options.retryDelayMs,
+      submitMode: original.options.submitMode ?? "create",
       actor: input.actor,
       ipAddress: input.ipAddress,
     })
@@ -2530,7 +2605,7 @@ function submitOperationException(error: unknown, prefix: string) {
   if (isProductArchiveDraftMutationConflictMessage(message)) {
     return new HTTPException(409, { message })
   }
-  const status = /草稿存在阻断|请选择|本地未找到|不存在|缺少|无效/.test(message) ? 400 : 502
+  const status = /草稿存在阻断|请选择|本地未找到|不存在|缺少|无效|暂未启用|暂不支持/.test(message) ? 400 : 502
   return new HTTPException(status, { message: `${prefix}：${message || "未知错误"}` })
 }
 
@@ -2694,29 +2769,63 @@ async function saveDraftImageUpload(input: {
   const imageDir = path.join(DRAFT_IMAGE_DIR, String(draftId))
   await mkdir(imageDir, { recursive: true })
   const fileName = safeDraftImageUploadName(input.file.fileName, input.file.extension)
-  const localPath = path.join(imageDir, `${randomUUID()}-${fileName}`)
+  const originalLocalPath = path.join(imageDir, `${randomUUID()}-original-${fileName}`)
+  let localPath = originalLocalPath
+  let storedFileName = fileName
+  let storedMimeType = input.file.mimeType
+  let storedFileSize = input.file.size
+  let storedWidth = input.file.width
+  let storedHeight = input.file.height
+  let compressed: Awaited<ReturnType<typeof writeCompressedProductArchiveDraftImage>> | null = null
+  let compressionError = ""
   try {
-    await writeFile(localPath, input.file.buffer, { flag: "wx" })
+    await writeFile(originalLocalPath, input.file.buffer, { flag: "wx" })
+    try {
+      compressed = await writeCompressedProductArchiveDraftImage({
+        imageDir,
+        fileName,
+        buffer: input.file.buffer,
+      })
+      localPath = compressed.localPath
+      storedFileName = compressed.fileName
+      storedMimeType = compressed.mimeType
+      storedFileSize = compressed.size
+      storedWidth = compressed.width
+      storedHeight = compressed.height
+    } catch (error) {
+      compressionError = errorMessage(error)
+      localPath = originalLocalPath
+    }
     return createProductArchiveDraftImage(input.db, {
       draftId,
       spuCode,
       sourceType: input.sourceType,
       sourceRef: input.sourceRef,
       localPath,
-      fileName,
+      fileName: storedFileName,
       originalFileName: input.file.originalFileName,
-      mimeType: input.file.mimeType,
-      fileSize: input.file.size,
-      width: input.file.width,
-      height: input.file.height,
+      mimeType: storedMimeType,
+      fileSize: storedFileSize,
+      width: storedWidth,
+      height: storedHeight,
       uploadedBy: input.uploadedBy,
       rawPayload: {
         original_file_name: input.file.originalFileName,
+        original_local_path: originalLocalPath,
+        compressed_local_path: compressed?.localPath ?? null,
+        compressed_from_original: compressed ? true : false,
+        compression_error: compressionError || null,
+        original_width: input.file.width,
+        original_height: input.file.height,
+        original_file_size: input.file.size,
+        compressed_width: compressed?.width ?? null,
+        compressed_height: compressed?.height ?? null,
+        compressed_file_size: compressed?.size ?? null,
         source_ref: input.sourceRef,
-        width: input.file.width,
-        height: input.file.height,
-        file_size: input.file.size,
-        mime_type: input.file.mimeType,
+        width: storedWidth,
+        height: storedHeight,
+        file_size: storedFileSize,
+        mime_type: storedMimeType,
         has_model_shot: input.file.hasModelShot === true,
         asset_kind: input.file.assetKind || null,
         asset_package: input.sourceType === "crawshrimp_asset_package",
@@ -2724,6 +2833,8 @@ async function saveDraftImageUpload(input: {
     })
   } catch (error) {
     await rm(localPath, { force: true })
+    await rm(originalLocalPath, { force: true })
+    if (compressed?.localPath && compressed.localPath !== localPath) await rm(compressed.localPath, { force: true })
     throw error
   }
 }
@@ -2740,29 +2851,65 @@ async function saveDraftAssetUpload(input: {
   const assetDir = path.join(DRAFT_IMAGE_DIR, String(draftId))
   await mkdir(assetDir, { recursive: true })
   const fileName = safeDraftAssetUploadName(input.file.fileName, input.file.extension)
-  const localPath = path.join(assetDir, `${randomUUID()}-${fileName}`)
+  const originalLocalPath = path.join(assetDir, `${randomUUID()}-original-${fileName}`)
+  let localPath = originalLocalPath
+  let storedFileName = fileName
+  let storedMimeType = input.file.mimeType
+  let storedFileSize = input.file.size
+  let storedWidth = input.file.width ?? null
+  let storedHeight = input.file.height ?? null
+  let compressed: Awaited<ReturnType<typeof writeCompressedProductArchiveDraftImage>> | null = null
+  let compressionError = ""
   try {
-    await writeFile(localPath, input.file.buffer, { flag: "wx" })
+    await writeFile(originalLocalPath, input.file.buffer, { flag: "wx" })
+    if (input.file.mimeType.startsWith("image/")) {
+      try {
+        compressed = await writeCompressedProductArchiveDraftImage({
+          imageDir: assetDir,
+          fileName,
+          buffer: input.file.buffer,
+        })
+        localPath = compressed.localPath
+        storedFileName = compressed.fileName
+        storedMimeType = compressed.mimeType
+        storedFileSize = compressed.size
+        storedWidth = compressed.width
+        storedHeight = compressed.height
+      } catch (error) {
+        compressionError = errorMessage(error)
+        localPath = originalLocalPath
+      }
+    }
     return createProductArchiveDraftImage(input.db, {
       draftId,
       spuCode,
       sourceType: "crawshrimp_asset_package",
       sourceRef: input.sourceRef,
       localPath,
-      fileName,
+      fileName: storedFileName,
       originalFileName: input.file.originalFileName,
-      mimeType: input.file.mimeType,
-      fileSize: input.file.size,
-      width: input.file.width ?? null,
-      height: input.file.height ?? null,
+      mimeType: storedMimeType,
+      fileSize: storedFileSize,
+      width: storedWidth,
+      height: storedHeight,
       uploadedBy: input.uploadedBy,
       rawPayload: {
         original_file_name: input.file.originalFileName,
+        original_local_path: originalLocalPath,
+        compressed_local_path: compressed?.localPath ?? null,
+        compressed_from_original: compressed ? true : false,
+        compression_error: compressionError || null,
+        original_width: input.file.width ?? null,
+        original_height: input.file.height ?? null,
+        original_file_size: input.file.size,
+        compressed_width: compressed?.width ?? null,
+        compressed_height: compressed?.height ?? null,
+        compressed_file_size: compressed?.size ?? null,
         source_ref: input.sourceRef,
-        width: input.file.width ?? null,
-        height: input.file.height ?? null,
-        file_size: input.file.size,
-        mime_type: input.file.mimeType,
+        width: storedWidth,
+        height: storedHeight,
+        file_size: storedFileSize,
+        mime_type: storedMimeType,
         asset_kind: input.file.assetKind,
         asset_package: true,
         ocr_asset: true,
@@ -2770,6 +2917,8 @@ async function saveDraftAssetUpload(input: {
     })
   } catch (error) {
     await rm(localPath, { force: true })
+    await rm(originalLocalPath, { force: true })
+    if (compressed?.localPath && compressed.localPath !== localPath) await rm(compressed.localPath, { force: true })
     throw error
   }
 }
@@ -2791,14 +2940,38 @@ async function repairLegacyDraftImageLocalPath(db: ReturnType<typeof getDb>, ima
   const imageDir = path.join(DRAFT_IMAGE_DIR, String(draftId))
   await mkdir(imageDir, { recursive: true })
   const fileName = safeDraftImageUploadName(stringValue(image.file_name) || path.basename(sourcePath), detected.extension)
-  const localPath = path.join(imageDir, `${randomUUID()}-${fileName}`)
+  const originalLocalPath = path.join(imageDir, `${randomUUID()}-original-${fileName}`)
+  let localPath = originalLocalPath
+  let storedFileName = fileName
+  let storedMimeType = detected.contentType
+  let storedFileSize = buffer.length
+  let storedWidth = dimensions.width
+  let storedHeight = dimensions.height
+  let compressed: Awaited<ReturnType<typeof writeCompressedProductArchiveDraftImage>> | null = null
+  let compressionError = ""
   try {
-    await writeFile(localPath, buffer, { flag: "wx" })
+    await writeFile(originalLocalPath, buffer, { flag: "wx" })
+    try {
+      compressed = await writeCompressedProductArchiveDraftImage({
+        imageDir,
+        fileName,
+        buffer,
+      })
+      localPath = compressed.localPath
+      storedFileName = compressed.fileName
+      storedMimeType = compressed.mimeType
+      storedFileSize = compressed.size
+      storedWidth = compressed.width
+      storedHeight = compressed.height
+    } catch (error) {
+      compressionError = errorMessage(error)
+      localPath = originalLocalPath
+    }
     const validated = await assertLocalImageFile({ rootDir: DRAFT_IMAGE_DIR, filePath: localPath })
     db.transaction(() => {
       assertProductArchiveDraftMutable(db, draftId)
       const current = db.prepare(`
-        select id, draft_id, source_type, local_path
+        select id, draft_id, source_type, local_path, raw_payload_json
         from product_archive_draft_image
         where id = ?
           and draft_id = ?
@@ -2820,6 +2993,7 @@ async function repairLegacyDraftImageLocalPath(db: ReturnType<typeof getDb>, ima
           file_size = ?,
           width = ?,
           height = ?,
+          raw_payload_json = ?::jsonb,
           updated_at = ?::timestamptz
         where id = ?
           and draft_id = ?
@@ -2827,11 +3001,28 @@ async function repairLegacyDraftImageLocalPath(db: ReturnType<typeof getDb>, ima
           and local_path = ?
       `).run(
         localPath,
-        fileName,
-        detected.contentType,
-        buffer.length,
-        dimensions.width,
-        dimensions.height,
+        storedFileName,
+        storedMimeType,
+        storedFileSize,
+        storedWidth,
+        storedHeight,
+        JSON.stringify({
+          ...objectValue(current.raw_payload_json),
+          original_local_path: originalLocalPath,
+          compressed_local_path: compressed?.localPath ?? null,
+          compressed_from_original: compressed ? true : false,
+          compression_error: compressionError || null,
+          original_width: dimensions.width,
+          original_height: dimensions.height,
+          original_file_size: buffer.length,
+          compressed_width: compressed?.width ?? null,
+          compressed_height: compressed?.height ?? null,
+          compressed_file_size: compressed?.size ?? null,
+          width: storedWidth,
+          height: storedHeight,
+          file_size: storedFileSize,
+          mime_type: storedMimeType,
+        }),
         nowIso(),
         imageId,
         draftId,
@@ -2844,8 +3035,19 @@ async function repairLegacyDraftImageLocalPath(db: ReturnType<typeof getDb>, ima
     return validated
   } catch (error) {
     await rm(localPath, { force: true })
+    await rm(originalLocalPath, { force: true })
+    if (compressed?.localPath && compressed.localPath !== localPath) await rm(compressed.localPath, { force: true })
     throw error
   }
+}
+
+function productArchiveDraftImageStoragePaths(image: Record<string, unknown>) {
+  const rawPayload = objectValue(image.raw_payload_json)
+  return [
+    image.local_path,
+    rawPayload.original_local_path,
+    rawPayload.compressed_local_path,
+  ].map(stringValue).filter(Boolean)
 }
 
 type LocalDraftImageReferenceDb = {
@@ -4134,6 +4336,8 @@ productArchiveDrafts.post("/publish-jobs", async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_SUBMIT")
   const db = getDb()
   const body = await readJson(c)
+  const submitMode = productArchiveSubmitModeFromBody(objectValue(body))
+  assertExecutableProductArchiveSubmitMode(submitMode)
   const targets = productArchiveDraftTargetsByIds(db, draftIdsFromBody(body), {
     emptyMessage: "请先选择需要发布的草稿",
     limitEnv: "LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_BATCH_LIMIT",
@@ -4159,7 +4363,7 @@ productArchiveDrafts.post("/publish-jobs", async (c) => {
     module: "PRODUCT_ARCHIVE_DRAFT",
     entityType: "product_archive_draft_batch",
     entityId: job.id,
-    summary: `提交后台批量发布深绘建档草稿 ${job.total_count} 个`,
+    summary: `提交后台批量${productArchiveSubmitModeLabel(submitMode)}深绘建档草稿 ${job.total_count} 个`,
     metadata: {
       jobId: job.id,
       count: job.total_count,
@@ -4288,16 +4492,27 @@ productArchiveDrafts.get("/images/:imageId/file", async (c) => {
   if (!image || !localPath) {
     throw new HTTPException(404, { message: "图片不存在" })
   }
+  const rawPayload = objectValue(image.raw_payload_json)
+  const requestedVariant = c.req.query("variant") ?? c.req.query("size")
+  const variant = imageFileVariant(requestedVariant)
+  const requestedOriginalPath = (
+    variant === "original"
+    && stringValue(requestedVariant)
+    && rawPayload.original_local_path
+  )
+    ? stringValue(rawPayload.original_local_path)
+    : ""
+  const imageReadPath = requestedOriginalPath || localPath
   const mimeType = stringValue(image.mime_type).toLowerCase()
   const extension = path.extname(stringValue(image.file_name) || localPath).toLowerCase()
   if (mimeType === "application/pdf" || extension === ".pdf") {
     let file: Awaited<ReturnType<typeof assertLocalProductArchiveAssetFile>>
     try {
-      file = await assertLocalProductArchiveAssetFile({ rootDir: DRAFT_IMAGE_DIR, filePath: localPath })
+      file = await assertLocalProductArchiveAssetFile({ rootDir: DRAFT_IMAGE_DIR, filePath: imageReadPath })
     } catch (error) {
       throw productArchiveDraftMutationException(error)
     }
-    if (file.contentType === "application/pdf" && imageFileVariant(c.req.query("variant") ?? c.req.query("size")) === "thumbnail") {
+    if (file.contentType === "application/pdf" && variant === "thumbnail") {
       throw new HTTPException(400, { message: "PDF 文件不支持缩略图" })
     }
     return new Response(await readFile(file.realPath), {
@@ -4309,20 +4524,26 @@ productArchiveDrafts.get("/images/:imageId/file", async (c) => {
   }
   let file: Awaited<ReturnType<typeof assertLocalImageFile>>
   try {
-    file = await assertLocalImageFile({ rootDir: DRAFT_IMAGE_DIR, filePath: localPath })
+    file = await assertLocalImageFile({ rootDir: DRAFT_IMAGE_DIR, filePath: imageReadPath })
   } catch (error) {
     try {
-      if (stringValue(image.source_type) === "crawshrimp_asset_package") {
-        requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+      if (rawPayload.original_local_path) {
+        file = await assertLocalImageFile({ rootDir: DRAFT_IMAGE_DIR, filePath: stringValue(rawPayload.original_local_path) })
+      } else {
+        throw error
       }
-      const repaired = await repairLegacyDraftImageLocalPath(db, image as Record<string, unknown>)
-      if (!repaired) throw error
-      file = repaired
-    } catch (repairError) {
-      throw productArchiveDraftMutationException(repairError)
+    } catch (originalError) {
+      try {
+        if (stringValue(image.source_type) !== "crawshrimp_asset_package") throw originalError
+        requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+        const repaired = await repairLegacyDraftImageLocalPath(db, image as Record<string, unknown>)
+        if (!repaired) throw originalError
+        file = repaired
+      } catch (repairError) {
+        throw productArchiveDraftMutationException(repairError)
+      }
     }
   }
-  const variant = imageFileVariant(c.req.query("variant") ?? c.req.query("size"))
   if (variant === "thumbnail") {
     const buffer = await sharp(file.realPath)
       .rotate()
@@ -4418,7 +4639,7 @@ productArchiveDrafts.delete("/:draftId/images/:imageId", async (c) => {
   if (!image) {
     throw new HTTPException(404, { message: "图片不存在" })
   }
-  const cleanup = await cleanupUnreferencedDraftImageFiles(db, [image.local_path])
+  const cleanup = await cleanupUnreferencedDraftImageFiles(db, productArchiveDraftImageStoragePaths(image))
   auditFromContext(c, {
     action: "draft.image.deleted",
     module: "PRODUCT_ARCHIVE_DRAFT",
@@ -4634,19 +4855,21 @@ productArchiveDrafts.post("/:draftId/submit", async (c) => {
   const draftId = readId(c.req.param("draftId"))
   const body = await readJson(c)
   const dryRun = body.dryRun === true
-  const updateExisting = body.updateExisting === true
+  const submitMode = productArchiveSubmitModeFromBody(objectValue(body))
+  const updateExisting = submitMode === "full_update"
   let result: unknown
   try {
-    result = await submitProductArchiveDraft(db, draftId, { dryRun, updateExisting })
+    result = await submitProductArchiveDraft(db, draftId, { dryRun, updateExisting, submitMode })
   } catch (error) {
-    throw submitOperationException(error, dryRun ? "生成深绘提交预览失败" : updateExisting ? "更新深绘已有商品失败" : "发布到深绘失败")
+    throw submitOperationException(error, dryRun ? "生成深绘提交预览失败" : updateExisting ? "全量更新深绘商品失败" : submitMode === "incremental_update" ? "增量更新深绘商品失败" : "发布到深绘失败")
   }
   auditFromContext(c, {
-    action: dryRun ? "draft.submit.dry_run" : updateExisting ? "draft.submit.update" : "draft.submit.create",
+    action: dryRun ? "draft.submit.dry_run" : updateExisting ? "draft.submit.full_update" : submitMode === "incremental_update" ? "draft.submit.incremental_update" : "draft.submit.create",
     module: "PRODUCT_ARCHIVE_DRAFT",
     entityType: "product_archive_draft",
     entityId: draftId,
-    summary: `${dryRun ? "预览" : updateExisting ? "更新" : "提交"}深绘建档草稿 ${draftId}`,
+    summary: `${dryRun ? "预览" : productArchiveSubmitModeLabel(submitMode)}深绘建档草稿 ${draftId}`,
+    metadata: { submitMode },
   })
   return c.json(result)
 })

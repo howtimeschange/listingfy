@@ -269,6 +269,14 @@ interface SizeChartMappingSaveResponse {
   detail?: DraftDetail
 }
 
+type DraftSubmitMode = "create" | "full_update" | "incremental_update"
+
+function draftSubmitModeLabel(mode: DraftSubmitMode) {
+  if (mode === "full_update") return "全量更新深绘商品"
+  if (mode === "incremental_update") return "增量更新深绘商品"
+  return "确认发布到深绘"
+}
+
 function useDraftDetail(draftId: string | undefined) {
   return useQuery<DraftDetail>({
     queryKey: ["product-archive-drafts", draftId],
@@ -1377,6 +1385,7 @@ export default function ProductArchiveDraftDetailPage() {
   const [fieldValues, setFieldValues] = useState<Record<number, string>>({})
   const [tradeDialogOpen, setTradeDialogOpen] = useState(false)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
+  const [publishSubmitMode, setPublishSubmitMode] = useState<DraftSubmitMode>("create")
   const [sizeChartMappingDialogOpen, setSizeChartMappingDialogOpen] = useState(false)
   const [sizeChartSourceOpen, setSizeChartSourceOpen] = useState(false)
   const [sizeChartSourcePinned, setSizeChartSourcePinned] = useState(false)
@@ -1756,14 +1765,18 @@ export default function ProductArchiveDraftDetailPage() {
   })
 
   const publishSubmit = useMutation({
-    mutationFn: ({ updateExisting }: { updateExisting: boolean }) => api.post<{
+    mutationFn: ({ submitMode }: { submitMode: DraftSubmitMode }) => api.post<{
       status?: string
       duplicateFound?: boolean
       alreadySubmitting?: boolean
-    }>(`/product-archive-drafts/${draftId}/submit`, { dryRun: false, updateExisting }),
-    onSuccess: (result) => {
+    }>(`/product-archive-drafts/${draftId}/submit`, {
+      dryRun: false,
+      submitMode,
+      updateExisting: submitMode === "full_update",
+    }),
+    onSuccess: (result, variables) => {
       if (result.status === "readback_verified") {
-        toast.success("深绘商品已提交并完成字段回读校验")
+        toast.success(`${draftSubmitModeLabel(variables.submitMode)}已完成字段回读校验`)
         setPublishDialogOpen(false)
       } else if (result.duplicateFound) {
         toast.warning("深绘已存在同货号商品，本次未重复创建")
@@ -1774,10 +1787,19 @@ export default function ProductArchiveDraftDetailPage() {
       }
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
     },
-    onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "发布到深绘失败")
+    onError: (error, variables) => {
+      toast.error(error instanceof Error ? error.message : `${draftSubmitModeLabel(variables.submitMode)}失败`)
     },
   })
+
+  function openPublishDialogForMode(submitMode: DraftSubmitMode) {
+    if (submitMode === "incremental_update") {
+      toast.info("深绘增量更新待接口回读验证后启用")
+      return
+    }
+    setPublishSubmitMode(submitMode)
+    setPublishDialogOpen(true)
+  }
 
   if (!draft) {
     return (
@@ -1787,8 +1809,7 @@ export default function ProductArchiveDraftDetailPage() {
     )
   }
 
-  const updateExistingProduct = draft.status === "duplicate_found"
-  const publishActionLabel = updateExistingProduct ? "更新深绘已有商品" : "确认发布到深绘"
+  const publishActionLabel = draftSubmitModeLabel(publishSubmitMode)
 
   const draftSummaryItems = [
     { label: "状态", value: draft.status, detail: draft.trade_path || "待确认类目" },
@@ -1964,18 +1985,33 @@ export default function ProductArchiveDraftDetailPage() {
           提交预览
         </Button>
         <Dialog open={publishDialogOpen} onOpenChange={setPublishDialogOpen}>
-          <DialogTrigger asChild>
-            <Button type="button" size="sm" disabled={!canWrite || publishSubmit.isPending}>
-              {publishSubmit.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-              {publishActionLabel}
-            </Button>
-          </DialogTrigger>
+          <Button type="button" size="sm" disabled={!canWrite || publishSubmit.isPending} onClick={() => openPublishDialogForMode("create")}>
+            {publishSubmit.isPending && publishSubmitMode === "create" ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+            确认发布到深绘
+          </Button>
+          <Button type="button" variant="outline" size="sm" disabled={!canWrite || publishSubmit.isPending} onClick={() => openPublishDialogForMode("full_update")}>
+            {publishSubmit.isPending && publishSubmitMode === "full_update" ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+            全量更新
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled
+            title="深绘增量更新待接口回读验证后启用"
+            onClick={() => openPublishDialogForMode("incremental_update")}
+          >
+            <AlertTriangle className="size-4" />
+            增量更新
+          </Button>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle>{publishActionLabel}</DialogTitle>
               <DialogDescription>
-                {updateExistingProduct
-                  ? `将用当前草稿字段完整更新深绘中款号 ${draft.spu_code} 的已有商品，并回读核对尺码、平台尺码表和 SKU。`
+                {publishSubmitMode === "full_update"
+                  ? `将用当前草稿字段全量覆盖深绘中款号 ${draft.spu_code} 的已有商品，并回读核对字段、尺码表和 SKU。`
+                  : publishSubmitMode === "incremental_update"
+                    ? `款号 ${draft.spu_code} 的增量更新待深绘接口回读验证后启用。`
                   : `将对款号 ${draft.spu_code} 执行真实深绘建档。系统会先查重，再提交并回读校验。`}
               </DialogDescription>
             </DialogHeader>
@@ -1986,7 +2022,7 @@ export default function ProductArchiveDraftDetailPage() {
               <Button
                 type="button"
                 disabled={!canWrite || publishSubmit.isPending}
-                onClick={() => publishSubmit.mutate({ updateExisting: updateExistingProduct })}
+                onClick={() => publishSubmit.mutate({ submitMode: publishSubmitMode })}
               >
                 {publishSubmit.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
                 {publishActionLabel}

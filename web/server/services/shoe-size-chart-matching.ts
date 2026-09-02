@@ -539,14 +539,14 @@ export function buildShoeSizeChartFieldValues(input: {
 
   const generic = templates.get("尺码表")
   if (generic) {
-    const measurementColumns = supportedColumns(generic, ["适合脚长", "鞋内长"], { 鞋内长: ["内长", "鞋长"] })
+    const measurementColumns = supportedColumns(generic, ["脚长", "鞋内长"], { 鞋内长: ["内长", "鞋长"] })
     const columns = measurementColumns.length > 0 ? ["尺码", ...measurementColumns] : []
     const value = tableValue(
       rows,
       columns,
       (row, column) => {
         if (column === "尺码") return normalizeShoeSkuSize(row.size_value)
-        return column === "适合脚长" || column === "脚长" ? baselineFoot(row) : innerLength(row)
+        return column === "脚长" ? baselineFoot(row) : innerLength(row)
       },
       (row) => `${normalizeShoeSkuSize(row.size_value)}码`,
     )

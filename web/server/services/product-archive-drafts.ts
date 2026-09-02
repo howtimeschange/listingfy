@@ -177,9 +177,22 @@ interface DeepdrawResult {
   payload: unknown
 }
 
+export type ProductArchiveSubmitMode = "create" | "full_update" | "incremental_update"
+
+function productArchiveSubmitModeFromOptions(options: SubmitOptions): ProductArchiveSubmitMode {
+  if (options.submitMode) return options.submitMode
+  return options.updateExisting ? "full_update" : "create"
+}
+
+function assertProductArchiveSubmitModeExecutable(mode: ProductArchiveSubmitMode) {
+  if (mode !== "incremental_update") return
+  throw new Error("深绘增量更新暂未启用：当前没有经过业务码和资源回读验证的安全增量写入路径，请先使用全量更新")
+}
+
 interface SubmitOptions {
   dryRun?: boolean
   updateExisting?: boolean
+  submitMode?: ProductArchiveSubmitMode
   claimToken?: string
   search?: () => Promise<DeepdrawResult>
   create?: (payload: JsonRecord) => Promise<DeepdrawResult>
@@ -579,6 +592,19 @@ const PRODUCT_ARCHIVE_PLATFORM_LIST_PRICE_KEYS = new Set([
   "微信视频小店价格",
 ])
 
+const PRODUCT_ARCHIVE_FIELD_LEVEL_BLANK_LIST_PRICE_KEYS = new Set([
+  "唯品会市场价",
+  "唯品市场价",
+  "有赞划线价",
+  "有赞划线价格",
+  "多平台通用吊牌价",
+  "多平台吊牌价",
+  "通用吊牌价",
+])
+
+const PRODUCT_ARCHIVE_WASH_INSTRUCTION_TEXT = "请根据产品面料特性进行清洗养护，具体方法可参考产品水洗唛/标签"
+const PRODUCT_ARCHIVE_VIP_SIZE_TIP_TEXT = "数据仅供参考手工测量难免1-2cm误差；插肩袖(肩膀无明确肩点)款袖长从后领中量至袖口"
+
 const LAUNCH_PLAN_REFERENCE_FIELDS = new Set([
   "款号",
   "大货款号",
@@ -663,6 +689,32 @@ function isProductArchiveListPriceReference(value: unknown) {
   return LIST_PRICE_REFERENCE_KEYS.has(key) || PRODUCT_ARCHIVE_PLATFORM_LIST_PRICE_KEYS.has(key)
 }
 
+function isProductArchiveFieldLevelBlankListPriceFieldKey(key: string, input: {
+  shoeProduct?: boolean
+  apparelProduct?: boolean
+} = {}) {
+  if (!input.shoeProduct && !input.apparelProduct) return false
+  if (PRODUCT_ARCHIVE_FIELD_LEVEL_BLANK_LIST_PRICE_KEYS.has(key)) return true
+  if (/^唯品(?:会)?(?:商品)?市场价/.test(key)) return true
+  if (/^有赞.*划线价/.test(key)) return true
+  if (/多平台.*吊牌价/.test(key)) return true
+  return Boolean(input.shoeProduct) && (key === "京东市场价" || key === "京东自营市场价")
+}
+
+function isProductArchiveVipWeightOrPackageFieldKey(key: string) {
+  return /^唯品(?:会)?重量$/.test(key)
+    || /^唯品(?:会)?(?:商品)?【?包装】?(?:重量|长度|宽度|高度|长|宽|高)$/.test(key)
+}
+
+function isProductArchiveCategoryBusinessBlankFieldKey(key: string, input: {
+  shoeProduct?: boolean
+  apparelProduct?: boolean
+} = {}) {
+  if (!input.shoeProduct && !input.apparelProduct) return false
+  return isProductArchiveFieldLevelBlankListPriceFieldKey(key, input)
+    || isProductArchiveVipWeightOrPackageFieldKey(key)
+}
+
 function sourceReferenceText(value: unknown) {
   return stringValue(value)
     .replace(/^(固定|默认|取|读取|来自)\s*/i, "")
@@ -744,6 +796,7 @@ const PRODUCT_ARCHIVE_MERCHANT_SKU_RULE_COLUMNS = [
   "好衣库原价",
   "微信视频小店价格",
   "单品货号",
+  "1688件重尺-重(g)",
   "小红书商家编码",
   "天猫SKU搜索标题",
 ]
@@ -784,6 +837,8 @@ function merchantSkuFieldValue(spu: JsonRecord, skus: JsonRecord[], input: {
     const barcode = stringValue(sku.ean_code)
     const skuCode = stringValue(sku.sku_code) || sellerCode
     const skcCode = stringValue(sku.skc_code) || productCode
+    const shoeSizeCode = shoeProduct ? normalizeShoeSkuSize(sku.size_name ?? sku.size_code) : ""
+    const xhsMerchantCode = shoeProduct && shoeSizeCode ? `${skcCode}${shoeSizeCode}` : skuCode
     const valuesByColumn: Record<string, string> = {
       价格: price,
       货号: productCode,
@@ -802,7 +857,8 @@ function merchantSkuFieldValue(spu: JsonRecord, skus: JsonRecord[], input: {
       天猫特卖折扣价: retailPrice || price,
       天猫特卖专柜价: retailPrice || price,
       单品货号: barcode,
-      小红书商家编码: shoeProduct ? skcCode : skuCode,
+      "1688件重尺-重(g)": "1000",
+      小红书商家编码: xhsMerchantCode,
       天猫SKU搜索标题: guideTitle,
     }
     if (shoeProduct || isApparelProduct(spu, sourceRows)) {
@@ -1550,6 +1606,13 @@ function isProductArchivePddPlatform(value: unknown) {
   return /^(?:pdd|拼多多)$/i.test(stringValue(value))
 }
 
+function isProductArchiveWashInstructionFieldKey(key: string) {
+  return key.includes("洗涤说明")
+    || key.includes("洗护说明")
+    || key.includes("洗涤方法")
+    || key.includes("洗护方法")
+}
+
 export function isProductArchiveBusinessBlankField(
   fieldName: string,
   spu: JsonRecord = {},
@@ -1561,6 +1624,7 @@ export function isProductArchiveBusinessBlankField(
   const apparelProduct = isApparelProduct(spu, sourceRows)
   if ((shoeProduct || apparelProduct) && (key === "拼多多标题" || key === "拼多多短标题")) return true
   if ((shoeProduct || apparelProduct) && key === "商品短标题" && isProductArchivePddPlatform(templatePlatform)) return true
+  if (isProductArchiveCategoryBusinessBlankFieldKey(key, { shoeProduct, apparelProduct })) return true
   if (shoeProduct && isProductArchiveShoeBusinessBlankFieldKey(key)) return true
   if (shoeProduct && ["微信视频小店副标题", "快手商品卖点"].includes(key)) return false
   if (PRODUCT_ARCHIVE_ALWAYS_BLANK_FIELDS.has(key)) return true
@@ -1570,6 +1634,18 @@ export function isProductArchiveBusinessBlankField(
   if (PRODUCT_ARCHIVE_CUP_CONTEXT_FIELDS.has(key)) return !isCupProduct(spu, sourceRows)
   if (PRODUCT_ARCHIVE_ACCESSORY_CONTEXT_FIELDS.has(key)) return !isAccessoryProduct(spu, sourceRows)
   return false
+}
+
+function isProductArchiveForcedFixedDerivedField(fieldName: string, spu: JsonRecord = {}, sourceRows: JsonRecord[] = []) {
+  const key = compactFieldKey(fieldName)
+  return (isShoeProduct(spu, sourceRows) || isApparelProduct(spu, sourceRows))
+    && (
+      key === "抖音商品重量"
+      || isProductArchiveWashInstructionFieldKey(key)
+      || key === "唯品会温馨提示"
+      || key === "销售渠道类型"
+      || key === "是否商场同款"
+    )
 }
 
 function isProductArchiveDocumentOptionalField(fieldName: string) {
@@ -1592,6 +1668,10 @@ export function isProductArchiveFieldLocallyRequired(fieldName: string, input: {
 } = {}) {
   const apparelRequiredSizeChart = Boolean(input.apparelProduct)
     && ["尺码表", "唯品会尺码表", "抖音尺码表"].includes(compactFieldKey(fieldName))
+  if (isProductArchiveCategoryBusinessBlankFieldKey(businessRuleFieldKey(fieldName), {
+    shoeProduct: Boolean(input.shoeProduct),
+    apparelProduct: Boolean(input.apparelProduct),
+  })) return false
   if (Boolean(input.shoeProduct) && isProductArchiveShoeBusinessBlankField(fieldName)) return false
   if (Object.prototype.hasOwnProperty.call(input, "templatePresent")) {
     if (!input.templatePresent) return false
@@ -1641,6 +1721,14 @@ function launchDateValue(sourceRows: JsonRecord[]) {
   return ""
 }
 
+function mdmDateValue(spu: JsonRecord = {}) {
+  for (const sourceField of ["enabled_date", "last_update_date", "creation_date"]) {
+    const date = dateFromText(spu[sourceField])
+    if (dateLooksLikeDeepdrawPayloadDate(date)) return date
+  }
+  return ""
+}
+
 function draftDateFieldValue(fields: JsonRecord[]) {
   for (const fieldName of ["上市时间(文本)", "对应日期", "内容上市时间", "搜索上市时间"]) {
     const field = fields.find((candidate) => stringValue(candidate.field_name) === fieldName)
@@ -1650,8 +1738,8 @@ function draftDateFieldValue(fields: JsonRecord[]) {
   return ""
 }
 
-export function buildProductArchivePayloadDate(sourceRows: JsonRecord[], fields: JsonRecord[] = []) {
-  return draftDateFieldValue(fields) || launchDateValue(sourceRows)
+export function buildProductArchivePayloadDate(sourceRows: JsonRecord[], fields: JsonRecord[] = [], spu: JsonRecord = {}) {
+  return draftDateFieldValue(fields) || launchDateValue(sourceRows) || mdmDateValue(spu)
 }
 
 function copyTextBlock(sourceRows: JsonRecord[]) {
@@ -1665,6 +1753,15 @@ function copyTextBlock(sourceRows: JsonRecord[]) {
 
 function copyOrLaunchValue(sourceRows: JsonRecord[], sourceField: string) {
   return copywritingValue(sourceRows, sourceField) || launchValue(sourceRows, sourceField)
+}
+
+function vipSubtitleValue(sourceRows: JsonRecord[]) {
+  return firstClause(
+    copyOrLaunchValue(sourceRows, "推荐理由")
+    || copywritingValue(sourceRows, "唯品标题")
+    || copywritingValue(sourceRows, "搜索标题"),
+    10,
+  )
 }
 
 function shoeEvidenceText(sourceRows: JsonRecord[]) {
@@ -1684,11 +1781,12 @@ function sourceAttributeText(sourceRows: JsonRecord[]) {
   return copyOrLaunchValue(sourceRows, "属性")
 }
 
+function productArchiveSalesChannelTypeValue(sourceRows: JsonRecord[]) {
+  return /全域/.test(sourceAttributeText(sourceRows)) ? "商场同款" : "纯电商"
+}
+
 function shoeSameMallStyleValue(sourceRows: JsonRecord[]) {
-  const attribute = sourceAttributeText(sourceRows)
-  if (/全域/.test(attribute)) return "是"
-  if (/专供|温州/.test(attribute)) return "否"
-  return ""
+  return productArchiveSalesChannelTypeValue(sourceRows) === "商场同款" ? "是" : "否"
 }
 
 function shoeSurfaceMaterialText(sourceRows: JsonRecord[]) {
@@ -1893,7 +1991,7 @@ function productArchiveDisplayTitleValue(spu: JsonRecord, sourceRows: JsonRecord
   return uniqueTextValues([
     stringValue(spu.brand_name) || "巴拉巴拉",
     gender,
-    includeAge ? copyOrLaunchValue(sourceRows, "年龄段") : "",
+    includeAge ? copyOrLaunchValue(sourceRows, "年龄段") || stringValue(spu.age_group_name) : "",
     copyOrLaunchValue(sourceRows, "品类") || stringValue(spu.subclass_name),
   ]).join("")
 }
@@ -2420,6 +2518,12 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   const shoeProduct = isShoeProduct(input.spu, sourceRows)
   const apparelProduct = isApparelProduct(input.spu, sourceRows)
   if (isProductArchiveBusinessBlankField(fieldName, input.spu, sourceRows, input.templatePlatform)) return ""
+  if ((shoeProduct || apparelProduct) && isProductArchiveWashInstructionFieldKey(key)) {
+    return PRODUCT_ARCHIVE_WASH_INSTRUCTION_TEXT
+  }
+  if ((shoeProduct || apparelProduct) && key === "唯品会温馨提示") return PRODUCT_ARCHIVE_VIP_SIZE_TIP_TEXT
+  if ((shoeProduct || apparelProduct) && key === "销售渠道类型") return productArchiveSalesChannelTypeValue(sourceRows)
+  if ((shoeProduct || apparelProduct) && key === "是否商场同款") return shoeSameMallStyleValue(sourceRows)
   if ((shoeProduct || apparelProduct) && /单买价/.test(fieldName)) {
     return productArchiveOffsetPriceText(productArchiveListPriceText(input.spu, sourceRows), -1)
   }
@@ -2436,9 +2540,6 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (shoeProduct && (key.includes("产品单价") || key.includes("奥莱店折扣价") || key.includes("抖音参考价"))) {
     return productArchiveListPriceText(input.spu, sourceRows)
   }
-  if (shoeProduct && key === "是否商场同款") {
-    return shoeSameMallStyleValue(sourceRows)
-  }
   if (shoeProduct && ["是否新品", "是否库存", "是否外贸"].includes(key)) {
     return key === "是否新品" ? "是" : "否"
   }
@@ -2449,6 +2550,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (shoeProduct && ["单用户累计限购件", "每次限购件"].includes(businessRuleFieldKey(fieldName))) return "5"
   if (shoeProduct && key.includes("京东发货地")) return "杭州"
   if (shoeProduct && key.includes("京东商品重量")) return "1"
+  if ((shoeProduct || apparelProduct) && key === "抖音商品重量") return "1"
   if (shoeProduct && /京东.*包装.*[宽长高]/.test(fieldName)) return "100"
   if (shoeProduct && ["微信视频小店商品编码", "唯品会款号"].includes(key)) {
     return stringValue(input.spu.spu_code) || launchValue(sourceRows, "款号")
@@ -2482,9 +2584,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (shoeProduct && ["详情页面料", "唯品会材质", "25面料成分"].includes(key)) return shoeDetailMaterialText(sourceRows)
   if (shoeProduct && ["商品名称", "产品名称", "25产品名称"].includes(key)) return shoeProductNameValue(sourceRows)
   if (shoeProduct && ["商品卖点", "产品卖点", "卖点", "销售卖点"].includes(key)) return shoeSellingPointValue(sourceRows)
-  if (shoeProduct && ["唯品会副标题"].includes(key)) {
-    return firstClause(copyOrLaunchValue(sourceRows, "推荐理由"), 10)
-  }
+  if (shoeProduct && ["唯品会副标题"].includes(key)) return vipSubtitleValue(sourceRows)
   if (shoeProduct && ["闭合方式", "闭合方式多选"].includes(key)) return shoeClosureValue(sourceRows)
   if (shoeProduct && ["鞋帮高度", "鞋帮高度多选", "靴筒高度"].includes(key)) return shoeUpperHeightValue(sourceRows)
   if (shoeProduct && ["流行元素", "流行元素多选"].includes(key)) return shoePopularElementValue(sourceRows)
@@ -2528,11 +2628,10 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (apparelProduct && key === "主图4文案1") return firstLines(copywritingValue(sourceRows, "设计师说——主图4"))[0] ?? ""
   if (apparelProduct && key === "主图4文案2") return firstLines(copywritingValue(sourceRows, "设计师说——主图4")).slice(1).join("\n")
   if (apparelProduct && key === "主图4样式") return "225"
-  if (apparelProduct && key === "商品展示标题") return productArchiveDisplayTitleValue(input.spu, sourceRows, false)
+  if (apparelProduct && key === "商品展示标题") return productArchiveDisplayTitleValue(input.spu, sourceRows)
   if (apparelProduct && ["快手标题", "抖音标题", "小红书标题", "微信视频小店标题"].includes(key)) return platformContentTitleValue(sourceRows)
   if (apparelProduct && key === "天猫导购标题") return copywritingValue(sourceRows, "导购标题")
   if (apparelProduct && key === "天猫推荐理由") return tmallRecommendationReasonValue(sourceRows)
-  if (apparelProduct && key === "羽绒服洗涤说明" && downContentEvidenceValue(input.spu, sourceRows)) return "羽绒服洗涤说明"
   if (apparelProduct && key === "报价方式") return "按产品数量报价"
   if (apparelProduct && key === "件重尺") return "按规格设置"
   if (apparelProduct && (key === "1688供货方式" || key === "供货方式1688")) return "现货"
@@ -2621,7 +2720,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (key === "是否带帽") return "连帽"
   if (key === "是否库存") return "否"
   if (key === "主面料成分含量") return materialPercentText(sourceRows)
-  if (key === "唯品会副标题") return copywritingValue(sourceRows, "唯品标题") || copywritingValue(sourceRows, "搜索标题")
+  if (key === "唯品会副标题") return vipSubtitleValue(sourceRows)
   if (key === "弹力") return copywritingValue(sourceRows, "弹性")
   if (key === "商品短标题") return copywritingValue(sourceRows, "导购标题") || copywritingValue(sourceRows, "搜索标题")
   if (key === "导购短标题" || key === "抖音导购短标题") {
@@ -2804,12 +2903,12 @@ function sizeChartCellValues(value: unknown) {
 
 function isBlankSizeChartCellValue(value: unknown) {
   const text = stringValue(value)
-  if (!text) return true
-  const numeric = Number(text)
-  return Number.isFinite(numeric) && numeric === 0
+  return !text
 }
 
-function cleanProductArchiveSizeChartTableValue(valueJson: unknown) {
+function cleanProductArchiveSizeChartTableValue(valueJson: unknown, options: {
+  preserveBlankColumns?: boolean
+} = {}) {
   const titles = sizeChartTitleOptions(valueJson)
   const entries = sizeChartDataEntries(valueJson)
   if (titles.length === 0 || entries.length === 0) return {}
@@ -2818,9 +2917,11 @@ function cleanProductArchiveSizeChartTableValue(valueJson: unknown) {
     rawSize,
     values: sizeChartCellValues(rawValues),
   }))
-  const activeIndexes = titles
-    .map((_, index) => index)
-    .filter((index) => rows.every((row) => !isBlankSizeChartCellValue(row.values[index])))
+  const activeIndexes = options.preserveBlankColumns
+    ? titles.map((_, index) => index)
+    : titles
+      .map((_, index) => index)
+      .filter((index) => rows.every((row) => !isBlankSizeChartCellValue(row.values[index])))
   if (activeIndexes.length === 0) return {}
 
   const output: JsonRecord = {
@@ -2830,6 +2931,13 @@ function cleanProductArchiveSizeChartTableValue(valueJson: unknown) {
     output[row.rawSize] = activeIndexes.map((index) => row.values[index]).join(",")
   }
   return output
+}
+
+function shouldPreserveProductArchiveFixedMainSizeChartColumns(fieldName: unknown, valueJson: unknown) {
+  if (compactFieldKey(fieldName) !== compactFieldKey("尺码表")) return false
+  const title = sizeChartTitleOptions(valueJson).join(",")
+  return title === "尺码,尺码,裤长,腰围,臀围,脚口,身高,体重"
+    || title === "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重"
 }
 
 function sizeChartTemplateOptionsForField(templateOptions: unknown, existingValueJson: unknown, fieldName: string) {
@@ -2988,6 +3096,27 @@ function productArchiveDownFillWeightColumnIndex(valueJson: JsonRecord) {
   return sizeChartTitleOptions(valueJson).findIndex((title) => /充绒|填充.*(?:g|克|量)/i.test(compactFieldKey(title)))
 }
 
+function productArchiveDownFillWeightRemark(rawSize: unknown, weight: unknown) {
+  return `${stringValue(rawSize)}（充绒量${stringValue(weight)}g）`
+}
+
+function productArchiveDownFillWeightRange(weights: string[]) {
+  const numbers = weights.map(numberValue).filter((value): value is number => value !== null)
+  if (!numbers.length) return ""
+  const minimum = Math.min(...numbers)
+  const maximum = Math.max(...numbers)
+  const minimumText = formatMaterialPercent(minimum)
+  const maximumText = formatMaterialPercent(maximum)
+  return minimumText === maximumText ? `${minimumText}g` : `${minimumText}-${maximumText}g`
+}
+
+function productArchiveDownFillWeightSource(fillSource: JsonRecord, field: JsonRecord) {
+  return {
+    sourceType: stringValue(fillSource.source_type) || stringValue(field.source_type) || "washlabel_ocr",
+    sourceRef: stringValue(fillSource.source_ref) || stringValue(field.source_ref) || null,
+  }
+}
+
 export function buildProductArchiveDownFillWeightSizeChartUpdates(fields: JsonRecord[]) {
   const fillSource = fields.find((field) => (
     compactFieldKey(field.field_name) === "充绒量文本"
@@ -3006,37 +3135,73 @@ export function buildProductArchiveDownFillWeightSizeChartUpdates(fields: JsonRe
   const updates: Array<{
     fieldId: number
     fieldName: string
-    valueJson: JsonRecord
+    valueText?: string
+    valueJson?: JsonRecord
     sourceType: string
     sourceRef: string | null
   }> = []
+  const scalarText = productArchiveDownFillWeightRange([...weightsBySize.values()])
+  if (scalarText) {
+    const scalarField = fields.find((field) => compactFieldKey(field.field_name) === "充绒量文本")
+    const fieldId = Number(scalarField?.id)
+    if (scalarField && Number.isInteger(fieldId) && fieldId > 0 && stringValue(scalarField.value_text) !== scalarText) {
+      updates.push({
+        fieldId,
+        fieldName: stringValue(scalarField.field_name),
+        valueText: scalarText,
+        ...productArchiveDownFillWeightSource(fillSource, scalarField),
+      })
+    }
+  }
   for (const field of fields) {
-    if (!compactFieldKey(field.field_name).includes("尺码表")) continue
+    const fieldKey = compactFieldKey(field.field_name)
+    if (!fieldKey.includes("尺码表") && fieldKey !== "多平台尺码") continue
     const fieldId = Number(field.id)
     if (!Number.isInteger(fieldId) || fieldId <= 0) continue
     const currentValue = recordValue(field.value_json)
     const columnIndex = productArchiveDownFillWeightColumnIndex(currentValue)
-    if (columnIndex < 0) continue
     const titles = sizeChartTitleOptions(currentValue)
+    const vipSizeChart = fieldKey === "唯品会尺码表"
+    const multiPlatformSizeChart = fieldKey === "多平台尺码"
+    const douyinSizeChart = fieldKey === "抖音尺码表"
+    const remarkColumnIndex = douyinSizeChart ? titles.findIndex((title) => compactFieldKey(title) === "备注") : -1
+    if (columnIndex < 0 && !multiPlatformSizeChart) continue
     const nextValue = { ...currentValue }
     let changed = false
     for (const [rawSize, rawValues] of sizeChartDataEntries(currentValue)) {
       const weight = weightsBySize.get(productArchiveSizeNumber(rawSize))
       if (!weight) continue
       const values = stringValue(rawValues).split(",")
-      while (values.length < titles.length) values.push("0")
-      if (values[columnIndex] === weight) continue
-      values[columnIndex] = weight
-      nextValue[rawSize] = values.join(",")
-      changed = true
+      while (values.length < titles.length) values.push("")
+      if (multiPlatformSizeChart) {
+        for (const [index, title] of titles.entries()) {
+          const titleKey = compactFieldKey(title)
+          if (titleKey === "京东") {
+            values[index] = productArchiveSizeNumber(rawSize)
+          } else if (["拼多多", "微信视频小店", "微信视频", "小红书"].includes(titleKey)) {
+            values[index] = productArchiveDownFillWeightRemark(rawSize, weight)
+          } else {
+            values[index] = ""
+          }
+        }
+      } else {
+        if (columnIndex >= 0) values[columnIndex] = weight
+        if (remarkColumnIndex >= 0) values[remarkColumnIndex] = `充绒量${weight}g`
+      }
+      const nextRowKey = vipSizeChart ? productArchiveDownFillWeightRemark(rawSize, weight) : rawSize
+      const nextRowValue = values.join(",")
+      if (nextValue[nextRowKey] !== nextRowValue || (nextRowKey !== rawSize && rawSize in nextValue)) {
+        if (nextRowKey !== rawSize) delete nextValue[rawSize]
+        nextValue[nextRowKey] = nextRowValue
+        changed = true
+      }
     }
     if (!changed) continue
     updates.push({
       fieldId,
       fieldName: stringValue(field.field_name),
       valueJson: nextValue,
-      sourceType: stringValue(fillSource.source_type) || stringValue(field.source_type) || "washlabel_ocr",
-      sourceRef: stringValue(fillSource.source_ref) || stringValue(field.source_ref) || null,
+      ...productArchiveDownFillWeightSource(fillSource, field),
     })
   }
   return updates
@@ -3049,7 +3214,8 @@ export function syncProductArchiveDownFillWeightSizeCharts(db: SyncPostgresDatab
   const now = nowIso()
   const updateField = db.prepare(`
     update product_archive_draft_field
-    set value_json = ?::jsonb,
+    set value_text = coalesce(?, value_text),
+      value_json = coalesce(?::jsonb, value_json),
       source_type = ?,
       source_ref = ?,
       manual_override = true,
@@ -3060,7 +3226,8 @@ export function syncProductArchiveDownFillWeightSizeCharts(db: SyncPostgresDatab
   `)
   for (const update of updates) {
     updateField.run(
-      jsonText(update.valueJson),
+      update.valueText ?? null,
+      update.valueJson ? jsonText(update.valueJson) : null,
       update.sourceType,
       update.sourceRef,
       now,
@@ -4332,7 +4499,10 @@ function tradeTieBreakScore(
 }
 
 function sizeMatchKeys(value: unknown) {
-  const text = stringValue(value).split("*")[0]?.trim() ?? ""
+  const text = stringValue(value)
+    .split("*")[0]
+    ?.replace(/[（(]\s*充绒量[^）)]*[）)]/g, "")
+    .trim() ?? ""
   if (!text) return []
   const normalized = deepdrawSizeValue(text)
   const numberText = normalized.match(/^(\d+)cm$/i)?.[1] ?? ""
@@ -5245,6 +5415,7 @@ function readSourceValue(spu: JsonRecord, rule: JsonRecord, sourceRows: JsonReco
     sourceRows,
     sourceField: sourceField || defaultValue,
   })
+  if (derived && isProductArchiveForcedFixedDerivedField(fieldName, spu, sourceRows)) return derived
   const shoeKey = compactFieldKey(fieldName)
   if (
     (isApparelProduct(spu, sourceRows) || isShoeProduct(spu, sourceRows))
@@ -5744,13 +5915,10 @@ function normalizeMaterialCompositionValue(value: unknown, options: unknown[]) {
 
 function normalizeMaterialMultiChoiceValue(value: unknown, options: unknown[]) {
   const parsedComponents = materialComponentsFromText(value)
-  const sourceValues = parsedComponents.length > 0
-    ? parsedComponents.map((component) => component.name)
-    : semicolonTextValues(value).map((item) => item.split(/[,，]/)[0])
-  const values = sourceValues
-    .map((item) => normalizeMaterialOptionValue(item, options))
-    .filter(Boolean)
-  return values.length ? uniqueTextValues(values).join(";") : stringValue(value)
+  const dominant = parsedComponents.length > 0
+    ? [...parsedComponents].sort((left, right) => Number(right.percent) - Number(left.percent))[0]?.name
+    : semicolonTextValues(value).map((item) => item.split(/[,，]/)[0]).find(Boolean)
+  return normalizeMaterialOptionValue(dominant, options) || stringValue(value)
 }
 
 function normalizeMaterialSummaryOptionValue(value: unknown, options: unknown[]) {
@@ -5892,6 +6060,10 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
       (option) => option === "男童",
       (option) => option.includes("男") && !option.includes("女"),
     ]) || text
+  }
+  if (key === "销售渠道类型") {
+    if (/商场同款|全域/.test(text)) return pickOption(options, [(option) => option === "商场同款", (option) => option.includes("商场")]) || text
+    if (/纯电商|专供|电商/.test(text)) return pickOption(options, [(option) => option === "纯电商", (option) => option.includes("电商")]) || text
   }
   if (key === "适用季节" || key === "适用季节多选") {
     const season = productArchiveSeasonText(text).match(/[春夏秋冬]/)?.[0] ?? ""
@@ -7755,7 +7927,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
   const sizeChartMappings = sizeChartMappingsForDraft(db, draft)
   const mdmSkus = mdmSkuRowsForSpu(db, stringValue(draft.spu_code))
   const sizeChartAllowedSizes = productArchiveSizeChartAllowedSizes(sourceRows, mdmSkus)
-  const dateText = launchDateValue(sourceRows)
+  const dateText = launchDateValue(sourceRows) || mdmDateValue(spu)
   const fieldNames = new Set<string>()
   for (const field of tradeFields) fieldNames.add(stringValue(field.field_name))
   for (const rule of rules) fieldNames.add(stringValue(rule.deepdraw_field))
@@ -7803,7 +7975,8 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     const colorField = compactFieldKey(fieldName).includes("颜色")
     const categoryPlatformListPriceField = (shoeProduct || apparelProduct)
       && PRODUCT_ARCHIVE_PLATFORM_LIST_PRICE_KEYS.has(compactFieldKey(fieldName))
-    const ruleSourceType = categoryPlatformListPriceField
+    const forcedFixedDerivedField = isProductArchiveForcedFixedDerivedField(fieldName, spu, sourceRows)
+    const ruleSourceType = categoryPlatformListPriceField || forcedFixedDerivedField
       ? "fixed"
       : stringValue(rule.source_type) || (originCountryField || shoe1688OriginField ? "fixed" : "manual")
     const sourceValueText = readSourceValue(spu, rule, sourceRows, fieldName)
@@ -10368,7 +10541,11 @@ export function productArchivePayloadFieldValue(field: JsonRecord, options: {
     ) return null
     if (hasProductArchiveSizeChartTableValue(jsonValue)) {
       if (!isStructuredProductPayloadField(field)) return null
-      const cleanedValue = multiPlatformSizeField ? jsonValue : cleanProductArchiveSizeChartTableValue(jsonValue)
+      const cleanedValue = multiPlatformSizeField
+        ? jsonValue
+        : cleanProductArchiveSizeChartTableValue(jsonValue, {
+          preserveBlankColumns: shouldPreserveProductArchiveFixedMainSizeChartColumns(field.field_name, jsonValue),
+        })
       return hasProductArchiveSizeChartTableValue(cleanedValue) ? cleanedValue : null
     }
     if (!fieldType || fieldType === "MULTI_TEXT") return null
@@ -10587,7 +10764,7 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
     title: stringValue(draft.title),
     tradeId: stringValue(draft.trade_id),
     retailPrice: numberValue(draft.retail_price),
-    date: buildProductArchivePayloadDate(sourceRows, detailFields),
+    date: buildProductArchivePayloadDate(sourceRows, detailFields, spu),
     ...(compatiblePlatforms ? { places: compatiblePlatforms } : {}),
     ...(shoeProduct ? {
       shoeSizes: true,
@@ -11000,6 +11177,8 @@ function prepareProductArchiveDraftDryRun(db: SyncPostgresDatabase, draftId: num
 }
 
 export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftId: number, options: SubmitOptions = {}) {
+  const submitMode = productArchiveSubmitModeFromOptions(options)
+  const updateExisting = submitMode === "full_update"
   if (options.dryRun) {
     const currentDraft = draftById(db, draftId)
     if (currentDraft.submit_claim_token) throw new Error("草稿正在提交，暂不能生成新预览")
@@ -11012,17 +11191,19 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
       omittedTemplateFieldCount: submitDiagnostics.omittedTemplateFieldCount,
       omittedTemplateFields: submitDiagnostics.omittedTemplateFieldNames,
       payloadIssues: submitDiagnostics.issues,
+      submitMode,
     }
     writeSubmitLog(db, draftId, "dry_run", { requestSummary: summary, status: 200, payload: { dryRun: true } })
     return { dryRun: true, payload, summary }
   }
+  assertProductArchiveSubmitModeExecutable(submitMode)
 
   const claimedDraft = claimProductArchiveDraftForSubmit(
     db,
     draftId,
     undefined,
     undefined,
-    { updateExisting: Boolean(options.updateExisting) },
+    { updateExisting },
   )
   if (!claimedDraft) {
     const currentDraft = draftById(db, draftId)
@@ -11046,7 +11227,7 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
       rebuildProductArchiveDraftFields(db, draftId)
       const nextValidation = validateProductArchiveDraft(db, draftId, {
         claimToken,
-        allowExistingProduct: Boolean(options.updateExisting),
+        allowExistingProduct: updateExisting,
       })
       const nextPayload = productPayload(db, draftId)
       return { validation: nextValidation, payload: nextPayload }
@@ -11070,6 +11251,7 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
     omittedTemplateFieldCount: submitDiagnostics.omittedTemplateFieldCount,
     omittedTemplateFields: submitDiagnostics.omittedTemplateFieldNames,
     payloadIssues: submitDiagnostics.issues,
+    submitMode,
   }
   if (validation.summary.blocker_count > 0) {
     db.prepare(`
@@ -11094,8 +11276,8 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
     )
     throw error
   }
-  if (duplicate.duplicateFound && !options.updateExisting) return { duplicateFound: true, duplicate }
-  if (options.updateExisting && !duplicate.duplicateFound) {
+  if (duplicate.duplicateFound && !updateExisting) return { duplicateFound: true, duplicate }
+  if (updateExisting && !duplicate.duplicateFound) {
     db.prepare(`
       update product_archive_draft
       set status = 'ready',
@@ -11192,7 +11374,7 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
     return result
   }
 
-  if (options.updateExisting) {
+  if (updateExisting) {
     let existing: ReturnType<typeof resolveDeepdrawDuplicateProductForUpdate>
     try {
       existing = resolveDeepdrawDuplicateProductForUpdate(duplicate, draft.spu_code)
