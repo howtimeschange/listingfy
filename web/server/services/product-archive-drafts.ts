@@ -842,7 +842,9 @@ function isProductArchiveMerchantSkuFieldName(fieldName: unknown) {
 }
 
 function productArchiveSaleSizeValues(value: unknown) {
-  return stringValue(value).split(/[;；]/).map((item) => item.trim()).filter(Boolean)
+  return stringValue(value).split(/[;；]/)
+    .map((item) => item.split("*")[0]?.trim() ?? "")
+    .filter(Boolean)
 }
 
 function productArchiveSaleSizeLookup(saleSizeValueText: unknown) {
@@ -2836,7 +2838,7 @@ function sizeChartTemplateOptionsForField(templateOptions: unknown, existingValu
   const existingTitles = sizeChartTitleOptions(existingValueJson)
   if (existingTitles.length > 0) return existingTitles
   if (compactFieldKey(fieldName) === compactFieldKey("多平台尺码")) {
-    return ["京东", "拼多多", "小红书", "微信视频小店"]
+    return ["天猫", "京东", "拼多多", "微信视频小店", "小红书", "快手"]
   }
   return compactFieldKey(fieldName) === compactFieldKey("尺码表") ? ["身高", "衣长", "胸围", "袖长"] : []
 }
@@ -4330,7 +4332,7 @@ function tradeTieBreakScore(
 }
 
 function sizeMatchKeys(value: unknown) {
-  const text = stringValue(value)
+  const text = stringValue(value).split("*")[0]?.trim() ?? ""
   if (!text) return []
   const normalized = deepdrawSizeValue(text)
   const numberText = normalized.match(/^(\d+)cm$/i)?.[1] ?? ""
@@ -10351,19 +10353,22 @@ function aiFillFieldSnapshot(field: JsonRecord) {
 
 export function productArchivePayloadFieldValue(field: JsonRecord, options: {
   includeOptionalStructuredSizeFields?: boolean
+  includeMultiPlatformSizeField?: boolean
 } = {}) {
   const jsonValue = recordValue(field.value_json)
   if (isProductArchiveStructuredSizeFieldName(field.field_name)) {
     const fieldType = stringValue(field.field_type).toUpperCase()
+    const multiPlatformSizeField = compactFieldKey(field.field_name) === compactFieldKey("多平台尺码")
     if (
       fieldType === "MULTI_TEXT"
       && !field.required
       && !field.blocking
       && !options.includeOptionalStructuredSizeFields
+      && !(multiPlatformSizeField && options.includeMultiPlatformSizeField)
     ) return null
     if (hasProductArchiveSizeChartTableValue(jsonValue)) {
       if (!isStructuredProductPayloadField(field)) return null
-      const cleanedValue = cleanProductArchiveSizeChartTableValue(jsonValue)
+      const cleanedValue = multiPlatformSizeField ? jsonValue : cleanProductArchiveSizeChartTableValue(jsonValue)
       return hasProductArchiveSizeChartTableValue(cleanedValue) ? cleanedValue : null
     }
     if (!fieldType || fieldType === "MULTI_TEXT") return null
@@ -10402,10 +10407,10 @@ export function shouldSubmitProductArchivePayloadField(field: JsonRecord, option
 
 export function productArchivePayloadIncludesMultiPlatformSizeField(options: {
   shoeProduct?: boolean
+  apparelProduct?: boolean
   includeOptionalStructuredSizeFields?: boolean
 } = {}) {
-  void options
-  return false
+  return Boolean(options.shoeProduct || options.apparelProduct)
 }
 
 export function productArchivePayloadTemplateFieldId(field: JsonRecord) {
@@ -10500,11 +10505,20 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
     .filter((field) => shouldSubmitProductArchivePayloadField(field, {
       includeMultiPlatformSizeField: productArchivePayloadIncludesMultiPlatformSizeField({
         shoeProduct,
+        apparelProduct,
         includeOptionalStructuredSizeFields,
       }),
     }))
     .flatMap((field) => {
-      const value = productArchivePayloadFieldValue(field, { includeOptionalStructuredSizeFields })
+      const includeMultiPlatformSizeField = productArchivePayloadIncludesMultiPlatformSizeField({
+        shoeProduct,
+        apparelProduct,
+        includeOptionalStructuredSizeFields,
+      })
+      const value = productArchivePayloadFieldValue(field, {
+        includeOptionalStructuredSizeFields,
+        includeMultiPlatformSizeField,
+      })
       if (!hasValue(value)) return []
       const templateFieldId = productArchivePayloadTemplateFieldId(field)
       if (!templateFieldId) {
@@ -10578,6 +10592,9 @@ function productPayload(db: SyncPostgresDatabase, draftId: number) {
     ...(shoeProduct ? {
       shoeSizes: true,
       sizeRemarks,
+    } : {}),
+    ...(stagedSizeTablePublish ? {
+      withSizeRemarks: true,
     } : {}),
     ...(stagedSizeTablePublish ? {
       legacyUpdateFields,

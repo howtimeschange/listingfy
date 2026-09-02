@@ -6,15 +6,15 @@
 
 | 文件 | 版本 | SHA-256 |
 | --- | --- | --- |
-| `dop-sdk-1.6.24.jar` | `1.6.24` | `1cd9f7f37a76a16e8a2e102b0e78b19470319d743d66a5af93ab58bb87fb2ed8` |
+| `dop-sdk-1.6.25.jar` | `1.6.25` | `3f57e6229b2b76ea633cf60f268d3db9691bc4b112c5d91d7aaf6c61229010f6` |
 | `sdk-core-java-1.1.0.jar` | `1.1.0` | `a9eb423b2522c9be4c632d75bd763a4dee7a6d4c1c982772ab3cf4309f37f3d3` |
 
 ## 来源
 
-`dop-sdk-1.6.24.jar` 来自深绘 2026-08-27 最新接口文档配套文件：
+`dop-sdk-1.6.25.jar` 来自深绘开发提供的新版本文件：
 
 ```text
-/Users/xingyicheng/Downloads/dop-sdk-1.6.24.jar
+/Users/xingyicheng/Downloads/dop-sdk-1.6.25.jar
 ```
 
 `sdk-core-java-1.1.0.jar` 来自本地交接包：

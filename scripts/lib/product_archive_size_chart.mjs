@@ -6,6 +6,25 @@ const MEASUREMENT_KEYS = ["measurementPoint", "measurement_point", "测量点", 
 const SIZE_KEYS = ["size", "size_name", "尺码", "规格", "码段"];
 const SIZE_VALUE_KEYS = ["sizeValue", "size_value", "尺码值", "测量值", "数值", "值"];
 const SKC_KEYS = ["skcCode", "skc_code", "款色", "款色号", "款色编码"];
+const DEFAULT_MULTI_PLATFORM_SIZE_TARGET_FIELDS = ["天猫", "京东", "拼多多", "微信视频小店", "小红书", "快手"];
+const MULTI_PLATFORM_SIZE_TARGET_FIELD_NAMES = new Map([
+  ["京东", "京东"],
+  ["jd", "京东"],
+  ["拼多多", "拼多多"],
+  ["pdd", "拼多多"],
+  ["微信视频小店", "微信视频小店"],
+  ["微信视频", "微信视频小店"],
+  ["微信视频号", "微信视频小店"],
+  ["weixinxiaodian", "微信视频小店"],
+  ["天猫", "天猫"],
+  ["tmall", "天猫"],
+  ["小红书", "小红书"],
+  ["xiaohongshu", "小红书"],
+  ["快手", "快手"],
+  ["kuaishou", "快手"],
+  ["得物", "得物"],
+  ["dewu", "得物"],
+]);
 
 // Source: 尺码数据模板.xlsx / balabala!A1:L18 (verified 2026-08-28).
 // Keep this as one canonical reference so age, weight and GB/T 1335-style
@@ -318,6 +337,33 @@ function templateTargetFields(template = {}) {
   return Array.from(new Set(options.map(optionText).filter(Boolean)));
 }
 
+function uniqueTextValues(values = []) {
+  const output = [];
+  const seen = new Set();
+  for (const value of values.map(stringValue).filter(Boolean)) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    output.push(value);
+  }
+  return output;
+}
+
+function multiPlatformSizeTargetFieldName(value) {
+  const text = stringValue(value);
+  return MULTI_PLATFORM_SIZE_TARGET_FIELD_NAMES.get(compactKey(text)) || "";
+}
+
+function multiPlatformSizeTargetFields(rawTargetFields = []) {
+  const source = rawTargetFields.length > 0 ? rawTargetFields : DEFAULT_MULTI_PLATFORM_SIZE_TARGET_FIELDS;
+  return uniqueTextValues(source.map(multiPlatformSizeTargetFieldName).filter(Boolean));
+}
+
+function multiPlatformSizeCellValue(size, targetField) {
+  return compactKey(targetField) === compactKey("京东")
+    ? stringValue(size).replace(/\s*(?:cm|厘米|公分|码)$/i, "")
+    : "";
+}
+
 function ruleRows() {
   return [
     ...HIGH_CONFIDENCE_SIZE_CHART_RULES.map(([targetField, sourcePoints]) => ({
@@ -537,19 +583,22 @@ export function buildSizeChartForTemplate({
   )
     ? ["尺码", ...rawTargetFields]
     : rawTargetFields;
-  const targetFields = targetFieldsWithSize.filter((targetField) => (
-    !multiPlatformSizeField || ["京东", "jd"].includes(compactKey(targetField))
-  ));
+  const targetFields = multiPlatformSizeField
+    ? multiPlatformSizeTargetFields(rawTargetFields)
+    : targetFieldsWithSize;
   const mappings = targetFields.map((targetField) => {
     const explicit = mappingOverrides.get(compactKey(targetField));
     if (explicit) return explicit;
     if (multiPlatformSizeField) {
+      const jdColumn = compactKey(targetField) === compactKey("京东");
       return {
         targetField,
-        sourcePoint: "尺码",
+        sourcePoint: jdColumn ? "尺码" : "",
         confidence: "high",
         source: "rule",
-        reason: "多平台尺码只发送京东，数值尺码去掉 cm/码",
+        reason: jdColumn
+          ? "多平台尺码京东列发送裸尺码值"
+          : "多平台尺码非特殊平台列留空，深绘同步时回退销售尺码",
       };
     }
     if (vipSizeTableField && compactKey(targetField) === compactKey("号型")) {
@@ -588,6 +637,7 @@ export function buildSizeChartForTemplate({
   const valuesBySize = new Map();
   for (const size of sortSizes(sizes)) {
     const values = mappings.map((mapping) => {
+      if (multiPlatformSizeField) return multiPlatformSizeCellValue(size, mapping.targetField);
       const derivedValue = derivedValueForMapping(mapping, size, { gender, garmentType, vipSizeTableField });
       if (derivedValue != null) return derivedValue;
       return mapping.sourcePoint
@@ -599,7 +649,11 @@ export function buildSizeChartForTemplate({
   const activeMappingIndexes = new Set();
   for (let index = 0; index < mappings.length; index += 1) {
     const values = Array.from(valuesBySize.values()).map((rowValues) => rowValues[index]);
-    if (values.length > 0 && values.every((value) => !isBlankSizeChartValue(value))) {
+    if (
+      multiPlatformSizeField
+        ? values.length > 0
+        : values.length > 0 && values.every((value) => !isBlankSizeChartValue(value))
+    ) {
       activeMappingIndexes.add(index);
     }
   }

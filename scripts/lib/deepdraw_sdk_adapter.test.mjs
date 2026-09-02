@@ -506,12 +506,25 @@ test("buildDeepdrawSdkProductInput omits unsupported scalar size payload fields"
 test("buildDeepdrawSdkClasspath includes vendored SDK jars and Maven runtime jars", () => {
   const classpath = buildDeepdrawSdkClasspath({ projectRoot: PROJECT_ROOT });
 
-  assert.ok(classpath.entries.some((entry) => entry.endsWith("vendor/deepdraw-sdk/dop-sdk-1.6.24.jar")));
+  assert.ok(classpath.entries.some((entry) => entry.endsWith("vendor/deepdraw-sdk/dop-sdk-1.6.25.jar")));
   assert.ok(classpath.entries.some((entry) => entry.endsWith("vendor/deepdraw-sdk/sdk-core-java-1.1.0.jar")));
   assert.ok(classpath.entries.some((entry) => entry.includes("fastjson")));
   assert.ok(classpath.entries.some((entry) => entry.includes("httpclient")));
   assert.ok(classpath.entries.some((entry) => entry.includes("commons-collections/commons-collections")));
   assert.ok(classpath.value.includes(path.delimiter));
+});
+
+test("buildDeepdrawSdkClasspath can isolate an explicit DOP SDK jar and compile directory for version probes", () => {
+  const classpath = buildDeepdrawSdkClasspath({
+    projectRoot: PROJECT_ROOT,
+    dopSdkJar: "/tmp/dop-sdk-1.6.26.jar",
+    buildDir: "/tmp/deepdraw-sdk-1.6.26-classes",
+  });
+
+  assert.equal(classpath.buildDir, "/tmp/deepdraw-sdk-1.6.26-classes");
+  assert.equal(classpath.entries[0], "/tmp/deepdraw-sdk-1.6.26-classes");
+  assert.equal(classpath.entries[1], "/tmp/dop-sdk-1.6.26.jar");
+  assert.equal(classpath.entries.some((entry) => entry.endsWith("dop-sdk-1.6.25.jar")), false);
 });
 
 test("buildDeepdrawSdkClasspath honors DEEPDRAW_M2_REPOSITORY for Maven runtime jars", async () => {
@@ -735,8 +748,8 @@ test("buildDeepdrawProductFullUpdateInput keeps shoe size enum values and only i
   assert.deepEqual(input.product.fields["天猫尺码表"], { title: "脚长,鞋内长", "26码": "16,17" });
   assert.deepEqual(input.product.fields["抖音尺码表"], { title: "脚长(cm),备注", "26码": "16,脚长15.8-16.2/内长17" });
   assert.deepEqual(input.product.fields["多平台尺码"], {
-    title: "京东,拼多多,微信视频小店",
-    "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
+    title: "京东,拼多多,微信视频小店,小红书,快手",
+    "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),,",
   });
   assert.equal(Object.hasOwn(input.product.fields, "淘宝尺码表"), false);
   assert.deepEqual(input.product.places, ["ALIBABA", "TMALL", "JD", "VIP", "YOUZAN", "PDD", "XIAOHONGSHU", "DOUYIN", "KUAISHOU", "WEIXINXIAODIAN"]);
@@ -777,7 +790,7 @@ test("buildDeepdrawSdkProductInput keeps shoe size remarks out of the public Pro
   assert.deepEqual(Object.keys(input.product.fields["商家SKU"]["黑色"]), ["26码", "27码"]);
 });
 
-test("buildDeepdrawSdkProductInput can inline shoe size remarks only for explicit probes", () => {
+test("buildDeepdrawSdkProductInput can inline shoe size remarks when requested", () => {
   const input = buildDeepdrawSdkProductInput({
     config: {
       baseUrl: "http://open.deepdraw.cn",
@@ -791,7 +804,7 @@ test("buildDeepdrawSdkProductInput can inline shoe size remarks only for explici
       title: "童鞋尺码备注创建探针",
       tradeId: "546",
       shoeSizes: true,
-      inlineSizeRemarksForProbe: true,
+      withSizeRemarks: true,
       sizeRemarks: {
         "26码": "(脚长15.8-16.2/内长17)",
         "27": "脚长16.3-16.7/内长17.7",
@@ -837,8 +850,8 @@ test("buildDeepdrawProductFullUpdateInput includes isolated multi-platform size 
 
   assert.equal(input.product.fields["尺码"], "26码");
   assert.deepEqual(input.product.fields["多平台尺码"], {
-    title: "京东,拼多多,微信视频小店",
-    "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
+    title: "京东,拼多多,微信视频小店,小红书",
+    "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),",
   });
 });
 
@@ -871,6 +884,48 @@ test("buildDeepdrawSdkProductInput can emit bare shoe sale-size identities for p
   assert.deepEqual(Object.keys(input.product.fields["商家SKU"]["黑色"]), ["26"]);
 });
 
+test("buildDeepdrawSdkProductInput can preserve unit-bearing table keys while sale sizes and SKUs stay bare for developer-feedback probes", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    payload: {
+      shoeSizes: true,
+      shoeSaleSizeUnitMode: "bare",
+      inlineSizeRemarksForProbe: true,
+      preserveStructuredSizeRowKeysForProbe: true,
+      sizeRemarks: {
+        "26码": "脚长15.8-16.2/内长17",
+        "27码": "脚长16.3-16.7/内长17.7",
+      },
+      fields: [
+        { name: "尺码", value: "26;27" },
+        {
+          name: "商家SKU",
+          fieldType: "MULTI_TEXT",
+          value: {
+            title: "价格,货号",
+            黑色: { 26: "359,probe26", 27: "359,probe27" },
+          },
+        },
+        { name: "尺码表", fieldType: "MULTI_TEXT", value: { title: "尺码,适合脚长", "26码": "26,16", "27码": "27,16.5" } },
+        { name: "唯品会尺码表", fieldType: "MULTI_TEXT", value: { title: "欧洲码,脚长", "26码": "26码,160", "27码": "27码,165" } },
+      ],
+      skus: [],
+    },
+  });
+
+  assert.equal(input.product.fields["尺码"], "26*脚长15.8-16.2/内长17;27*脚长16.3-16.7/内长17.7");
+  assert.deepEqual(Object.keys(input.product.fields["商家SKU"]["黑色"]), ["26", "27"]);
+  assert.deepEqual(Object.keys(input.product.fields["尺码表"]), ["title", "26码", "27码"]);
+  assert.deepEqual(Object.keys(input.product.fields["唯品会尺码表"]), ["title", "26码", "27码"]);
+  assert.equal(Object.hasOwn(input.product.fields, "多平台尺码"), false);
+});
+
 test("buildDeepdrawSdkProductInput normalizes optional JD-only apparel multi-platform sizes", () => {
   const input = buildDeepdrawSdkProductInput({
     config: {
@@ -894,9 +949,9 @@ test("buildDeepdrawSdkProductInput normalizes optional JD-only apparel multi-pla
   });
 
   assert.deepEqual(input.product.fields["多平台尺码"], {
-    title: "京东",
-    "130cm": "128",
-    "140cm": "140",
+    title: "天猫,京东,快手,微信视频小店,拼多多",
+    "130cm": ",128,,,",
+    "140cm": ",140,,,",
   });
 });
 
@@ -949,9 +1004,9 @@ test("buildDeepdrawSdkProductInput keeps shoe multi-platform rows display-sized 
   });
 
   assert.deepEqual(input.product.fields["多平台尺码"], {
-    title: "京东,拼多多,微信视频小店",
-    "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
-    "27码": "27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
+    title: "天猫,京东,拼多多,微信视频小店,小红书,快手",
+    "26码": ",26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),,",
+    "27码": ",27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),,",
   });
 });
 
@@ -1012,7 +1067,7 @@ test("legacy v1 shoe publish creates with the main table then updates the remain
   const createFields = selectDeepdrawLegacyShoeCreateFields(fields);
   assert.deepEqual(
     createFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
-    ["尺码表"],
+    ["尺码表", "多平台尺码"],
   );
   assert.deepEqual(
     legacyUpdateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
@@ -1046,7 +1101,11 @@ test("legacy v1 shoe publish creates with the main table then updates the remain
     "26码": "26,16,17",
     "27码": "27,16.5,17.7",
   });
-  assert.equal(Object.hasOwn(createInput.product.fields, "多平台尺码"), false);
+  assert.deepEqual(createInput.product.fields["多平台尺码"], {
+    title: "京东,拼多多,微信视频小店,小红书",
+    "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),",
+    "27码": "27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),",
+  });
 
   const payload = {
     shoeSizes: true,
@@ -1180,7 +1239,7 @@ test("apparel staged size publish creates with the main table then updates stabl
 
   assert.deepEqual(
     createFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
-    ["尺码表"],
+    ["尺码表", "多平台尺码"],
   );
   assert.deepEqual(
     updateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
@@ -1210,7 +1269,11 @@ test("apparel staged size publish creates with the main table then updates stabl
     "140cm": "140,140,74",
   });
   assert.equal(Object.hasOwn(createInput.product.fields, "唯品会尺码表"), false);
-  assert.equal(Object.hasOwn(createInput.product.fields, "多平台尺码"), false);
+  assert.deepEqual(createInput.product.fields["多平台尺码"], {
+    title: "京东",
+    "130cm": "130",
+    "140cm": "140",
+  });
 
   const updateInput = buildDeepdrawProductFullUpdateInput({
     config: {

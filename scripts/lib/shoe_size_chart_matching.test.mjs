@@ -126,7 +126,7 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
       { fieldName: "天猫尺码表", fieldType: "MULTI_TEXT", options: ["脚长", "鞋内长"] },
       { fieldName: "抖音尺码表", fieldType: "MULTI_TEXT", options: ["脚长(cm)", "备注"] },
       { fieldName: "淘宝尺码表", fieldType: "MULTI_TEXT", options: ["脚长"] },
-      { fieldName: "多平台尺码", fieldType: "MULTI_TEXT", options: ["京东", "拼多多", "小红书", "快手", "微信视频小店"] },
+      { fieldName: "多平台尺码", fieldType: "MULTI_TEXT", options: ["天猫", "京东", "拼多多", "小红书", "快手", "微信视频小店"] },
       { fieldName: "25鞋子模板类型", fieldType: "SINGLE_CHOICE", options: ["运动", "休闲", "雪地靴", "婴童"] },
       { fieldName: "25鞋子尺码表", fieldType: "SINGLE_CHOICE", options: ["包头凉鞋", "镂空凉鞋", "运动公主鞋", "凉鞋"] },
       { fieldName: "22Q4-童鞋尺码表", fieldType: "SINGLE_CHOICE", options: ["轻跑鞋", "雪地靴", "学步鞋"] },
@@ -165,12 +165,12 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
     "38": "24,脚长23.8-24.2/内长25",
   });
   assert.deepEqual(result["多平台尺码"].valueJson, {
-    title: "京东,拼多多,微信视频小店",
-    "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
-    "27码": "27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
-    "38码": "38,38码(脚长23.8-24.2/内长25),38码(脚长23.8-24.2/内长25)",
+    title: "天猫,京东,拼多多,微信视频小店,小红书,快手",
+    "26码": ",26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),,",
+    "27码": ",27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),,",
+    "38码": ",38,38码(脚长23.8-24.2/内长25),38码(脚长23.8-24.2/内长25),,",
   });
-  assert.equal(result["多平台尺码"].valueText, "京东;拼多多;微信视频小店");
+  assert.equal(result["多平台尺码"].valueText, "天猫;京东;拼多多;微信视频小店;小红书;快手");
   assert.deepEqual(result["25鞋子模板类型"], { valueText: "运动", valueJson: {} });
   assert.deepEqual(result["22Q4-童鞋尺码表"], { valueText: "轻跑鞋", valueJson: {} });
   assert.equal(result["25鞋子尺码表"], undefined);

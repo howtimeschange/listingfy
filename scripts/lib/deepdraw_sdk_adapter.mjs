@@ -155,7 +155,7 @@ function shoeSaleSizeValue(value, options = {}) {
 }
 
 function sizeMatchKeys(value) {
-  const text = stringValue(value);
+  const text = stringValue(value).split("*")[0].trim();
   if (!text) return [];
   const normalized = sdkSizeValue(text);
   const numberText = normalized.match(/^(\d+)cm$/i)?.[1] ?? "";
@@ -327,7 +327,8 @@ const DEEPDRAW_MULTI_PLATFORM_SIZE_NAMES = new Map([
   ["喵街", "喵街"],
   ["miaojie", "喵街"],
 ]);
-const DEEPDRAW_SHOE_MULTI_PLATFORM_SIZE_NAME_ORDER = ["京东", "拼多多", "微信视频小店"];
+const DEEPDRAW_SHOE_MULTI_PLATFORM_SIZE_NAME_ORDER = ["天猫", "京东", "拼多多", "微信视频小店", "小红书", "快手"];
+const DEEPDRAW_SHOE_MULTI_PLATFORM_SIZE_VALUE_NAMES = new Set(["京东", "拼多多", "微信视频小店"]);
 
 const DEEPDRAW_SITE_CODES = new Map([
   ["1688", "ALIBABA"],
@@ -410,7 +411,8 @@ export function selectDeepdrawStableSizeCreateFields(fields = []) {
     const type = fieldType(field);
     if (!name || !hasValue(value)) return false;
     if (!isStructuredSizePayloadField(name, type)) return true;
-    return compactKey(name) === compactKey("尺码表");
+    return compactKey(name) === compactKey("尺码表")
+      || compactKey(name) === compactKey("多平台尺码");
   });
 }
 
@@ -432,7 +434,8 @@ export function selectDeepdrawLegacyShoeCreateFields(fields = []) {
     if (!name || !hasValue(value)) return false;
     if (!isStructuredSizePayloadField(name, type)) return true;
     const key = compactKey(name);
-    return key === compactKey("尺码表");
+    return key === compactKey("尺码表")
+      || key === compactKey("多平台尺码");
   });
 }
 
@@ -471,15 +474,20 @@ function apparelMultiPlatformJdColumnIndex(title) {
 
 function normalizeMultiPlatformSizeField(value, sizeValues = []) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const output = { title: "京东" };
-  const jdColumnIndex = apparelMultiPlatformJdColumnIndex(value.title);
+  const sourceColumns = stringValue(value.title).split(/[,，]/)
+    .map((part, index) => ({ name: deepdrawMultiPlatformSizeName(part), index }))
+    .filter((column) => column.name);
+  const columns = sourceColumns.length > 0 ? sourceColumns : [{ name: "京东", index: 0 }];
+  const output = { title: columns.map((column) => column.name).join(",") };
+  const jdColumnIndex = sourceColumns.find((column) => column.name === "京东")?.index ?? apparelMultiPlatformJdColumnIndex(value.title);
   for (const [size, rowValue] of Object.entries(value)) {
     if (size === "title") continue;
     const normalizedSize = sdkPayloadSizeValue(size, sizeValues);
     const cells = stringValue(rowValue).split(/[,，]/);
     const jdCandidate = jdColumnIndex >= 0 ? cells[jdColumnIndex] : "";
     const jdSize = bareMultiPlatformSizeValue(jdCandidate || size);
-    if (normalizedSize && jdSize) output[normalizedSize] = jdSize;
+    const normalizedRow = columns.map((column) => column.name === "京东" ? jdSize : "").join(",");
+    if (normalizedSize && jdSize) output[normalizedSize] = normalizedRow;
   }
   return output;
 }
@@ -506,6 +514,21 @@ function shoeMultiPlatformRowSizeValue(value, sizeValues = [], options = {}) {
   return options.shoeMultiPlatformRowKey === "bare" ? bare : `${bare}码`;
 }
 
+function shoeMultiPlatformSizeText(value) {
+  const bare = bareMultiPlatformSizeValue(value);
+  return bare ? `${bare}码` : stringValue(value);
+}
+
+function shoeMultiPlatformCellValue({ column, cell, size, options = {} }) {
+  if (!DEEPDRAW_SHOE_MULTI_PLATFORM_SIZE_VALUE_NAMES.has(column.name)) return "";
+  if (column.name === "京东") return bareMultiPlatformSizeValue(cell || size);
+  const text = stringValue(cell);
+  if (text) return text;
+  const displaySize = shoeMultiPlatformSizeText(size);
+  const remark = sizeRemarkForPayload(displaySize, options.sizeRemarks);
+  return remark ? `${displaySize}(${remark})` : "";
+}
+
 function normalizeShoeMultiPlatformSizeField(value, sizeValues = [], options = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const columns = shoeMultiPlatformColumns(value.title);
@@ -515,7 +538,12 @@ function normalizeShoeMultiPlatformSizeField(value, sizeValues = [], options = {
     if (size === "title") continue;
     const normalizedSize = shoeMultiPlatformRowSizeValue(size, sizeValues, options);
     const cells = stringValue(rowValue).split(",");
-    const normalizedRow = columns.map((column) => stringValue(cells[column.index])).join(",");
+    const normalizedRow = columns.map((column) => shoeMultiPlatformCellValue({
+      column,
+      cell: cells[column.index],
+      size: normalizedSize,
+      options,
+    })).join(",");
     if (normalizedSize && normalizedRow) output[normalizedSize] = normalizedRow;
   }
   return output;
@@ -536,7 +564,10 @@ function normalizeSizeTableField(value, sizeValues = [], name = "", options = {}
       output[size] = rowValue;
       continue;
     }
-    output[sdkPayloadSizeValue(size, sizeValues)] = rowValue;
+    const normalizedSize = options.preserveStructuredSizeRowKeysForProbe === true
+      ? stringValue(size)
+      : sdkPayloadSizeValue(size, sizeValues);
+    if (normalizedSize) output[normalizedSize] = rowValue;
   }
   return output;
 }
@@ -908,6 +939,8 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
         ? normalizeSizeTableField(value, selectedSizeValues, name, {
             shoeSizes,
             shoeMultiPlatformRowKey: payload.shoeMultiPlatformRowKey,
+            preserveStructuredSizeRowKeysForProbe: payload.preserveStructuredSizeRowKeysForProbe,
+            sizeRemarks,
           })
         : key === compactKey("所在地")
           ? normalizeDeepdrawLocation(value)
@@ -989,11 +1022,12 @@ function existingJar(m2Repository, candidates) {
 export function buildDeepdrawSdkClasspath({
   projectRoot = path.resolve(import.meta.dirname, "../.."),
   m2Repository = process.env.DEEPDRAW_M2_REPOSITORY || path.join(os.homedir(), ".m2/repository"),
-  buildDir = path.join(projectRoot, "tmp/deepdraw-sdk-adapter/classes"),
+  buildDir = process.env.DEEPDRAW_SDK_BUILD_DIR || path.join(projectRoot, "tmp/deepdraw-sdk-adapter/classes"),
+  dopSdkJar = process.env.DEEPDRAW_DOP_SDK_JAR || path.join(projectRoot, "vendor/deepdraw-sdk/dop-sdk-1.6.25.jar"),
 } = {}) {
   const entries = [
     buildDir,
-    path.join(projectRoot, "vendor/deepdraw-sdk/dop-sdk-1.6.24.jar"),
+    dopSdkJar,
     path.join(projectRoot, "vendor/deepdraw-sdk/sdk-core-java-1.1.0.jar"),
   ];
   const missing = [];

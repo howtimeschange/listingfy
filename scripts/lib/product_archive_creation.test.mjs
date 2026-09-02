@@ -3567,11 +3567,11 @@ test("product archive service derives DeepDraw size-chart fields from PLM source
     templateOptions: [],
   });
   assert.deepEqual(multiPlatform.valueJson, {
-    title: "京东",
-    "130cm": "130",
-    "170cm": "170",
+    title: "天猫,京东,拼多多,微信视频小店,小红书,快手",
+    "130cm": ",130,,,,",
+    "170cm": ",170,,,,",
   });
-  assert.equal(multiPlatform.valueText, "京东");
+  assert.equal(multiPlatform.valueText, "天猫;京东;拼多多;微信视频小店;小红书;快手");
   assert.equal(service.isStructuredProductPayloadField({ field_name: "多平台尺码", field_type: "" }), true);
 });
 
@@ -3671,7 +3671,7 @@ test("product archive SKU size field validation blocks values inconsistent with 
   assert.match(issues[1].message, /48cm/);
 });
 
-test("product archive create payload omits scalar size-chart fields", async () => {
+test("product archive create payload includes multi-platform size fields for size-chart products", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const serviceSource = await readText(files.draftService);
 
@@ -3680,13 +3680,19 @@ test("product archive create payload omits scalar size-chart fields", async () =
   assert.equal(service.productArchivePayloadIncludesMultiPlatformSizeField({
     shoeProduct: true,
     includeOptionalStructuredSizeFields: false,
-  }), false);
+  }), true);
   assert.equal(service.productArchivePayloadIncludesMultiPlatformSizeField({
     shoeProduct: true,
     includeOptionalStructuredSizeFields: true,
-  }), false);
+  }), true);
   assert.equal(service.productArchivePayloadIncludesMultiPlatformSizeField({
     shoeProduct: false,
+    apparelProduct: true,
+    includeOptionalStructuredSizeFields: false,
+  }), true);
+  assert.equal(service.productArchivePayloadIncludesMultiPlatformSizeField({
+    shoeProduct: false,
+    apparelProduct: false,
     includeOptionalStructuredSizeFields: false,
   }), false);
   assert.equal(service.shouldIncludeProductArchivePayloadField({
@@ -3794,10 +3800,10 @@ test("product archive create payload omits scalar size-chart fields", async () =
     field_name: "多平台尺码",
     field_type: "MULTI_TEXT",
     value_text: "",
-    value_json: { title: "拼多多,微信视频小店", "26码": "26码脚长15.8-16.2/内长17,26码(脚长15.8-16.2/内长17)" },
-  }, { includeOptionalStructuredSizeFields: true }), {
-    title: "拼多多,微信视频小店",
-    "26码": "26码脚长15.8-16.2/内长17,26码(脚长15.8-16.2/内长17)",
+    value_json: { title: "天猫,京东,拼多多,微信视频小店,小红书,快手", "26码": ",26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),," },
+  }, { includeMultiPlatformSizeField: true }), {
+    title: "天猫,京东,拼多多,微信视频小店,小红书,快手",
+    "26码": ",26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),,",
   });
   assert.equal(service.productArchivePayloadFieldValue({
     field_name: "颜色",

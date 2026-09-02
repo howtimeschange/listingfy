@@ -587,7 +587,7 @@ export function buildShoeSizeChartFieldValues(input: {
 
   const multi = templates.get("多平台尺码")
   if (multi) {
-    const columns = supportedColumns(multi, ["京东", "拼多多", "微信视频小店"], { 微信视频小店: ["微信视频", "微信视频号"] })
+    const columns = supportedColumns(multi, ["天猫", "京东", "拼多多", "微信视频小店", "小红书", "快手"], { 微信视频小店: ["微信视频", "微信视频号"] })
     const value = tableValue(rows, columns, (row, column) => {
       if (column === "京东") return normalizeShoeSkuSize(row.size_value)
       if (column === "拼多多" || column === "微信视频小店" || column === "微信视频" || column === "微信视频号") {

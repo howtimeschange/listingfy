@@ -150,7 +150,7 @@ test("fills VIP apparel size-chart model column with bare size values", () => {
   });
 });
 
-test("fills apparel multi-platform sizes with only bare JD values", () => {
+test("fills apparel multi-platform sizes with full platform columns and only bare JD values", () => {
   const rows = [
     { "款号": "208426121101", "测量点": "衣长", "尺码": "130", "尺码值": "50.5" },
     { "款号": "208426121101", "测量点": "衣长", "尺码": "140码", "尺码值": "54" },
@@ -163,9 +163,9 @@ test("fills apparel multi-platform sizes with only bare JD values", () => {
   });
 
   assert.deepEqual(result.valueJson, {
-    title: "京东",
-    "130cm": "130",
-    "140cm": "140",
+    title: "京东,天猫,快手,微信视频小店,拼多多",
+    "130cm": "130,,,,",
+    "140cm": "140,,,,",
   });
 });
 
