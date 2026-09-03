@@ -6551,6 +6551,85 @@ test("product archive down-fill sync adds Douyin remark when template exposes re
   }]);
 });
 
+test("product archive down-fill sync loads template options before deciding Douyin remark support", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const draft = {
+    id: 1002,
+    tenant_name: "电商巴拉巴拉",
+    merchant_id: "1162",
+    trade_id: "9652",
+  };
+  const fields = [
+    {
+      id: 1,
+      field_name: "充绒量",
+      value_text: "140码100克；150码114克",
+      source_type: "washlabel_ocr",
+    },
+    {
+      id: 2,
+      field_name: "抖音尺码表",
+      field_id: "148800",
+      value_json: {
+        title: "身高(cm),体重(斤),充绒量(g)",
+        "140cm": "140,62,100",
+        "150cm": "150,74,114",
+      },
+    },
+  ];
+  const template = {
+    field_name: "抖音尺码表",
+    field_id: "148800",
+    options_json: [
+      { value: "身高(cm)" },
+      { value: "体重(斤)" },
+      { value: "备注" },
+    ],
+  };
+  const writes = [];
+  const fakeDb = {
+    prepare(sql) {
+      const normalized = sql.replace(/\s+/g, " ").trim();
+      if (/select \* from product_archive_draft where id = \?/i.test(normalized)) {
+        return { get: () => draft };
+      }
+      if (/from deepdraw_trade_field_cache/i.test(normalized)) {
+        return { all: () => [template] };
+      }
+      if (/select \* from product_archive_draft_field/i.test(normalized)) {
+        return { all: () => fields };
+      }
+      if (/update product_archive_draft_field/i.test(normalized)) {
+        return {
+          run(...args) {
+            writes.push(args);
+            return { changes: 1 };
+          },
+        };
+      }
+      throw new Error(`Unexpected SQL: ${normalized}`);
+    },
+  };
+
+  const updates = service.syncProductArchiveDownFillWeightSizeCharts(fakeDb, draft.id);
+
+  assert.deepEqual(updates, [{
+    fieldId: 2,
+    fieldName: "抖音尺码表",
+    valueJson: {
+      title: "身高(cm),体重(斤),充绒量(g),备注",
+      "140cm": "140,62,100,充绒量100g",
+      "150cm": "150,74,114,充绒量114g",
+    },
+    sourceType: "washlabel_ocr",
+    sourceRef: null,
+  }]);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0][5], draft.id);
+  assert.equal(writes[0][6], 2);
+  assert.deepEqual(JSON.parse(writes[0][1]), updates[0].valueJson);
+});
+
 test("product archive asset package helpers classify reference images and model shots", async () => {
   const [service, serviceSource, route] = await Promise.all([
     import("../../web/server/services/product-archive-drafts.ts"),

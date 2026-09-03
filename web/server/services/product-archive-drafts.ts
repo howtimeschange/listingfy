@@ -4072,7 +4072,13 @@ export function buildProductArchiveApparelSizeRemarks(fields: JsonRecord[]) {
 }
 
 export function syncProductArchiveDownFillWeightSizeCharts(db: SyncPostgresDatabase, draftId: number) {
-  const fields = db.prepare("select * from product_archive_draft_field where draft_id = ?").all(draftId) as JsonRecord[]
+  const draft = draftById(db, draftId)
+  const templateOptions = fieldOptionsLookup(db, draft)
+  const fields = (db.prepare("select * from product_archive_draft_field where draft_id = ?").all(draftId) as JsonRecord[])
+    .map((field) => ({
+      ...field,
+      options_json: templateOptions.get(stringValue(field.field_name))?.options ?? [],
+    }))
   const updates = buildProductArchiveDownFillWeightSizeChartUpdates(fields)
   if (!updates.length) return updates
   const now = nowIso()
