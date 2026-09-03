@@ -4214,6 +4214,20 @@ function mdmSkuRowsForSpu(db: SyncPostgresDatabase, spuCode: string) {
   `).all(spuCode) as JsonRecord[]
 }
 
+export function productArchiveDraftSkuRowsAsMdmRows(skus: JsonRecord[] = []) {
+  return skus.map((sku) => ({
+    sku_code: stringValue(sku.sku_code),
+    ean_code: stringValue(sku.barcode) || null,
+    inner_code: stringValue(sku.seller_code) || stringValue(sku.sku_code),
+    size_code: stringValue(sku.size_code),
+    size_name: stringValue(sku.size_name),
+    price_tag: numberValue(sku.price),
+    skc_code: stringValue(sku.skc_code),
+    color_code: stringValue(sku.color_code),
+    color_name: stringValue(sku.color_name),
+  }))
+}
+
 function sourceRowsForSpu(db: SyncPostgresDatabase, spuCode: string, sourceBatchId?: number | null) {
   const batchId = numberValue(sourceBatchId)
   const where = ["source.spu_code = ?"]
@@ -9092,7 +9106,11 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
   const shoeProduct = isShoeProduct(spu, sourceRows)
   const apparelProduct = isApparelProduct(spu, sourceRows)
   const sizeChartMappings = sizeChartMappingsForDraft(db, draft)
-  const mdmSkus = mdmSkuRowsForSpu(db, stringValue(draft.spu_code))
+  const draftSkus = draftSkusForDraft(db, numberValue(draft.id) ?? 0)
+  const liveMdmSkus = mdmSkuRowsForSpu(db, stringValue(draft.spu_code))
+  const mdmSkus = liveMdmSkus.length > 0
+    ? liveMdmSkus
+    : productArchiveDraftSkuRowsAsMdmRows(draftSkus)
   const sizeChartAllowedSizes = productArchiveSizeChartAllowedSizes(sourceRows, mdmSkus)
   const dateText = launchDateValue(sourceRows) || mdmDateValue(spu)
   const fieldNames = new Set<string>()

@@ -421,6 +421,34 @@ test("product archive field rebuild falls back to the draft MDM snapshot for clo
   }), snapshotSpu);
 });
 
+test("cloned test SPUs reuse draft SKU rows when live MDM has no matching code", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.deepEqual(service.productArchiveDraftSkuRowsAsMdmRows([
+    {
+      sku_code: "202426107128-test20047140",
+      barcode: "6914678673746",
+      seller_code: "6914678673746",
+      size_code: "140",
+      size_name: "140",
+      price: 999.9,
+      skc_code: "202426107128-test20047",
+      color_code: "20047",
+      color_name: "浅灰20047",
+    },
+  ]), [{
+    sku_code: "202426107128-test20047140",
+    ean_code: "6914678673746",
+    inner_code: "6914678673746",
+    size_code: "140",
+    size_name: "140",
+    price_tag: 999.9,
+    skc_code: "202426107128-test20047",
+    color_code: "20047",
+    color_name: "浅灰20047",
+  }]);
+});
+
 test("product archive source imports support PLM size-chart batches", async () => {
   const [migration, service, route] = await Promise.all([
     readText(files.sizeChartMigration),
