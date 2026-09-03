@@ -12643,6 +12643,11 @@ export function productArchiveDraftFieldPatchesFromDeepdrawResource(input: {
     const id = numberValue(field.id)
     const fieldName = stringValue(field.field_name ?? field.fieldName ?? field.name)
     if (!Number.isInteger(id) || id <= 0 || !fieldName) continue
+    // Full-update resource preservation is only for missing scalar fields.
+    // DeepDraw may expose a structured size chart through its generic field
+    // list with an unreliable type; never let that fallback replace the
+    // locally rebuilt size-chart payload with a cloned legacy table.
+    if (isProductArchiveStructuredSizeFieldName(fieldName)) continue
     if (stringValue(field.source_type) === "skip" && !field.required && !field.blocking) continue
     if (hasValue(stringValue(field.value_text)) || hasValue(recordValue(field.value_json))) continue
     const fieldId = stringValue(field.field_id ?? field.fieldId)

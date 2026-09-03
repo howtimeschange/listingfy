@@ -4094,6 +4094,53 @@ test("field rebuild keeps trusted DeepDraw resource scalar values when rules can
   assert.match(serviceSource, /preserveDeepdrawResourceValue[\s\S]*\? stringValue\(existing\.source_ref\) \|\| "DeepDraw已有档案"/);
 });
 
+test("full update never preserves a structured size chart from the generic DeepDraw field list", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const patches = service.productArchiveDraftFieldPatchesFromDeepdrawResource({
+    fields: [
+      {
+        id: 1,
+        field_name: "抖音尺码表",
+        field_id: "1627572",
+        value_text: "",
+        value_json: {},
+        source_type: "manual",
+        required: true,
+        blocking: true,
+      },
+      {
+        id: 2,
+        field_name: "唯品会温馨提示",
+        field_id: "44734",
+        value_text: "",
+        value_json: {},
+        source_type: "manual",
+        required: false,
+        blocking: false,
+      },
+    ],
+    templateFields: [],
+    resourceBody: {
+      body: {
+        fields: [
+          {
+            field: { id: "1627572", name: "抖音尺码表", type: "TEXT" },
+            texts: ["身高(cm),体重(斤),充绒量(g),备注;140cm=140,62,32,充绒量32g"],
+            options: [],
+          },
+          {
+            field: { id: "44734", name: "唯品会温馨提示", type: "TEXT" },
+            texts: ["数据仅供参考"],
+            options: [],
+          },
+        ],
+      },
+    },
+  });
+
+  assert.deepEqual(patches.map((patch) => patch.fieldName), ["唯品会温馨提示"]);
+});
+
 test("product archive full update filters payload to existing DeepDraw shoe color aliases and SKUs", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const payload = {
