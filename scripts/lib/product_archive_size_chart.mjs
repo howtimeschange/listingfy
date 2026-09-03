@@ -367,12 +367,33 @@ function multiPlatformSizeTargetFields() {
   return DEFAULT_MULTI_PLATFORM_SIZE_TARGET_FIELDS;
 }
 
-function mainSizeChartTargetFields(rawTargetFields = [], garmentType = "") {
+function mainSizeChartTargetFields(rawTargetFields = [], garmentType = "", options = {}) {
   const garmentKey = apparelGarmentKey(garmentType);
   const text = stringValue(garmentType).replace(/\s+/g, "");
   if (/牛仔(?:裤|长裤|短裤|中裤)/.test(text)) return ["尺码", "尺码", "裤长", "腰围", "臀围", "脚口", "身高", "体重"];
   if (garmentKey === "top") return ["尺码", "尺码", "衣长", "肩宽", "胸围", "袖长", "身高", "体重"];
+  if (garmentKey === "bottom") {
+    return [
+      "尺码",
+      "尺码",
+      ...rawTargetFields.filter((field) => !isGenericBareSizeTargetFieldName(field)),
+    ];
+  }
+  if (options.apparelProduct) {
+    return [
+      "尺码",
+      "尺码",
+      ...rawTargetFields.filter((field) => !isGenericBareSizeTargetFieldName(field)),
+    ];
+  }
   return rawTargetFields;
+}
+
+function shouldForceMainSizeChartColumns(garmentType = "", businessTargetFields = [], rawTargetFields = []) {
+  if (businessTargetFields === rawTargetFields) return false;
+  const text = stringValue(garmentType).replace(/\s+/g, "");
+  if (/牛仔(?:裤|长裤|短裤|中裤)/.test(text)) return true;
+  return apparelGarmentKey(garmentType) === "top";
 }
 
 function vipSizeChartTargetFields(rawTargetFields = [], garmentType = "") {
@@ -614,6 +635,7 @@ export function buildSizeChartForTemplate({
   allowedSizes = [],
   gender = "",
   garmentType = "",
+  apparelProduct = false,
 } = {}) {
   const allowedSizeKeys = new Set(
     (Array.isArray(allowedSizes) ? allowedSizes : [])
@@ -629,11 +651,12 @@ export function buildSizeChartForTemplate({
   const multiPlatformSizeField = compactKey(template.fieldName) === compactKey("多平台尺码");
   const rawTargetFields = templateTargetFields(template);
   const businessTargetFields = mainSizeTableField
-    ? mainSizeChartTargetFields(rawTargetFields, garmentType)
+    ? mainSizeChartTargetFields(rawTargetFields, garmentType, { apparelProduct })
     : vipSizeTableField
       ? vipSizeChartTargetFields(rawTargetFields, garmentType)
     : rawTargetFields;
-  const forceMainSizeColumns = mainSizeTableField && businessTargetFields !== rawTargetFields;
+  const forceMainSizeColumns = mainSizeTableField
+    && shouldForceMainSizeChartColumns(garmentType, businessTargetFields, rawTargetFields);
   const mayBuildRowsFromAllowedSizes = mainSizeTableField || vipSizeTableField || douyinSizeTableField || multiPlatformSizeField;
   const targetFieldsWithSize = (
     (mainSizeTableField && !businessTargetFields.some(isGenericBareSizeTargetFieldName))

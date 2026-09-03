@@ -107,6 +107,8 @@ const PRODUCT_ARCHIVE_DRAFT_REUSE_STATUSES = [
   "ready",
 ] as const
 
+const PRODUCT_ARCHIVE_SOURCE_REFRESH_STATUS_SQL = "('draft', 'missing_fields', 'manual_review', 'ready', 'update_pending', 'duplicate_found')"
+
 export function isProductArchiveTradeBackfillStatus(status: unknown) {
   return PRODUCT_ARCHIVE_TRADE_BACKFILL_EDITABLE_STATUSES.has(stringValue(status))
 }
@@ -1971,8 +1973,8 @@ const SHORT_GUIDE_TITLE_AUDIENCE_WORDS = [
 
 const SHORT_GUIDE_TITLE_CATEGORY_WORDS = [
   "户外运动鞋",
-  "运动鞋",
   "户外鞋",
+  "运动鞋",
   "休闲鞋",
   "学步鞋",
   "篮球鞋",
@@ -1985,17 +1987,21 @@ const SHORT_GUIDE_TITLE_CATEGORY_WORDS = [
   "拖鞋",
   "皮鞋",
   "鞋",
+  "羽绒马甲",
   "羽绒服",
   "冲锋衣",
   "防晒服",
   "连衣裙",
   "半身裙",
+  "直筒裤",
   "牛仔裤",
   "休闲裤",
   "长裤",
   "短裤",
+  "裤子",
   "卫衣",
   "T恤",
+  "上衣",
   "外套",
   "棉服",
   "夹克",
@@ -2010,22 +2016,25 @@ function indexedShortGuideTitleTerm(title: string, term: string, used: Array<[nu
   if (index < 0) return null
   const end = index + term.length
   if (used.some(([start, usedEnd]) => index < usedEnd && end > start)) return null
-  used.push([index, end])
   return { index, term }
+}
+
+function preferredShortGuideTitleTerm(title: string, terms: string[], used: Array<[number, number]>) {
+  for (const term of terms) {
+    const match = indexedShortGuideTitleTerm(title, term, used)
+    if (!match) continue
+    used.push([match.index, match.index + match.term.length])
+    return match.term
+  }
+  return ""
 }
 
 function shortGuideTitleProtectedFallback(title: string, maxLength: number) {
   const brand = title.includes("巴拉巴拉") ? "巴拉巴拉" : ""
   const used: Array<[number, number]> = []
   if (brand) used.push([title.indexOf(brand), title.indexOf(brand) + brand.length])
-  const audience = SHORT_GUIDE_TITLE_AUDIENCE_WORDS
-    .map((term) => indexedShortGuideTitleTerm(title, term, used))
-    .filter((item): item is { index: number; term: string } => Boolean(item))
-    .sort((left, right) => right.index - left.index)[0]?.term ?? ""
-  const category = SHORT_GUIDE_TITLE_CATEGORY_WORDS
-    .map((term) => indexedShortGuideTitleTerm(title, term, used))
-    .filter((item): item is { index: number; term: string } => Boolean(item))
-    .sort((left, right) => right.index - left.index || right.term.length - left.term.length)[0]?.term ?? ""
+  const audience = preferredShortGuideTitleTerm(title, SHORT_GUIDE_TITLE_AUDIENCE_WORDS, used)
+  const category = preferredShortGuideTitleTerm(title, SHORT_GUIDE_TITLE_CATEGORY_WORDS, used)
   for (const candidate of uniqueTextValues([
     `${brand}${audience}${category}`,
     `${brand}${category}`,
@@ -2364,6 +2373,30 @@ function apparelSilhouetteEvidenceValue(spu: JsonRecord, sourceRows: JsonRecord[
     || launchValue(sourceRows, "裤型")
     || launchValue(sourceRows, "廓形")
     || spuRawPayloadValue(spu, ["SILHOUETTE_DESC"])
+}
+
+function copywritingStyleEvidenceCandidates(sourceRows: JsonRecord[]) {
+  return [
+    copywritingValue(sourceRows, "导购标题"),
+    copywritingValue(sourceRows, "名称"),
+    copywritingValue(sourceRows, "搜索标题"),
+    copywritingValue(sourceRows, "内容标题"),
+    copywritingValue(sourceRows, "内容平台标题"),
+    copywritingValue(sourceRows, "品类"),
+  ]
+}
+
+function apparelStyleEvidenceCandidates(spu: JsonRecord, sourceRows: JsonRecord[] = []) {
+  return uniqueTextValues([
+    launchValue(sourceRows, "主款式 （唯品四级品类）"),
+    launchValue(sourceRows, "主款式（唯品四级品类）"),
+    launchValue(sourceRows, "主款式"),
+    ...copywritingStyleEvidenceCandidates(sourceRows),
+    apparelSilhouetteEvidenceValue(spu, sourceRows),
+    stringValue(spu.subclass_name),
+    stringValue(spu.middle_class_name),
+    stringValue(spu.spu_name),
+  ])
 }
 
 function apparelThicknessEvidenceValue(spu: JsonRecord, sourceRows: JsonRecord[] = []) {
@@ -3145,11 +3178,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
       || launchValue(sourceRows, "填充物")
   }
   if (key === "款式" || key === "款式多选" || key === "款式单选") {
-    return launchValue(sourceRows, "主款式 （唯品四级品类）")
-      || apparelSilhouetteEvidenceValue(input.spu, sourceRows)
-      || stringValue(input.spu.subclass_name)
-      || stringValue(input.spu.middle_class_name)
-      || stringValue(input.spu.spu_name)
+    return apparelStyleEvidenceCandidates(input.spu, sourceRows)[0] ?? ""
   }
   if (key === "袖长多选") return "长袖"
   if (key === "袖长") return "长袖"
@@ -3575,6 +3604,22 @@ function productArchiveMainSizeChartFirstSizeColumnNeedsDisplayUnit(fieldName: u
   return false
 }
 
+function productArchiveMainSizeChartNeedsApparelDualSizeColumns(input: {
+  fieldName: unknown
+  valueJson: unknown
+  spu: JsonRecord
+  sourceRows: JsonRecord[]
+}) {
+  if (!isProductArchiveMainSizeChartFieldName(input.fieldName)) return false
+  if (!isApparelProduct(input.spu, input.sourceRows)) return false
+  const titles = sizeChartTitleOptions(input.valueJson)
+  const genericSizeColumnCount = titles
+    .filter((title) => ["尺码", "尺寸"].includes(compactFieldKey(title)))
+    .length
+  if (genericSizeColumnCount >= 2) return false
+  return sizeChartDataEntries(input.valueJson).some(([rawSize]) => /cm$/i.test(deepdrawSizeValue(rawSize)))
+}
+
 function isStaleStructuredSizeChartManualOverride(input: {
   fieldName: string
   field: JsonRecord
@@ -3613,6 +3658,12 @@ function isStaleStructuredSizeChartManualOverride(input: {
     sourceRows: input.sourceRows,
   })) return true
   if (productArchiveMainSizeChartFirstSizeColumnNeedsDisplayUnit(input.fieldName, valueJson)) return true
+  if (productArchiveMainSizeChartNeedsApparelDualSizeColumns({
+    fieldName: input.fieldName,
+    valueJson,
+    spu: input.spu,
+    sourceRows: input.sourceRows,
+  })) return true
   return isZeroPaddedProductArchiveSizeChartValue(valueJson)
 }
 
@@ -3654,6 +3705,12 @@ export function buildProductArchiveSizeChartFieldValue(input: {
     input.tradePath,
     input.draftTitle,
   ]).join(" ")
+  const apparelProduct = isApparelProduct(input.spu ?? {}, input.sourceRows)
+    || isApparelProductContext({
+      tradePath: input.tradePath,
+      productLineName: productCategoryText(input.spu ?? {}, input.sourceRows),
+      title: garmentType,
+    })
   const result = buildSizeChartForTemplate({
     rows: sizeChartSourceRowJson(input.sourceRows),
     spuCode: input.spuCode,
@@ -3665,6 +3722,7 @@ export function buildProductArchiveSizeChartFieldValue(input: {
     allowedSizes: input.allowedSizes ?? [],
     gender,
     garmentType,
+    apparelProduct,
   })
   const valueJson = recordValue(result.valueJson)
   return {
@@ -7337,7 +7395,13 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
       (option) => /运动板鞋/.test(text) && option === "板鞋",
       (option) => /爬爬鞋|学步鞋/.test(text) && option === "学步鞋",
       (option) => /拖鞋/.test(text) && option === "拖鞋",
-      (option) => /户外|运动/.test(text) && /户外|运动|运动鞋/.test(option),
+      (option) => /凉鞋/.test(text) && option === "运动凉鞋",
+      (option) => /户外/.test(text) && option === "户外休闲鞋",
+      (option) => /徒步/.test(text) && option === "徒步鞋",
+      (option) => /登山/.test(text) && option === "登山鞋",
+      (option) => /休闲/.test(text) && option === "运动休闲鞋",
+      (option) => /运动鞋|运动/.test(text) && option === "运动休闲鞋",
+      (option) => /户外|运动/.test(text) && /户外|运动|运动鞋/.test(option) && !/拖鞋|凉鞋/.test(option),
       (option) => /板鞋/.test(text) && /板鞋/.test(option),
       (option) => option.includes(text) || text.includes(option),
     ]) || text
@@ -7430,10 +7494,13 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
   if (key === "款式单选" || key === "款式") {
     return pickOption(options, [
       (option) => option === text,
+      (option) => key === "款式" && /套装|两件套|三件套|一衣两穿/.test(text) && /^(?:其他|其它)$/.test(option),
+      (option) => /直筒裤/.test(text) && option === "直筒裤",
+      (option) => /牛仔裤/.test(text) && option === "牛仔裤",
+      (option) => /弯刀/.test(text) && /弯刀裤/.test(option),
       (option) => /针织长裤|长裤/.test(text) && option === "长裤款",
       (option) => /针织长裤|长裤/.test(text) && option === "长裤",
       (option) => text.includes(option) || option.includes(text),
-      (option) => /弯刀/.test(text) && /弯刀裤/.test(option),
       (option) => /三合一|一衣三穿/.test(text) && /三合一|一衣三穿/.test(option),
       (option) => /棉服|棉衣/.test(text) && option === "短款棉服",
       (option) => /棉服|棉衣/.test(text) && /棉服/.test(option),
@@ -8340,21 +8407,30 @@ function evidenceRuleValueForField(input: {
     }
   }
   if (key === "款式" || key === "款式多选" || key === "款式单选" || key === "类型" || key === "类型多选" || key === "分类") {
-    const sourceValue = launchValue(input.sourceRows, "主款式 （唯品四级品类）")
-      || launchValue(input.sourceRows, "主款式（唯品四级品类）")
-      || launchValue(input.sourceRows, "品类")
-      || apparelSilhouetteEvidenceValue(contextSpu, input.sourceRows)
-      || currentValue
-      || stringValue(contextSpu.subclass_name)
-      || stringValue(contextSpu.middle_class_name)
-      || stringValue(contextSpu.spu_name)
-    const normalized = normalizeProductArchiveDeepdrawFieldValue(fieldName, sourceValue, options)
-    if (normalized && productArchiveFieldValueMatchesOptions(normalized, options, fieldName)) {
+    const shoeProduct = isShoeProduct(contextSpu, input.sourceRows)
+    const sourceValues = shoeProduct
+      ? uniqueTextValues([
+        launchValue(input.sourceRows, "主款式 （唯品四级品类）"),
+        launchValue(input.sourceRows, "主款式（唯品四级品类）"),
+        launchValue(input.sourceRows, "品类"),
+        currentValue,
+        stringValue(contextSpu.subclass_name),
+        stringValue(contextSpu.middle_class_name),
+        stringValue(contextSpu.spu_name),
+      ])
+      : uniqueTextValues([
+        ...apparelStyleEvidenceCandidates(contextSpu, input.sourceRows),
+        currentValue,
+      ])
+    const normalized = sourceValues
+      .map((sourceValue) => normalizeProductArchiveDeepdrawFieldValue(fieldName, sourceValue, options))
+      .find((value) => value && productArchiveFieldValueMatchesOptions(value, options, fieldName))
+    if (normalized) {
       return {
         value: normalized,
         sourceType: "source_rule",
-        sourceRef: "上市计划/MDM款式",
-        reason: "根据上市计划、MDM 子类或当前来源值归一到深绘模板款式枚举",
+        sourceRef: "上市计划/标准文案/MDM款式",
+        reason: "根据上市计划、标准文案、MDM 子类或当前来源值归一到深绘模板款式枚举",
       }
     }
   }
@@ -9098,6 +9174,14 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
       && !isStaleSourceDerivedAgeAiFillField(fieldName, existing, sourceValueText, templateOptions)
       && !(apparelOriginAreaField && isStaleApparelOriginAreaAiField(fieldName, existing, sourceValueText, templateOptions))
       && !isStaleSourceDerivedShoeAgeManualField(fieldName, existing, sourceValueText, stringValue(shoeDerivedCandidate?.valueText), templateOptions)
+      && !isStaleSourceDerivedShoeStyleManualField({
+        fieldName,
+        field: existing,
+        spu,
+        sourceRows,
+        sourceValueText,
+        options: templateOptions,
+      })
       && !isStaleNonSandalAi25ShoeSizeTable({
         fieldName,
         sourceType: existing.source_type,
@@ -10058,7 +10142,7 @@ export function refreshProductArchiveDraftsFromSourceBatch(db: SyncPostgresDatab
     join product_archive_source_row source on source.spu_code = draft.spu_code
     where source.source_batch_id = ?
       and source.source_type = ?
-      and draft.status in ('draft', 'missing_fields', 'manual_review', 'ready')
+      and draft.status in ${PRODUCT_ARCHIVE_SOURCE_REFRESH_STATUS_SQL}
     order by draft.updated_at desc, draft.id desc
   `).all(sourceBatchId, sourceType) as JsonRecord[]
   let refreshedDraftCount = 0
@@ -10126,7 +10210,7 @@ export async function refreshProductArchiveDraftsFromSourceBatchInChunks(
     join product_archive_source_row source on source.spu_code = draft.spu_code
     where source.source_batch_id = ?
       and source.source_type = ?
-      and draft.status in ('draft', 'missing_fields', 'manual_review', 'ready')
+      and draft.status in ${PRODUCT_ARCHIVE_SOURCE_REFRESH_STATUS_SQL}
     order by draft.updated_at desc, draft.id desc
   `).all(sourceBatchId, sourceType) as JsonRecord[]
   let refreshedDraftCount = 0
@@ -11719,6 +11803,40 @@ function isStaleSourceDerivedShoeAgeManualField(
   if (!existingValue || existingValue === shoeValue) return false
   const legacyValue = normalizeProductArchiveDeepdrawFieldValue(fieldName, legacySourceValueText, options)
   return Boolean(legacyValue) && existingValue === legacyValue
+}
+
+function isStaleSourceDerivedShoeStyleManualField(input: {
+  fieldName: unknown
+  field: JsonRecord
+  spu: JsonRecord
+  sourceRows: JsonRecord[]
+  sourceValueText: string
+  options: unknown[]
+}) {
+  const key = compactFieldKey(input.fieldName)
+  if (!["款式单选", "款式", "类型", "类型多选"].includes(key)) return false
+  if (!isShoeProduct(input.spu, input.sourceRows)) return false
+  if (stringValue(input.field.source_type) !== "manual") return false
+  const existingText = stringValue(input.field.value_text)
+  if (!/拖鞋|凉鞋/.test(existingText)) return false
+  const sourceValues = uniqueTextValues([
+    input.sourceValueText,
+    copyOrLaunchValue(input.sourceRows, "主款式"),
+    copyOrLaunchValue(input.sourceRows, "品类"),
+    shoeProductNameValue(input.sourceRows),
+    copywritingValue(input.sourceRows, "导购标题"),
+    copywritingValue(input.sourceRows, "搜索标题"),
+    productCategoryText(input.spu, input.sourceRows),
+  ])
+  const sourceText = sourceValues.join(" ")
+  if (!sourceText || /拖鞋|凉鞋/.test(sourceText)) return false
+  if (!/运动|户外|休闲|鞋/.test(sourceText)) return false
+  const expectedValue = sourceValues
+    .map((sourceValue) => normalizeProductArchiveDeepdrawFieldValue(input.fieldName, sourceValue, input.options))
+    .find((value) => value && productArchiveFieldValueMatchesOptions(value, input.options, input.fieldName))
+  if (!expectedValue) return false
+  const existingValue = normalizeProductArchiveDeepdrawFieldValue(input.fieldName, existingText, input.options)
+  return Boolean(existingValue && existingValue !== expectedValue)
 }
 
 function aiFillFieldSnapshot(field: JsonRecord) {

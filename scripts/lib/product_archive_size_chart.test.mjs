@@ -88,6 +88,23 @@ test("omits unmapped DeepDraw size-chart fields instead of filling zero values",
   assert.equal(result.unmatchedTargets.includes("领口"), true);
 });
 
+test("adds dual size columns to apparel main size charts even when the garment type is generic", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [
+      { "款号": "202426100999", "测量点": "衣长", "尺码": "130", "尺码值": "43" },
+      { "款号": "202426100999", "测量点": "胸围", "尺码": "130", "尺码值": "85" },
+    ],
+    spuCode: "202426100999",
+    template: { fieldName: "尺码表", options: ["衣长", "胸围"] },
+    apparelProduct: true,
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "尺码,尺码,衣长,胸围",
+    "130cm": "130cm,130,43,85",
+  });
+});
+
 test("normalizes platform size-chart unit suffixes and pants aliases", () => {
   const rows = [
     { "款号": "208426108218", "测量点": "全腰围（平量）", "尺码": "080", "尺码值": "41" },
@@ -282,6 +299,26 @@ test("forces denim pants main size chart to the eight business columns", () => {
     "140cm": "140cm,140,82,55,80,46.4,140,31",
   });
   assert.equal(result.unmatchedTargets.includes("脚口翻折高"), false);
+});
+
+test("keeps dual apparel size columns for non-denim bottom main size charts", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [],
+    spuCode: "202426108104",
+    template: {
+      fieldName: "尺码表",
+      options: ["尺码", "腰围", "臀围", "直裆", "后裆", "大腿围", "小腿围", "脚口", "裤长", "身高", "体重"],
+    },
+    allowedSizes: ["110cm", "120cm"],
+    gender: "男童",
+    garmentType: "长裤",
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "尺码,尺码,身高,体重",
+    "110cm": "110cm,110,110,17",
+    "120cm": "120cm,120,120,20.5",
+  });
 });
 
 test("forces apparel top main size chart to fixed columns and prefers three-point sleeve length", () => {

@@ -1916,6 +1916,23 @@ test("source-batch refresh preserves a concurrent human trade adjustment", async
   assert.equal(result.failedDrafts.length, 0);
 });
 
+test("source-batch refresh also rebuilds duplicate drafts prepared for full update", async () => {
+  const service = await readFile(files.draftService, "utf8");
+  const syncRefreshStart = service.indexOf("export function refreshProductArchiveDraftsFromSourceBatch");
+  const asyncRefreshStart = service.indexOf("export async function refreshProductArchiveDraftsFromSourceBatchInChunks");
+  const legacyBackfillStart = service.indexOf("export function backfillLegacyProductArchiveDraftTrades");
+  assert.ok(syncRefreshStart >= 0, "missing sync source refresh");
+  assert.ok(asyncRefreshStart > syncRefreshStart, "missing async source refresh");
+  assert.ok(legacyBackfillStart > asyncRefreshStart, "missing legacy backfill after source refresh");
+
+  const syncRefresh = service.slice(syncRefreshStart, asyncRefreshStart);
+  const asyncRefresh = service.slice(asyncRefreshStart, legacyBackfillStart);
+  for (const implementation of [syncRefresh, asyncRefresh]) {
+    assert.match(implementation, /PRODUCT_ARCHIVE_SOURCE_REFRESH_STATUS_SQL/);
+  }
+  assert.match(service, /PRODUCT_ARCHIVE_SOURCE_REFRESH_STATUS_SQL = "\('draft', 'missing_fields', 'manual_review', 'ready', 'update_pending', 'duplicate_found'\)"/);
+});
+
 test("confirming a recommendation rejects a concurrent snapshot change", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const sourceRows = [{ source_type: "launch_plan", row_json: { "官方发布类目": "童装 > 外套" } }];
@@ -3745,6 +3762,21 @@ test("product archive service derives DeepDraw size-chart fields from PLM source
     "80cm": "80cm,80,33,64,26",
   });
   assert.equal(genericValue.sourceType, "size_chart");
+
+  const bottomValue = service.buildProductArchiveSizeChartFieldValue({
+    fieldName: "尺码表",
+    spuCode: "202426108104",
+    sourceRows: [],
+    templateOptions: ["尺码", "身高", "体重"],
+    allowedSizes: ["110cm", "120cm"],
+    gender: "男童",
+    garmentType: "长裤",
+  });
+  assert.deepEqual(bottomValue.valueJson, {
+    title: "尺码,尺码,身高,体重",
+    "110cm": "110cm,110,110,17",
+    "120cm": "120cm,120,120,20.5",
+  });
 
   const multiPlatform = service.buildProductArchiveSizeChartFieldValue({
     fieldName: "多平台尺码",
@@ -6685,6 +6717,89 @@ test("product archive evidence rules use MDM silhouette and thickness for pants 
   ]);
 });
 
+test("product archive evidence rules use copywriting title for pants style single choice before incompatible silhouette", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("款式(单选)", "巴拉巴拉童装男童直筒裤儿童裤子", [
+    { value: "长裤款" },
+    { value: "直筒裤" },
+  ]), "直筒裤");
+
+  const fills = service.buildProductArchiveEvidenceRuleFills({
+    draft: { id: 1165, spu_code: "202426108104" },
+    spu: {
+      spu_code: "202426108104",
+      subclass_name: "针织长裤",
+      raw_payload_json: JSON.stringify({ SILHOUETTE_DESC: "弯刀裤", MODEL_DESC: "宽松型" }),
+    },
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: {
+        "导购标题": "巴拉巴拉童装男童直筒裤儿童裤子",
+        "品类": "长裤",
+      },
+    }],
+    fields: [
+      {
+        id: 1,
+        field_name: "款式(单选)",
+        value_text: "",
+        value_json: {},
+        validation_status: "missing",
+        source_ref: "判断",
+        options_json: [{ value: "防蚊裤" }, { value: "直筒裤" }, { value: "休闲裤" }],
+      },
+    ],
+  });
+
+  assert.deepEqual(fills.map((fill) => [fill.field_name, fill.field_value, fill.source_type, fill.source_ref]), [
+    ["款式(单选)", "直筒裤", "source_rule", "上市计划/标准文案/MDM款式"],
+  ]);
+});
+
+test("product archive evidence rules use other for apparel style when copywriting two-piece text lacks an exact enum", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  const fills = service.buildProductArchiveEvidenceRuleFills({
+    draft: { id: 1164, spu_code: "202426107129" },
+    spu: {
+      spu_code: "202426107129",
+      spu_name: "男童羽绒服（两件套）",
+      subclass_name: "羽绒服",
+    },
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: {
+        "导购标题": "巴拉巴拉童装羽绒马甲男童两件套",
+        "推荐理由": "两件套一衣两穿，防泼水羽绒温暖过冬",
+      },
+    }],
+    fields: [
+      {
+        id: 1,
+        field_name: "款式",
+        value_text: "",
+        value_json: {},
+        validation_status: "missing",
+        source_ref: "判断",
+        options_json: [
+          { value: "连帽可脱卸" },
+          { value: "连帽" },
+          { value: "可拆卸袖" },
+          { value: "可拆卸内胆" },
+          { value: "双面穿" },
+          { value: "其他" },
+          { value: "假两件" },
+        ],
+      },
+    ],
+  });
+
+  assert.deepEqual(fills.map((fill) => [fill.field_name, fill.field_value, fill.source_type, fill.source_ref]), [
+    ["款式", "其他", "source_rule", "上市计划/标准文案/MDM款式"],
+  ]);
+});
+
 test("product archive service maps every main-fabric component for 208326105206-TEST", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const sourceRows = [
@@ -6922,6 +7037,22 @@ test("product archive shoe required fields derive from trusted launch and brand 
   }), {
     valueText: "",
     valueJson: { title: "购买数量,产品单价（元）", 1: "1,359" },
+  });
+  assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("价格区间", {
+    spu: { ...spu, price_tag: 359.9 },
+    sourceRows: [
+      {
+        source_type: "launch_plan",
+        row_json: {
+          "大货款号": "208426140203",
+          "吊牌价": "999",
+        },
+      },
+    ],
+    skus: [],
+  }), {
+    valueText: "",
+    valueJson: { title: "购买数量,产品单价（元）", 1: "1,359.9" },
   });
   assert.equal(derive("专柜价"), "10000");
   assert.equal(derive("是否商场同款"), "否");
@@ -7329,6 +7460,30 @@ test("shoe platform subtitles preserve complete words at their field limits", as
       },
     }],
   }), "");
+});
+
+test("guide short titles keep the most specific apparel noun from copywriting titles", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const derive = (guideTitle) => service.buildProductArchiveSourceDerivedFieldValue("导购短标题", {
+    spu: { product_line_name: "童装服饰" },
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: { "导购标题": guideTitle },
+    }],
+  });
+
+  assert.equal(derive("巴拉巴拉童装男童直筒裤儿童裤子"), "巴拉巴拉男童直筒裤");
+  assert.equal(derive("巴拉巴拉童装女童牛仔裤儿童裤子"), "巴拉巴拉女童牛仔裤");
+  assert.equal(derive("巴拉巴拉儿童羽绒服男童外套厚款"), "巴拉巴拉男童羽绒服");
+  assert.equal(derive("巴拉巴拉童装羽绒马甲男童两件套"), "巴拉巴拉男童羽绒马甲");
+  for (const value of [
+    derive("巴拉巴拉童装男童直筒裤儿童裤子"),
+    derive("巴拉巴拉童装女童牛仔裤儿童裤子"),
+    derive("巴拉巴拉儿童羽绒服男童外套厚款"),
+    derive("巴拉巴拉童装羽绒马甲男童两件套"),
+  ]) {
+    assert.ok(value.length <= 12, value);
+  }
 });
 
 test("product archive local requirement follows the DeepDraw template when present", async () => {
@@ -8314,6 +8469,18 @@ test("product archive service normalizes source values into DeepDraw enum option
     { attrValueId: 2370485, attrValueName: "飞织鞋" },
     { attrValueId: 1343692, attrValueName: "运动凉鞋" },
     { attrValueId: 2430427, attrValueName: "运动休闲鞋" },
+  ]), "运动休闲鞋");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("款式(单选)", "巴拉巴拉运动鞋男童轻便户外鞋", [
+    { value: "运动拖鞋" },
+    { value: "运动凉鞋" },
+    { value: "运动休闲鞋" },
+    { value: "户外休闲鞋" },
+  ]), "户外休闲鞋");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("款式(单选)", "童鞋儿童运动鞋", [
+    { value: "运动拖鞋" },
+    { value: "运动凉鞋" },
+    { value: "运动休闲鞋" },
+    { value: "户外休闲鞋" },
   ]), "运动休闲鞋");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("适用年龄(多选)", "2-7岁", [
     { value: "1-3岁" },
