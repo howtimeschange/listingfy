@@ -745,8 +745,8 @@ test("buildDeepdrawProductFullUpdateInput keeps shoe size enum values and only i
   assert.equal(input.product.code, "208426140203");
   assert.equal(input.product.date, "2026-09-02");
   assert.equal(input.product.fields["尺码"], "26码");
-  assert.deepEqual(input.product.fields["尺码表"], { title: "适合脚长,鞋内长", "26码": "16,17" });
-  assert.deepEqual(input.product.fields["唯品会尺码表"], { title: "欧洲码,脚长,鞋内长", "26码": "26码,160,170.32" });
+  assert.deepEqual(input.product.fields["尺码表"], { title: "脚长,鞋内长", "26码": "16,17" });
+  assert.deepEqual(input.product.fields["唯品会尺码表"], { title: "欧洲码,脚长,鞋内长", "26码": "26,160,170.32" });
   assert.deepEqual(input.product.fields["天猫尺码表"], { title: "脚长,鞋内长", "26码": "16,17" });
   assert.deepEqual(input.product.fields["抖音尺码表"], { title: "脚长(cm),备注", "26码": "16,脚长15.8-16.2/内长17" });
   assert.deepEqual(input.product.fields["多平台尺码"], {
@@ -785,9 +785,9 @@ test("buildDeepdrawSdkProductInput keeps shoe size remarks out of the public Pro
 
   assert.equal(input.product.fields["尺码"], "26码;27码");
   assert.deepEqual(input.product.fields["尺码表"], {
-    title: "尺码,适合脚长",
-    "26码": "26,16",
-    "27码": "27,16.5",
+    title: "脚长",
+    "26码": "16",
+    "27码": "16.5",
   });
   assert.deepEqual(Object.keys(input.product.fields["商家SKU"]["黑色"]), ["26码", "27码"]);
 });
@@ -879,9 +879,9 @@ test("buildDeepdrawSdkProductInput can emit bare shoe sale-size identities for p
 
   assert.equal(input.product.fields["尺码"], "26;27");
   assert.deepEqual(input.product.fields["尺码表"], {
-    title: "尺码,适合脚长",
-    "26": "26,16",
-    "27": "27,16.5",
+    title: "脚长",
+    "26": "16",
+    "27": "16.5",
   });
   assert.deepEqual(Object.keys(input.product.fields["商家SKU"]["黑色"]), ["26"]);
 });
@@ -925,6 +925,8 @@ test("buildDeepdrawSdkProductInput can preserve unit-bearing table keys while sa
   assert.deepEqual(Object.keys(input.product.fields["商家SKU"]["黑色"]), ["26", "27"]);
   assert.deepEqual(Object.keys(input.product.fields["尺码表"]), ["title", "26码", "27码"]);
   assert.deepEqual(Object.keys(input.product.fields["唯品会尺码表"]), ["title", "26码", "27码"]);
+  assert.deepEqual(input.product.fields["尺码表"], { title: "脚长", "26码": "16", "27码": "16.5" });
+  assert.deepEqual(input.product.fields["唯品会尺码表"], { title: "欧洲码,脚长", "26码": "26,160", "27码": "27,165" });
   assert.equal(Object.hasOwn(input.product.fields, "多平台尺码"), false);
 });
 
@@ -1105,9 +1107,9 @@ test("legacy v1 shoe publish creates with the main table then updates the remain
   });
   assert.equal(createInput.product.fields["尺码"], "26码;27码");
   assert.deepEqual(createInput.product.fields["尺码表"], {
-    title: "尺码,适合脚长,鞋内长",
-    "26码": "26,16,17",
-    "27码": "27,16.5,17.7",
+    title: "脚长,鞋内长",
+    "26码": "16,17",
+    "27码": "16.5,17.7",
   });
   assert.deepEqual(createInput.product.fields["多平台尺码"], {
     title: "京东,拼多多,微信视频小店,小红书",
@@ -1373,9 +1375,9 @@ test("compareDeepdrawLegacyShoePayloadToResource resolves DeepDraw standard size
         name: "尺码表",
         fieldType: "MULTI_TEXT",
         value: {
-          title: "尺码,适合脚长,鞋内长",
-          "26码": "26,16,17",
-          "27码": "27,16.5,17.7",
+          title: "脚长,鞋内长",
+          "26码": "16,17",
+          "27码": "16.5,17.7",
         },
       },
     ],
@@ -1384,9 +1386,9 @@ test("compareDeepdrawLegacyShoePayloadToResource resolves DeepDraw standard size
         name: "尺码表",
         fieldType: "MULTI_TEXT",
         value: {
-          title: "尺码,适合脚长,鞋内长",
-          "26码": "26,16,17",
-          "27码": "27,16.5,17.7",
+          title: "脚长,鞋内长",
+          "26码": "16,17",
+          "27码": "16.5,17.7",
         },
       },
     ],
@@ -1407,8 +1409,8 @@ test("compareDeepdrawLegacyShoePayloadToResource resolves DeepDraw standard size
       {
         field: { name: "尺码表" },
         sizeTableItems: [
-          { size: "26", values: { "鞋长": "26", "适合脚长": "16", "鞋内长": "17" } },
-          { size: "26.5", values: { "鞋长": "27", "适合脚长": "16.5", "鞋内长": "17.7" } },
+          { size: "26", values: { "适合脚长": "16", "鞋内长": "17" } },
+          { size: "26.5", values: { "适合脚长": "16.5", "鞋内长": "17.7" } },
         ],
       },
     ],

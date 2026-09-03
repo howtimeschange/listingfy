@@ -111,7 +111,9 @@ test("normalizes platform size-chart unit suffixes and pants aliases", () => {
   const vip = buildSizeChartForTemplate({
     rows,
     spuCode: "208426108218",
-    template: { fieldName: "唯品会尺码表", options: ["号型", "适合年龄", "身高", "腰围", "臀围", "裤长", "前浪", "后浪", "大腿围"] },
+    template: { fieldName: "唯品会尺码表", options: ["号型", "适合年龄", "身高", "腰围", "臀围", "裤长", "上装号型", "下装号型", "前浪", "后浪", "大腿围", "体重"] },
+    gender: "女童",
+    garmentType: "长裤",
   });
 
   assert.deepEqual(douyin.valueJson, {
@@ -123,15 +125,17 @@ test("normalizes platform size-chart unit suffixes and pants aliases", () => {
     "80cm": "80,9.5,41,74,43",
   });
   assert.deepEqual(vip.valueJson, {
-    title: "号型,适合年龄,身高,腰围,臀围,裤长,前浪,后浪,大腿围",
-    "80cm": "80,12-18月,80,41,74,43,21.8,27.1,22",
+    title: "号型,适合年龄,身高,腰围,臀围,裤长,体重",
+    "80cm": "80/47,12-18月,80,41,74,43,9.5",
   });
   assert.deepEqual(douyin.unmatchedTargets, ["备注"]);
   assert.deepEqual(haoyiku.unmatchedTargets, []);
-  assert.deepEqual(vip.unmatchedTargets, []);
+  assert.equal(vip.unmatchedTargets.includes("前浪"), false);
+  assert.equal(vip.unmatchedTargets.includes("后浪"), false);
+  assert.equal(vip.unmatchedTargets.includes("大腿围"), false);
 });
 
-test("fills VIP apparel size-chart model column with bare size values", () => {
+test("fills VIP apparel size-chart model column with top or bottom recommended sizes", () => {
   const result = buildSizeChartForTemplate({
     rows: [
       { "款号": "208426121101", "测量点": "衣长", "尺码": "130cm", "尺码值": "50.5" },
@@ -145,8 +149,40 @@ test("fills VIP apparel size-chart model column with bare size values", () => {
 
   assert.deepEqual(result.valueJson, {
     title: "号型,衣长",
-    "130cm": "130,50.5",
-    "140cm": "140,54",
+    "130cm": "130/64,50.5",
+    "140cm": "140/64,54",
+  });
+
+  const pants = buildSizeChartForTemplate({
+    rows: [
+      { "款号": "208426108039", "测量点": "裤长", "尺码": "140", "尺码值": "82" },
+    ],
+    spuCode: "208426108039",
+    template: { fieldName: "唯品会尺码表", options: ["号型", "裤长"] },
+    gender: "女童",
+    garmentType: "牛仔裤",
+  });
+
+  assert.deepEqual(pants.valueJson, {
+    title: "号型,裤长",
+    "140cm": "140/55,82",
+  });
+});
+
+test("fills explicit VIP top and bottom model columns from separate size references", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [],
+    spuCode: "202426108035",
+    template: { fieldName: "唯品会尺码表", options: ["上装号型", "下装号型"] },
+    allowedSizes: ["140", "150"],
+    gender: "女童",
+    garmentType: "套装",
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "上装号型,下装号型",
+    "140cm": "140/64,140/55",
+    "150cm": "150/72,150/61",
   });
 });
 

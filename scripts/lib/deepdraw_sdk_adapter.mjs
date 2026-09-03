@@ -576,17 +576,58 @@ function normalizeSizeTableField(value, sizeValues = [], name = "", options = {}
       : normalizeMultiPlatformSizeField(value, sizeValues);
   }
   const output = {};
+  const sourceTitle = value.title;
+  const title = normalizeSizeTableTitleForPayload(sourceTitle, name, options);
   for (const [size, rowValue] of Object.entries(value)) {
     if (size === "title") {
-      output[size] = rowValue;
+      output[size] = title;
       continue;
     }
     const normalizedSize = options.preserveStructuredSizeRowKeysForProbe === true
       ? stringValue(size)
       : sdkPayloadSizeValue(size, sizeValues);
-    if (normalizedSize) output[normalizedSize] = rowValue;
+    const normalizedRowValue = normalizeSizeTableRowForPayload(rowValue, sourceTitle, name, options);
+    if (normalizedSize) output[normalizedSize] = normalizedRowValue;
   }
   return output;
+}
+
+function normalizeShoeMainSizeTableColumn(column) {
+  const key = compactKey(column);
+  if (key === compactKey("尺码") || key === compactKey("尺寸")) return "";
+  if (key === compactKey("适合脚长")) return "脚长";
+  if (key === compactKey("内长") || key === compactKey("鞋长")) return "鞋内长";
+  return stringValue(column);
+}
+
+function normalizeSizeTableTitleForPayload(title, name = "", options = {}) {
+  if (!options.shoeSizes || compactKey(name) !== compactKey("尺码表")) return title;
+  return stringValue(title).split(",")
+    .map(normalizeShoeMainSizeTableColumn)
+    .filter(Boolean)
+    .join(",");
+}
+
+function normalizeSizeTableRowForPayload(rowValue, title, name = "", options = {}) {
+  const fieldKey = compactKey(name);
+  if (options.shoeSizes && fieldKey === compactKey("尺码表")) {
+    const columns = stringValue(title).split(",").map((column) => column.trim());
+    const cells = stringValue(rowValue).split(",");
+    return columns
+      .map((column, index) => ({ column: normalizeShoeMainSizeTableColumn(column), value: cells[index] ?? "" }))
+      .filter((entry) => entry.column)
+      .map((entry) => stringValue(entry.value))
+      .join(",");
+  }
+  if (!options.shoeSizes || fieldKey !== compactKey("唯品会尺码表")) return rowValue;
+  const columns = stringValue(title).split(",").map((column) => column.trim());
+  const europeanCodeIndex = columns.findIndex((column) => compactKey(column) === compactKey("欧洲码"));
+  if (europeanCodeIndex < 0) return rowValue;
+  const cells = stringValue(rowValue).split(",");
+  const value = stringValue(cells[europeanCodeIndex]);
+  const match = value.match(/^(\d+(?:\.\d+)?)\s*码$/);
+  if (match) cells[europeanCodeIndex] = match[1];
+  return cells.join(",");
 }
 
 function fieldKey(fields, names) {
@@ -987,11 +1028,12 @@ function actualSizeTableRowData(actualRow) {
 
 function actualSizeTableCellCandidates(actualRow, column, expectedName, { shoeSizes = false } = {}) {
   const row = actualSizeTableRowData(actualRow);
-  const candidates = compactKey(expectedName) === compactKey("尺码表")
-    && shoeSizes
-    && compactKey(column) === compactKey("尺码")
-    ? [column, "鞋长"]
-    : [column];
+  let candidates = [column];
+  if (compactKey(expectedName) === compactKey("尺码表") && shoeSizes) {
+    const columnKey = compactKey(column);
+    if (columnKey === compactKey("尺码")) candidates = [column, "鞋长"];
+    if (columnKey === compactKey("脚长")) candidates = [column, "适合脚长"];
+  }
   const candidateKeys = new Set(candidates.map(compactKey).filter(Boolean));
   const output = [];
   for (const [actualColumn, actualValue] of Object.entries(row.values)) {

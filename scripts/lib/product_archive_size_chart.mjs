@@ -109,6 +109,8 @@ function balabalaReferenceMapping(targetField, gender, garmentType) {
   if (/适合年龄|推荐年龄/.test(key)) return "balabala:age";
   if (/斤|抖音重量/.test(raw)) return "balabala:douyin_weight";
   if (/kg|公斤/i.test(raw) || key === compactKey("体重")) return "balabala:weight";
+  if (/上装号型|上衣号型/.test(key) && apparelGenderKey(gender)) return "balabala:recommended_top_size";
+  if (/下装号型|裤装号型/.test(key) && apparelGenderKey(gender)) return "balabala:recommended_bottom_size";
   if (/号型|推荐尺码|标准尺码/.test(key) && apparelGenderKey(gender) && apparelGarmentKey(garmentType)) {
     return "balabala:recommended_size";
   }
@@ -186,7 +188,7 @@ function isGenericBareSizeTargetFieldName(value) {
 }
 
 function isVipBareSizeTargetFieldName(value) {
-  return ["尺码", "尺寸", "号型", "身高"].some((field) => compactKey(value) === compactKey(field));
+  return ["尺码", "尺寸", "号型", "上装号型", "下装号型", "身高"].some((field) => compactKey(value) === compactKey(field));
 }
 
 function firstValue(row, keys) {
@@ -373,6 +375,25 @@ function mainSizeChartTargetFields(rawTargetFields = [], garmentType = "") {
   return rawTargetFields;
 }
 
+function vipSizeChartTargetFields(rawTargetFields = [], garmentType = "") {
+  const garmentKey = apparelGarmentKey(garmentType);
+  if (garmentKey !== "top" && garmentKey !== "bottom") return rawTargetFields;
+  const hasGenericModelColumn = rawTargetFields.some((field) => compactKey(field) === compactKey("号型"));
+  return rawTargetFields.filter((field) => {
+    const key = compactKey(field);
+    if (hasGenericModelColumn && (key === compactKey("上装号型") || key === compactKey("下装号型"))) return false;
+    if (garmentKey === "bottom" && [
+      "前浪",
+      "前档",
+      "前裆",
+      "后浪",
+      "后裆",
+      "大腿围",
+    ].some((excluded) => key === compactKey(excluded))) return false;
+    return true;
+  });
+}
+
 function multiPlatformSizeCellValue(size, targetField) {
   return compactKey(targetField) === compactKey("京东")
     ? stringValue(size).replace(/\s*(?:cm|厘米|公分|码)$/i, "")
@@ -537,13 +558,16 @@ function derivedValueForMapping(mapping, size, context = {}) {
   if (mapping?.sourcePoint === "balabala:recommended_size") {
     return balabalaApparelRecommendedSize({ size, gender: context.gender, garmentType: context.garmentType });
   }
+  if (mapping?.sourcePoint === "balabala:recommended_top_size") {
+    return balabalaApparelRecommendedSize({ size, gender: context.gender, garmentType: "上装" });
+  }
+  if (mapping?.sourcePoint === "balabala:recommended_bottom_size") {
+    return balabalaApparelRecommendedSize({ size, gender: context.gender, garmentType: "下装" });
+  }
   if (isGenericSizeTargetField(mapping?.targetField)) {
     if (context.mainSizeTableField && Number(context.sizeColumnOrdinal ?? 0) === 0) {
       return normalizeDeepdrawSize(size);
     }
-    return sizeLabelNumber(size);
-  }
-  if (context.vipSizeTableField && targetKey === compactKey("号型") && sourceKey === compactKey("尺码")) {
     return sizeLabelNumber(size);
   }
   if (targetKey === compactKey("身高") && sourceKey === compactKey("尺码")) {
@@ -606,6 +630,8 @@ export function buildSizeChartForTemplate({
   const rawTargetFields = templateTargetFields(template);
   const businessTargetFields = mainSizeTableField
     ? mainSizeChartTargetFields(rawTargetFields, garmentType)
+    : vipSizeTableField
+      ? vipSizeChartTargetFields(rawTargetFields, garmentType)
     : rawTargetFields;
   const forceMainSizeColumns = mainSizeTableField && businessTargetFields !== rawTargetFields;
   const mayBuildRowsFromAllowedSizes = mainSizeTableField || vipSizeTableField || douyinSizeTableField || multiPlatformSizeField;
@@ -631,15 +657,6 @@ export function buildSizeChartForTemplate({
         reason: jdColumn
           ? "多平台尺码京东列发送裸尺码值"
           : "多平台尺码非特殊平台列留空，深绘同步时回退销售尺码",
-      };
-    }
-    if (vipSizeTableField && compactKey(targetField) === compactKey("号型")) {
-      return {
-        targetField,
-        sourcePoint: "尺码",
-        confidence: "high",
-        source: "rule",
-        reason: "唯品会尺码表行尺码展示带单位，号型列填裸尺码值",
       };
     }
     const resolved = resolveMapping(targetField, normalizedRows);

@@ -147,17 +147,17 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
   assert.deepEqual(result["适用年龄"], { valueText: "3-14岁", valueJson: {} });
   assert.deepEqual(result["适用年龄(多选)"], { valueText: "3-6岁;6-9岁;9-12岁", valueJson: {} });
   assert.deepEqual(result["尺码表"].valueJson, {
-    title: "尺码,脚长,鞋内长",
-    "26码": "26码,16,17",
-    "27码": "27码,16.5,17.7",
-    "38码": "38码,24,25",
+    title: "脚长,鞋内长",
+    "26码": "16,17",
+    "27码": "16.5,17.7",
+    "38码": "24,25",
   });
   assert.doesNotMatch(result["尺码表"].valueJson.title, /适合脚长/);
   assert.deepEqual(result["唯品会尺码表"].valueJson, {
     title: "欧洲码,脚长,鞋内长",
-    "26码": "26码,160,170.32",
-    "27码": "27码,165,176.98",
-    "38码": "38码,240,250.24",
+    "26码": "26,160,170.32",
+    "27码": "27,165,176.98",
+    "38码": "38,240,250.24",
   });
   assert.deepEqual(result["抖音尺码表"].valueJson, {
     title: "脚长(cm),备注",

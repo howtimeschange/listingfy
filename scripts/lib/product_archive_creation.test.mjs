@@ -1392,6 +1392,67 @@ test("trade selection resolves long-pants ties from full production launch-plan 
   assert.notEqual(decision.reasonCode, "ambiguous_match");
 });
 
+test("trade selection prefers middle-child long pants over gender branch when age or size segment supports it", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const platforms = BALA_TRADE_TEST_PLATFORMS;
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    {
+      source_batch_id: 16,
+      source_type: "launch_plan",
+      row_json: {
+        "官方发布类目": "童装/婴儿装/亲子装>裤子（新）>长裤",
+        "品类": "长裤",
+        "性别": "男",
+        "年龄段": "中童",
+        "尺码段": "130-170",
+      },
+    },
+  ], [
+    deepdrawRoot("7", "童装婴幼儿服装"),
+    deepdrawChild("9641", "7", "中大童", "童装婴幼儿服装 / 中大童"),
+    deepdrawChild("9669", "7", "男童", "童装婴幼儿服装 / 男童"),
+    deepdrawChild("9659", "9641", "长裤", "童装婴幼儿服装 / 中大童 / 长裤"),
+    deepdrawChild("9685", "9669", "长裤", "童装婴幼儿服装 / 男童 / 长裤"),
+  ].map((trade) => ({ ...trade, third_platforms: platforms })), {
+    tenantName: "电商巴拉巴拉",
+    evaluatedAt: "2026-09-03T00:00:00.000Z",
+  });
+
+  assert.equal(decision.recommendedTrade?.tradeId, "9659");
+  assert.equal(decision.recommendedTrade?.tradePath, "童装婴幼儿服装 / 中大童 / 长裤");
+  assert.notEqual(decision.reasonCode, "ambiguous_match");
+});
+
+test("trade selection can use MDM-only apparel evidence for middle-child long pants", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const platforms = BALA_TRADE_TEST_PLATFORMS;
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    {
+      source_type: "copywriting",
+      row_json: {
+        "品类": "长裤",
+        "小类": "针织长裤",
+        "性别": "男",
+        "年龄段": "中童",
+        "尺码段": "110-175",
+      },
+    },
+  ], [
+    deepdrawRoot("7", "童装婴幼儿服装"),
+    deepdrawChild("9641", "7", "中大童", "童装婴幼儿服装 / 中大童"),
+    deepdrawChild("9669", "7", "男童", "童装婴幼儿服装 / 男童"),
+    deepdrawChild("9659", "9641", "长裤", "童装婴幼儿服装 / 中大童 / 长裤"),
+    deepdrawChild("9685", "9669", "长裤", "童装婴幼儿服装 / 男童 / 长裤"),
+  ].map((trade) => ({ ...trade, third_platforms: platforms })), {
+    tenantName: "电商巴拉巴拉",
+    evaluatedAt: "2026-09-03T00:00:00.000Z",
+  });
+
+  assert.equal(decision.recommendedTrade?.tradeId, "9659");
+  assert.equal(decision.recommendedTrade?.tradePath, "童装婴幼儿服装 / 中大童 / 长裤");
+  assert.notEqual(decision.reasonCode, "ambiguous_match");
+});
+
 test("source-derived fields use the latest launch-plan batch for repeated SPU uploads", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const sourceRows = [
@@ -1566,6 +1627,38 @@ test("trade selection decision preserves the manual-confirmation gate for legacy
   assert.match(merged.reason, /旧草稿/);
 });
 
+test("trade selection releases stale gendered long-pants human adjustment when middle-child evidence wins", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const evaluated = {
+    status: "pending_confirmation",
+    confidence: "medium",
+    reasonCode: "applied_trade_mismatch",
+    recommendedTrade: { tradeId: "9659", tradePath: "童装婴幼儿服装 / 中大童 / 长裤" },
+    appliedTrade: { tradeId: "9685", tradePath: "所有行业.服装.童装婴幼儿服装.男童.长裤" },
+    matchedField: "上市计划品类",
+    matchedValue: "长裤",
+    requiredPlatforms: ["ALIBABA", "PDD", "TAOBAO", "KUAISHOU"],
+    coveredPlatforms: ["ALIBABA", "KUAISHOU", "PDD", "TAOBAO"],
+    sourceConflict: false,
+    reason: "当前已应用类目与系统推荐类目不一致，需要应用推荐类目并由人工确认。",
+    evaluatedAt: "2026-09-03T00:00:00.000Z",
+    confirmedAt: null,
+  };
+  const persisted = {
+    ...evaluated,
+    status: "human_adjusted",
+    reasonCode: "human_adjusted",
+    reason: "人工已选择不同于系统推荐的深绘类目，后续来源刷新不会覆盖当前人工类目。",
+    confirmedAt: "2026-09-02T00:00:00.000Z",
+  };
+
+  const merged = service.mergeTradeSelectionHumanState(evaluated, persisted);
+  assert.equal(merged.status, "pending_confirmation");
+  assert.equal(merged.reasonCode, "applied_trade_mismatch");
+  assert.equal(merged.recommendedTrade?.tradeId, "9659");
+  assert.equal(merged.appliedTrade?.tradeId, "9685");
+});
+
 test("automatic trade refresh does not overwrite a human-adjusted draft", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const sourceRows = [{ source_type: "launch_plan", row_json: { "官方发布类目": "童装 > 外套" } }];
@@ -1640,6 +1733,92 @@ test("automatic trade refresh does not overwrite a human-adjusted draft", async 
 
   assert.equal(result.tradeSelectionAutoApplied, false);
   assert.equal(tradeUpdateSql.length, 0);
+});
+
+test("automatic trade refresh repairs stale gendered long-pants human adjustment", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const recommendedTrade = { tradeId: "9659", tradePath: "童装婴幼儿服装 / 中大童 / 长裤" };
+  const staleTrade = { tradeId: "9685", tradePath: "所有行业.服装.童装婴幼儿服装.男童.长裤" };
+  const automaticDecision = {
+    status: "pending_confirmation",
+    confidence: "medium",
+    reasonCode: "applied_trade_mismatch",
+    recommendedTrade,
+    appliedTrade: staleTrade,
+    matchedField: "上市计划品类",
+    matchedValue: "长裤",
+    requiredPlatforms: ["ALIBABA", "PDD", "TAOBAO", "KUAISHOU"],
+    coveredPlatforms: ["ALIBABA", "KUAISHOU", "PDD", "TAOBAO"],
+    sourceConflict: false,
+    reason: "当前已应用类目与系统推荐类目不一致，需要应用推荐类目并由人工确认。",
+    evaluatedAt: "2026-09-03T00:00:00.000Z",
+    confirmedAt: null,
+  };
+  let currentDraft = {
+    id: 104,
+    spu_code: "202426108104",
+    tenant_name: "电商巴拉巴拉",
+    merchant_id: "1162",
+    trade_id: staleTrade.tradeId,
+    trade_path: staleTrade.tradePath,
+    status: "draft",
+    source_snapshot_json: {
+      tradeSelection: {
+        ...automaticDecision,
+        status: "human_adjusted",
+        reasonCode: "human_adjusted",
+        reason: "人工已选择不同于系统推荐的深绘类目，后续来源刷新不会覆盖当前人工类目。",
+        confirmedAt: "2026-09-02T00:00:00.000Z",
+      },
+    },
+    validation_summary_json: {},
+  };
+  const trade = {
+    trade_id: recommendedTrade.tradeId,
+    trade_name: "长裤",
+    trade_path: recommendedTrade.tradePath,
+    third_platforms: BALA_TRADE_TEST_PLATFORMS,
+  };
+  const tradeUpdateSql = [];
+  const fakeDb = {
+    prepare(sql) {
+      return {
+        get() {
+          return /from deepdraw_trade_cache/i.test(sql) ? trade : currentDraft;
+        },
+        all() {
+          return [];
+        },
+        run(...params) {
+          if (/set\s+trade_id\s*=/i.test(sql)) {
+            tradeUpdateSql.push(sql);
+            currentDraft = {
+              ...currentDraft,
+              trade_id: params[0],
+              trade_path: params[1],
+              source_snapshot_json: JSON.parse(params[2]),
+            };
+          }
+          return { changes: 1, lastInsertRowid: null };
+        },
+      };
+    },
+    transaction(fn) {
+      return fn;
+    },
+  };
+
+  const result = service.applyProductArchiveDraftTrade(fakeDb, 104, {
+    tradeId: recommendedTrade.tradeId,
+    tradePath: recommendedTrade.tradePath,
+  }, { automaticDecision });
+
+  assert.equal(result.tradeSelectionAutoApplied, true);
+  assert.equal(tradeUpdateSql.length, 1);
+  assert.equal(currentDraft.trade_id, "9659");
+  assert.equal(currentDraft.trade_path, "童装婴幼儿服装 / 中大童 / 长裤");
+  assert.equal(currentDraft.source_snapshot_json.tradeSelection.status, "auto_applied");
+  assert.equal(currentDraft.source_snapshot_json.tradeSelection.reasonCode, "medium_confidence");
 });
 
 test("source-batch refresh preserves a concurrent human trade adjustment", async () => {
@@ -2362,7 +2541,7 @@ test("product archive AI fill skips fields that already have JSON values", async
   assert.match(service, /rebuildProductArchiveDraftFields\(db, draftId\)/);
   assert.match(service, /fillProductArchiveDraftFieldsWithAi/);
   assert.match(service, /isStaleUnsupportedAiFillField/);
-  assert.match(service, /Boolean\(existing\.manual_override\)[\s\S]*!isStaleUnsupportedAiFillField\(fieldName, existing\)[\s\S]*!isStaleMaterialAiRuleFallbackField\(fieldName, existing\)[\s\S]*!isStaleSizeChartScalarOverride\(fieldName, existing\)/);
+  assert.match(service, /!categoryPlatformListPriceField[\s\S]*!forcedFixedDerivedField[\s\S]*Boolean\(existing\.manual_override\)[\s\S]*!isStaleUnsupportedAiFillField\(fieldName, existing\)[\s\S]*!isStaleMaterialAiRuleFallbackField\(fieldName, existing\)[\s\S]*!isStaleSizeChartScalarOverride\(fieldName, existing\)/);
   assert.match(service, /hasSizeChartValue[\s\S]*stringValue\(sizeChartDerived\.valueText\)[\s\S]*skuSizeField/);
 });
 
@@ -3653,8 +3832,8 @@ test("product archive payload preserves forced main size-chart columns with blan
     },
   });
   assert.deepEqual(shoeMainTable, {
-    title: "尺码,脚长,鞋内长",
-    "26码": "26码,16,17",
+    title: "脚长,鞋内长",
+    "26码": "16,17",
   });
 
   const legacyShoeMainTable = service.productArchivePayloadFieldValue({
@@ -3668,8 +3847,8 @@ test("product archive payload preserves forced main size-chart columns with blan
     },
   });
   assert.deepEqual(legacyShoeMainTable, {
-    title: "尺码,脚长,鞋内长",
-    "26码": "26码,16,17",
+    title: "脚长,鞋内长",
+    "26码": "16,17",
   });
 
   const optionalPlatformTable = service.productArchivePayloadFieldValue({
@@ -3692,7 +3871,7 @@ test("shoe main size-chart manual overrides with old foot-length columns are reb
 
   assert.match(serviceSource, /function productArchiveShoeMainSizeChartNeedsRuleRebuild/);
   assert.match(serviceSource, /isShoeProduct\(input\.spu,\s*input\.sourceRows\)/);
-  assert.match(serviceSource, /title !== "尺码,脚长,鞋内长"/);
+  assert.match(serviceSource, /title !== "脚长,鞋内长"/);
   assert.match(
     serviceSource,
     /isStaleStructuredSizeChartManualOverride[\s\S]*productArchiveShoeMainSizeChartNeedsRuleRebuild[\s\S]*return true/,
@@ -3886,9 +4065,9 @@ test("product archive full update filters payload to existing DeepDraw shoe colo
         name: "尺码表",
         fieldType: "MULTI_TEXT",
         value: {
-          title: "尺码,脚长,鞋内长",
-          "26码": "26码,16,17",
-          "27码": "27码,16.5,17.7",
+          title: "脚长,鞋内长",
+          "26码": "16,17",
+          "27码": "16.5,17.7",
         },
       },
       {
@@ -5139,7 +5318,7 @@ test("product archive service derives remaining field values from launch plan an
     skus: [],
   }), {
     valueText: "",
-    valueJson: { title: "产品单价（元）", 1: "359" },
+    valueJson: { title: "购买数量,产品单价（元）", 1: "1,359" },
   });
   assert.equal(derive("微信视频小店标题", "内容平台标题"), "【balaOne】巴拉巴拉儿童外套男女2026新秋卡通萌趣满印防护上衣");
   assert.equal(derive("商品详情"), "潮流满印外套，防风防泼水透湿");
@@ -5976,6 +6155,93 @@ test("product archive down-fill size-chart sync appends platform columns without
   ]);
 });
 
+test("product archive rebuilds stale VIP size tables by apparel and shoe rules", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const topSpu = {
+    spu_code: "202426121024",
+    product_line_name: "童装",
+    category_name: "卫衣",
+    gender_name: "女童",
+  };
+  const pantsSpu = {
+    spu_code: "202426108035",
+    product_line_name: "童装",
+    category_name: "牛仔裤",
+    gender_name: "女童",
+  };
+  const shoeSpu = {
+    spu_code: "204426140121",
+    product_line_name: "童鞋",
+    category_name: "运动鞋",
+  };
+
+  assert.equal(service.productArchiveVipApparelSizeChartNeedsRuleRebuild({
+    fieldName: "唯品会尺码表",
+    valueJson: {
+      title: "号型,适合年龄,身高",
+      "140cm": "140,8-11岁,140",
+    },
+    spu: topSpu,
+    draft: { title: "女童圆领卫衣", trade_path: "童装婴幼儿服装 / 中大童 / 卫衣" },
+  }), true);
+  assert.equal(service.productArchiveVipApparelSizeChartNeedsRuleRebuild({
+    fieldName: "唯品会尺码表",
+    valueJson: {
+      title: "号型,适合年龄,身高",
+      "140cm": "140/64,8-11岁,140",
+    },
+    spu: topSpu,
+    draft: { title: "女童圆领卫衣", trade_path: "童装婴幼儿服装 / 中大童 / 卫衣" },
+  }), false);
+  assert.equal(service.productArchiveVipApparelSizeChartNeedsRuleRebuild({
+    fieldName: "唯品会尺码表",
+    valueJson: {
+      title: "号型,适合年龄,身高,上装号型,下装号型,前浪,后浪,大腿围",
+      "140cm": "140/55,8-11岁,140,140/55,140/55,25.7,34,25.3",
+    },
+    spu: pantsSpu,
+    draft: { title: "女童长裤", trade_path: "童装婴幼儿服装 / 中大童 / 牛仔裤" },
+  }), true);
+  assert.equal(service.productArchiveVipApparelSizeChartNeedsRuleRebuild({
+    fieldName: "唯品会尺码表",
+    valueJson: {
+      title: "欧洲码,脚长,鞋内长",
+      "26码": "26,160,170.32",
+    },
+    spu: shoeSpu,
+    draft: { title: "巴拉巴拉童鞋儿童运动鞋" },
+  }), false);
+  assert.equal(service.productArchiveShoeVipSizeChartNeedsRuleRebuild({
+    fieldName: "唯品会尺码表",
+    valueJson: {
+      title: "欧洲码,脚长,鞋内长",
+      "26码": "26码,160,170.32",
+    },
+    spu: shoeSpu,
+  }), true);
+  assert.equal(service.productArchiveShoeVipSizeChartNeedsRuleRebuild({
+    fieldName: "唯品会尺码表",
+    valueJson: {
+      title: "欧洲码,脚长,鞋内长",
+      "26码": "26,160,170.32",
+    },
+    spu: shoeSpu,
+  }), false);
+  assert.deepEqual(service.productArchivePayloadFieldValue({
+    field_name: "唯品会尺码表",
+    field_type: "MULTI_TEXT",
+    required: true,
+    blocking: true,
+    value_json: {
+      title: "欧洲码,脚长,鞋内长",
+      "26码": "26码,160,170.32",
+    },
+  }), {
+    title: "欧洲码,脚长,鞋内长",
+    "26码": "26,160,170.32",
+  });
+});
+
 test("product archive apparel sale-size remarks use down-fill evidence without zero placeholders", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
@@ -6649,6 +6915,14 @@ test("product archive shoe required fields derive from trusted launch and brand 
   assert.equal(derive("抖音参考价"), "359");
   assert.equal(derive("奥莱店折扣价"), "359");
   assert.equal(derive("产品单价"), "359");
+  assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("价格区间", {
+    spu,
+    sourceRows,
+    skus: [],
+  }), {
+    valueText: "",
+    valueJson: { title: "购买数量,产品单价（元）", 1: "1,359" },
+  });
   assert.equal(derive("专柜价"), "10000");
   assert.equal(derive("是否商场同款"), "否");
   assert.equal(derive("是否商场同款", [
@@ -6672,6 +6946,8 @@ test("product archive shoe required fields derive from trusted launch and brand 
   assert.equal(derive("唯品会款号"), "208426140203");
   assert.equal(derive("唯品会标题"), "巴拉巴拉儿童户外鞋");
   assert.equal(derive("唯品会副标题"), "防滑耐磨");
+  assert.equal(derive("导购短标题"), "儿童户外鞋防滑耐磨");
+  assert.ok(derive("导购短标题").length <= 12);
   assert.equal(derive("商品详情"), "防滑耐磨，校园日常都好穿");
   assert.equal(derive("天猫商品卖点"), "防滑耐磨，校园日常都好穿");
   const shoeGuideTitle = JSON.parse(derive("天猫导购标题"))[0];
@@ -7007,9 +7283,52 @@ test("shoe platform subtitles preserve complete words at their field limits", as
   const derive = (fieldName) => service.buildProductArchiveSourceDerivedFieldValue(fieldName, { spu, sourceRows });
 
   assert.equal(derive("唯品会副标题"), "轻盈缓震 舒适贴合");
-  assert.equal(derive("导购短标题"), "巴拉巴拉 儿童 户外运动鞋 防滑耐磨 舒适保暖 校园日常");
-  assert.ok(derive("导购短标题").length <= 30);
+  assert.equal(derive("导购短标题"), "巴拉巴拉儿童户外运动鞋");
+  assert.ok(derive("导购短标题").length <= 12);
   assert.equal(derive("导购短标题").endsWith("校园日"), false);
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("导购短标题", {
+    spu,
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: {
+        "导购标题": "巴拉巴拉运动鞋男童轻便户外鞋",
+        "搜索标题": "搜索标题不应用于导购短标题",
+        "品类": "户外鞋",
+        "推荐理由": "防滑耐磨",
+      },
+    }],
+  }), "巴拉巴拉男童户外鞋");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("导购短标题", {
+    spu,
+    sourceField: "导购标题",
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: {
+        "导购标题": "巴拉巴拉运动鞋男童轻便户外鞋",
+      },
+    }],
+  }), "巴拉巴拉男童户外鞋");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("导购短标题", {
+    spu,
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: {
+        "导购标题": "巴拉巴拉儿童户外鞋",
+        "搜索标题": "巴拉巴拉儿童户外运动鞋防滑耐磨舒适保暖",
+        "推荐理由": "轻便舒适",
+      },
+    }],
+  }), "巴拉巴拉儿童户外鞋");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("导购短标题", {
+    spu,
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: {
+        "搜索标题": "巴拉巴拉儿童户外鞋",
+        "推荐理由": "轻便舒适",
+      },
+    }],
+  }), "");
 });
 
 test("product archive local requirement follows the DeepDraw template when present", async () => {
@@ -8067,16 +8386,42 @@ test("product archive service normalizes source values into DeepDraw enum option
   ]), "balabala/巴拉巴拉");
 });
 
-test("product archive origin-country fields default to a fixed China source", async () => {
-  const service = await readFile(files.draftService, "utf8");
+test("product archive origin fields derive fixed China values for apparel template variants", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const apparelSpu = {
+    spu_code: "202426108035",
+    brand_name: "巴拉巴拉",
+    product_line_name: "童装",
+    category_name: "牛仔裤",
+  };
+  const shoeSpu = {
+    spu_code: "204426140121",
+    brand_name: "巴拉巴拉",
+    product_line_name: "童鞋",
+    category_name: "运动鞋",
+  };
+  const derive = (fieldName, spu = apparelSpu) => service.buildProductArchiveSourceDerivedFieldValue(fieldName, {
+    spu,
+    sourceRows: [],
+  });
 
-  assert.match(service, /const originCountryField = isProductArchiveOriginCountryField\(fieldName\)/);
-  assert.match(service, /const shoe1688OriginField = shoeProduct && compactFieldKey\(fieldName\) === "产地"/);
-  assert.match(service, /const apparelOriginAreaField = apparelProduct && compactFieldKey\(fieldName\) === "产地"/);
-  assert.match(service, /const forcedFixedDerivedField = isProductArchiveForcedFixedDerivedField\(fieldName, spu, sourceRows\)/);
-  assert.match(service, /categoryPlatformListPriceField \|\| forcedFixedDerivedField/);
-  assert.match(service, /stringValue\(rule\.source_type\) \|\| \(originCountryField \|\| shoe1688OriginField \? "fixed" : "manual"\)/);
-  assert.match(service, /ruleSourceRef \|\| \(shoe1688OriginField \? shoe1688OriginValue\(\) : apparelOriginAreaField \? "中国大陆" : originCountryField \? "中国" : null\)/);
+  assert.equal(derive("原产国"), "中国");
+  assert.equal(derive("原产国(AKC)"), "中国");
+  assert.equal(derive("产地"), "中国大陆");
+  assert.equal(derive("童装产地(多选)"), "中国大陆");
+  assert.equal(derive("唯品会产地"), "中国大陆");
+  assert.equal(derive("京东产地"), "中国大陆");
+  assert.equal(derive("所在地"), "浙江,杭州");
+  assert.equal(derive("产地", shoeSpu), "浙江杭州");
+  assert.equal(derive("原产国(AKC)", shoeSpu), "中国");
+  assert.equal(service.normalizeProductArchiveTemplateFieldValue("童装产地(多选)", "中国大陆", [
+    { value: "中国" },
+    { value: "越南" },
+  ]), "中国");
+  assert.equal(service.normalizeProductArchiveTemplateFieldValue("唯品会产地", "中国", [
+    { value: "中国大陆" },
+    { value: "中国香港" },
+  ]), "中国大陆");
 });
 
 test("product archive payload date keeps the launch-plan source date for SDK product date", async () => {
