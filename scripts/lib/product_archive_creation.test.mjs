@@ -3751,6 +3751,99 @@ test("product archive service derives core sales fields from MDM master data", a
   );
 });
 
+test("product archive appends the full washlabel down filler to down-jacket color aliases", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const result = service.buildProductArchiveMdmDerivedFieldValue("颜色", {
+    spu: {
+      spu_code: "202426107128",
+      product_line_name: "中童服装",
+      subclass_name: "羽绒服",
+      spu_name: "女童羽绒服",
+    },
+    skus: [
+      { color_name: "浅灰20047" },
+      { color_name: "黑色90001" },
+    ],
+    existingFields: [{
+      field_name: "成分含量(文本)",
+      value_text: [
+        "面料/挂面:100%聚酯纤维",
+        "填充物",
+        "大身/袖子:白鸭绒",
+        "绒子含量:90%",
+      ].join("\n"),
+      source_type: "washlabel_ocr",
+      value_json: {},
+    }],
+  });
+
+  assert.equal(result.valueText, "灰色,浅灰20047-白鸭绒;黑色,黑色90001-白鸭绒");
+});
+
+test("product archive preserves the exact duck and goose filler name recognized from the washlabel", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const fillers = ["白鸭绒", "灰鸭绒", "白鹅绒", "灰鹅绒"];
+
+  for (const filler of fillers) {
+    const result = service.buildProductArchiveMdmDerivedFieldValue("颜色", {
+      spu: {
+        spu_code: "202426107128",
+        product_line_name: "中童服装",
+        subclass_name: "羽绒服",
+      },
+      skus: [{ color_name: "浅灰20047" }],
+      existingFields: [{
+        field_name: "材质成分(文本)",
+        value_text: `填充物:\n大身/袖子:${filler}`,
+        source_type: "washlabel_ocr",
+        value_json: {},
+      }],
+    });
+
+    assert.equal(result.valueText, `灰色,浅灰20047-${filler}`);
+  }
+});
+
+test("product archive does not append a filler without washlabel OCR evidence", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const result = service.buildProductArchiveMdmDerivedFieldValue("颜色", {
+    spu: {
+      spu_code: "202426107128",
+      product_line_name: "中童服装",
+      subclass_name: "羽绒服",
+      filler: "白鸭绒",
+    },
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: { "面料成分": "填充物:白鸭绒" },
+    }],
+    skus: [{ color_name: "浅灰20047" }],
+  });
+
+  assert.equal(result.valueText, "灰色,浅灰20047");
+});
+
+test("product archive does not append a washlabel filler to non-down apparel colors", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const result = service.buildProductArchiveMdmDerivedFieldValue("颜色", {
+    spu: {
+      spu_code: "202426121024",
+      product_line_name: "中童服装",
+      subclass_name: "卫衣",
+      spu_name: "女童卫衣",
+    },
+    skus: [{ color_name: "浅灰20047" }],
+    existingFields: [{
+      field_name: "成分含量(文本)",
+      value_text: "填充物:白鸭绒",
+      source_type: "washlabel_ocr",
+      value_json: {},
+    }],
+  });
+
+  assert.equal(result.valueText, "灰色,浅灰20047");
+});
+
 test("product archive service derives DeepDraw size-chart fields from PLM source rows", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const value = service.buildProductArchiveSizeChartFieldValue({

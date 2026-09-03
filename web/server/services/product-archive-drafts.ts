@@ -1610,6 +1610,10 @@ function isApparelProduct(spu: JsonRecord = {}, sourceRows: JsonRecord[] = []) {
   return isApparelProductContext({ productLineName: productCategoryText(spu, sourceRows) })
 }
 
+function isDownJacketProduct(spu: JsonRecord = {}, sourceRows: JsonRecord[] = []) {
+  return productTextIncludesAny(productCategoryText(spu, sourceRows), ["羽绒服"])
+}
+
 function isCupProduct(spu: JsonRecord = {}, sourceRows: JsonRecord[] = []) {
   const categoryText = productCategoryText(spu, sourceRows)
   return productTextIncludesAny(categoryText, ["水杯", "杯子"])
@@ -2786,6 +2790,7 @@ function materialCompositionText(sourceRows: JsonRecord[]) {
 }
 
 const DOWN_FILLER_NAMES = ["白鸭绒", "灰鸭绒", "白鹅绒", "灰鹅绒", "鸭绒", "鹅绒", "羽绒", "棉", "聚酯纤维"]
+const DOWN_COLOR_FILLER_NAMES = ["白鸭绒", "灰鸭绒", "白鹅绒", "灰鹅绒", "鸭绒", "鹅绒", "羽绒"]
 
 function sourceRowJsonByType(sourceRows: JsonRecord[], sourceType: string) {
   return sourceRows
@@ -2800,6 +2805,70 @@ function downFillerNameFromText(value: unknown) {
     if (text.includes(name)) return name === "白鸭绒" ? "鸭绒" : name
   }
   return ""
+}
+
+function exactDownColorFillerNamesFromText(value: unknown) {
+  const text = stringValue(value).replace(/\s+/g, "")
+  const matches = DOWN_COLOR_FILLER_NAMES.filter((name) => text.includes(name))
+  return uniqueTextValues(matches.filter((name) => (
+    !matches.some((candidate) => candidate !== name && candidate.length > name.length && candidate.includes(name))
+  )))
+}
+
+function washlabelOcrFillerEvidence(fields: JsonRecord[]) {
+  return fields
+    .filter((field) => stringValue(field.source_type) === "washlabel_ocr")
+    .map((field) => {
+      const fieldName = compactFieldKey(field.field_name)
+      if (fieldName && !/(成分|材质|填充物|洗唛|水洗)/.test(fieldName)) return null
+      const valueText = stringValue(field.value_text)
+      const names = exactDownColorFillerNamesFromText(valueText)
+      if (!names.length) return null
+      const valueJson = recordValue(field.value_json)
+      const productArchiveOcr = recordValue(valueJson.product_archive_ocr)
+      const ocrEvidence = recordValue(valueJson.ocr_evidence)
+      const metadata = [
+        field.source_ref,
+        productArchiveOcr.file_name,
+        productArchiveOcr.evidence_text,
+        ocrEvidence.file_name,
+        ocrEvidence.evidence_text,
+      ].map(stringValue).filter(Boolean).join("\n")
+      return { names, metadata }
+    })
+    .filter((evidence): evidence is { names: string[]; metadata: string } => Boolean(evidence))
+}
+
+function productArchiveColorEvidenceTokens(value: unknown) {
+  const text = stringValue(value)
+  const parts = text.split(/[,，]/).map((part) => part.trim()).filter(Boolean)
+  const alias = parts[1] || parts[0] || ""
+  const aliasWithoutFiller = alias.replace(/[-—–－](?:白鸭绒|灰鸭绒|白鹅绒|灰鹅绒|鸭绒|鹅绒|羽绒)$/, "")
+  const code = aliasWithoutFiller.match(/\d{3,}/)?.[0] ?? ""
+  const name = aliasWithoutFiller.replace(/\d{3,}$/, "")
+  return uniqueTextValues([text, ...parts, aliasWithoutFiller, code, name].filter((token) => token.length >= 2))
+}
+
+function washlabelDownColorFiller(color: unknown, fields: JsonRecord[]) {
+  const evidence = washlabelOcrFillerEvidence(fields)
+  if (!evidence.length) return ""
+  const tokens = productArchiveColorEvidenceTokens(color)
+  const colorMatched = evidence.filter((item) => tokens.some((token) => item.metadata.includes(token)))
+  const colorNames = uniqueTextValues(colorMatched.flatMap((item) => item.names))
+  if (colorMatched.length > 0 && colorNames.length === 1) return colorNames[0]
+  const allNames = uniqueTextValues(evidence.flatMap((item) => item.names))
+  return allNames.length === 1 ? allNames[0] : ""
+}
+
+function appendDownFillerToColorValue(value: unknown, filler: string) {
+  const text = stringValue(value)
+  if (!text || !filler) return text
+  const parts = text.split(/[,，]/).map((part) => part.trim()).filter(Boolean)
+  const option = parts[0] || text
+  const alias = parts[1] || ""
+  const cleanAlias = alias.replace(/[-—–－](?:白鸭绒|灰鸭绒|白鹅绒|灰鹅绒|鸭绒|鹅绒|羽绒)$/, "")
+  const nextAlias = `${cleanAlias || option}-${filler}`
+  return `${option},${nextAlias}`
 }
 
 function colorHintsFromCopywritingRow(row: JsonRecord) {
@@ -3217,11 +3286,13 @@ export function buildProductArchiveMdmDerivedFieldValue(fieldName: string, input
   skus: JsonRecord[]
   dateText?: string
   sourceRows?: JsonRecord[]
+  existingFields?: JsonRecord[]
   templateOptions?: unknown[]
 }) {
   const key = compactFieldKey(fieldName)
   const shoeProduct = isShoeProduct(input.spu, input.sourceRows ?? [])
   const apparelProduct = isApparelProduct(input.spu, input.sourceRows ?? [])
+  const downJacketProduct = isDownJacketProduct(input.spu, input.sourceRows ?? [])
   if (isProductArchiveOriginCountryField(fieldName)) {
     return { valueText: "中国", valueJson: {} }
   }
@@ -3241,7 +3312,12 @@ export function buildProductArchiveMdmDerivedFieldValue(fieldName: string, input
     return { valueText: stringValue(input.dateText), valueJson: {} }
   }
   if (key === "颜色" || key === "颜色文本" || key === "颜色名称文本") {
-    return { valueText: uniqueTextValues(input.skus.map((sku) => deepdrawColorValue(sku.color_name))).join(";"), valueJson: {} }
+    const values = input.skus.map((sku) => {
+      const color = deepdrawColorValue(sku.color_name)
+      const filler = downJacketProduct ? washlabelDownColorFiller(sku.color_name, input.existingFields ?? []) : ""
+      return filler ? appendDownFillerToColorValue(color, filler) : color
+    })
+    return { valueText: uniqueTextValues(values).join(";"), valueJson: {} }
   }
   if (key === "尺码" || key === "尺寸") {
     const values = input.skus.map((sku) => shoeProduct
@@ -9250,6 +9326,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
           skus: mdmSkus,
           dateText,
           sourceRows,
+          existingFields,
           templateOptions,
         }).valueText
       : ""
@@ -9264,6 +9341,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
             skus: mdmSkus,
             dateText,
             sourceRows,
+            existingFields,
             templateOptions,
           })
     const generatedValueText = businessBlank
