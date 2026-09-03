@@ -6847,7 +6847,12 @@ function normalizeMaterialOptionValue(value: unknown, options: unknown[]) {
     return pickOption(options, [
       (option) => option === "聚酰胺纤维",
       (option) => option === "锦纶",
-      (option) => option.includes("聚酰胺纤维") || option.includes("锦纶") || option.includes("尼龙"),
+      (option) => option === "尼龙",
+      (option) => option.includes("聚酰胺纤维")
+        && /(?:锦纶|尼龙)/.test(option)
+        && !/(?:芳香族|芳纶|再生)/.test(option),
+      (option) => /(?:锦纶|尼龙)/.test(option)
+        && !/(?:芳香族|芳纶|再生)/.test(option),
     ]) || other || text
   }
   if (text === "粘胶纤维") {

@@ -8409,6 +8409,11 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "粘胶纤维(粘纤)" },
     { value: "聚氨酯弹性纤维(氨纶)" },
   ]), "棉,65.1;聚酯纤维,25;粘胶纤维(粘纤),9.2;聚氨酯弹性纤维(氨纶),0.7");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("材质成分", "面料:70.6%锦纶 29.4%腈纶", [
+    { value: "芳香族聚酰胺纤维(芳纶)" },
+    { value: "聚酰胺纤维(锦纶)" },
+    { value: "聚丙烯腈纤维(腈纶)" },
+  ]), "聚酰胺纤维(锦纶),70.6;聚丙烯腈纤维(腈纶),29.4");
   assert.equal(service.normalizeProductArchiveAiFillValue("材质成分", "", "面料: 65.1%棉\n25.0%聚酯纤维\n9.2%粘纤\n0.7%氨纶（配料除外）", [
     { value: "棉", label: "棉" },
     { value: "聚酯纤维", label: "聚酯纤维" },
