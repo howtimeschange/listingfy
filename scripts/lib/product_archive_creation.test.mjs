@@ -6513,7 +6513,7 @@ test("product archive down-fill size-chart sync keeps separate Douyin remark whe
   }]);
 });
 
-test("product archive down-fill sync adds Douyin remark when template exposes remark beside an existing fill column", async () => {
+test("product archive down-fill sync drops a legacy Douyin fill column when the template exposes remark only", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const updates = service.buildProductArchiveDownFillWeightSizeChartUpdates([
     {
@@ -6542,9 +6542,9 @@ test("product archive down-fill sync adds Douyin remark when template exposes re
     fieldId: 2,
     fieldName: "抖音尺码表",
     valueJson: {
-      title: "身高(cm),体重(斤),充绒量(g),备注",
-      "140cm": "140,62,100,充绒量100g",
-      "150cm": "150,74,114,充绒量114g",
+      title: "身高(cm),体重(斤),备注",
+      "140cm": "140,62,充绒量100g",
+      "150cm": "150,74,充绒量114g",
     },
     sourceType: "washlabel_ocr",
     sourceRef: null,
@@ -6617,9 +6617,9 @@ test("product archive down-fill sync loads template options before deciding Douy
     fieldId: 2,
     fieldName: "抖音尺码表",
     valueJson: {
-      title: "身高(cm),体重(斤),充绒量(g),备注",
-      "140cm": "140,62,100,充绒量100g",
-      "150cm": "150,74,114,充绒量114g",
+      title: "身高(cm),体重(斤),备注",
+      "140cm": "140,62,充绒量100g",
+      "150cm": "150,74,充绒量114g",
     },
     sourceType: "washlabel_ocr",
     sourceRef: null,

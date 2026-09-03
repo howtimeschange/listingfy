@@ -3878,6 +3878,7 @@ function productArchiveDouyinSizeChartSupportsSeparateDownFillRemark(field: Json
   return optionKeys.includes("备注") && (
     optionKeys.some(isProductArchiveDownFillTitle)
     || productArchiveDownFillWeightColumnIndex(valueJson) >= 0
+    || optionKeys.includes("备注")
   )
 }
 
@@ -3961,14 +3962,23 @@ export function buildProductArchiveDownFillWeightSizeChartUpdates(fields: JsonRe
     if (columnIndex < 0 && mainSizeChart) continue
     let nextTitles = titles
     let dropDouyinRemarkColumnIndex = -1
+    let dropDouyinDownFillColumnIndex = -1
     if (columnIndex < 0 && vipSizeChart) {
       nextTitles = appendProductArchiveSizeChartTitle(nextTitles, "充绒量")
     }
     if (douyinSizeChart) {
       const separateRemarkSupported = productArchiveDouyinSizeChartSupportsSeparateDownFillRemark(field, currentValue)
       const originalRemarkColumnIndex = titles.findIndex((title) => compactFieldKey(title) === "备注")
+      const templateOptionKeys = optionValues(arrayValue(field.options_json)).map(compactFieldKey)
+      const templateOptionsKnown = templateOptionKeys.length > 0
+      const templateSupportsDownFillColumn = templateOptionKeys.some(isProductArchiveDownFillTitle)
       if (separateRemarkSupported) {
-        if (columnIndex < 0) nextTitles = appendProductArchiveSizeChartTitle(nextTitles, "充绒量(g)")
+        if (templateOptionsKnown && !templateSupportsDownFillColumn && columnIndex >= 0) {
+          dropDouyinDownFillColumnIndex = columnIndex
+          nextTitles = nextTitles.filter((_, index) => index !== dropDouyinDownFillColumnIndex)
+        } else if (columnIndex < 0 && (!templateOptionsKnown || templateSupportsDownFillColumn)) {
+          nextTitles = appendProductArchiveSizeChartTitle(nextTitles, "充绒量(g)")
+        }
         nextTitles = appendProductArchiveSizeChartTitle(nextTitles, "备注")
       } else if (columnIndex >= 0) {
         if (
@@ -3988,7 +3998,7 @@ export function buildProductArchiveDownFillWeightSizeChartUpdates(fields: JsonRe
     }
     const nextColumnIndex = productArchiveDownFillWeightColumnIndex({ title: nextTitles.join(",") })
     const remarkColumnIndex = douyinSizeChart ? nextTitles.findIndex((title) => compactFieldKey(title) === "备注") : -1
-    if (nextColumnIndex < 0 && !multiPlatformSizeChart) continue
+    if (nextColumnIndex < 0 && !multiPlatformSizeChart && !(douyinSizeChart && remarkColumnIndex >= 0)) continue
     const nextValue = { ...currentValue }
     let changed = false
     for (const [rawSize, rawValues] of sizeChartDataEntries(currentValue)) {
@@ -3996,6 +4006,7 @@ export function buildProductArchiveDownFillWeightSizeChartUpdates(fields: JsonRe
       if (!weight) continue
       const values = sizeChartCellValues(rawValues)
       if (dropDouyinRemarkColumnIndex >= 0) values.splice(dropDouyinRemarkColumnIndex, 1)
+      if (dropDouyinDownFillColumnIndex >= 0) values.splice(dropDouyinDownFillColumnIndex, 1)
       while (values.length < nextTitles.length) values.push("")
       if (multiPlatformSizeChart) {
         for (const [index, title] of nextTitles.entries()) {
