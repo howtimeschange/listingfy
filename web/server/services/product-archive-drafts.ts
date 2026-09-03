@@ -3567,9 +3567,11 @@ function isDerivedSizeChartColumnTitle(value: unknown) {
     || key === "年龄"
     || key.includes("适合年龄")
     || key.includes("推荐年龄")
+    || /^身高(?:cm|厘米|公分)$/i.test(key)
+    || /^体重(?:斤|kg|公斤)$/i.test(key)
 }
 
-function isZeroPaddedProductArchiveSizeChartValue(valueJson: unknown) {
+export function isZeroPaddedProductArchiveSizeChartValue(valueJson: unknown) {
   const titles = sizeChartTitleOptions(valueJson)
   const entries = sizeChartDataEntries(valueJson)
   if (titles.length === 0 || entries.length === 0) return false

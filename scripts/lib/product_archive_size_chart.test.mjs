@@ -382,6 +382,15 @@ test("keeps fixed apparel columns blank instead of sending PLM zero placeholders
   });
 });
 
+test("treats unit-suffixed height and weight columns as derived when detecting zero padding", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(service.isZeroPaddedProductArchiveSizeChartValue({
+    title: "身高(cm),体重(斤),腰围(cm),臀围(cm),裤长(cm),备注",
+    "110cm": "110,17,0,0,0,0",
+  }), true);
+});
+
 test("maps PLM outerwear body-length chest and shoulder-sleeve aliases into fixed top columns", () => {
   const result = buildSizeChartForTemplate({
     rows: [
