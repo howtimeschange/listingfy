@@ -2176,13 +2176,13 @@ test("mutable draft writes keep the row lock and mutation in one transaction", a
   );
   assert.doesNotMatch(aiPreparation, /db\.transaction\(\(\) => assertProductArchiveDraftMutable\(db, draftId\)\)\(\)[\s\S]*rebuildProductArchiveDraftFields/);
   assert.match(aiFill, /await callDeepdrawAiFill/);
-  assert.match(aiFill, /const validated = db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)/);
+  assert.match(aiFill, /const validated = db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*syncProductArchiveDownFillWeightSizeCharts\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)/);
 
   const dryRun = section(
     "function prepareProductArchiveDraftDryRun",
     "export async function submitProductArchiveDraft",
   );
-  assert.match(dryRun, /return db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)[\s\S]*productPayload\(db, draftId\)/);
+  assert.match(dryRun, /return db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*syncProductArchiveDownFillWeightSizeCharts\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)[\s\S]*productPayload\(db, draftId(?:, [^)]*)?\)/);
 
   const productPayload = section(
     "function productPayload",
@@ -2213,7 +2213,7 @@ test("mutable draft writes keep the row lock and mutation in one transaction", a
     "export async function submitProductArchiveDraft",
     "export async function readbackProductArchiveDraft",
   );
-  assert.match(submit, /refreshDraftTradeSelectionFromLaunchPlan\(db, draftId, \{ claimToken \}\)/);
+  assert.match(submit, /refreshDraftTradeSelectionFromLaunchPlan\(db, draftId, \{ claimToken \}\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*syncProductArchiveDownFillWeightSizeCharts\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId/);
 });
 
 test("claimed drafts reject image mutation before any image insert", async () => {
@@ -2290,7 +2290,7 @@ test("trade refresh and submit preparation keep validation behind the submit fen
     "export async function submitProductArchiveDraft",
     "export async function readbackProductArchiveDraft",
   );
-  assert.match(submit, /const prepared = db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId, \{ claimToken \}\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId, \{ claimToken \}\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId, \{[\s\S]*claimToken,[\s\S]*allowExistingProduct:[\s\S]*\}\)[\s\S]*productPayload\(db, draftId\)/);
+  assert.match(submit, /const prepared = db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId, \{ claimToken \}\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId, \{ claimToken \}\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId, \{[\s\S]*claimToken,[\s\S]*allowExistingProduct:[\s\S]*\}\)[\s\S]*productPayload\(db, draftId(?:, [^)]*)?\)/);
 });
 
 test("ordinary validation and trade refresh reject an active submit claim before writes", async () => {
@@ -3544,7 +3544,7 @@ test("product archive service derives DeepDraw size-chart fields from PLM source
 
   assert.deepEqual(value.valueJson, {
     title: "尺码,肩宽,袖长,胸围,衣长",
-    "80cm": "80,26.5,24.5,66,38",
+    "80cm": "80cm,26.5,24.5,66,38",
   });
   assert.equal(value.sourceType, "size_chart");
   assert.equal(value.mappings.find((item) => item.targetField === "袖长")?.confidence, "medium");
@@ -3563,7 +3563,7 @@ test("product archive service derives DeepDraw size-chart fields from PLM source
 
   assert.deepEqual(genericValue.valueJson, {
     title: "尺码,身高,衣长,胸围,袖长",
-    "80cm": "80,80,33,64,26",
+    "80cm": "80cm,80,33,64,26",
   });
   assert.equal(genericValue.sourceType, "size_chart");
 
@@ -3585,6 +3585,31 @@ test("product archive service derives DeepDraw size-chart fields from PLM source
   assert.equal(service.isStructuredProductPayloadField({ field_name: "多平台尺码", field_type: "" }), true);
 });
 
+test("product archive service lets newer size-chart source rows override older duplicate measurements", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const value = service.buildProductArchiveSizeChartFieldValue({
+    fieldName: "尺码表",
+    spuCode: "202426107129",
+    sourceRows: [
+      { id: 44836, source_batch_id: 63, source_type: "size_chart", row_json: { 款号: "202426107129", 测量点: "袖长（肩至袖口", 尺码: "140cm", 尺码值: "48.5", rowNumber: 16458 } },
+      { id: 44801, source_batch_id: 63, source_type: "size_chart", row_json: { 款号: "202426107129", 测量点: "全胸围（夹下1CM", 尺码: "140cm", 尺码值: "88", rowNumber: 16423 } },
+      { id: 44794, source_batch_id: 63, source_type: "size_chart", row_json: { 款号: "202426107129", 测量点: "肩宽", 尺码: "140cm", 尺码值: "34", rowNumber: 16416 } },
+      { id: 44787, source_batch_id: 63, source_type: "size_chart", row_json: { 款号: "202426107129", 测量点: "后中长", 尺码: "140cm", 尺码值: "51.5", rowNumber: 16409 } },
+      { id: 44689, source_batch_id: 63, source_type: "size_chart", row_json: { 款号: "202426107129", 测量点: "全胸围（夹下1CM", 尺码: "140cm", 尺码值: "89", rowNumber: 16311 } },
+      { id: 44682, source_batch_id: 63, source_type: "size_chart", row_json: { 款号: "202426107129", 测量点: "肩宽", 尺码: "140cm", 尺码值: "34.5", rowNumber: 16304 } },
+    ],
+    templateOptions: ["衣长", "肩宽", "胸围", "袖长"],
+    allowedSizes: ["140cm"],
+    gender: "男童",
+    garmentType: "羽绒服",
+  });
+
+  assert.deepEqual(value.valueJson, {
+    title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
+    "140cm": "140cm,140,51.5,34,88,48.5,140,31",
+  });
+});
+
 test("product archive payload preserves forced main size-chart columns with blank cells", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const fixedTop = service.productArchivePayloadFieldValue({
@@ -3599,7 +3624,7 @@ test("product archive payload preserves forced main size-chart columns with blan
   });
   assert.deepEqual(fixedTop, {
     title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
-    "130cm": "130,130,43,,85,61,130,25",
+    "130cm": "130cm,130,43,,85,61,130,25",
   });
 
   const ordinaryTable = service.productArchivePayloadFieldValue({
@@ -3614,7 +3639,37 @@ test("product archive payload preserves forced main size-chart columns with blan
   });
   assert.deepEqual(ordinaryTable, {
     title: "尺码,衣长,肩宽,胸围",
-    "130cm": "130,43,0,85",
+    "130cm": "130cm,43,,85",
+  });
+
+  const shoeMainTable = service.productArchivePayloadFieldValue({
+    field_name: "尺码表",
+    field_type: "MULTI_TEXT",
+    required: true,
+    blocking: true,
+    value_json: {
+      title: "尺码,脚长,鞋内长",
+      "26码": "26,16,17",
+    },
+  });
+  assert.deepEqual(shoeMainTable, {
+    title: "尺码,脚长,鞋内长",
+    "26码": "26码,16,17",
+  });
+
+  const legacyShoeMainTable = service.productArchivePayloadFieldValue({
+    field_name: "尺码表",
+    field_type: "MULTI_TEXT",
+    required: true,
+    blocking: true,
+    value_json: {
+      title: "尺码,脚长,鞋内长",
+      "26": "26,16,17",
+    },
+  });
+  assert.deepEqual(legacyShoeMainTable, {
+    title: "尺码,脚长,鞋内长",
+    "26码": "26码,16,17",
   });
 
   const optionalPlatformTable = service.productArchivePayloadFieldValue({
@@ -3630,6 +3685,488 @@ test("product archive payload preserves forced main size-chart columns with blan
     title: "身高(cm),体重(斤)",
     "130cm": "130,50",
   });
+});
+
+test("shoe main size-chart manual overrides with old foot-length columns are rebuilt by rules", async () => {
+  const serviceSource = await readFile(files.draftService, "utf8");
+
+  assert.match(serviceSource, /function productArchiveShoeMainSizeChartNeedsRuleRebuild/);
+  assert.match(serviceSource, /isShoeProduct\(input\.spu,\s*input\.sourceRows\)/);
+  assert.match(serviceSource, /title !== "尺码,脚长,鞋内长"/);
+  assert.match(
+    serviceSource,
+    /isStaleStructuredSizeChartManualOverride[\s\S]*productArchiveShoeMainSizeChartNeedsRuleRebuild[\s\S]*return true/,
+  );
+});
+
+test("product archive full update can preserve missing scalar fields from existing DeepDraw resources", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const patches = service.productArchiveDraftFieldPatchesFromDeepdrawResource({
+    fields: [
+      { id: 1, field_name: "充绒量(文本)", field_id: "53883", value_text: "", value_json: {}, source_type: "manual", required: true, blocking: true },
+      { id: 2, field_name: "材质成分(文本)", field_id: "26485", value_text: null, value_json: {}, source_type: "manual", required: true, blocking: true },
+      { id: 3, field_name: "填充物", field_id: "26425", value_text: "鸭绒", value_json: {}, source_type: "source_rule", required: true, blocking: true },
+      { id: 4, field_name: "尺码表", field_id: "3000", value_text: "", value_json: {}, source_type: "manual", required: true, blocking: true },
+      { id: 5, field_name: "小红书商家编码", field_id: "3001", value_text: "", value_json: {}, source_type: "manual", required: false, blocking: false },
+      { id: 6, field_name: "颜色", field_id: "3002", value_text: "", value_json: {}, source_type: "manual", required: true, blocking: true },
+      { id: 7, field_name: "跳过字段", field_id: "3003", value_text: "", value_json: {}, source_type: "skip", required: false, blocking: false },
+      { id: 8, field_name: "充绒量", field_id: "42981", value_text: "", value_json: {}, source_type: "manual", required: true, blocking: true },
+      { id: 9, field_name: "成分含量(文本)", field_id: "78447", value_text: "", value_json: {}, source_type: "manual", required: true, blocking: true },
+      { id: 10, field_name: "天猫导购标题", field_id: "86313", value_text: "", value_json: {}, source_type: "manual", required: false, blocking: false },
+    ],
+    templateFields: [
+      { field_name: "充绒量(文本)", options_json: [] },
+      { field_name: "材质成分(文本)", options_json: [] },
+      { field_name: "填充物", options_json: [] },
+      { field_name: "充绒量", options_json: [] },
+      { field_name: "成分含量(文本)", options_json: [] },
+      { field_name: "天猫导购标题", options_json: [] },
+    ],
+    resourceBody: {
+      body: {
+        fields: [
+          { field: { id: "53883", name: "充绒量(文本)", type: "TEXT" }, texts: ["32-63g"], options: [] },
+          { field: { id: "26485", name: "材质成分(文本)", type: "TEXT" }, texts: ["面料:100%聚酯纤维"], options: [] },
+          {
+            field: { id: "89216", name: "25面料成分", type: "MULTI_TEXT" },
+            texts: [
+              [
+                "马甲成分",
+                "成分",
+                "面料:100%聚酯纤维(薄膜除外)",
+                "里料:100%锦纶(配料除外)",
+                "填充物",
+                "大身:白鸭绒",
+                "绒子含量:90%",
+                "其余部位:100%聚酯纤维",
+                "",
+                "上衣成分",
+                "面料:34.6%粘纤18.0%腈纶15.4%聚酯纤维14.0%棉10.8%氨纶7.2%绵羊毛(配料除外)",
+              ].join("\n"),
+            ],
+            options: [],
+          },
+          { field: { id: "26425", name: "填充物", type: "TEXT" }, texts: ["鸭绒"], options: [] },
+          { field: { id: "3000", name: "尺码表", type: "MULTI_TEXT" }, texts: ["7908,204462,140"], options: ["140cm"] },
+          {
+            field: { id: "88969", name: "多平台尺码", type: "MULTI_TEXT" },
+            texts: [
+              "10810,204443,140cm(充绒量32g)",
+              "10812,204443,150cm(充绒量37g)",
+              "10818,204443,180cm(充绒量63g)",
+            ],
+            options: ["140cm", "150cm", "180cm"],
+          },
+          { field: { id: "3001", name: "小红书商家编码", type: "TEXT" }, texts: ["old-seller-code"], options: [] },
+          { field: { id: "3002", name: "颜色", type: "MULTI_CHOICE" }, texts: [], options: ["蓝色"] },
+          { field: { id: "3003", name: "跳过字段", type: "TEXT" }, texts: ["不应补"], options: [] },
+          {
+            field: { id: "86313", name: "天猫导购标题", type: "TEXT" },
+            texts: ['[{"200001,品牌":"巴拉巴拉儿童羽绒服男童外套厚款","316102,衣长":"","16269273,厚薄":"","205484,适用性别":"","1000240545,亮点":"","2165044216,品类词":"","interest7,利益点":""}]'],
+            options: [],
+          },
+        ],
+	      },
+	    },
+  });
+
+  assert.deepEqual(patches.map((patch) => [patch.id, patch.fieldName, patch.valueText]), [
+    [1, "充绒量(文本)", "32-63g"],
+    [2, "材质成分(文本)", [
+      "马甲成分",
+      "成分",
+      "面料:100%聚酯纤维(薄膜除外)",
+      "里料:100%锦纶(配料除外)",
+      "填充物",
+      "大身:白鸭绒",
+      "绒子含量:90%",
+      "其余部位:100%聚酯纤维",
+      "",
+      "上衣成分",
+      "面料:34.6%粘纤18.0%腈纶15.4%聚酯纤维14.0%棉10.8%氨纶7.2%绵羊毛(配料除外)",
+    ].join("\n")],
+    [8, "充绒量", "140cm32g；150cm37g；180cm63g"],
+    [9, "成分含量(文本)", [
+      "马甲成分",
+      "成分",
+      "面料:100%聚酯纤维(薄膜除外)",
+      "里料:100%锦纶(配料除外)",
+      "填充物",
+      "大身:白鸭绒",
+      "绒子含量:90%",
+      "其余部位:100%聚酯纤维",
+      "",
+      "上衣成分",
+      "面料:34.6%粘纤18.0%腈纶15.4%聚酯纤维14.0%棉10.8%氨纶7.2%绵羊毛(配料除外)",
+    ].join("\n")],
+    [10, "天猫导购标题", '[{"200001,品牌":"","316102,衣长":"","16269273,厚薄":"","205484,适用性别":"","1000240545,亮点":"","2165044216,品类词":"","interest7,利益点":"巴拉巴拉儿童羽绒服男童外套厚款"}]'],
+	  ]);
+
+  const serviceSource = await readFile(files.draftService, "utf8");
+  const submitStart = serviceSource.indexOf("export async function submitProductArchiveDraft");
+  const submitEnd = serviceSource.indexOf("export async function readbackProductArchiveDraft", submitStart);
+  const submitImplementation = serviceSource.slice(submitStart, submitEnd);
+  assert.match(submitImplementation, /preserveProductArchiveDraftFieldsFromDeepdrawResource/);
+  assert.ok(
+    submitImplementation.indexOf("preserveProductArchiveDraftFieldsFromDeepdrawResource") <
+      submitImplementation.indexOf("syncProductArchiveDownFillWeightSizeCharts", submitImplementation.indexOf("preserveProductArchiveDraftFieldsFromDeepdrawResource")),
+    "full update must sync down-fill size charts after preserving resource fields",
+  );
+  assert.ok(
+    submitImplementation.indexOf("syncProductArchiveDownFillWeightSizeCharts", submitImplementation.indexOf("preserveProductArchiveDraftFieldsFromDeepdrawResource")) <
+      submitImplementation.indexOf("allowExistingProduct: true"),
+    "full update must merge existing DeepDraw scalar values before final validation",
+  );
+});
+
+test("field rebuild keeps trusted DeepDraw resource scalar values when rules cannot regenerate them", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(service.shouldPreserveProductArchiveDeepdrawResourceFieldValue("充绒量", {
+    source_type: "deepdraw_resource",
+    source_ref: "DeepDraw已有档案:6518125",
+    value_text: "140cm32g；150cm37g",
+    value_json: {},
+  }), true);
+  assert.equal(service.shouldPreserveProductArchiveDeepdrawResourceFieldValue("充绒量(文本)", {
+    source_type: "deepdraw_resource",
+    value_text: "32-63g",
+    value_json: {},
+  }), true);
+  assert.equal(service.shouldPreserveProductArchiveDeepdrawResourceFieldValue("尺码表", {
+    source_type: "deepdraw_resource",
+    value_text: "140cm32g",
+    value_json: {},
+  }), false);
+  assert.equal(service.shouldPreserveProductArchiveDeepdrawResourceFieldValue("小红书商家编码", {
+    source_type: "deepdraw_resource",
+    value_text: "old-seller-code",
+    value_json: {},
+  }), false);
+  assert.equal(service.shouldPreserveProductArchiveDeepdrawResourceFieldValue("材质", {
+    source_type: "deepdraw_resource",
+    value_text: "深绘旧枚举",
+    value_json: {},
+  }, { templateOptions: ["棉"] }), false);
+
+  const serviceSource = await readFile(files.draftService, "utf8");
+  assert.match(serviceSource, /const preserveDeepdrawResourceValue = !existingManual[\s\S]*!hasValue\(generatedValueText\)[\s\S]*!hasValue\(generatedValueJson\)[\s\S]*shouldPreserveProductArchiveDeepdrawResourceFieldValue/);
+  assert.match(serviceSource, /preserveDeepdrawResourceValue[\s\S]*\? "deepdraw_resource"/);
+  assert.match(serviceSource, /preserveDeepdrawResourceValue[\s\S]*\? stringValue\(existing\.source_ref\) \|\| "DeepDraw已有档案"/);
+});
+
+test("product archive full update filters payload to existing DeepDraw shoe color aliases and SKUs", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const payload = {
+    code: "204426140121",
+    shoeSizes: true,
+    includeMultiPlatformSizeField: true,
+    date: "2026-09-01",
+    fields: [
+      { id: "2040", name: "颜色", fieldType: "MULTI_CHOICE", value: "蓝色,蓝色调00388;绿色,白绿色调00414" },
+      { id: "2398", name: "尺码", fieldType: "MULTI_CHOICE", value: "26;27" },
+      {
+        id: "3000",
+        name: "商家SKU",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "价格,小红书商家编码",
+          "蓝色调00388": {
+            26: "359.9,2044261401210038826",
+            27: "359.9,2044261401210038827",
+          },
+          "白绿色调00414": {
+            26: "359.9,2044261401210041426",
+            27: "359.9,2044261401210041427",
+          },
+        },
+      },
+      {
+        id: "7908",
+        name: "尺码表",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "尺码,脚长,鞋内长",
+          "26码": "26码,16,17",
+          "27码": "27码,16.5,17.7",
+        },
+      },
+      {
+        id: "88969",
+        name: "多平台尺码",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "天猫,京东,拼多多,微信视频小店,小红书,快手",
+          "26码": ",26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),",
+          "27码": ",27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),",
+        },
+      },
+    ],
+    legacyUpdateFields: [
+      { id: "2040", name: "颜色", fieldType: "MULTI_CHOICE", value: "蓝色,蓝色调00388;绿色,白绿色调00414" },
+      { id: "2398", name: "尺码", fieldType: "MULTI_CHOICE", value: "26;27" },
+      {
+        id: "3000",
+        name: "商家SKU",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "价格,小红书商家编码",
+          "蓝色调00388": {
+            26: "359.9,2044261401210038826",
+            27: "359.9,2044261401210038827",
+          },
+          "白绿色调00414": {
+            26: "359.9,2044261401210041426",
+            27: "359.9,2044261401210041427",
+          },
+        },
+      },
+    ],
+    skus: [
+      { skuCode: "blue-26", color: "蓝色调00388", size: "26" },
+      { skuCode: "blue-27", color: "蓝色调00388", size: "27" },
+      { skuCode: "green-26", color: "白绿色调00414", size: "26" },
+      { skuCode: "green-27", color: "白绿色调00414", size: "27" },
+    ],
+  };
+
+  const filtered = service.filterProductArchiveFullUpdatePayloadForExistingDeepdrawResource(payload, {
+    body: {
+      colors: { optionAliases: { 绿色: "白绿色调00414" } },
+      skus: {
+        skuItems: [
+          { color: "绿色", size: "26" },
+          { color: "绿色", size: "27" },
+        ],
+      },
+    },
+  });
+
+  assert.equal(filtered.boundary.applied, true);
+  assert.equal(filtered.boundary.existingSkuCount, 2);
+  assert.equal(filtered.boundary.originalSkuCount, 4);
+  assert.equal(filtered.boundary.filteredSkuCount, 2);
+  assert.deepEqual(filtered.payload.skus.map((sku) => sku.skuCode), ["green-26", "green-27"]);
+  assert.equal(filtered.payload.fields.find((field) => field.name === "颜色").value, "绿色,白绿色调00414");
+  assert.deepEqual(Object.keys(filtered.payload.fields.find((field) => field.name === "商家SKU").value), [
+    "title",
+    "白绿色调00414",
+  ]);
+  assert.deepEqual(Object.keys(filtered.payload.legacyUpdateFields.find((field) => field.name === "商家SKU").value), [
+    "title",
+    "白绿色调00414",
+  ]);
+  assert.deepEqual(Object.keys(filtered.payload.fields.find((field) => field.name === "多平台尺码").value), [
+    "title",
+    "26码",
+    "27码",
+  ]);
+  assert.deepEqual(filtered.boundary.omittedColors, ["蓝色调00388"]);
+});
+
+test("product archive full update filters apparel cm size rows to the existing DeepDraw SKU boundary", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const payload = {
+    code: "202426107129",
+    date: "2026-09-01",
+    fields: [
+      { id: "2040", name: "颜色", fieldType: "MULTI_CHOICE", value: "浅灰,浅灰20047;黑色,黑色90001" },
+      { id: "2398", name: "尺码", fieldType: "MULTI_CHOICE", value: "140cm;150cm" },
+      {
+        id: "3000",
+        name: "商家SKU",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "价格,京东价",
+          浅灰20047: {
+            "140cm": "999.9,999.9",
+            "150cm": "999.9,999.9",
+          },
+          黑色90001: {
+            "140cm": "999.9,999.9",
+          },
+        },
+      },
+      {
+        id: "7908",
+        name: "尺码表",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
+          "140cm": "140cm,140,51.5,34,88,48.5,140,31",
+          "150cm": "150cm,150,55,36,92,51,150,37",
+        },
+      },
+      {
+        id: "88969",
+        name: "多平台尺码",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "天猫,京东,拼多多,微信视频小店,小红书,快手",
+          "140cm": ",140,,,,",
+          "150cm": ",150,,,,",
+        },
+      },
+    ],
+    legacyUpdateFields: [
+      {
+        id: "7908",
+        name: "尺码表",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
+          "140cm": "140cm,140,51.5,34,88,48.5,140,31",
+          "150cm": "150cm,150,55,36,92,51,150,37",
+        },
+      },
+    ],
+    skus: [
+      { skuCode: "gray-140", color: "浅灰20047", size: "140" },
+      { skuCode: "gray-150", color: "浅灰20047", size: "150" },
+      { skuCode: "black-140", color: "黑色90001", size: "140" },
+    ],
+  };
+
+  const filtered = service.filterProductArchiveFullUpdatePayloadForExistingDeepdrawResource(payload, {
+    body: {
+      skus: {
+        skuItems: [
+          { color: "浅灰", size: "140cm" },
+        ],
+      },
+    },
+  });
+
+  assert.deepEqual(filtered.payload.skus.map((sku) => sku.skuCode), ["gray-140"]);
+  assert.equal(filtered.payload.fields.find((field) => field.name === "颜色").value, "浅灰,浅灰20047");
+  assert.equal(filtered.payload.fields.find((field) => field.name === "尺码").value, "140cm");
+  assert.deepEqual(Object.keys(filtered.payload.fields.find((field) => field.name === "商家SKU").value), [
+    "title",
+    "浅灰20047",
+  ]);
+  assert.deepEqual(Object.keys(filtered.payload.fields.find((field) => field.name === "尺码表").value), [
+    "title",
+    "140cm",
+  ]);
+  assert.deepEqual(Object.keys(filtered.payload.fields.find((field) => field.name === "多平台尺码").value), [
+    "title",
+    "140cm",
+  ]);
+  assert.deepEqual(Object.keys(filtered.payload.legacyUpdateFields[0].value), ["title", "140cm"]);
+  assert.deepEqual(filtered.boundary.omittedColors, ["黑色90001"]);
+});
+
+test("product archive full update leaves payload unchanged when DeepDraw resource has no readable SKU rows", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const payload = {
+    code: "202426108104",
+    date: "2026-09-01",
+    fields: [{ id: "2398", name: "尺码", value: "130cm;140cm" }],
+    skus: [{ skuCode: "sku-130", color: "米白10302", size: "130cm" }],
+  };
+
+  const filtered = service.filterProductArchiveFullUpdatePayloadForExistingDeepdrawResource(payload, {
+    body: { fields: [] },
+  });
+
+  assert.equal(filtered.boundary.applied, false);
+  assert.equal(filtered.boundary.reason, "deepdraw_resource_has_no_readable_skus");
+  assert.deepEqual(filtered.payload.skus, payload.skus);
+  assert.deepEqual(filtered.payload.fields, payload.fields);
+});
+
+test("product archive standalone full-update readback compares against the DeepDraw SKU boundary", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const payload = {
+    code: "202426107033",
+    fields: [
+      { id: "2040", name: "颜色", fieldType: "MULTI_CHOICE", value: "黑色,黑色90001;米白,米白10302" },
+      { id: "2398", name: "尺码", fieldType: "MULTI_CHOICE", value: "140cm;150cm" },
+      {
+        id: "7908",
+        name: "尺码表",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
+          "140cm": "140cm,140,51,34,88,48,140,31",
+          "150cm": "150cm,150,55,36,92,51,150,37",
+        },
+      },
+    ],
+    skus: [
+      { skuCode: "black-140", color: "黑色90001", size: "140" },
+      { skuCode: "black-150", color: "黑色90001", size: "150" },
+      { skuCode: "white-140", color: "米白10302", size: "140" },
+    ],
+  };
+  const resource = {
+    response: {
+      body: {
+        skus: {
+          skuItems: [
+            { color: "黑色", size: "140cm" },
+            { color: "黑色", size: "150cm" },
+          ],
+        },
+      },
+    },
+  };
+
+  const filtered = service.productArchiveReadbackComparePayloadForResource(payload, resource, {
+    submitMode: "full_update",
+  });
+  const explicit = service.productArchiveReadbackComparePayloadForResource(payload, resource, {
+    submitMode: "full_update",
+    comparePayloadProvided: true,
+  });
+
+  assert.deepEqual(filtered.skus.map((sku) => sku.skuCode), ["black-140", "black-150"]);
+  assert.equal(filtered.fields.find((field) => field.name === "颜色").value, "黑色,黑色90001");
+  assert.equal(filtered.fields.find((field) => field.name === "尺码").value, "140cm;150cm");
+  assert.deepEqual(Object.keys(filtered.fields.find((field) => field.name === "尺码表").value), [
+    "title",
+    "140cm",
+    "150cm",
+  ]);
+  assert.equal(explicit, payload);
+});
+
+test("product archive full update derives missing down-fill fields from DeepDraw resource size tables", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const patches = service.productArchiveDraftFieldPatchesFromDeepdrawResource({
+    fields: [
+      { id: 1, field_name: "充绒量", field_id: "42981", value_text: "", value_json: {}, source_type: "manual", required: true, blocking: true },
+      { id: 2, field_name: "充绒量(文本)", field_id: "53883", value_text: "", value_json: {}, source_type: "manual", required: true, blocking: true },
+    ],
+    templateFields: [
+      { field_name: "充绒量", options_json: [] },
+      { field_name: "充绒量(文本)", options_json: [] },
+    ],
+    resourceBody: {
+      status: 200,
+      response: {
+        code: 10200,
+        body: {
+          fields: [],
+          sizeTables: [
+            {
+              field: { id: "3000", name: "尺码表" },
+              sizeTableItems: [
+                { size: "140cm", values: { "充绒(g)": "32" } },
+                { size: "150cm", values: { "备注": "充绒量37g" } },
+                { size: "180cm", values: { "充绒量": "63g" } },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(patches.map((patch) => [patch.id, patch.fieldName, patch.valueText]), [
+    [1, "充绒量", "140cm32g；150cm37g；180cm63g"],
+    [2, "充绒量(文本)", "32-63g"],
+  ]);
 });
 
 test("product archive derives JD size subattributes from actual SKU sizes", async () => {
@@ -3824,7 +4361,7 @@ test("product archive create payload includes multi-platform size fields for siz
     blocking: true,
     value_text: "",
     value_json: { title: "腰围,直裆,裤长", "80cm": "41,0,43", "90cm": "42,0,48" },
-  }), { title: "腰围,直裆,裤长", "80cm": "41,0,43", "90cm": "42,0,48" });
+  }), { title: "腰围,直裆,裤长", "80cm": "41,,43", "90cm": "42,,48" });
   assert.deepEqual(service.productArchivePayloadFieldValue({
     field_name: "抖音尺码表",
     field_type: "MULTI_TEXT",
@@ -3867,10 +4404,10 @@ test("product archive create payload includes multi-platform size fields for siz
     field_name: "多平台尺码",
     field_type: "MULTI_TEXT",
     value_text: "",
-    value_json: { title: "天猫,京东,拼多多,微信视频小店,小红书,快手", "26码": ",26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),," },
+    value_json: { title: "天猫,京东,拼多多,微信视频小店,小红书,快手", "26码": ",26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)," },
   }, { includeMultiPlatformSizeField: true }), {
     title: "天猫,京东,拼多多,微信视频小店,小红书,快手",
-    "26码": ",26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),,",
+    "26码": ",26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),",
   });
   assert.equal(service.productArchivePayloadFieldValue({
     field_name: "颜色",
@@ -3977,6 +4514,14 @@ test("product archive payload aligns structured size rows with selected size fie
       "80cm",
     ),
     { title: "身高", "80cm": "80" },
+  );
+  assert.deepEqual(
+    service.alignProductArchivePayloadSizeFieldValue(
+      "唯品会尺码表",
+      { title: "号型,充绒量", "140cm（充绒量100g）": "140,100" },
+      "140cm",
+    ),
+    { title: "号型,充绒量", "140cm（充绒量100g）": "140,100" },
   );
 });
 
@@ -4088,9 +4633,9 @@ test("product archive create payload keeps only current DeepDraw template fields
   assert.match(payloadImplementation, /payloadFieldsFromDetail\(true\)/);
   assert.doesNotMatch(payloadImplementation, /isProductArchiveMultiPlatformSizeFieldName\(field\.field_name\)/);
   assert.match(payloadImplementation, /selectDeepdrawLegacyShoeCreateFields\(alignedAllFields\)/);
-  assert.match(payloadImplementation, /selectDeepdrawLegacyShoeUpdateFields\(alignedAllFields\)/);
+  assert.match(payloadImplementation, /selectDeepdrawLegacyShoeUpdateFields\(alignedAllFields,\s*\{[\s\S]*includeMultiPlatformSizeField/);
   assert.match(payloadImplementation, /selectDeepdrawStableSizeCreateFields\(alignedAllFields\)/);
-  assert.match(payloadImplementation, /selectDeepdrawStableSizeUpdateFields\(alignedAllFields\)/);
+  assert.match(payloadImplementation, /selectDeepdrawStableSizeUpdateFields\(alignedAllFields,\s*\{[\s\S]*includeMultiPlatformSizeField/);
   assert.match(payloadImplementation, /stagedSizeTablePublish/);
   assert.match(payloadImplementation, /legacyUpdateFields/);
   assert.match(payloadImplementation, /fields:\s*createFields/);
@@ -4580,7 +5125,9 @@ test("product archive service derives remaining field values from launch plan an
   ]), "服饰标准样式225");
   assert.equal(service.productArchiveAiFieldStrategyForField("主图4样式"), null);
   assert.equal(derive("快手标题"), "【balaOne】巴拉巴拉儿童外套男女2026新秋卡通萌趣满印防护上衣");
-  assert.equal(derive("天猫导购标题"), "巴拉巴拉balaOne外套防护连帽衣");
+  const apparelGuideTitle = JSON.parse(derive("天猫导购标题"))[0];
+  assert.equal(Object.keys(apparelGuideTitle).at(-1), "interest7,利益点");
+  assert.deepEqual(Object.values(apparelGuideTitle).filter(Boolean), ["巴拉巴拉balaOne外套防护连帽衣"]);
   assert.equal(derive("天猫推荐理由"), "潮流满印外套");
   assert.equal(derive("商品展示标题"), "巴拉巴拉男女幼童外套");
   assert.equal(derive("报价方式"), "按产品数量报价");
@@ -4928,7 +5475,6 @@ test("product archive evidence rules backfill filler text and equivalent down-co
 
   assert.deepEqual(fills.map((fill) => [fill.field_name, fill.field_value, fill.source_type]), [
     ["填充物(文本)", "聚酯纤维", "field_backup_rule"],
-    ["充绒量", "绒子含量90%", "field_backup_rule"],
   ]);
 });
 
@@ -4991,7 +5537,7 @@ test("product archive evidence rules use explicit no-filler source evidence for 
 test("product archive down-content normalizer maps a percentage to the template range without using size weights", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
-  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("充绒量", "90%", [
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("充绒量(多选)", "90%", [
     { value: "80%-89%" },
     { value: "90%以上" },
   ]), "90%以上");
@@ -5002,6 +5548,165 @@ test("product archive down-content normalizer maps a percentage to the template 
     { value: "80%以上" },
     { value: "其他" },
   ]), "其他");
+});
+
+test("product archive AI candidates exclude fill-weight fields while allowing down-content choices", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const candidates = service.buildProductArchiveAiFillCandidateFields([
+    {
+      id: 1,
+      field_name: "充绒量",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      options_json: [{ value: "绒子含量90%" }],
+      required: true,
+    },
+    {
+      id: 2,
+      field_name: "充绒量(多选)",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      options_json: [{ value: "90%以上" }, { value: "其他" }],
+      required: true,
+    },
+    {
+      id: 3,
+      field_name: "充绒量(文本)",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      options_json: [],
+      required: true,
+    },
+  ]);
+
+  assert.deepEqual(candidates.map((field) => field.fieldName), ["充绒量(多选)"]);
+});
+
+test("product archive AI fill does not guess filler fields for non-filler apparel", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sweatshirtSourceRows = [{
+    source_type: "copywriting",
+    row_json: {
+      "搜索标题": "巴拉巴拉女童圆领卫衣",
+      "面料成分": "面料: 37.6%棉\n29.8%聚酯纤维\n23.8%莫代尔\n8.8%氨纶\n罗纹: 97.1%棉\n2.9%氨纶",
+    },
+  }];
+  const sweatshirtContext = {
+    draft: { trade_path: "所有行业.服装.童装婴幼儿服装.中大童.卫衣", title: "巴拉巴拉女中童圆领卫衣" },
+    spu: { subclass_name: "卫衣", spu_name: "圆领卫衣" },
+    sourceRows: sweatshirtSourceRows,
+  };
+
+  assert.equal(service.shouldProductArchiveAiFillFillerOrDownField("填充物(多选)", sweatshirtContext), false);
+  assert.equal(service.shouldProductArchiveAiFillFillerOrDownField("充绒量(多选)", sweatshirtContext), false);
+  assert.equal(service.shouldProductArchiveAiFillFillerOrDownField("材质", sweatshirtContext), true);
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("填充物(文本)", sweatshirtContext), "");
+  assert.deepEqual(service.buildProductArchiveEvidenceRuleFills({
+    draft: sweatshirtContext.draft,
+    spu: sweatshirtContext.spu,
+    sourceRows: sweatshirtSourceRows,
+    fields: [{
+      id: 1,
+      field_name: "填充物(文本)",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      options_json: [],
+    }],
+  }), []);
+
+  assert.equal(service.shouldProductArchiveAiFillFillerOrDownField("填充物(多选)", {
+    draft: { trade_path: "所有行业.服装.童装婴幼儿服装.中大童.羽绒服", title: "巴拉巴拉男童羽绒服" },
+    spu: { subclass_name: "羽绒服", spu_name: "羽绒服" },
+    sourceRows: [],
+  }), true);
+});
+
+test("product archive evidence rules reuse OCR composition for down-content and skipped lining fields", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const fields = [
+    {
+      id: 1,
+      field_name: "成分含量(文本)",
+      value_text: [
+        "面料/挂面:100%聚酯纤维",
+        "里料:100%锦纶",
+        "填充物",
+        "大身/袖子:白鸭绒",
+        "绒子含量:90%",
+      ].join("\n"),
+      source_type: "washlabel_ocr",
+      value_json: {},
+      options_json: [],
+    },
+    {
+      id: 2,
+      field_name: "充绒量(多选)",
+      value_text: "",
+      source_type: "manual",
+      value_json: {},
+      validation_status: "missing",
+      options_json: [{ value: "其他" }, { value: "90%以上" }, { value: "80%-90%" }],
+    },
+    {
+      id: 3,
+      field_name: "里料",
+      value_text: "",
+      source_type: "skip",
+      value_json: {},
+      validation_status: "missing",
+      options_json: [{ value: "锦纶/尼龙" }, { value: "聚酯纤维（涤纶）" }],
+    },
+  ];
+
+  const fills = service.buildProductArchiveEvidenceRuleFills({
+    draft: { id: 1162, spu_code: "202426107128" },
+    fields,
+    sourceRows: [],
+  });
+
+  assert.deepEqual(fills.map((fill) => [fill.field_name, fill.field_value, fill.source_type]), [
+    ["充绒量(多选)", "90%以上", "source_rule"],
+    ["里料", "锦纶/尼龙", "source_rule"],
+  ]);
+});
+
+test("product archive evidence rules parse compound lining labels from OCR composition", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const fills = service.buildProductArchiveEvidenceRuleFills({
+    draft: { id: 1163, spu_code: "202426107033" },
+    sourceRows: [],
+    fields: [
+      {
+        id: 1,
+        field_name: "材质成分(文本)",
+        value_text: [
+          "面料:100%聚酯纤维",
+          "大身/袖里料:100%锦纶",
+          "后背上中拼接/帽里/领里料:100%聚酯纤维",
+          "填充物:灰鸭绒",
+          "绒子含量:90%",
+        ].join("\n"),
+        source_type: "washlabel_ocr",
+        value_json: {},
+        options_json: [],
+      },
+      {
+        id: 2,
+        field_name: "里料",
+        value_text: "",
+        source_type: "skip",
+        value_json: {},
+        validation_status: "missing",
+        options_json: [{ value: "锦纶/尼龙" }, { value: "聚酯纤维（涤纶）" }],
+      },
+    ],
+  });
+
+  assert.deepEqual(fills.map((fill) => [fill.field_name, fill.field_value]), [["里料", "锦纶/尼龙"]]);
 });
 
 test("product archive source rules map product-style and popular-element evidence to template options", async () => {
@@ -5125,6 +5830,7 @@ test("product archive down-fill text normalizes scalar text and populates matchi
     {
       id: 5,
       field_name: "抖音尺码表",
+      options_json: ["码号", "身高(cm)", "体重(斤)", "衣长(cm)", "充绒量(g)", "备注"],
       value_json: {
         title: "码号,身高(cm),体重(斤),衣长(cm),充绒量(g),备注",
         "80cm": "80cm,80,19,34.5,0,",
@@ -5195,6 +5901,192 @@ test("product archive down-fill text normalizes scalar text and populates matchi
   ]);
 });
 
+test("product archive down-fill size-chart sync appends platform columns without changing fixed main table columns", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const updates = service.buildProductArchiveDownFillWeightSizeChartUpdates([
+    {
+      id: 1,
+      field_name: "充绒量",
+      value_text: "140cm100g；150cm120g",
+      source_type: "washlabel_ocr",
+      source_ref: "202426107128洗唛.jpg",
+    },
+    {
+      id: 2,
+      field_name: "尺码表",
+      value_json: {
+        title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
+        "140cm": "140cm,140,51.5,34.5,89,48.5,140,31",
+        "150cm": "150cm,150,55,36,93,51,150,37",
+      },
+      source_type: "size_chart",
+      source_ref: "PLM尺码表",
+    },
+    {
+      id: 3,
+      field_name: "唯品会尺码表",
+      value_json: {
+        title: "号型,适合年龄,身高",
+        "140cm": "140,8-11岁,140",
+        "150cm": "150,11-13岁,150",
+        "160cm": "160,13-14岁,160",
+      },
+      source_type: "size_chart",
+      source_ref: "PLM尺码表",
+    },
+    {
+      id: 4,
+      field_name: "抖音尺码表",
+      value_json: {
+        title: "身高(cm),体重(斤)",
+        "140cm": "140,62",
+        "150cm": "150,74",
+        "160cm": "160,90",
+      },
+      source_type: "size_chart",
+      source_ref: "PLM尺码表",
+    },
+  ]);
+
+  assert.deepEqual(updates, [
+    {
+      fieldId: 3,
+      fieldName: "唯品会尺码表",
+      valueJson: {
+        title: "号型,适合年龄,身高,充绒量",
+        "140cm（充绒量100g）": "140,8-11岁,140,100",
+        "150cm（充绒量120g）": "150,11-13岁,150,120",
+        "160cm": "160,13-14岁,160,",
+      },
+      sourceType: "washlabel_ocr",
+      sourceRef: "202426107128洗唛.jpg",
+    },
+    {
+      fieldId: 4,
+      fieldName: "抖音尺码表",
+      valueJson: {
+        title: "身高(cm),体重(斤),充绒量(g)",
+        "140cm": "140,62,100",
+        "150cm": "150,74,120",
+        "160cm": "160,90,",
+      },
+      sourceType: "washlabel_ocr",
+      sourceRef: "202426107128洗唛.jpg",
+    },
+  ]);
+});
+
+test("product archive apparel sale-size remarks use down-fill evidence without zero placeholders", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.deepEqual(service.buildProductArchiveApparelSizeRemarks([
+    {
+      field_name: "充绒量",
+      value_text: "140cm100g；150cm120g",
+      value_json: {},
+    },
+    {
+      field_name: "抖音尺码表",
+      value_json: {
+        title: "身高(cm),体重(斤),充绒量(g),备注",
+        "140cm": "140,62,100,充绒量100g",
+        "150cm": "150,74,120,充绒量120g",
+        "160cm": "160,90,,",
+      },
+    },
+  ]), {
+    "140cm": "充绒量100g",
+    "150cm": "充绒量120g",
+  });
+
+  assert.deepEqual(service.buildProductArchiveApparelSizeRemarks([
+    {
+      field_name: "唯品会尺码表",
+      value_json: {
+        title: "号型,身高,充绒量",
+        "140cm（充绒量100g）": "140,140,100",
+        "150cm": "150,150,0",
+      },
+    },
+  ]), {
+    "140cm": "充绒量100g",
+  });
+});
+
+test("product archive payload omits per-size down-fill source text from scalar down-fill field", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(service.shouldSubmitProductArchivePayloadField({
+    field_name: "充绒量",
+    value_text: "140码100克；150码120克",
+    source_type: "washlabel_ocr",
+    required: true,
+    blocking: true,
+    validation_status: "valid",
+  }), false);
+  assert.equal(service.shouldSubmitProductArchivePayloadField({
+    field_name: "充绒量(文本)",
+    value_text: "100-180g",
+    source_type: "washlabel_ocr",
+    required: true,
+    blocking: true,
+    validation_status: "valid",
+  }), true);
+});
+
+test("product archive down-fill size-chart sync is idempotent for VIP row remarks", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const cleanUpdates = service.buildProductArchiveDownFillWeightSizeChartUpdates([
+    {
+      id: 1,
+      field_name: "充绒量",
+      value_text: "140cm100g；150cm120g",
+      source_type: "washlabel_ocr",
+    },
+    {
+      id: 2,
+      field_name: "唯品会尺码表",
+      value_json: {
+        title: "号型,适合年龄,身高,充绒量",
+        "140cm（充绒量100g）": "140,8-11岁,140,100",
+        "150cm（充绒量120g）": "150,11-13岁,150,120",
+      },
+      source_type: "washlabel_ocr",
+    },
+  ]);
+  const duplicateUpdates = service.buildProductArchiveDownFillWeightSizeChartUpdates([
+    {
+      id: 1,
+      field_name: "充绒量",
+      value_text: "140cm100g；150cm120g",
+      source_type: "washlabel_ocr",
+    },
+    {
+      id: 2,
+      field_name: "唯品会尺码表",
+      value_json: {
+        title: "号型,适合年龄,身高,充绒量",
+        "140cm（充绒量100g）（充绒量100g）": "140,8-11岁,140,100",
+        "150cm（充绒量120g）（充绒量120g）": "150,11-13岁,150,120",
+      },
+      source_type: "washlabel_ocr",
+    },
+  ]);
+
+  assert.deepEqual(cleanUpdates, []);
+  assert.deepEqual(duplicateUpdates, [{
+    fieldId: 2,
+    fieldName: "唯品会尺码表",
+    valueJson: {
+      title: "号型,适合年龄,身高,充绒量",
+      "140cm（充绒量100g）": "140,8-11岁,140,100",
+      "150cm（充绒量120g）": "150,11-13岁,150,120",
+    },
+    sourceType: "washlabel_ocr",
+    sourceRef: null,
+  }]);
+});
+
 test("product archive down-fill size-chart sync falls back to a plain down-fill field", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const updates = service.buildProductArchiveDownFillWeightSizeChartUpdates([
@@ -5252,9 +6144,43 @@ test("product archive down-fill size-chart sync leaves absent cells blank", asyn
     fieldId: 2,
     fieldName: "抖音尺码表",
     valueJson: {
-      title: "身高(cm),充绒量(g),备注",
-      "80cm": "80,14,充绒量14g",
-      "90cm": "90,15,充绒量15g",
+      title: "身高(cm),充绒量(g)",
+      "80cm": "80,14",
+      "90cm": "90,15",
+    },
+    sourceType: "washlabel_ocr",
+    sourceRef: null,
+  }]);
+});
+
+test("product archive down-fill size-chart sync keeps separate Douyin remark when template supports it", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const updates = service.buildProductArchiveDownFillWeightSizeChartUpdates([
+    {
+      id: 1,
+      field_name: "充绒量",
+      value_text: "80码14克；90码15克",
+      source_type: "washlabel_ocr",
+    },
+    {
+      id: 2,
+      field_name: "抖音尺码表",
+      options_json: ["身高(cm)", "充绒量(g)", "备注"],
+      value_json: {
+        title: "身高(cm),备注",
+        "80cm": "80,",
+        "90cm": "90,",
+      },
+    },
+  ]);
+
+  assert.deepEqual(updates, [{
+    fieldId: 2,
+    fieldName: "抖音尺码表",
+    valueJson: {
+      title: "身高(cm),备注,充绒量(g)",
+      "80cm": "80,充绒量14g,14",
+      "90cm": "90,充绒量15g,15",
     },
     sourceType: "washlabel_ocr",
     sourceRef: null,
@@ -5374,6 +6300,123 @@ test("product archive source and evidence rules fill 208426 batch workbook field
   assert.equal(fillMap.get("厚薄"), "超厚");
   assert.equal(fillMap.get("弹力"), "无弹");
   assert.equal(fillMap.get("填充物种类"), "灰鸭绒");
+});
+
+test("product archive evidence rules derive composition range and model from trusted fields", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const fields = [
+    {
+      id: 1,
+      field_name: "成分含量",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      options_json: [
+        { value: "95%及以上" },
+        { value: "70%（含）-95%" },
+        { value: "50%(含)-70%" },
+        { value: "30%（含）-50%" },
+        { value: "20%（含）-30%" },
+      ],
+    },
+    {
+      id: 2,
+      field_name: "成分含量(文本)",
+      value_text: [
+        "面料: 37.6%棉",
+        "29.8%聚酯纤维",
+        "23.8%莫代尔",
+        "8.8%氨纶",
+        "罗纹: 97.1%棉",
+        "2.9%氨纶",
+        "(配料除外)",
+      ].join("\n"),
+      source_type: "washlabel_ocr",
+      value_json: {},
+      validation_status: "valid",
+      options_json: [],
+    },
+    {
+      id: 3,
+      field_name: "服装版型",
+      value_text: "",
+      value_json: {},
+      validation_status: "missing",
+      options_json: [{ value: "标准型" }, { value: "宽松型" }],
+    },
+  ];
+
+  const fills = service.buildProductArchiveEvidenceRuleFills({
+    draft: { id: 1167, spu_code: "202426121024" },
+    spu: {
+      spu_code: "202426121024",
+      model_name: "标准型",
+      raw_payload_json: JSON.stringify({ MODEL_DESC: "标准型" }),
+    },
+    fields,
+    sourceRows: [],
+  });
+
+  assert.deepEqual(fills.map((fill) => [fill.field_name, fill.field_value, fill.source_type]), [
+    ["成分含量", "30%（含）-50%", "source_rule"],
+    ["服装版型", "标准型", "source_rule"],
+  ]);
+});
+
+test("product archive evidence rules use MDM silhouette and thickness for pants without fabricating stretch", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("款式", "针织长裤", [
+    { value: "长裤款" },
+    { value: "卫裤" },
+  ]), "长裤款");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("厚薄", "中", [
+    { value: "薄" },
+    { value: "常规" },
+    { value: "厚" },
+  ]), "常规");
+
+  const fills = service.buildProductArchiveEvidenceRuleFills({
+    draft: { id: 1165, spu_code: "202426108104" },
+    spu: {
+      spu_code: "202426108104",
+      subclass_name: "针织长裤",
+      raw_payload_json: JSON.stringify({ SILHOUETTE_DESC: "弯刀裤", MODEL_DESC: "宽松型" }),
+      multi_lang_json: JSON.stringify([{ LANG: "zh-CN", THICKNESS: "中" }]),
+    },
+    sourceRows: [],
+    fields: [
+      {
+        id: 1,
+        field_name: "款式",
+        value_text: "",
+        value_json: {},
+        validation_status: "missing",
+        options_json: [{ value: "弯刀裤" }, { value: "长裤款" }, { value: "卫裤" }],
+      },
+      {
+        id: 2,
+        field_name: "厚薄",
+        value_text: "",
+        value_json: {},
+        validation_status: "missing",
+        options_json: [{ value: "薄" }, { value: "常规" }, { value: "厚" }],
+      },
+      {
+        id: 3,
+        field_name: "弹力",
+        value_text: "",
+        value_json: {},
+        validation_status: "missing",
+        options_json: [{ value: "无弹" }, { value: "微弹" }],
+      },
+    ],
+  });
+
+  assert.deepEqual(fills.map((fill) => [fill.field_name, fill.field_value]), [
+    ["款式", "弯刀裤"],
+    ["厚薄", "常规"],
+  ]);
 });
 
 test("product archive service maps every main-fabric component for 208326105206-TEST", async () => {
@@ -5631,7 +6674,9 @@ test("product archive shoe required fields derive from trusted launch and brand 
   assert.equal(derive("唯品会副标题"), "防滑耐磨");
   assert.equal(derive("商品详情"), "防滑耐磨，校园日常都好穿");
   assert.equal(derive("天猫商品卖点"), "防滑耐磨，校园日常都好穿");
-  assert.equal(derive("天猫导购标题"), "儿童户外鞋防滑耐磨");
+  const shoeGuideTitle = JSON.parse(derive("天猫导购标题"))[0];
+  assert.equal(Object.keys(shoeGuideTitle).at(-1), "interest7,利益点");
+  assert.deepEqual(Object.values(shoeGuideTitle).filter(Boolean), ["儿童户外鞋防滑耐磨"]);
   assert.equal(derive("天猫推荐理由"), "防滑耐磨，校园日常都好穿");
   assert.equal(derive("商品展示标题"), "巴拉巴拉男 and 女中童户外鞋");
   assert.equal(derive("25实拍文案"), "鞋头防撞-行走更安心*鞋底防滑-雨天稳抓地");
@@ -5711,6 +6756,15 @@ test("product archive shoe required fields derive from trusted launch and brand 
       },
     },
   ]), "浙江杭州");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("产地", {
+    spu: {
+      spu_code: "202426107033",
+      brand_name: "巴拉巴拉",
+      product_line_name: "童装",
+      category_name: "羽绒服",
+    },
+    sourceRows: [],
+  }), "中国大陆");
 
   const merchantSku = service.buildProductArchiveMdmDerivedFieldValue("商家SKU", {
     spu,
@@ -5813,6 +6867,48 @@ test("shoe and apparel display titles ignore stale mapping placeholders", async 
     }),
     "巴拉巴拉女中童牛仔长裤",
   );
+  const mdmOnlyGuideTitle = JSON.parse(service.buildProductArchiveSourceDerivedFieldValue("天猫导购标题", {
+    spu: {
+      spu_code: "202426107129",
+      brand_name: "巴拉巴拉",
+      product_line_name: "中童服装",
+      gender_name: "男",
+      age_group_name: "中童",
+      middle_class_name: "羽绒服",
+      subclass_name: "其他羽绒服",
+      spu_name: "男童羽绒服（两件套）",
+    },
+    sourceRows: [],
+  }))[0];
+  assert.equal(Object.keys(mdmOnlyGuideTitle).at(-1), "interest7,利益点");
+  assert.deepEqual(Object.values(mdmOnlyGuideTitle).filter(Boolean), ["巴拉巴拉男中童羽绒服"]);
+
+  const setGuideTitle = JSON.parse(service.buildProductArchiveSourceDerivedFieldValue("天猫导购标题", {
+    spu: {
+      spu_code: "202426104101",
+      brand_name: "巴拉巴拉",
+      product_line_name: "童装服饰",
+      gender_name: "男",
+      age_group_name: "中童",
+      subclass_name: "长袖套装",
+      spu_name: "儿童套装男童两件套",
+    },
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: { "导购标题": "巴拉巴拉童装儿童套装男童两件套" },
+    }],
+  }))[0];
+  assert.deepEqual(Object.keys(setGuideTitle), [
+    "200001,品牌",
+    "206082,风格",
+    "205513,面料",
+    "317454,件数",
+    "308965,适用季节",
+    "1000240546,亮点",
+    "2165044217,品类词",
+    "interest8,利益点",
+  ]);
+  assert.deepEqual(Object.values(setGuideTitle).filter(Boolean), ["巴拉巴拉童装儿童套装男童两件套"]);
 });
 
 test("product archive service maps launch-plan size segments to Balabala age ranges", async () => {
@@ -6976,10 +8072,11 @@ test("product archive origin-country fields default to a fixed China source", as
 
   assert.match(service, /const originCountryField = isProductArchiveOriginCountryField\(fieldName\)/);
   assert.match(service, /const shoe1688OriginField = shoeProduct && compactFieldKey\(fieldName\) === "产地"/);
+  assert.match(service, /const apparelOriginAreaField = apparelProduct && compactFieldKey\(fieldName\) === "产地"/);
   assert.match(service, /const forcedFixedDerivedField = isProductArchiveForcedFixedDerivedField\(fieldName, spu, sourceRows\)/);
   assert.match(service, /categoryPlatformListPriceField \|\| forcedFixedDerivedField/);
   assert.match(service, /stringValue\(rule\.source_type\) \|\| \(originCountryField \|\| shoe1688OriginField \? "fixed" : "manual"\)/);
-  assert.match(service, /ruleSourceRef \|\| \(shoe1688OriginField \? shoe1688OriginValue\(\) : originCountryField \? "中国" : null\)/);
+  assert.match(service, /ruleSourceRef \|\| \(shoe1688OriginField \? shoe1688OriginValue\(\) : apparelOriginAreaField \? "中国大陆" : originCountryField \? "中国" : null\)/);
 });
 
 test("product archive payload date keeps the launch-plan source date for SDK product date", async () => {
@@ -7044,6 +8141,7 @@ test("product archive submit route allows real DeepDraw creates through the SDK 
   assert.doesNotMatch(draftRoute, /真实创建需要 SDK Product entity\/body adapter/);
   assert.match(draftRoute, /const submitMode = productArchiveSubmitModeFromBody\(objectValue\(body\)\)/);
   assert.match(draftRoute, /submitProductArchiveDraft\(db, draftId, \{ dryRun, updateExisting, submitMode \}\)/);
+  assert.match(draftRoute, /productArchivePublishQueue\.enqueue\(\{[\s\S]*submitMode,[\s\S]*actor:/);
   assert.match(draftRoute, /draft\.submit\.full_update/);
   assert.match(draftRoute, /draft\.submit\.incremental_update/);
   assert.match(deepdrawClient, /deepdraw_sdk_adapter\.mjs/);
@@ -7096,6 +8194,32 @@ test("product archive submit rejects unverified incremental DeepDraw update mode
     () => service.submitProductArchiveDraft({}, 1, { submitMode: "incremental_update" }),
     /深绘增量更新暂未启用/,
   );
+});
+
+test("product archive full update can retry previously failed or mismatched drafts", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const captured = [];
+  const db = {
+    prepare(sql) {
+      return {
+        get() {
+          captured.push(sql);
+          return undefined;
+        },
+      };
+    },
+  };
+
+  service.claimProductArchiveDraftForSubmit(db, 1, "2026-09-02T00:00:00.000Z", "claim-create");
+  service.claimProductArchiveDraftForSubmit(db, 1, "2026-09-02T00:00:00.000Z", "claim-update", {
+    updateExisting: true,
+  });
+
+  assert.equal(captured.length, 2);
+  assert.doesNotMatch(captured[0], /failed|readback_mismatch|readback_verified/);
+  assert.match(captured[1], /failed/);
+  assert.match(captured[1], /readback_mismatch/);
+  assert.match(captured[1], /readback_verified/);
 });
 
 test("DeepDraw create transport uncertainty keeps the submit claim and does not mark an ordinary failure", async () => {

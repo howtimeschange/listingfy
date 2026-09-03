@@ -331,7 +331,7 @@ const DEEPDRAW_MULTI_PLATFORM_SIZE_NAMES = new Map([
   ["miaojie", "喵街"],
 ]);
 const DEEPDRAW_SHOE_MULTI_PLATFORM_SIZE_NAME_ORDER = ["天猫", "京东", "拼多多", "微信视频小店", "小红书", "快手"];
-const DEEPDRAW_SHOE_MULTI_PLATFORM_SIZE_VALUE_NAMES = new Set(["京东", "拼多多", "微信视频小店"]);
+const DEEPDRAW_SHOE_MULTI_PLATFORM_SIZE_VALUE_NAMES = new Set(["京东", "拼多多", "微信视频小店", "小红书"]);
 
 const DEEPDRAW_SITE_CODES = new Map([
   ["1688", "ALIBABA"],
@@ -419,13 +419,15 @@ export function selectDeepdrawStableSizeCreateFields(fields = []) {
   });
 }
 
-export function selectDeepdrawStableSizeUpdateFields(fields = []) {
+export function selectDeepdrawStableSizeUpdateFields(fields = [], options = {}) {
   return arrayValue(fields).filter((field) => {
     const name = normalizeSdkFieldName(fieldName(field));
     const value = fieldValue(field);
     const type = fieldType(field);
     if (!name || !hasValue(value)) return false;
-    return !isStructuredSizePayloadField(name, type) || isStablePostCreateSizeTable(name);
+    return !isStructuredSizePayloadField(name, type)
+      || isStablePostCreateSizeTable(name)
+      || (options.includeMultiPlatformSizeField === true && compactKey(name) === compactKey("多平台尺码"));
   });
 }
 
@@ -475,6 +477,14 @@ function apparelMultiPlatformJdColumnIndex(title) {
     .findIndex((column) => deepdrawMultiPlatformSizeName(column) === "京东");
 }
 
+function apparelMultiPlatformCellValue(cell, normalizedSize) {
+  const text = stringValue(cell);
+  if (!text) return "";
+  const compact = text.replace(/\s+/g, "");
+  if (/^0*\d+(?:\.\d+)?(?:cm|厘米|公分|码)?$/i.test(compact)) return normalizedSize || text;
+  return text;
+}
+
 function normalizeMultiPlatformSizeField(value, sizeValues = []) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const sourceColumns = stringValue(value.title).split(/[,，]/)
@@ -489,8 +499,12 @@ function normalizeMultiPlatformSizeField(value, sizeValues = []) {
     const cells = stringValue(rowValue).split(/[,，]/);
     const jdCandidate = jdColumnIndex >= 0 ? cells[jdColumnIndex] : "";
     const jdSize = bareMultiPlatformSizeValue(jdCandidate || size);
-    const normalizedRow = columns.map((column) => column.name === "京东" ? jdSize : "").join(",");
-    if (normalizedSize && jdSize) output[normalizedSize] = normalizedRow;
+    const normalizedRow = columns.map((column) => (
+      column.name === "京东"
+        ? jdSize
+        : apparelMultiPlatformCellValue(cells[column.index], normalizedSize)
+    )).join(",");
+    if (normalizedSize && normalizedRow.split(",").some((cell) => hasValue(cell))) output[normalizedSize] = normalizedRow;
   }
   return output;
 }
@@ -526,9 +540,9 @@ function shoeMultiPlatformCellValue({ column, cell, size, options = {} }) {
   if (!DEEPDRAW_SHOE_MULTI_PLATFORM_SIZE_VALUE_NAMES.has(column.name)) return "";
   if (column.name === "京东") return bareMultiPlatformSizeValue(cell || size);
   const text = stringValue(cell);
-  if (text) return text;
   const displaySize = shoeMultiPlatformSizeText(size);
   const remark = sizeRemarkForPayload(displaySize, options.sizeRemarks);
+  if (text && (!remark || /(?:脚长|内长)/.test(text))) return text;
   return remark ? `${displaySize}(${remark})` : "";
 }
 
@@ -627,8 +641,148 @@ function unwrapDeepdrawResourceBody(value) {
   const responseBody = recordValue(recordValue(source.response).body);
   if (hasValue(responseBody)) return responseBody;
   const body = recordValue(source.body);
-  if (hasValue(body) && (source.code != null || source.response != null || source.requestId != null)) return body;
+  if (hasValue(body) && (
+    source.code != null
+    || source.response != null
+    || source.requestId != null
+    || Array.isArray(body.fields)
+    || hasValue(body.sizes)
+    || hasValue(body.skus)
+  )) return body;
   return source;
+}
+
+function deepdrawResourceFieldName(entry) {
+  const field = recordValue(entry.field);
+  return normalizeSdkFieldName(field.name ?? entry.name ?? entry.fieldName ?? entry.field_name);
+}
+
+function deepdrawResourceFieldId(entry) {
+  const field = recordValue(entry.field);
+  return stringValue(field.id ?? entry.id ?? entry.fieldId ?? entry.field_id);
+}
+
+function deepdrawResourceFieldType(entry) {
+  const field = recordValue(entry.field);
+  return stringValue(field.type ?? entry.type ?? entry.fieldType ?? entry.field_type).toUpperCase();
+}
+
+function deepdrawResourceFieldSelectedValue(entry) {
+  const options = arrayValue(entry.options).map(stringValue).filter(Boolean);
+  if (options.length > 0) return options.join(";");
+  const texts = arrayValue(entry.texts).map(stringValue).filter(Boolean);
+  if (texts.length === 1) return texts[0];
+  if (texts.length > 1) return texts.join(";");
+  return stringValue(entry.value ?? entry.valueText ?? entry.value_text);
+}
+
+function isDeepdrawResourcePreservedScalarFieldName(name, type = "") {
+  const key = compactKey(name);
+  if (!key) return false;
+  if (isStructuredSizePayloadField(name, type)) return false;
+  if (["尺码", "尺寸", "规格", "size", "商家sku"].includes(key)) return false;
+  if (/sku|skc|颜色|色系|色号|商家编码|商品编码|条形码|货号|价格|价$|库存|数量/.test(key)) return false;
+  return true;
+}
+
+export function extractDeepdrawResourceScalarFields(resourceBody) {
+  const source = unwrapDeepdrawResourceBody(resourceBody);
+  const output = [];
+  const seen = new Set();
+  for (const entry of arrayValue(source.fields).map(recordValue)) {
+    const name = deepdrawResourceFieldName(entry);
+    const type = deepdrawResourceFieldType(entry);
+    const value = deepdrawResourceFieldSelectedValue(entry);
+    if (!name || !hasValue(value)) continue;
+    if (!isDeepdrawResourcePreservedScalarFieldName(name, type)) continue;
+    const id = deepdrawResourceFieldId(entry);
+    const identity = id ? `id:${id}` : `name:${compactKey(name)}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    output.push({
+      id,
+      name,
+      fieldType: type || undefined,
+      value,
+    });
+  }
+  return output;
+}
+
+function payloadFieldIdentity(field) {
+  const id = stringValue(field.id ?? field.fieldId ?? field.field_id);
+  if (id) return `id:${id}`;
+  const name = fieldName(field);
+  return name ? `name:${compactKey(name)}` : "";
+}
+
+function mergeDeepdrawScalarFieldsIntoFieldArray(fields, resourceFields, options = {}) {
+  const appendMissingFields = options.appendMissingFields !== false;
+  const byId = new Map();
+  const byName = new Map();
+  for (const field of resourceFields) {
+    if (field.id) byId.set(field.id, field);
+    byName.set(compactKey(field.name), field);
+  }
+  const used = new Set();
+  const present = new Set();
+  const merged = arrayValue(fields).map((field) => {
+    const row = recordValue(field);
+    const id = stringValue(row.id ?? row.fieldId ?? row.field_id);
+    const name = fieldName(row);
+    const identity = payloadFieldIdentity(row);
+    if (identity) present.add(identity);
+    if (hasValue(fieldValue(row))) return row;
+    const resourceField = (id ? byId.get(id) : null) ?? (name ? byName.get(compactKey(name)) : null);
+    if (!resourceField) return row;
+    used.add(resourceField.id ? `id:${resourceField.id}` : `name:${compactKey(resourceField.name)}`);
+    return {
+      ...row,
+      id: stringValue(row.id) || resourceField.id || undefined,
+      name: name || resourceField.name,
+      fieldType: stringValue(row.fieldType ?? row.field_type) || resourceField.fieldType || undefined,
+      value: resourceField.value,
+    };
+  });
+  if (appendMissingFields) {
+    for (const resourceField of resourceFields) {
+      const identities = [
+        resourceField.id ? `id:${resourceField.id}` : "",
+        `name:${compactKey(resourceField.name)}`,
+      ].filter(Boolean);
+      if (identities.some((identity) => used.has(identity) || present.has(identity))) continue;
+      merged.push({
+        ...(resourceField.id ? { id: resourceField.id } : {}),
+        name: resourceField.name,
+        ...(resourceField.fieldType ? { fieldType: resourceField.fieldType } : {}),
+        value: resourceField.value,
+      });
+      used.add(resourceField.id ? `id:${resourceField.id}` : `name:${compactKey(resourceField.name)}`);
+    }
+  }
+  return { fields: merged, mergedKeys: used };
+}
+
+export function mergeDeepdrawExistingScalarFieldsIntoPayload(payload = {}, resourceBody, options = {}) {
+  const resourceFields = extractDeepdrawResourceScalarFields(resourceBody);
+  const mergedFields = mergeDeepdrawScalarFieldsIntoFieldArray(payload.fields, resourceFields, options);
+  const output = {
+    ...payload,
+    fields: mergedFields.fields,
+  };
+  const mergedKeys = new Set(mergedFields.mergedKeys);
+  if (Array.isArray(payload.legacyUpdateFields)) {
+    const mergedLegacyUpdateFields = mergeDeepdrawScalarFieldsIntoFieldArray(payload.legacyUpdateFields, resourceFields, options);
+    output.legacyUpdateFields = mergedLegacyUpdateFields.fields;
+    for (const key of mergedLegacyUpdateFields.mergedKeys) mergedKeys.add(key);
+  }
+  return {
+    payload: output,
+    preservedFields: resourceFields.filter((field) => (
+      mergedKeys.has(field.id ? `id:${field.id}` : `name:${compactKey(field.name)}`)
+    )),
+    preservedFieldCount: mergedKeys.size,
+  };
 }
 
 export function buildDeepdrawProductFullUpdateInput({ config, productId, payload = {} } = {}) {
@@ -728,17 +882,66 @@ function legacyExpectedSizeTable(field, selectedSizes, { shoeSizes = false } = {
   const name = normalizeSdkFieldName(fieldName(field));
   const normalized = recordValue(normalizeSizeTableField(fieldValue(field), selectedSizes, name, { shoeSizes }));
   const columns = stringValue(normalized.title).split(",").map((column) => column.trim()).filter(Boolean);
+  const rowEntries = {};
   const rows = Object.fromEntries(Object.entries(normalized)
     .filter(([size]) => size !== "title")
     .map(([size, value]) => {
       const cells = stringValue(value).split(",");
-      return [payloadSizeIdentityValue(size, { shoeSizes }), Object.fromEntries(columns.flatMap((column, index) => {
+      const sizeKey = payloadSizeIdentityValue(size, { shoeSizes });
+      const entries = columns.flatMap((column, index) => {
         const cell = stringValue(cells[index]);
-        return cell ? [[column, cell]] : [];
-      }))];
+        return cell ? [{ column, value: cell }] : [];
+      });
+      if (sizeKey && entries.length > 0) rowEntries[sizeKey] = entries;
+      return [sizeKey, Object.fromEntries(entries.map((entry) => [entry.column, entry.value]))];
     })
     .filter(([size, values]) => size && hasValue(values)));
-  return { name, rows };
+  return { name, rows, rowEntries };
+}
+
+function legacyActualSizeTableOptionAliases(table) {
+  const aliases = recordValue(table.optionAliases ?? table.option_aliases);
+  return Object.fromEntries(Object.entries(aliases)
+    .map(([column, alias]) => [stringValue(column), normalizeSdkFieldName(alias)])
+    .filter(([column, alias]) => column && alias));
+}
+
+function legacyActualSizeTableRows(table, { shoeSizes = false, sizeAliases = new Map() } = {}) {
+  const aliases = legacyActualSizeTableOptionAliases(table);
+  return Object.fromEntries(arrayValue(table.sizeTableItems ?? table.size_table_items)
+    .map(recordValue)
+    .map((row) => [
+      resourceSizeIdentityValue(row.size, sizeAliases, { shoeSizes }),
+      { values: recordValue(row.values), aliases },
+    ])
+    .filter(([size, row]) => size && hasValue(row.values)));
+}
+
+function legacyActualMultiPlatformRowsFromSizeTexts(resource, { shoeSizes = false, sizeAliases = new Map() } = {}) {
+  const sizes = recordValue(resource.sizes);
+  const labelsById = new Map();
+  const rowsById = new Map();
+  for (const raw of arrayValue(sizes.texts ?? sizes.Texts)) {
+    const parts = stringValue(raw).split(",").map((part) => part.trim());
+    const rowId = parts[0];
+    const value = parts[1] ?? "";
+    const platform = parts[2] ?? "";
+    if (!rowId) continue;
+    if (!platform) {
+      if (stringValue(value)) labelsById.set(rowId, stringValue(value));
+      continue;
+    }
+    const row = rowsById.get(rowId) ?? {};
+    row[platform] = stringValue(value);
+    rowsById.set(rowId, row);
+  }
+  const rows = {};
+  for (const [rowId, values] of rowsById.entries()) {
+    const label = labelsById.get(rowId);
+    const size = resourceSizeIdentityValue(label, sizeAliases, { shoeSizes });
+    if (size && hasValue(values)) rows[size] = { values, aliases: {} };
+  }
+  return rows;
 }
 
 function legacyActualSizeTables(resource, { shoeSizes = false, sizeAliases = new Map() } = {}) {
@@ -754,27 +957,51 @@ function legacyActualSizeTables(resource, { shoeSizes = false, sizeAliases = new
   for (const table of candidates) {
     const name = normalizeSdkFieldName(recordValue(table.field).name ?? table.name);
     if (!name || tables.has(compactKey(name))) continue;
-    const rows = Object.fromEntries(arrayValue(table.sizeTableItems ?? table.size_table_items)
-      .map(recordValue)
-      .map((row) => [resourceSizeIdentityValue(row.size, sizeAliases, { shoeSizes }), recordValue(row.values)])
-      .filter(([size, values]) => size && hasValue(values)));
+    const rows = legacyActualSizeTableRows(table, { shoeSizes, sizeAliases });
     tables.set(compactKey(name), { name, rows });
+  }
+  const multiPlatformRows = legacyActualMultiPlatformRowsFromSizeTexts(source, { shoeSizes, sizeAliases });
+  if (hasValue(multiPlatformRows) && !tables.has(compactKey("多平台尺码"))) {
+    tables.set(compactKey("多平台尺码"), { name: "多平台尺码", rows: multiPlatformRows });
   }
   return tables;
 }
 
-function actualSizeTableCellValue(actualValues, column, expectedName, { shoeSizes = false } = {}) {
+function expectedSizeTableRowEntries(expected, size) {
+  const rowEntries = recordValue(expected.rowEntries);
+  const entries = arrayValue(rowEntries[size]).map(recordValue).filter((entry) => stringValue(entry.column));
+  if (entries.length > 0) return entries;
+  return Object.entries(recordValue(expected.rows?.[size])).map(([column, value]) => ({ column, value }));
+}
+
+function actualSizeTableRowData(actualRow) {
+  const row = recordValue(actualRow);
+  if (hasValue(row.values) || hasValue(row.aliases)) {
+    return {
+      values: recordValue(row.values),
+      aliases: recordValue(row.aliases),
+    };
+  }
+  return { values: row, aliases: {} };
+}
+
+function actualSizeTableCellCandidates(actualRow, column, expectedName, { shoeSizes = false } = {}) {
+  const row = actualSizeTableRowData(actualRow);
   const candidates = compactKey(expectedName) === compactKey("尺码表")
     && shoeSizes
     && compactKey(column) === compactKey("尺码")
     ? [column, "鞋长"]
     : [column];
-  for (const candidate of candidates) {
-    if (Object.prototype.hasOwnProperty.call(actualValues, candidate)) return actualValues[candidate];
-    const normalizedColumn = Object.keys(actualValues).find((actualColumn) => compactKey(actualColumn) === compactKey(candidate));
-    if (normalizedColumn) return actualValues[normalizedColumn];
+  const candidateKeys = new Set(candidates.map(compactKey).filter(Boolean));
+  const output = [];
+  for (const [actualColumn, actualValue] of Object.entries(row.values)) {
+    const actualColumnKey = compactKey(actualColumn);
+    const aliasKey = compactKey(row.aliases[actualColumn]);
+    if (candidateKeys.has(actualColumnKey) || candidateKeys.has(aliasKey)) {
+      output.push({ column: actualColumn, value: stringValue(actualValue) });
+    }
   }
-  return undefined;
+  return output;
 }
 
 function compareLegacySizeTable(expected, actual, { shoeSizes = false } = {}) {
@@ -784,16 +1011,31 @@ function compareLegacySizeTable(expected, actual, { shoeSizes = false } = {}) {
   const unexpectedSizes = actualSizes.filter((size) => !Object.prototype.hasOwnProperty.call(expected.rows, size));
   const mismatchedCells = [];
   for (const size of expectedSizes) {
-    const expectedValues = recordValue(expected.rows[size]);
-    const actualValues = recordValue(actual?.rows?.[size]);
-    for (const [column, expectedValue] of Object.entries(expectedValues)) {
-      const actualValue = actualSizeTableCellValue(actualValues, column, expected.name, { shoeSizes });
-      if (stringValue(actualValue) !== stringValue(expectedValue)) {
+    const expectedEntriesByColumn = new Map();
+    for (const entry of expectedSizeTableRowEntries(expected, size)) {
+      const column = stringValue(entry.column);
+      const key = compactKey(column);
+      if (!key) continue;
+      expectedEntriesByColumn.set(key, [
+        ...(expectedEntriesByColumn.get(key) ?? []),
+        { column, value: stringValue(entry.value) },
+      ]);
+    }
+    for (const entries of expectedEntriesByColumn.values()) {
+      const column = entries[0]?.column ?? "";
+      const actualCandidates = actualSizeTableCellCandidates(actual?.rows?.[size], column, expected.name, { shoeSizes });
+      const remainingActualValues = actualCandidates.map((candidate) => candidate.value);
+      for (const entry of entries) {
+        const actualIndex = remainingActualValues.findIndex((value) => value === entry.value);
+        if (actualIndex >= 0) {
+          remainingActualValues.splice(actualIndex, 1);
+          continue;
+        }
         mismatchedCells.push({
           size,
-          column,
-          expected: stringValue(expectedValue),
-          actual: stringValue(actualValue),
+          column: entry.column,
+          expected: entry.value,
+          actual: actualCandidates.map((candidate) => candidate.value).filter(Boolean).join(" | "),
         });
       }
     }
@@ -810,6 +1052,26 @@ function compareLegacySizeTable(expected, actual, { shoeSizes = false } = {}) {
     unexpectedSizes,
     mismatchedCells: mismatchedCells.slice(0, 20),
   };
+}
+
+function comparisonSectionNeedsUiVerification(section) {
+  return compactKey(section.name) === compactKey("多平台尺码") && !section.ok && section.actualCount === 0;
+}
+
+function sizeRemarkComparisonSection(payload = {}) {
+  const hasInlineRemarks = shouldInlineSizeRemarks(payload)
+    && hasValue({
+      ...saleSizeInlineRemarks(findPayloadFieldValue(arrayValue(payload.fields).map(recordValue), ["尺码", "尺寸", "规格", "size"])),
+      ...recordValue(payload.sizeRemarks),
+    });
+  return hasInlineRemarks
+    ? {
+        name: "尺码备注",
+        ok: true,
+        needsUiVerification: true,
+        reason: "DeepDraw resource API may omit inline size remarks; verify in UI when needed.",
+      }
+    : null;
 }
 
 export function compareDeepdrawProductPayloadToResource({ payload = {}, resourceBody, shoeSizes = Boolean(payload.shoeSizes) } = {}) {
@@ -869,13 +1131,25 @@ export function compareDeepdrawProductPayloadToResource({ payload = {}, resource
     .map((field) => legacyExpectedSizeTable(field, selectedSizes, { shoeSizes }))
     .filter((table) => table.name && hasValue(table.rows));
   const actualTables = legacyActualSizeTables(source, { shoeSizes, sizeAliases });
-  const tableSections = expectedTables.map((table) => (
-    compareLegacySizeTable(table, actualTables.get(compactKey(table.name)), { shoeSizes })
-  ));
-  const sections = [sizeSection, skuSection, ...tableSections];
+  const tableSections = expectedTables.map((table) => {
+    const section = compareLegacySizeTable(table, actualTables.get(compactKey(table.name)), { shoeSizes });
+    return comparisonSectionNeedsUiVerification(section)
+      ? {
+          ...section,
+          needsUiVerification: true,
+          reason: "DeepDraw resource API may omit multi-platform size rows while UI still shows them.",
+        }
+      : section;
+  });
+  const remarkSection = sizeRemarkComparisonSection(payload);
+  const sections = [sizeSection, skuSection, ...tableSections, ...(remarkSection ? [remarkSection] : [])];
+  const strictSections = sections.filter((section) => !section.needsUiVerification);
+  const uiVerificationSections = sections.filter((section) => section.needsUiVerification);
   return {
-    ok: sections.length > 0 && sections.every((section) => section.ok),
+    ok: strictSections.length > 0 && strictSections.every((section) => section.ok),
     sections,
+    needsUiVerification: uiVerificationSections.length > 0,
+    uiVerificationSections: uiVerificationSections.map((section) => section.name),
     supportedSizeTables: tableSections.map((section) => section.name),
     omittedUnsupportedSizeTables: shoeSizes
       ? [
@@ -911,12 +1185,11 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
           ? shoeSaleSizeValue(sku.size ?? sku.sizeName ?? sku.size_name, shoeSaleSizeOptions)
           : sdkSizeValue(sku.size ?? sku.sizeName ?? sku.size_name)
       )).filter(Boolean));
-  const sizeRemarks = shouldInlineSizeRemarks(payload)
-    ? {
-        ...saleSizeInlineRemarks(declaredSizeFieldValue),
-        ...recordValue(payload.sizeRemarks),
-      }
-    : {};
+  const inlineSizeRemarks = saleSizeInlineRemarks(declaredSizeFieldValue);
+  const sizeRemarks = {
+    ...inlineSizeRemarks,
+    ...recordValue(payload.sizeRemarks),
+  };
   const publishedSizeValue = shouldInlineSizeRemarks(payload)
     ? saleSizePayloadValue(selectedSizeValues, sizeRemarks)
     : uniqueValues(selectedSizeValues).join(";");

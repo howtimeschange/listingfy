@@ -61,7 +61,7 @@ test("normalizes PLM long-table rows and builds a high-confidence top size chart
 
   assert.deepEqual(result.valueJson, {
     title: "尺码,肩宽,袖长,胸围,衣长,下摆围",
-    "80cm": "80,26.5,24.5,66,38,80",
+    "80cm": "80cm,26.5,24.5,66,38,80",
   });
   assert.equal(result.mappings.find((item) => item.targetField === "袖长")?.sourcePoint, "里：袖长");
   assert.equal(result.mappings.find((item) => item.targetField === "袖长")?.confidence, "medium");
@@ -83,7 +83,7 @@ test("omits unmapped DeepDraw size-chart fields instead of filling zero values",
 
   assert.deepEqual(result.valueJson, {
     title: "尺码,胸围,衣长",
-    "80cm": "80,66,38",
+    "80cm": "80cm,66,38",
   });
   assert.equal(result.unmatchedTargets.includes("领口"), true);
 });
@@ -150,6 +150,25 @@ test("fills VIP apparel size-chart model column with bare size values", () => {
   });
 });
 
+test("builds Douyin apparel size-chart rows from allowed sizes without fabricating missing PLM measurements", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [],
+    spuCode: "202426107128",
+    template: { fieldName: "抖音尺码表", options: ["身高(cm)", "体重(斤)", "衣长(cm)", "肩宽(cm)", "胸围(cm)", "袖长(cm)"] },
+    allowedSizes: ["140cm", "150cm"],
+    gender: "女童",
+    garmentType: "羽绒服",
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "身高(cm),体重(斤)",
+    "140cm": "140,62",
+    "150cm": "150,74",
+  });
+  assert.equal(result.sourceRowCount, 0);
+  assert.equal(result.unmatchedTargets.includes("衣长(cm)"), true);
+});
+
 test("fills apparel multi-platform sizes with full platform columns and only bare JD values", () => {
   const rows = [
     { "款号": "208426121101", "测量点": "衣长", "尺码": "130", "尺码值": "50.5" },
@@ -182,7 +201,7 @@ test("maps collar sleeve and weight when the PLM source provides them", () => {
 
   assert.deepEqual(result.valueJson, {
     title: "尺码,领口,袖长,体重",
-    "130cm": "130,34,45,50",
+    "130cm": "130cm,34,45,50",
   });
   assert.equal(result.mappings.find((item) => item.targetField === "袖长")?.sourcePoint, "袖长肩点量");
 });
@@ -202,7 +221,7 @@ test("doubles half-width chest waist hip and leg-opening measurements and omits 
 
   assert.deepEqual(result.valueJson, {
     title: "尺码,胸围,腰围,臀围,脚口",
-    "90cm": "90,60,42,74,16",
+    "90cm": "90cm,60,42,74,16",
   });
 });
 
@@ -224,7 +243,7 @@ test("forces denim pants main size chart to the eight business columns", () => {
 
   assert.deepEqual(result.valueJson, {
     title: "尺码,尺码,裤长,腰围,臀围,脚口,身高,体重",
-    "140cm": "140,140,82,55,80,46.4,140,31",
+    "140cm": "140cm,140,82,55,80,46.4,140,31",
   });
   assert.equal(result.unmatchedTargets.includes("脚口翻折高"), false);
 });
@@ -246,7 +265,7 @@ test("forces apparel top main size chart to fixed columns and prefers three-poin
 
   assert.deepEqual(result.valueJson, {
     title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
-    "130cm": "130,130,52,36,84,57,130,25",
+    "130cm": "130cm,130,52,36,84,57,130,25",
   });
   assert.equal(result.mappings.find((item) => item.targetField === "袖长")?.sourcePoint, "袖长（三点量）插肩/落肩");
 });
@@ -266,8 +285,54 @@ test("keeps fixed apparel top size-chart columns when a source point is absent",
 
   assert.deepEqual(result.valueJson, {
     title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
-    "130cm": "130,130,43,,85,61,130,25",
+    "130cm": "130cm,130,43,,85,61,130,25",
   });
+});
+
+test("keeps fixed apparel columns blank instead of sending PLM zero placeholders", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [
+      { "款号": "202426121024", "测量点": "衣长", "尺码": "130", "尺码值": "43" },
+      { "款号": "202426121024", "测量点": "肩宽", "尺码": "130", "尺码值": "0" },
+      { "款号": "202426121024", "测量点": "胸围", "尺码": "130", "尺码值": "85" },
+      { "款号": "202426121024", "测量点": "袖长（三点量）插肩/落肩", "尺码": "130", "尺码值": "61" },
+    ],
+    spuCode: "202426121024",
+    template: { fieldName: "尺码表", options: ["衣长", "肩宽", "胸围", "袖长"] },
+    gender: "女童",
+    garmentType: "圆领卫衣",
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
+    "130cm": "130cm,130,43,,85,61,130,25",
+  });
+});
+
+test("maps PLM outerwear body-length chest and shoulder-sleeve aliases into fixed top columns", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [
+      { "款号": "202426107129", "测量点": "后中长", "尺码": "140/", "尺码值": "51.5" },
+      { "款号": "202426107129", "测量点": "后中长松量", "尺码": "140/", "尺码值": "48.0" },
+      { "款号": "202426107129", "测量点": "肩宽", "尺码": "140/", "尺码值": "34.5" },
+      { "款号": "202426107129", "测量点": "全胸围（夹下1CM", "尺码": "140/", "尺码值": "89.0" },
+      { "款号": "202426107129", "测量点": "肩宽", "尺码": "140/", "尺码值": "34.0" },
+      { "款号": "202426107129", "测量点": "全胸围（夹下1CM", "尺码": "140/", "尺码值": "88.0" },
+      { "款号": "202426107129", "测量点": "袖长（肩至袖口", "尺码": "140/", "尺码值": "48.5" },
+    ],
+    spuCode: "202426107129",
+    template: { fieldName: "尺码表", options: ["衣长", "肩宽", "胸围", "袖长"] },
+    gender: "男童",
+    garmentType: "羽绒服",
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
+    "140cm": "140cm,140,51.5,34,88,48.5,140,31",
+  });
+  assert.equal(result.mappings.find((item) => item.targetField === "衣长")?.sourcePoint, "后中长");
+  assert.equal(result.mappings.find((item) => item.targetField === "胸围")?.sourcePoint, "全胸围（夹下1CM");
+  assert.equal(result.mappings.find((item) => item.targetField === "袖长")?.sourcePoint, "袖长（肩至袖口");
 });
 
 test("does not fabricate zero values when a size label cannot be parsed", () => {
@@ -285,7 +350,7 @@ test("does not fabricate zero values when a size label cannot be parsed", () => 
 
   assert.deepEqual(result.valueJson, {
     title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
-    "试穿码": ",,43,,85,61,,",
+    "试穿码": "试穿码,,43,,85,61,,",
   });
 });
 
@@ -303,7 +368,7 @@ test("maps skirt hem target alias 下摆 from PLM hem circumference points", () 
 
   assert.deepEqual(result.valueJson, {
     title: "尺码,裙长,腰围,臀围,下摆",
-    "90cm": "90,44,42,70,88",
+    "90cm": "90cm,44,42,70,88",
   });
   assert.equal(result.mappings.find((item) => item.targetField === "下摆")?.sourcePoint, "裙摆围");
 });
@@ -323,7 +388,7 @@ test("derives height from the size label while filling PLM mapped size-chart val
 
   assert.deepEqual(result.valueJson, {
     title: "尺码,身高,衣长,胸围,袖长",
-    "80cm": "80,80,33,64,26",
+    "80cm": "80cm,80,33,64,26",
   });
   assert.equal(result.mappings.find((item) => item.targetField === "身高")?.sourcePoint, "尺码");
   assert.equal(result.unmatchedTargets.includes("身高"), false);
@@ -346,7 +411,7 @@ test("clips PLM size-chart rows to authoritative draft sizes", () => {
 
   assert.deepEqual(result.valueJson, {
     title: "尺码,身高,裤长",
-    "80cm": "80,80,44",
+    "80cm": "80cm,80,44",
   });
 });
 
@@ -403,8 +468,8 @@ test("builds separate size charts for set templates using field-specific source 
     template: { fieldName: "裤子尺码表", options: ["裤长", "腰围", "臀围"] },
   });
 
-  assert.deepEqual(top.valueJson, { title: "尺码,衣长,胸围,腰围", "80cm": "80,36,72,42" });
-  assert.deepEqual(pants.valueJson, { title: "尺码,裤长,腰围", "80cm": "80,49,42" });
+  assert.deepEqual(top.valueJson, { title: "尺码,衣长,胸围,腰围", "80cm": "80cm,36,72,42" });
+  assert.deepEqual(pants.valueJson, { title: "尺码,裤长,腰围", "80cm": "80cm,49,42" });
   assert.equal(pants.unmatchedTargets.includes("臀围"), true);
 });
 
@@ -431,13 +496,13 @@ test("uses reviewed AI mappings to fill unmatched size-chart target fields", () 
 
   assert.deepEqual(result.valueJson, {
     title: "尺码,领口,衣长",
-    "80cm": "80,14,38",
+    "80cm": "80cm,14,38",
   });
   assert.equal(result.mappings.find((item) => item.targetField === "领口")?.source, "ai");
   assert.equal(result.unmatchedTargets.includes("领口"), false);
 });
 
-test("keeps the first duplicate PLM value so newer source rows win", () => {
+test("keeps the last duplicate PLM value so newer source rows win", () => {
   const result = buildSizeChartForTemplate({
     rows: [
       { "款号": "208326100020", "测量点": "衣长", "尺码": "080", "尺码值": "40" },
@@ -449,7 +514,7 @@ test("keeps the first duplicate PLM value so newer source rows win", () => {
 
   assert.deepEqual(result.valueJson, {
     title: "尺码,衣长",
-    "80cm": "80,40",
+    "80cm": "80cm,38",
   });
 });
 

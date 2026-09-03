@@ -11,7 +11,9 @@ import {
   compareDeepdrawLegacyShoePayloadToResource,
   createDeepdrawProductWithSdk,
   deepdrawLegacyShoePostCreateUpdateRequired,
+  extractDeepdrawResourceScalarFields,
   getDeepdrawProductWithSdk,
+  mergeDeepdrawExistingScalarFieldsIntoPayload,
   parseDeepdrawSdkOutput,
   runDeepdrawSdkCli,
   selectDeepdrawLegacyShoeCreateFields,
@@ -749,7 +751,7 @@ test("buildDeepdrawProductFullUpdateInput keeps shoe size enum values and only i
   assert.deepEqual(input.product.fields["抖音尺码表"], { title: "脚长(cm),备注", "26码": "16,脚长15.8-16.2/内长17" });
   assert.deepEqual(input.product.fields["多平台尺码"], {
     title: "京东,拼多多,微信视频小店,小红书,快手",
-    "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),,",
+    "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),",
   });
   assert.equal(Object.hasOwn(input.product.fields, "淘宝尺码表"), false);
   assert.deepEqual(input.product.places, ["ALIBABA", "TMALL", "JD", "VIP", "YOUZAN", "PDD", "XIAOHONGSHU", "DOUYIN", "KUAISHOU", "WEIXINXIAODIAN"]);
@@ -851,7 +853,7 @@ test("buildDeepdrawProductFullUpdateInput includes isolated multi-platform size 
   assert.equal(input.product.fields["尺码"], "26码");
   assert.deepEqual(input.product.fields["多平台尺码"], {
     title: "京东,拼多多,微信视频小店,小红书",
-    "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),",
+    "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
   });
 });
 
@@ -926,7 +928,7 @@ test("buildDeepdrawSdkProductInput can preserve unit-bearing table keys while sa
   assert.equal(Object.hasOwn(input.product.fields, "多平台尺码"), false);
 });
 
-test("buildDeepdrawSdkProductInput normalizes optional JD-only apparel multi-platform sizes", () => {
+test("buildDeepdrawSdkProductInput preserves apparel multi-platform cells while normalizing JD and row sizes", () => {
   const input = buildDeepdrawSdkProductInput({
     config: {
       baseUrl: "http://open.deepdraw.cn",
@@ -940,18 +942,20 @@ test("buildDeepdrawSdkProductInput normalizes optional JD-only apparel multi-pla
         name: "多平台尺码",
         fieldType: "MULTI_TEXT",
         value: {
-          title: "天猫,京东,快手,微信视频小店,拼多多",
-          "130cm": "130cm,128cm,130cm,130cm,130cm",
-          "140码": "140码,,140码,140码,140码",
+          title: "天猫,京东,拼多多,微信视频小店,小红书,快手",
+          "130cm": ",130,,,,",
+          "140": ",140,140cm（充绒量100g）,140cm（充绒量100g）,140cm（充绒量100g）,",
+          "150码": ",150,,,,",
         },
       }],
     },
   });
 
   assert.deepEqual(input.product.fields["多平台尺码"], {
-    title: "天猫,京东,快手,微信视频小店,拼多多",
-    "130cm": ",128,,,",
-    "140cm": ",140,,,",
+    title: "天猫,京东,拼多多,微信视频小店,小红书,快手",
+    "130cm": ",130,,,,",
+    "140cm": ",140,140cm（充绒量100g）,140cm（充绒量100g）,140cm（充绒量100g）,",
+    "150cm": ",150,,,,",
   });
 });
 
@@ -988,6 +992,10 @@ test("buildDeepdrawSdkProductInput keeps shoe multi-platform rows display-sized 
     },
     payload: {
       shoeSizes: true,
+      sizeRemarks: {
+        "26码": "脚长15.8-16.2/内长17",
+        "27码": "脚长16.3-16.7/内长17.7",
+      },
       fields: [
         { name: "尺码", value: "26码;27码" },
         {
@@ -1005,8 +1013,8 @@ test("buildDeepdrawSdkProductInput keeps shoe multi-platform rows display-sized 
 
   assert.deepEqual(input.product.fields["多平台尺码"], {
     title: "天猫,京东,拼多多,微信视频小店,小红书,快手",
-    "26码": ",26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),,",
-    "27码": ",27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),,",
+    "26码": ",26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),",
+    "27码": ",27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),",
   });
 });
 
@@ -1103,8 +1111,8 @@ test("legacy v1 shoe publish creates with the main table then updates the remain
   });
   assert.deepEqual(createInput.product.fields["多平台尺码"], {
     title: "京东,拼多多,微信视频小店,小红书",
-    "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),",
-    "27码": "27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),",
+    "26码": "26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17)",
+    "27码": "27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
   });
 
   const payload = {
@@ -1162,6 +1170,198 @@ test("legacy v1 shoe publish creates with the main table then updates the remain
     ['["紫色","27"]'],
   );
   assert.doesNotMatch(JSON.stringify(skuMismatch), /\\u0000/);
+});
+
+test("compareDeepdrawProductPayloadToResource treats multi-platform and remark readback gaps as UI verification", () => {
+  const resourceBody = {
+    sizes: { options: ["130cm", "140cm"] },
+    skus: { skuItems: [] },
+    sizeTables: [],
+  };
+  const payload = {
+    withSizeRemarks: true,
+    sizeRemarks: { "130cm": "身高125-135cm" },
+    fields: [
+      { name: "尺码", value: "130cm;140cm" },
+      {
+        name: "多平台尺码",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "天猫,京东,拼多多,微信视频小店,小红书,快手",
+          "130cm": ",130,,,,",
+          "140cm": ",140,140cm（充绒量100g）,140cm（充绒量100g）,140cm（充绒量100g）,",
+        },
+      },
+    ],
+    skus: [],
+  };
+
+  const match = compareDeepdrawProductPayloadToResource({ payload, resourceBody });
+  assert.equal(match.ok, true);
+  assert.equal(match.needsUiVerification, true);
+  assert.deepEqual(match.uiVerificationSections, ["多平台尺码", "尺码备注"]);
+  const multiPlatformSection = match.sections.find((section) => section.name === "多平台尺码");
+  assert.equal(multiPlatformSection?.ok, false);
+  assert.equal(multiPlatformSection?.needsUiVerification, true);
+  assert.equal(multiPlatformSection?.reason, "DeepDraw resource API may omit multi-platform size rows while UI still shows them.");
+  assert.equal(multiPlatformSection?.expectedCount, 2);
+  assert.equal(multiPlatformSection?.actualCount, 0);
+  assert.deepEqual(multiPlatformSection?.missingSizes, ["130cm", "140cm"]);
+
+  const strictMismatch = compareDeepdrawProductPayloadToResource({
+    payload: {
+      fields: [
+        { name: "尺码", value: "130cm;140cm" },
+        {
+          name: "尺码表",
+          fieldType: "MULTI_TEXT",
+          value: {
+            title: "尺码,身高",
+            "130cm": "130cm,130",
+            "140cm": "140cm,140",
+          },
+        },
+      ],
+      skus: [],
+    },
+    resourceBody,
+  });
+  assert.equal(strictMismatch.ok, false);
+  assert.equal(strictMismatch.needsUiVerification, false);
+  assert.equal(strictMismatch.sections.find((section) => section.name === "尺码表")?.ok, false);
+});
+
+test("compareDeepdrawProductPayloadToResource resolves DeepDraw size-table option aliases and duplicate columns", () => {
+  const payload = {
+    fields: [
+      { name: "尺码", value: "140cm" },
+      {
+        name: "尺码表",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
+          "140cm": "140cm,140,51.5,34,88,48.5,140,31",
+        },
+      },
+      {
+        name: "抖音尺码表",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "身高(cm),体重(斤),充绒量(g),备注",
+          "140cm": "140,62,32,充绒量32g",
+        },
+      },
+    ],
+    skus: [],
+  };
+  const resourceBody = {
+    sizes: { options: ["140cm"] },
+    skus: { skuItems: [] },
+    sizeTables: [
+      {
+        field: { name: "尺码表" },
+        optionAliases: {
+          "领口": "尺码",
+          "腰围": "尺码",
+          "衣长": "衣长",
+          "肩宽": "肩宽",
+          "胸围": "胸围",
+          "袖长": "袖长",
+          "身高": "身高",
+          "体重": "体重",
+        },
+        sizeTableItems: [
+          {
+            size: "140cm",
+            values: {
+              "领口": "140cm",
+              "腰围": "140",
+              "衣长": "51.5",
+              "肩宽": "34",
+              "胸围": "88",
+              "袖长": "48.5",
+              "身高": "140",
+              "体重": "31",
+            },
+          },
+        ],
+      },
+      {
+        field: { name: "抖音尺码表" },
+        optionAliases: {
+          "身高(cm)": "身高(cm)",
+          "体重(斤)": "体重(斤)",
+          "衣长(cm)": "充绒量(g)",
+          "备注": "备注",
+        },
+        sizeTableItems: [
+          {
+            size: "140cm",
+            values: {
+              "身高(cm)": "140",
+              "体重(斤)": "62",
+              "衣长(cm)": "32",
+              "备注": "充绒量32g",
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  const match = compareDeepdrawProductPayloadToResource({ payload, resourceBody });
+  assert.equal(match.ok, true);
+  assert.equal(match.needsUiVerification, false);
+  assert.equal(match.sections.find((section) => section.name === "尺码表")?.ok, true);
+  assert.equal(match.sections.find((section) => section.name === "抖音尺码表")?.ok, true);
+});
+
+test("compareDeepdrawProductPayloadToResource reads multi-platform sizes from DeepDraw size texts", () => {
+  const payload = {
+    fields: [
+      { name: "尺码", value: "140cm;150cm" },
+      {
+        name: "多平台尺码",
+        fieldType: "MULTI_TEXT",
+        value: {
+          title: "天猫,京东,拼多多,微信视频小店,小红书,快手",
+          "140cm": ",140,140cm（充绒量32g）,140cm（充绒量32g）,140cm（充绒量32g）,",
+          "150cm": ",150,150cm（充绒量37g）,150cm（充绒量37g）,150cm（充绒量37g）,",
+        },
+      },
+    ],
+    skus: [],
+  };
+  const resourceBody = {
+    sizes: {
+      options: ["140cm", "150cm"],
+      texts: [
+        "s140,140cm",
+        "s140,,天猫",
+        "s140,140,京东",
+        "s140,140cm（充绒量32g）,拼多多",
+        "s140,140cm（充绒量32g）,微信视频小店",
+        "s140,140cm（充绒量32g）,小红书",
+        "s140,,快手",
+        "s150,150cm",
+        "s150,,天猫",
+        "s150,150,京东",
+        "s150,150cm（充绒量37g）,拼多多",
+        "s150,150cm（充绒量37g）,微信视频小店",
+        "s150,150cm（充绒量37g）,小红书",
+        "s150,,快手",
+      ],
+    },
+    skus: { skuItems: [] },
+    sizeTables: [],
+  };
+
+  const match = compareDeepdrawProductPayloadToResource({ payload, resourceBody });
+  assert.equal(match.ok, true);
+  assert.equal(match.needsUiVerification, false);
+  const multiPlatformSection = match.sections.find((section) => section.name === "多平台尺码");
+  assert.equal(multiPlatformSection?.ok, true);
+  assert.equal(multiPlatformSection?.actualCount, 2);
 });
 
 test("compareDeepdrawLegacyShoePayloadToResource resolves DeepDraw standard sizes through aliases", () => {
@@ -1223,6 +1423,66 @@ test("compareDeepdrawLegacyShoePayloadToResource resolves DeepDraw standard size
   ]);
 });
 
+test("DeepDraw resource scalar preservation keeps trusted text and choice fields only", () => {
+  const resourceBody = {
+    body: {
+      fields: [
+        { field: { id: "53883", name: "充绒量(文本)", type: "TEXT" }, texts: ["32-63g"], options: [] },
+        { field: { id: "26485", name: "材质成分(文本)", type: "TEXT" }, texts: ["面料:100%聚酯纤维 里料:100%锦纶"], options: [] },
+        { field: { id: "43170", name: "充绒量(多选)", type: "MULTI_CHOICE" }, texts: ["80%-90%"], options: [] },
+        { field: { id: "2475", name: "里料", type: "TEXT" }, texts: [], options: ["聚酯纤维（涤纶）"] },
+        { field: { id: "1001", name: "颜色", type: "MULTI_CHOICE" }, texts: [], options: ["蓝色"] },
+        { field: { id: "1002", name: "尺码", type: "MULTI_CHOICE" }, texts: ["7908,140cm"], options: ["140cm"] },
+        { field: { id: "1003", name: "尺码表", type: "MULTI_TEXT" }, texts: ["7908,204462,140"], options: ["140cm"] },
+        { field: { id: "1004", name: "多平台尺码", type: "MULTI_TEXT" }, texts: ["7908,192899,140"], options: ["140cm"] },
+        { field: { id: "1005", name: "商家SKU", type: "MULTI_TEXT" }, texts: ["sku"], options: [] },
+        { field: { id: "1006", name: "小红书商家编码", type: "TEXT" }, texts: ["old-seller-code"], options: [] },
+      ],
+    },
+  };
+
+  assert.deepEqual(
+    extractDeepdrawResourceScalarFields(resourceBody).map((field) => [field.id, field.name, field.value]),
+    [
+      ["53883", "充绒量(文本)", "32-63g"],
+      ["26485", "材质成分(文本)", "面料:100%聚酯纤维 里料:100%锦纶"],
+      ["43170", "充绒量(多选)", "80%-90%"],
+      ["2475", "里料", "聚酯纤维（涤纶）"],
+    ],
+  );
+
+  const merged = mergeDeepdrawExistingScalarFieldsIntoPayload({
+    fields: [
+      { id: "53883", name: "充绒量(文本)", fieldType: "TEXT", value: "" },
+      { id: "26485", name: "材质成分(文本)", fieldType: "TEXT", value: "本地已有值" },
+      { id: "1001", name: "颜色", fieldType: "MULTI_CHOICE", value: "" },
+      { id: "1003", name: "尺码表", fieldType: "MULTI_TEXT", value: { title: "尺码", "140cm": "140cm" } },
+      { id: "1006", name: "小红书商家编码", fieldType: "TEXT", value: "" },
+    ],
+    legacyUpdateFields: [
+      { id: "53883", name: "充绒量(文本)", fieldType: "TEXT", value: "" },
+      { id: "26485", name: "材质成分(文本)", fieldType: "TEXT", value: "本地已有值" },
+      { id: "1004", name: "多平台尺码", fieldType: "MULTI_TEXT", value: { title: "京东", "140cm": "140" } },
+    ],
+  }, resourceBody);
+
+  assert.equal(merged.preservedFieldCount, 3);
+  assert.deepEqual(
+    merged.preservedFields.map((field) => field.name).sort(),
+    ["充绒量(多选)", "充绒量(文本)", "里料"],
+  );
+  assert.equal(merged.payload.fields.find((field) => field.name === "充绒量(文本)")?.value, "32-63g");
+  assert.equal(merged.payload.fields.find((field) => field.name === "材质成分(文本)")?.value, "本地已有值");
+  assert.equal(merged.payload.fields.find((field) => field.name === "颜色")?.value, "");
+  assert.equal(merged.payload.fields.find((field) => field.name === "小红书商家编码")?.value, "");
+  assert.deepEqual(merged.payload.fields.find((field) => field.name === "尺码表")?.value, {
+    title: "尺码",
+    "140cm": "140cm",
+  });
+  assert.equal(merged.payload.legacyUpdateFields.find((field) => field.name === "充绒量(文本)")?.value, "32-63g");
+  assert.equal(merged.payload.legacyUpdateFields.find((field) => field.name === "多平台尺码")?.value["140cm"], "140");
+});
+
 test("apparel staged size publish creates with the main table then updates stable platform tables", () => {
   const fields = [
     { name: "尺码", value: "130cm;140cm" },
@@ -1236,6 +1496,7 @@ test("apparel staged size publish creates with the main table then updates stabl
   ];
   const createFields = selectDeepdrawStableSizeCreateFields(fields);
   const updateFields = selectDeepdrawStableSizeUpdateFields(fields);
+  const fullUpdateFields = selectDeepdrawStableSizeUpdateFields(fields, { includeMultiPlatformSizeField: true });
 
   assert.deepEqual(
     createFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
@@ -1244,6 +1505,10 @@ test("apparel staged size publish creates with the main table then updates stabl
   assert.deepEqual(
     updateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
     ["尺码表", "唯品会尺码表", "天猫尺码表", "抖音尺码表"],
+  );
+  assert.deepEqual(
+    fullUpdateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
+    ["尺码表", "唯品会尺码表", "天猫尺码表", "抖音尺码表", "多平台尺码"],
   );
   assert.equal(deepdrawLegacyShoePostCreateUpdateRequired(createFields, updateFields), true);
 

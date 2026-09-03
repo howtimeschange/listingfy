@@ -148,9 +148,9 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
   assert.deepEqual(result["适用年龄(多选)"], { valueText: "3-6岁;6-9岁;9-12岁", valueJson: {} });
   assert.deepEqual(result["尺码表"].valueJson, {
     title: "尺码,脚长,鞋内长",
-    "26码": "26,16,17",
-    "27码": "27,16.5,17.7",
-    "38码": "38,24,25",
+    "26码": "26码,16,17",
+    "27码": "27码,16.5,17.7",
+    "38码": "38码,24,25",
   });
   assert.doesNotMatch(result["尺码表"].valueJson.title, /适合脚长/);
   assert.deepEqual(result["唯品会尺码表"].valueJson, {
@@ -167,9 +167,9 @@ test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw co
   });
   assert.deepEqual(result["多平台尺码"].valueJson, {
     title: "天猫,京东,拼多多,微信视频小店,小红书,快手",
-    "26码": ",26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),,",
-    "27码": ",27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),,",
-    "38码": ",38,38码(脚长23.8-24.2/内长25),38码(脚长23.8-24.2/内长25),,",
+    "26码": ",26,26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),26码(脚长15.8-16.2/内长17),",
+    "27码": ",27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),",
+    "38码": ",38,38码(脚长23.8-24.2/内长25),38码(脚长23.8-24.2/内长25),38码(脚长23.8-24.2/内长25),",
   });
   assert.equal(result["多平台尺码"].valueText, "天猫;京东;拼多多;微信视频小店;小红书;快手");
   assert.deepEqual(result["25鞋子模板类型"], { valueText: "运动", valueJson: {} });
@@ -234,7 +234,7 @@ test("shoe multi-platform charts fall back to the Vipshop mapping when channel m
     fieldTemplates: [{
       fieldName: "多平台尺码",
       fieldType: "MULTI_TEXT",
-      options: ["拼多多", "微信视频小店"],
+      options: ["拼多多", "微信视频小店", "小红书"],
     }],
     match: {
       status: "matched",
@@ -247,10 +247,10 @@ test("shoe multi-platform charts fall back to the Vipshop mapping when channel m
   });
 
   assert.deepEqual(result["多平台尺码"].valueJson, {
-    title: "拼多多,微信视频小店",
-    "26码": "26码(脚长16/内长17),26码(脚长16/内长17)",
+    title: "拼多多,微信视频小店,小红书",
+    "26码": "26码(脚长16/内长17),26码(脚长16/内长17),26码(脚长16/内长17)",
   });
-  assert.equal(result["多平台尺码"].valueText, "拼多多;微信视频小店");
+  assert.equal(result["多平台尺码"].valueText, "拼多多;微信视频小店;小红书");
 });
 
 test("shoe structured chart is emitted in the create payload", async () => {
@@ -324,6 +324,27 @@ test("shoe launch-plan evidence fills required free-text and platform marker fie
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("单色平台AI标", input), "");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("多色平台AI", input), "");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("详情页AI标注", input), "");
+});
+
+test("shoe AKC material derives synthetic textile evidence from copywriting material text", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const input = {
+    spu: { product_line_name: "鞋品", subclass_name: "运动鞋" },
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: {
+        "面料成分": "帮面材料：合成革+织物\n里料材质：织物",
+      },
+    }],
+  };
+
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("材质(AKC)", input), "合成材料+织物");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("材质(AKC)", "合成材料+织物", [
+    { value: "织物" },
+    { value: "合成材料" },
+    { value: "合成材料+织物" },
+    { value: "其他" },
+  ]), "合成材料+织物");
 });
 
 test("shoe launch-plan evidence deterministically fills required material, age, origin and channel enums", async () => {
@@ -436,6 +457,18 @@ test("25 shoe size-table AI is limited to sandals that still need visual classif
   }), false);
   assert.equal(service.shouldProductArchiveAiFill25ShoeSizeTable({
     tradeId: "537",
+    tradePath: "童鞋/亲子鞋 / 凉鞋",
+  }), true);
+  assert.equal(service.isProductArchiveFieldLocallyRequired("25鞋子尺码表", {
+    templateRequired: true,
+    templatePresent: true,
+    shoeProduct: true,
+    tradePath: "童鞋/亲子鞋 / 运动鞋",
+  }), false);
+  assert.equal(service.isProductArchiveFieldLocallyRequired("25鞋子尺码表", {
+    templateRequired: true,
+    templatePresent: true,
+    shoeProduct: true,
     tradePath: "童鞋/亲子鞋 / 凉鞋",
   }), true);
   assert.equal(service.isStaleNonSandalAi25ShoeSizeTable({

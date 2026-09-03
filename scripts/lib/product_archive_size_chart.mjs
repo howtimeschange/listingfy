@@ -117,10 +117,10 @@ function balabalaReferenceMapping(targetField, gender, garmentType) {
 
 export const HIGH_CONFIDENCE_SIZE_CHART_RULES = [
   ["领口", ["领口", "领围", "领宽"]],
-  ["衣长", ["衣长"]],
+  ["衣长", ["衣长", "后中长"]],
   ["裙长", ["裙长"]],
   ["肩宽", ["肩宽"]],
-  ["胸围", ["胸围", "1/2胸围（平量）", "1/2胸围"]],
+  ["胸围", ["胸围", "全胸围（夹下1CM", "全胸围（夹下1CM）", "1/2胸围（平量）", "1/2胸围"]],
   ["裤长", ["裤长"]],
   ["腰围", ["全腰围（平量）", "腰围", "1/2腰围（平量）", "1/2腰围"]],
   ["臀围", ["臀围", "臀围（平量）", "1/2臀围（平量）", "1/2臀围"]],
@@ -132,7 +132,7 @@ export const HIGH_CONFIDENCE_SIZE_CHART_RULES = [
 ];
 
 export const MEDIUM_CONFIDENCE_SIZE_CHART_RULES = [
-  ["袖长", ["袖长（三点量）插肩/落肩", "袖长（三点量）", "袖长", "袖长肩点量", "内袖长", "里：袖长"]],
+  ["袖长", ["袖长（三点量）插肩/落肩", "袖长（三点量）", "袖长（肩至袖口", "袖长", "袖长肩点量", "内袖长", "里：袖长"]],
   ["前浪", ["前浪（弯量）"]],
   ["前档", ["前浪（弯量）"]],
   ["前裆", ["前浪（弯量）"]],
@@ -177,6 +177,10 @@ function isVipSizeTableFieldName(value) {
   return compactKey(value) === compactKey("唯品会尺码表");
 }
 
+function isDouyinSizeTableFieldName(value) {
+  return compactKey(value) === compactKey("抖音尺码表");
+}
+
 function isGenericBareSizeTargetFieldName(value) {
   return ["尺码", "尺寸"].some((field) => compactKey(value) === compactKey(field));
 }
@@ -200,6 +204,10 @@ function numberText(value) {
   const number = Number(text);
   if (!Number.isFinite(number)) return text;
   return String(Number(number.toFixed(3)));
+}
+
+function isZeroPlaceholderValue(value) {
+  return /^0(?:\.0+)?$/.test(stringValue(value));
 }
 
 function cleanRow(row) {
@@ -245,7 +253,7 @@ function normalizedSizeChartRow({
   const normalizedSize = normalizeDeepdrawSize(size);
   const normalizedPoint = normalizeMeasurementPoint(measurementPoint);
   const normalizedValue = numberText(sizeValue);
-  if (!spuCode || !normalizedPoint || !normalizedSize || !normalizedValue) return null;
+  if (!spuCode || !normalizedPoint || !normalizedSize || !normalizedValue || isZeroPlaceholderValue(normalizedValue)) return null;
   const rowJson = {
     ...cleanRow(row),
     款号: spuCode,
@@ -515,6 +523,10 @@ function sizeMatchKeys(value) {
   ].map((item) => item.replace(/\s+/g, "").toLowerCase()).filter(Boolean)));
 }
 
+function isGenericSizeTargetField(value) {
+  return ["尺码", "尺寸"].some((field) => compactKey(value) === compactKey(field));
+}
+
 function derivedValueForMapping(mapping, size, context = {}) {
   const referenceRow = balabalaReferenceRow(size);
   const targetKey = compactKey(mapping?.targetField);
@@ -525,7 +537,10 @@ function derivedValueForMapping(mapping, size, context = {}) {
   if (mapping?.sourcePoint === "balabala:recommended_size") {
     return balabalaApparelRecommendedSize({ size, gender: context.gender, garmentType: context.garmentType });
   }
-  if (["尺码", "尺寸"].some((field) => targetKey === compactKey(field))) {
+  if (isGenericSizeTargetField(mapping?.targetField)) {
+    if (context.mainSizeTableField && Number(context.sizeColumnOrdinal ?? 0) === 0) {
+      return normalizeDeepdrawSize(size);
+    }
     return sizeLabelNumber(size);
   }
   if (context.vipSizeTableField && targetKey === compactKey("号型") && sourceKey === compactKey("尺码")) {
@@ -558,7 +573,13 @@ function mappedSizeChartValue(mapping, value) {
 
 function isBlankSizeChartValue(value) {
   const text = stringValue(value);
-  return !text;
+  return !text || isZeroPlaceholderValue(text);
+}
+
+function fallbackSizeValuesFromAllowedSizes(allowedSizes = []) {
+  return uniqueTextValues((Array.isArray(allowedSizes) ? allowedSizes : [])
+    .map(normalizeDeepdrawSize)
+    .filter(Boolean));
 }
 
 export function buildSizeChartForTemplate({
@@ -580,12 +601,14 @@ export function buildSizeChartForTemplate({
   const mappingOverrides = explicitMappingLookup(explicitMappings, normalizedRows);
   const mainSizeTableField = isMainSizeTableFieldName(template.fieldName);
   const vipSizeTableField = isVipSizeTableFieldName(template.fieldName);
+  const douyinSizeTableField = isDouyinSizeTableFieldName(template.fieldName);
   const multiPlatformSizeField = compactKey(template.fieldName) === compactKey("多平台尺码");
   const rawTargetFields = templateTargetFields(template);
   const businessTargetFields = mainSizeTableField
     ? mainSizeChartTargetFields(rawTargetFields, garmentType)
     : rawTargetFields;
   const forceMainSizeColumns = mainSizeTableField && businessTargetFields !== rawTargetFields;
+  const mayBuildRowsFromAllowedSizes = mainSizeTableField || vipSizeTableField || douyinSizeTableField || multiPlatformSizeField;
   const targetFieldsWithSize = (
     (mainSizeTableField && !businessTargetFields.some(isGenericBareSizeTargetFieldName))
     || (vipSizeTableField && !businessTargetFields.some(isVipBareSizeTargetFieldName))
@@ -640,14 +663,26 @@ export function buildSizeChartForTemplate({
   for (const row of normalizedRows) {
     sizes.add(row.size);
     const key = `${compactKey(row.measurementPoint)}\u0000${row.size}`;
-    if (!valueByPointAndSize.has(key)) valueByPointAndSize.set(key, row.sizeValue);
+    valueByPointAndSize.set(key, row.sizeValue);
+  }
+  if (sizes.size === 0 && mayBuildRowsFromAllowedSizes) {
+    for (const size of fallbackSizeValuesFromAllowedSizes(allowedSizes)) sizes.add(size);
   }
 
+  const sizeColumnOrdinals = mappings.map((mapping, index) => (
+    mappings.slice(0, index).filter((candidate) => isGenericSizeTargetField(candidate.targetField)).length
+  ));
   const valuesBySize = new Map();
   for (const size of sortSizes(sizes)) {
-    const values = mappings.map((mapping) => {
+    const values = mappings.map((mapping, index) => {
       if (multiPlatformSizeField) return multiPlatformSizeCellValue(size, mapping.targetField);
-      const derivedValue = derivedValueForMapping(mapping, size, { gender, garmentType, vipSizeTableField });
+      const derivedValue = derivedValueForMapping(mapping, size, {
+        gender,
+        garmentType,
+        vipSizeTableField,
+        mainSizeTableField,
+        sizeColumnOrdinal: sizeColumnOrdinals[index],
+      });
       if (derivedValue != null) return derivedValue;
       if (!mapping.sourcePoint) return "";
       const valueKey = `${compactKey(mapping.sourcePoint)}\u0000${size}`;
@@ -670,7 +705,7 @@ export function buildSizeChartForTemplate({
   }
 
   const activeMappings = mappings.filter((_, index) => activeMappingIndexes.has(index));
-  const activeNonSizeMappings = activeMappings.filter((mapping) => !["尺码", "尺寸"].some((field) => compactKey(mapping.targetField) === compactKey(field)));
+  const activeNonSizeMappings = activeMappings.filter((mapping) => !isGenericSizeTargetField(mapping.targetField));
   const valueJson = {};
   if (mappings.length > 0 && sizes.size > 0) {
     if (activeMappings.length > 0 && (!mainSizeTableField || activeNonSizeMappings.length > 0)) {

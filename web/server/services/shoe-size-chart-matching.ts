@@ -545,7 +545,7 @@ export function buildShoeSizeChartFieldValues(input: {
       rows,
       columns,
       (row, column) => {
-        if (column === "尺码") return normalizeShoeSkuSize(row.size_value)
+        if (column === "尺码") return shoeSizeDisplayLabel(row.size_value)
         return column === "脚长" ? baselineFoot(row) : innerLength(row)
       },
       (row) => `${normalizeShoeSkuSize(row.size_value)}码`,
@@ -590,7 +590,7 @@ export function buildShoeSizeChartFieldValues(input: {
     const columns = supportedColumns(multi, ["天猫", "京东", "拼多多", "微信视频小店", "小红书", "快手"], { 微信视频小店: ["微信视频", "微信视频号"] })
     const value = tableValue(rows, columns, (row, column) => {
       if (column === "京东") return normalizeShoeSkuSize(row.size_value)
-      if (column === "拼多多" || column === "微信视频小店" || column === "微信视频" || column === "微信视频号") {
+      if (column === "拼多多" || column === "微信视频小店" || column === "微信视频" || column === "微信视频号" || column === "小红书") {
         return shoePlatformSizeRemark(row)
       }
       return ""

@@ -4349,6 +4349,7 @@ productArchiveDrafts.post("/publish-jobs", async (c) => {
     targets,
     maxAttempts: body.maxAttempts ?? body.max_attempts,
     retryDelayMs: body.retryDelayMs ?? body.retry_delay_ms,
+    submitMode,
     actor: {
       id: user.id,
       username: user.username,
