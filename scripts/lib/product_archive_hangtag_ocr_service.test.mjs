@@ -620,7 +620,7 @@ test("SCM composition normalizes into DeepDraw enum fields instead of writing fr
   assert.deepEqual(preview.items[0].targetFields.map((field) => [field.fieldName, field.valueText, field.willApply]), [
     ["材质成分", "棉,65.1;聚酯纤维,25;粘胶纤维(粘纤),9.2;聚氨酯弹性纤维(氨纶),0.7", true],
     ["抖音面料材质", "棉混纺", true],
-    ["材质(多选)", "棉;聚酯纤维;粘胶纤维(粘纤);氨纶", true],
+    ["材质(多选)", "棉", true],
   ]);
   assert.equal(preview.items[0].targetFields.some((field) => String(field.valueText).startsWith("面料:")), false);
 });

@@ -3873,9 +3873,12 @@ function isProductArchiveDownFillTitle(value: unknown) {
   return /充绒|填充.*(?:g|克|量)/i.test(compactFieldKey(value))
 }
 
-function productArchiveDouyinSizeChartSupportsSeparateDownFillRemark(field: JsonRecord) {
+function productArchiveDouyinSizeChartSupportsSeparateDownFillRemark(field: JsonRecord, valueJson: JsonRecord) {
   const optionKeys = optionValues(arrayValue(field.options_json)).map(compactFieldKey)
-  return optionKeys.some(isProductArchiveDownFillTitle) && optionKeys.includes("备注")
+  return optionKeys.includes("备注") && (
+    optionKeys.some(isProductArchiveDownFillTitle)
+    || productArchiveDownFillWeightColumnIndex(valueJson) >= 0
+  )
 }
 
 function isProductArchiveDownFillRemarkValue(value: unknown) {
@@ -3962,7 +3965,7 @@ export function buildProductArchiveDownFillWeightSizeChartUpdates(fields: JsonRe
       nextTitles = appendProductArchiveSizeChartTitle(nextTitles, "充绒量")
     }
     if (douyinSizeChart) {
-      const separateRemarkSupported = productArchiveDouyinSizeChartSupportsSeparateDownFillRemark(field)
+      const separateRemarkSupported = productArchiveDouyinSizeChartSupportsSeparateDownFillRemark(field, currentValue)
       const originalRemarkColumnIndex = titles.findIndex((title) => compactFieldKey(title) === "备注")
       if (separateRemarkSupported) {
         if (columnIndex < 0) nextTitles = appendProductArchiveSizeChartTitle(nextTitles, "充绒量(g)")
@@ -4803,17 +4806,9 @@ const LAUNCH_PLAN_CATEGORY_REFERENCE_FIELDS = [
   },
 ]
 
-function launchPlanSourceRows(sourceRows: JsonRecord[]) {
-  return sourceRows.filter((row) => stringValue(row.source_type) === "launch_plan")
-}
-
 function sourceRowsByTypes(sourceRows: JsonRecord[], sourceTypes: string[]) {
   const allowed = new Set(sourceTypes)
   return sourceRows.filter((row) => allowed.has(stringValue(row.source_type)))
-}
-
-function launchPlanSourceBatchId(row: JsonRecord) {
-  return numberValue(row.source_batch_id ?? row.sourceBatchId)
 }
 
 function sourceRowBatchId(row: JsonRecord) {
@@ -6268,7 +6263,7 @@ function currentTradeSelectionDecision(db: SyncPostgresDatabase, draft: JsonReco
   try {
     spu = resolveProductArchiveDraftSpu(db, draft)
   } catch {
-    spu = null
+    // Trade selection can still use source rows when live MDM enrichment is unavailable.
   }
   const evaluated = inferDeepdrawTradeSelectionFromLaunchPlan(db, {
     tenantName,
@@ -10082,7 +10077,7 @@ export function refreshDraftTradeSelectionFromLaunchPlan(
     try {
       spu = resolveProductArchiveDraftSpu(db, draft)
     } catch {
-      spu = null
+      // Trade selection can still use source rows when live MDM enrichment is unavailable.
     }
     const evaluated = inferDeepdrawTradeSelectionFromLaunchPlan(db, {
       tenantName,

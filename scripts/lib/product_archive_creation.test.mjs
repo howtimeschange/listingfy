@@ -6513,6 +6513,44 @@ test("product archive down-fill size-chart sync keeps separate Douyin remark whe
   }]);
 });
 
+test("product archive down-fill sync adds Douyin remark when template exposes remark beside an existing fill column", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const updates = service.buildProductArchiveDownFillWeightSizeChartUpdates([
+    {
+      id: 1,
+      field_name: "充绒量",
+      value_text: "140码100克；150码114克",
+      source_type: "washlabel_ocr",
+    },
+    {
+      id: 2,
+      field_name: "抖音尺码表",
+      options_json: [
+        { value: "身高(cm)" },
+        { value: "体重(斤)" },
+        { value: "备注" },
+      ],
+      value_json: {
+        title: "身高(cm),体重(斤),充绒量(g)",
+        "140cm": "140,62,100",
+        "150cm": "150,74,114",
+      },
+    },
+  ]);
+
+  assert.deepEqual(updates, [{
+    fieldId: 2,
+    fieldName: "抖音尺码表",
+    valueJson: {
+      title: "身高(cm),体重(斤),充绒量(g),备注",
+      "140cm": "140,62,100,充绒量100g",
+      "150cm": "150,74,114,充绒量114g",
+    },
+    sourceType: "washlabel_ocr",
+    sourceRef: null,
+  }]);
+});
+
 test("product archive asset package helpers classify reference images and model shots", async () => {
   const [service, serviceSource, route] = await Promise.all([
     import("../../web/server/services/product-archive-drafts.ts"),

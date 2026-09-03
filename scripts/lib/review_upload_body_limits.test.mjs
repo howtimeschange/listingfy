@@ -140,7 +140,7 @@ test("product archive single-image delete returns post-commit cleanup warnings",
   assert.ok(start >= 0 && end > start, "single-image delete route is present")
   const implementation = source.slice(start, end)
   assert.match(implementation, /deleteProductArchiveDraftImage\(db, draftId, imageId\)/)
-  assert.match(implementation, /cleanupUnreferencedDraftImageFiles\(db, \[image\.local_path\]\)/)
+  assert.match(implementation, /cleanupUnreferencedDraftImageFiles\(db, productArchiveDraftImageStoragePaths\(image\)\)/)
   assert.match(implementation, /cleanup_warnings: cleanup\.warnings/)
   assert.ok(
     implementation.indexOf("deleteProductArchiveDraftImage") < implementation.indexOf("cleanupUnreferencedDraftImageFiles"),
