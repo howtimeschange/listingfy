@@ -74,6 +74,16 @@ import {
   submitProductArchiveDraft,
   validateProductArchiveDraft,
 } from "../services/product-archive-drafts"
+import {
+  getProductArchiveDraftActivity,
+  getProductArchiveDraftAssets,
+  getProductArchiveDraftFields,
+  getProductArchiveDraftIssues,
+  getProductArchiveDraftSizeChartSource,
+  getProductArchiveDraftSkus,
+  getProductArchiveDraftSourceSnapshot,
+  getProductArchiveDraftSummary,
+} from "../services/product-archive-draft-detail"
 import { importListingLaunchPlanSheetsInChunks } from "../services/listing-launch-plans"
 import { readSpreadsheetSheetsFromFileInWorker } from "../services/spreadsheet-worker"
 import { readPlmSizeChartWorkbook } from "../../../scripts/lib/product_archive_size_chart.mjs"
@@ -2585,6 +2595,18 @@ function readId(value: string) {
   return id
 }
 
+function readPageInput(c: Context) {
+  return {
+    limit: c.req.query("limit"),
+    offset: c.req.query("offset"),
+  }
+}
+
+function requireProductArchiveDraftResource<T>(resource: T | null, message = "草稿不存在") {
+  if (!resource) throw new HTTPException(404, { message })
+  return resource
+}
+
 async function readJson(c: Context) {
   try {
     return await c.req.json()
@@ -4821,6 +4843,74 @@ productArchiveDrafts.delete("/:draftId", async (c) => {
     },
   })
   return c.json({ ok: true })
+})
+
+productArchiveDrafts.get("/:draftId/summary", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const resource = getProductArchiveDraftSummary(getDb(), readId(c.req.param("draftId")))
+  return c.json(requireProductArchiveDraftResource(resource))
+})
+
+productArchiveDrafts.get("/:draftId/fields", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const resource = getProductArchiveDraftFields(
+    getDb(),
+    readId(c.req.param("draftId")),
+    readPageInput(c),
+  )
+  return c.json(requireProductArchiveDraftResource(resource))
+})
+
+productArchiveDrafts.get("/:draftId/skus", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const resource = getProductArchiveDraftSkus(
+    getDb(),
+    readId(c.req.param("draftId")),
+    readPageInput(c),
+  )
+  return c.json(requireProductArchiveDraftResource(resource))
+})
+
+productArchiveDrafts.get("/:draftId/assets", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const resource = getProductArchiveDraftAssets(getDb(), readId(c.req.param("draftId")))
+  return c.json(requireProductArchiveDraftResource(resource))
+})
+
+productArchiveDrafts.get("/:draftId/issues", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const resource = getProductArchiveDraftIssues(
+    getDb(),
+    readId(c.req.param("draftId")),
+    readPageInput(c),
+  )
+  return c.json(requireProductArchiveDraftResource(resource))
+})
+
+productArchiveDrafts.get("/:draftId/activity", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const resource = getProductArchiveDraftActivity(
+    getDb(),
+    readId(c.req.param("draftId")),
+    readPageInput(c),
+  )
+  return c.json(requireProductArchiveDraftResource(resource))
+})
+
+productArchiveDrafts.get("/:draftId/size-chart/source", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const resource = getProductArchiveDraftSizeChartSource(
+    getDb(),
+    readId(c.req.param("draftId")),
+    readPageInput(c),
+  )
+  return c.json(requireProductArchiveDraftResource(resource))
+})
+
+productArchiveDrafts.get("/:draftId/source", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const resource = getProductArchiveDraftSourceSnapshot(getDb(), readId(c.req.param("draftId")))
+  return c.json(requireProductArchiveDraftResource(resource))
 })
 
 productArchiveDrafts.get("/:draftId", (c) => {
