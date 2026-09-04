@@ -2,11 +2,13 @@
 
 ## Status
 
-DONE_WITH_CONCERNS
+DONE_WITH_CONCERNS - local development/readiness only
 
 ## Commits
 
 - `08a1529` - `perf: validate product archive rollout config`
+- `7d5c03d` - `docs: record product archive rollout handoff`
+- `e5665ea` - `fix: scope product archive task 11 readiness`
 
 ## Files Changed
 
@@ -18,7 +20,6 @@ DONE_WITH_CONCERNS
 - `web/server/routes/product-archives.ts`
 - `web/server/services/product-archive-bulk-write.ts`
 - `web/server/services/product-archive-workflow-jobs.ts`
-- `web/server/services/product-archive-drafts.ts`
 - `scripts/lib/product_archive_bulk_write.test.mjs`
 - `scripts/lib/product_archive_ai_fill_bench_safety.test.mjs`
 - `scripts/lib/product_archive_creation.test.mjs`
@@ -39,7 +40,7 @@ DONE_WITH_CONCERNS
 - Added Yunxiao env passthrough for the five explicit performance variables.
 - Created the rollout/handoff doc with gray gates, rollback defaults, controller checklist, and local measurement limitations.
 - Preserved DeepDraw submit/readback boundaries; no provider payloads or secrets were logged or documented.
-- Restored AI fill partial-conflict behavior so a stale field becomes a warning while unchanged fields can still save.
+- Task 11 development/local-readiness is complete. Deployment, gray rollout, live provider/readback, and the full benchmark matrix remain pending external authorization and the next operational phase.
 
 ## Commands Run
 
@@ -66,3 +67,19 @@ DONE_WITH_CONCERNS
 - `npm run web:lint` exits successfully but reports 6 pre-existing React hook dependency warnings in `web/src/pages/product-archive-drafts/page.tsx`.
 - `npm run web:build` exits successfully but reports existing Vite chunk-size warnings.
 - Production rollout still requires controller-owned deployed SHA readback, migration `055_product_archive_performance.sql` readback, startup log inspection, and the full benchmark matrix.
+
+## Review Fix - Needs Fixes Follow-up
+
+- Addressed finding 1 by re-scoping the local artifact language in `docs/reference/integration-handoffs/product-archive-performance-rollout-20260904.md`: local development/readiness is complete, while deployment, gray rollout, live provider calls, live DeepDraw submit/readback, bastion readback, and the full benchmark matrix are explicitly pending the controller/next operational phase.
+- Addressed finding 2 by reverting the unrelated AI-fill stale-change behavior change in `web/server/services/product-archive-drafts.ts` to the pre-Task-11 hard-failure behavior for `PRODUCT_ARCHIVE_DRAFT_CHANGED`; updated the focused test to assert fail-closed behavior.
+- Addressed finding 3 by recording commits `08a1529`, `7d5c03d`, and fix commit `e5665ea` in this report.
+
+### Fix Verification
+
+- `NODE_OPTIONS=--no-warnings=ExperimentalWarning ./web/node_modules/.bin/tsx --test scripts/lib/product_archive_performance_config.test.mjs scripts/lib/product_archive_ai_fill_bench_safety.test.mjs scripts/lib/product_archive_bulk_write.test.mjs scripts/lib/product_archive_sync_queue.test.mjs scripts/lib/product_archive_publish_concurrency.test.mjs scripts/lib/product_archive_creation.test.mjs` - passed, 256/256
+- `git diff --check` - passed
+- `npm run web:build` - passed with existing Vite chunk-size warnings
+
+### Remaining Operational Boundary
+
+- No push, deployment, production write, live provider call, live DeepDraw submit/readback, gray rollout, or bastion readback was performed in this follow-up.
