@@ -403,9 +403,10 @@ function createWorkflowController({
     const directories = new Set<string>()
     for (const file of job.files) {
       if (!file.filePath) continue
-      await rm(file.filePath, { force: true })
       const directory = path.dirname(path.resolve(file.filePath))
-      if (directory.startsWith(`${WORKFLOW_ARTIFACT_ROOT}${path.sep}`)) directories.add(directory)
+      if (!directory.startsWith(`${WORKFLOW_ARTIFACT_ROOT}${path.sep}`)) continue
+      await rm(file.filePath, { force: true })
+      directories.add(directory)
     }
     for (const directory of directories) await rm(directory, { recursive: true, force: true })
   },
@@ -422,6 +423,15 @@ function createWorkflowController({
   let running = false
   let scheduled = false
   const runningControllers = new Map<string, AbortController>()
+  const cancelledJobs = new Map<string, ProductArchiveWorkflowJob>()
+
+  async function cleanupWorkflowArtifacts(job: ProductArchiveWorkflowJob) {
+    try {
+      await cleanupArtifacts(job)
+    } catch {
+      // Artifact cleanup is best effort after the terminal transition.
+    }
+  }
 
   function enqueueProductArchiveWorkflowJob(input: ProductArchiveWorkflowJobInput) {
     const job = store.enqueue(input)
@@ -453,13 +463,7 @@ function createWorkflowController({
     job.finished_at = nowIso(now)
     job.updated_at = nowIso(now)
     const saved = store.save(job)
-    if (saved) {
-      try {
-        await cleanupArtifacts(job)
-      } catch {
-        // Artifact cleanup is best effort after the fenced terminal transition.
-      }
-    }
+    if (saved) await cleanupWorkflowArtifacts(job)
     return saved
   }
 
@@ -553,6 +557,19 @@ function createWorkflowController({
     } finally {
       if (heartbeat) clearInterval(heartbeat)
       runningControllers.delete(job.id)
+      let cancelledJob = cancelledJobs.get(job.id) ?? null
+      if (!cancelledJob) {
+        try {
+          const current = store.get(job.id)
+          if (current?.status === "cancelled") cancelledJob = current
+        } catch {
+          // A cleanup read failure must not interrupt the current worker's shutdown.
+        }
+      }
+      if (cancelledJob) {
+        cancelledJobs.delete(job.id)
+        await cleanupWorkflowArtifacts(cancelledJob)
+      }
       recordPerformanceSpan("workflow.job", Date.now() - startedAt, {
         jobId: job.id,
         status: job.status,
@@ -596,15 +613,19 @@ function createWorkflowController({
     schedule()
   }
 
-  function cancelProductArchiveWorkflowJob(id: string, actor: unknown) {
+  async function cancelProductArchiveWorkflowJob(id: string, actor: unknown) {
     const job = store.cancel(id, actor)
+    if (!job) return null
     const controller = runningControllers.get(id)
     if (controller && !controller.signal.aborted) {
+      cancelledJobs.set(id, job)
       const error = new Error("深绘建档工作流已取消")
       error.name = "AbortError"
       controller.abort(error)
+    } else if (!job.started_at) {
+      await cleanupWorkflowArtifacts(job)
     }
-    return job ? jobSnapshot(job) : null
+    return jobSnapshot(job)
   }
 
   return {
@@ -786,7 +807,6 @@ export function createProductArchiveWorkflowRuntime(options: {
     heartbeatIntervalMs: 0,
     idFactory,
     fileExists: options.fileExists,
-    cleanupArtifacts: async () => {},
   })
 
   return {
@@ -847,6 +867,6 @@ export function resumeProductArchiveWorkflowJobs() {
   getPostgresController().resumeProductArchiveWorkflowJobs()
 }
 
-export function cancelProductArchiveWorkflowJob(id: string, actor: unknown) {
+export async function cancelProductArchiveWorkflowJob(id: string, actor: unknown) {
   return getPostgresController().cancelProductArchiveWorkflowJob(id, actor)
 }

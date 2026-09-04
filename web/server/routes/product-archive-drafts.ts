@@ -4084,9 +4084,11 @@ async function processProductArchiveWorkflowStage(
     })
     const filteredDraftCodes = filterKnownProductArchiveSyncCandidates(db, "mdm_draft", draftCodes)
     await context.assertActive()
+    const draftRefreshIdempotencyKey = `product-archive-workflow:${job.id}:draft_refresh`
     const syncJob = draftCodes.length > 0
       ? await context.runSideEffect(() => draftQueue.enqueue({
         source: "mdm_draft",
+        idempotencyKey: draftRefreshIdempotencyKey,
         rawCodes: filteredDraftCodes.acceptedCodes,
         skippedItems: filteredDraftCodes.skippedItems,
         intervalMs: options.intervalMs,
@@ -4097,6 +4099,8 @@ async function processProductArchiveWorkflowStage(
           sourceBatchId: sourceBatchIdsByType.launch_plan?.[0] ?? null,
           sourceBatchIds: sourceBatchIdsByType,
           createdBy: Number(options.createdBy) || null,
+          workflowJobId: job.id,
+          workflowStageKey: stage.key,
         },
       }))
       : null
@@ -4625,7 +4629,7 @@ productArchiveDrafts.get("/workflow/jobs/:jobId", (c) => {
 
 productArchiveDrafts.post("/workflow/jobs/:jobId/cancel", async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
-  const job = cancelProductArchiveWorkflowJob(c.req.param("jobId"), {
+  const job = await cancelProductArchiveWorkflowJob(c.req.param("jobId"), {
     id: user.id,
     username: user.username,
   })

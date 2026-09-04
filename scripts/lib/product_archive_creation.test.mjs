@@ -5260,6 +5260,19 @@ test("product archive routes fence prechecks, owned image files, and mutation co
   }
 });
 
+test("product archive draft refresh gives its sync job a stable workflow idempotency key", async () => {
+  const route = await readText(files.draftRoute);
+  const start = route.indexOf('if (stage.key === "draft_refresh")');
+  const end = route.indexOf('return { skipped: true, reason: "unknown_stage" }', start);
+  assert.ok(start >= 0, "missing draft_refresh stage");
+  assert.ok(end > start, "missing draft_refresh stage end");
+  const draftRefresh = route.slice(start, end);
+
+  assert.match(draftRefresh, /const draftRefreshIdempotencyKey = `product-archive-workflow:\$\{job\.id\}:draft_refresh`/);
+  assert.match(draftRefresh, /draftQueue\.enqueue\(\{[\s\S]*idempotencyKey:\s*draftRefreshIdempotencyKey/);
+  assert.match(draftRefresh, /options:\s*\{[\s\S]*workflowJobId:\s*job\.id[\s\S]*workflowStageKey:\s*stage\.key/);
+});
+
 test("product archive field option validation supports multi-value strings and object SKU payloads", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 

@@ -151,6 +151,76 @@ test("queue slices long jobs so later jobs can run between chunks", async () => 
   assert.equal(queue.getJob(quickJob.id).status, "completed");
 });
 
+test("queue reuses a persisted workflow idempotency key after restart", async () => {
+  const storedJobs = new Map();
+  const store = {
+    save(job) {
+      storedJobs.set(job.id, structuredClone(job));
+      return true;
+    },
+    get(id) {
+      const job = storedJobs.get(id);
+      return job ? structuredClone(job) : null;
+    },
+  };
+  let syncCount = 0;
+  const queueOptions = {
+    autoRecover: false,
+    store,
+    wait: async () => {},
+    syncOne: async () => {
+      syncCount += 1;
+      return { ok: true };
+    },
+  };
+  const firstQueue = createProductArchiveSyncQueue(queueOptions);
+  const first = firstQueue.enqueue({
+    source: "mdm",
+    rawCodes: ["A001"],
+    intervalMs: 0,
+    idempotencyKey: "workflow:job-1:draft_refresh",
+  });
+  const restartedQueue = createProductArchiveSyncQueue(queueOptions);
+  const replayed = restartedQueue.enqueue({
+    source: "mdm",
+    rawCodes: ["A001"],
+    intervalMs: 0,
+    idempotencyKey: "workflow:job-1:draft_refresh",
+  });
+
+  assert.equal(replayed.id, first.id);
+  await Promise.all([firstQueue.waitForIdle(), restartedQueue.waitForIdle()]);
+  assert.equal(syncCount, 1);
+});
+
+test("retrying a failed idempotent workflow job creates a new sync job", async () => {
+  let attempts = 0;
+  const queue = createProductArchiveSyncQueue({
+    maxAttempts: 1,
+    retryDelayMs: 0,
+    wait: async () => {},
+    syncOne: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("访问频率过高，请稍后重试");
+      return { ok: true };
+    },
+  });
+  const failed = queue.enqueue({
+    source: "mdm",
+    rawCodes: ["A001"],
+    intervalMs: 0,
+    idempotencyKey: "workflow:job-2:draft_refresh",
+  });
+  await queue.waitForIdle();
+
+  const retried = queue.retryFailed(failed.id);
+
+  assert.notEqual(retried.id, failed.id);
+  await queue.waitForIdle();
+  assert.equal(attempts, 2);
+  assert.equal(queue.getJob(retried.id).completed_count, 1);
+});
+
 test("queue retries transient rate-limit failures with bounded backoff", async () => {
   const waits = [];
   let attempts = 0;

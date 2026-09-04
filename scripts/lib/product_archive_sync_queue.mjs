@@ -478,11 +478,18 @@ export function createProductArchiveSyncQueue({
     }
   }
 
-  function enqueue({ source, rawCodes, intervalMs, options = {}, skippedItems = [] } = {}) {
+  function enqueue({ source, rawCodes, intervalMs, options = {}, skippedItems = [], idempotencyKey = null } = {}) {
     const normalizedSource = String(source ?? "").toLowerCase();
     const normalizedAllowedSources = allowedSources.map((item) => String(item).toLowerCase());
     if (!normalizedAllowedSources.includes(normalizedSource)) {
       throw new Error(`source must be ${normalizedAllowedSources.join(", or ")}`);
+    }
+
+    const normalizedIdempotencyKey = String(idempotencyKey ?? options.idempotencyKey ?? "").trim() || null;
+    const jobId = normalizedIdempotencyKey ? `product-archive-sync:${normalizedIdempotencyKey}` : randomUUID();
+    if (normalizedIdempotencyKey) {
+      const existing = jobs.get(jobId) ?? store?.get?.(jobId);
+      if (existing) return snapshot(existing);
     }
 
     const codes = parseSpuCodes(rawCodes);
@@ -506,12 +513,14 @@ export function createProductArchiveSyncQueue({
     }
 
     const job = {
-      id: randomUUID(),
+      id: jobId,
+      idempotency_key: normalizedIdempotencyKey,
       source: normalizedSource,
       status: "queued",
       interval_ms: clampInterval(intervalMs),
       options: {
         ...options,
+        idempotencyKey: normalizedIdempotencyKey,
         deepdrawTenantName: options.deepdrawTenantName ?? null,
       },
       codes,
@@ -543,6 +552,8 @@ export function createProductArchiveSyncQueue({
     jobs.set(job.id, job);
     if (!persist(job) && store?.requiresLease) {
       jobs.delete(job.id);
+      const existing = normalizedIdempotencyKey ? store?.get?.(job.id) : null;
+      if (existing) return snapshot(existing);
       throw new ProductArchiveSyncLeaseError("Unable to acquire the initial product archive sync job lease");
     }
     pending.push(job);
@@ -566,6 +577,7 @@ export function createProductArchiveSyncQueue({
     const original = getJob(id);
     if (!original) throw new Error("Sync job not found");
     if (original.status !== "completed") throw new Error("Sync job is still running");
+    const { idempotencyKey: _idempotencyKey, ...retryOptions } = original.options ?? {};
     const failedCodes = original.items
       .filter((item) => item.status === "failed" && item.retryable === true)
       .map((item) => item.spu_code);
@@ -580,7 +592,7 @@ export function createProductArchiveSyncQueue({
       skippedItems: filtered.skippedItems ?? [],
       intervalMs: intervalMs ?? original.interval_ms,
       options: {
-        ...original.options,
+        ...retryOptions,
         retryOfJobId: original.id,
       },
     });
