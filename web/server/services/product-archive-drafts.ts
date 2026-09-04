@@ -2,6 +2,11 @@ import fs from "node:fs"
 import { randomUUID } from "node:crypto"
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import {
+  loadCurrentReusablePreparedProductArchiveDraft,
+  prepareProductArchiveDraft as prepareReusableProductArchiveDraft,
+  type PreparedProductArchiveDraft,
+} from "./product-archive-prepared-draft"
+import {
   normalizeProductArchiveSourceRowsInChunks,
   normalizeProductArchiveSourceRows,
   parseProductArchiveFieldRuleRows,
@@ -13993,14 +13998,53 @@ function restoreProductArchiveDraftAfterSubmitPreparationFailure(
 function prepareProductArchiveDraftDryRun(db: SyncPostgresDatabase, draftId: number, options: {
   includeMultiPlatformSizeFieldInUpdate?: boolean
 } = {}) {
-  return db.transaction(() => {
-    assertProductArchiveDraftMutable(db, draftId)
-    refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
-    rebuildProductArchiveDraftFields(db, draftId)
-    syncProductArchiveDownFillWeightSizeCharts(db, draftId)
-    validateProductArchiveDraft(db, draftId)
-    return productPayload(db, draftId, options)
-  })()
+  return prepareProductArchiveDraftForSubmit(db, draftId, {
+    submitMode: options.includeMultiPlatformSizeFieldInUpdate ? "full_update" : "create",
+    includeMultiPlatformSizeFieldInUpdate: options.includeMultiPlatformSizeFieldInUpdate,
+  }).payload
+}
+
+export function prepareProductArchiveDraftForSubmit(db: SyncPostgresDatabase, draftId: number, options: {
+  claimToken?: string | null
+  submitMode?: ProductArchiveSubmitMode
+  includeMultiPlatformSizeFieldInUpdate?: boolean
+  allowExistingProduct?: boolean
+} = {}): PreparedProductArchiveDraft {
+  const submitMode = options.submitMode ?? "create"
+  const prepared = prepareReusableProductArchiveDraft(db, draftId, {
+    submitMode,
+    prepare: () => db.transaction(() => {
+      assertProductArchiveDraftMutable(db, draftId, { claimToken: options.claimToken ?? null })
+      const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, draftId, { claimToken: options.claimToken ?? undefined })
+      rebuildProductArchiveDraftFields(db, draftId)
+      syncProductArchiveDownFillWeightSizeCharts(db, draftId)
+      const validation = validateProductArchiveDraft(db, draftId, {
+        claimToken: options.claimToken ?? undefined,
+        allowExistingProduct: options.allowExistingProduct,
+      }) as unknown as JsonRecord
+      const payload = productPayload(db, draftId, {
+        includeMultiPlatformSizeFieldInUpdate: options.includeMultiPlatformSizeFieldInUpdate,
+      })
+      return {
+        validation: {
+          ...validation,
+          tradeRefresh,
+          submitDiagnostics: productArchiveSubmitDiagnostics(payload),
+        },
+        payload,
+      }
+    })(),
+  })
+  const diagnostics = recordValue(prepared.validation.submitDiagnostics)
+  if (hasValue(diagnostics)) {
+    attachProductArchiveSubmitDiagnostics(prepared.payload, {
+      omittedTemplateFieldCount: numberValue(diagnostics.omittedTemplateFieldCount) ?? 0,
+      omittedTemplateFieldNames: arrayValue(diagnostics.omittedTemplateFieldNames).map(stringValue).filter(Boolean),
+      issues: arrayValue(diagnostics.issues).map(stringValue).filter(Boolean),
+      ...(diagnostics.fullUpdateBoundary ? { fullUpdateBoundary: diagnostics.fullUpdateBoundary as ProductArchiveFullUpdateBoundarySummary } : {}),
+    })
+  }
+  return prepared
 }
 
 export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftId: number, options: SubmitOptions = {}) {
@@ -14027,6 +14071,9 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
   }
   assertProductArchiveSubmitModeExecutable(submitMode)
 
+  const reusablePreparedBeforeClaim = updateExisting
+    ? null
+    : loadCurrentReusablePreparedProductArchiveDraft(db, draftId, { submitMode })
   const claimedDraft = claimProductArchiveDraftForSubmit(
     db,
     draftId,
@@ -14059,22 +14106,14 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
         syncProductArchiveDownFillWeightSizeCharts(db, draftId)
       })()
     } else {
-      const prepared = db.transaction(() => {
-        assertProductArchiveDraftMutable(db, draftId, { claimToken })
-        refreshDraftTradeSelectionFromLaunchPlan(db, draftId, { claimToken })
-        rebuildProductArchiveDraftFields(db, draftId)
-        syncProductArchiveDownFillWeightSizeCharts(db, draftId)
-        const nextValidation = validateProductArchiveDraft(db, draftId, {
+      const prepared = reusablePreparedBeforeClaim ?? prepareProductArchiveDraftForSubmit(db, draftId, {
           claimToken,
+          submitMode,
+          includeMultiPlatformSizeFieldInUpdate: updateExisting,
           allowExistingProduct: updateExisting,
         })
-        const nextPayload = productPayload(db, draftId, {
-          includeMultiPlatformSizeFieldInUpdate: updateExisting,
-        })
-        return { validation: nextValidation, payload: nextPayload }
-      })()
-      validation = prepared.validation
-      payload = prepared.payload
+      validation = prepared.validation as unknown as ReturnType<typeof validateProductArchiveDraft>
+      payload = prepared.payload as ReturnType<typeof productPayload>
     }
   } catch (error) {
     restoreProductArchiveDraftAfterSubmitPreparationFailure(
@@ -14165,21 +14204,15 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
           sourceRef: `DeepDraw已有档案:${existing.displayProductId}`,
         },
       )
-      const prepared = db.transaction(() => {
-        assertProductArchiveDraftMutable(db, draftId, { claimToken })
-        syncProductArchiveDownFillWeightSizeCharts(db, draftId)
-        const nextValidation = validateProductArchiveDraft(db, draftId, {
-          claimToken,
-          allowExistingProduct: true,
-        })
-        const nextPayload = productPayload(db, draftId, {
-          includeMultiPlatformSizeFieldInUpdate: true,
-        })
-        return { validation: nextValidation, payload: nextPayload }
-      })()
-      validation = prepared.validation
+      const prepared = prepareProductArchiveDraftForSubmit(db, draftId, {
+        claimToken,
+        submitMode,
+        includeMultiPlatformSizeFieldInUpdate: true,
+        allowExistingProduct: true,
+      })
+      validation = prepared.validation as unknown as ReturnType<typeof validateProductArchiveDraft>
       const filtered = filterProductArchiveFullUpdatePayloadForExistingDeepdrawResource(
-        prepared.payload,
+        prepared.payload as ReturnType<typeof productPayload>,
         existing.record,
       )
       if (filtered.boundary.applied && filtered.boundary.originalSkuCount > 0 && filtered.boundary.filteredSkuCount === 0) {

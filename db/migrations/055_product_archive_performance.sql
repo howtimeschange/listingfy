@@ -42,3 +42,19 @@ create table if not exists product_archive_workflow_job (
 
 create index if not exists idx_product_archive_workflow_job_claim
   on product_archive_workflow_job(status, lease_expires_at, created_at);
+
+create table if not exists product_archive_draft_preparation (
+  draft_id bigint primary key references product_archive_draft(id) on delete cascade,
+  draft_updated_at timestamptz not null,
+  input_hash text not null,
+  template_version text not null default '',
+  submit_mode text not null,
+  payload_json jsonb not null,
+  validation_json jsonb not null default '{}'::jsonb,
+  prepared_at timestamptz not null default now(),
+  expires_at timestamptz not null default (now() + interval '30 minutes'),
+  unique(draft_id, input_hash, submit_mode)
+);
+
+create index if not exists idx_product_archive_draft_preparation_expiry
+  on product_archive_draft_preparation(expires_at);

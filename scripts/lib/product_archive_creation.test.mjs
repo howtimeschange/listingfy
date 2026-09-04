@@ -2406,7 +2406,9 @@ test("mutable draft writes keep the row lock and mutation in one transaction", a
     "function prepareProductArchiveDraftDryRun",
     "export async function submitProductArchiveDraft",
   );
-  assert.match(dryRun, /return db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*syncProductArchiveDownFillWeightSizeCharts\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)[\s\S]*productPayload\(db, draftId(?:, [^)]*)?\)/);
+  assert.match(dryRun, /prepareProductArchiveDraftDryRun[\s\S]*prepareProductArchiveDraftForSubmit\(db, draftId/);
+  assert.match(dryRun, /export function prepareProductArchiveDraftForSubmit[\s\S]*prepareReusableProductArchiveDraft\(db, draftId/);
+  assert.match(dryRun, /prepare: \(\) => db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId, \{ claimToken: options\.claimToken \?\? null \}\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*syncProductArchiveDownFillWeightSizeCharts\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId[\s\S]*productPayload\(db, draftId/);
 
   const productPayload = section(
     "function productPayload",
@@ -2437,7 +2439,9 @@ test("mutable draft writes keep the row lock and mutation in one transaction", a
     "export async function submitProductArchiveDraft",
     "export async function readbackProductArchiveDraft",
   );
-  assert.match(submit, /refreshDraftTradeSelectionFromLaunchPlan\(db, draftId, \{ claimToken \}\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*syncProductArchiveDownFillWeightSizeCharts\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId/);
+  assert.match(submit, /prepareProductArchiveDraftForSubmit\(db, draftId, \{[\s\S]*claimToken,[\s\S]*submitMode,[\s\S]*allowExistingProduct:[\s\S]*\}\)/);
+  assert.match(submit, /const reusablePreparedBeforeClaim = updateExisting[\s\S]*loadCurrentReusablePreparedProductArchiveDraft\(db, draftId, \{ submitMode \}\)[\s\S]*const claimedDraft = claimProductArchiveDraftForSubmit/);
+  assert.match(submit, /const prepared = reusablePreparedBeforeClaim \?\? prepareProductArchiveDraftForSubmit\(db, draftId, \{[\s\S]*claimToken,/);
 });
 
 test("claimed drafts reject image mutation before any image insert", async () => {
@@ -2514,7 +2518,8 @@ test("trade refresh and submit preparation keep validation behind the submit fen
     "export async function submitProductArchiveDraft",
     "export async function readbackProductArchiveDraft",
   );
-  assert.match(submit, /const prepared = db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId, \{ claimToken \}\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId, \{ claimToken \}\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId, \{[\s\S]*claimToken,[\s\S]*allowExistingProduct:[\s\S]*\}\)[\s\S]*productPayload\(db, draftId(?:, [^)]*)?\)/);
+  assert.match(submit, /const prepared = prepareProductArchiveDraftForSubmit\(db, draftId, \{[\s\S]*claimToken,[\s\S]*submitMode,[\s\S]*includeMultiPlatformSizeFieldInUpdate:[\s\S]*allowExistingProduct:[\s\S]*\}\)/);
+  assert.match(source, /export function prepareProductArchiveDraftForSubmit[\s\S]*assertProductArchiveDraftMutable\(db, draftId, \{ claimToken: options\.claimToken \?\? null \}\)[\s\S]*validateProductArchiveDraft\(db, draftId, \{[\s\S]*claimToken: options\.claimToken[\s\S]*allowExistingProduct: options\.allowExistingProduct[\s\S]*\}\)/);
 });
 
 test("ordinary validation and trade refresh reject an active submit claim before writes", async () => {
@@ -5076,7 +5081,10 @@ test("product archive routes fence prechecks, owned image files, and mutation co
   };
 
   const precheck = section("async function runPrecheckItemOnce", "function finishJob(job");
-  assert.match(precheck, /const prepared = db\.transaction\(\(\) => \{[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, item\.draft_id\)[\s\S]*validateProductArchiveDraft\(db, item\.draft_id\)[\s\S]*return \{ tradeRefresh, validation \}/);
+  assert.match(precheck, /const prepared = prepareProductArchiveDraftForSubmit\(db, item\.draft_id, \{ submitMode: "create" \}\)/);
+  assert.match(precheck, /const validation = prepared\.validation[\s\S]*const tradeRefresh = objectValue\(validation\.tradeRefresh\)/);
+  assert.match(precheck, /item\.phase = "duplicate"[\s\S]*checkDuplicateProductArchiveDraft\(db, item\.draft_id\)/);
+  assert.doesNotMatch(precheck, /submitProductArchiveDraft\(db, item\.draft_id, \{ dryRun: true \}\)[\s\S]*validateProductArchiveDraft\(db, item\.draft_id\)/);
 
   const queueableRefresh = section("function queueableDraftRefreshCodesForCodes", "function numericIdValue");
   assert.match(queueableRefresh, /isReusableProductArchiveDraftStatus\(row\.status\)/);

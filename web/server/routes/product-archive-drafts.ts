@@ -65,6 +65,7 @@ import {
   missingDraftSpuCodes,
   patchProductArchiveDraftFields,
   productArchiveImageHasModelShot,
+  prepareProductArchiveDraftForSubmit,
   readbackProductArchiveDraft,
   recommendProductArchiveSizeChartMappings,
   refreshDraftTradeSelectionFromLaunchPlan,
@@ -1161,12 +1162,9 @@ function createProductArchivePrecheckQueue({
     persist(job)
 
     const db = getDb()
-    const prepared = db.transaction(() => {
-      const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, item.draft_id)
-      const validation = validateProductArchiveDraft(db, item.draft_id)
-      return { tradeRefresh, validation }
-    })()
-    const { tradeRefresh, validation } = prepared
+    const prepared = prepareProductArchiveDraftForSubmit(db, item.draft_id, { submitMode: "create" })
+    const validation = prepared.validation
+    const tradeRefresh = objectValue(validation.tradeRefresh)
     const validationCounts = validationSummaryCounts(validation)
     if (validationCounts.blockerCount > 0) {
       const message = `校验未通过：${validationIssueSummary(objectValue(validation).issues)}`
@@ -1178,7 +1176,7 @@ function createProductArchivePrecheckQueue({
         message,
         blockerCount: validationCounts.blockerCount,
         warningCount: validationCounts.warningCount,
-        tradeSelectionAutoApplied: tradeRefresh.autoApplied,
+        tradeSelectionAutoApplied: Boolean(tradeRefresh.autoApplied),
       }, message, persist, now)
       return
     }
@@ -1203,8 +1201,7 @@ function createProductArchivePrecheckQueue({
 
     item.phase = "preview"
     persist(job)
-    const preview = await submitProductArchiveDraft(db, item.draft_id, { dryRun: true })
-    const finalValidation = validateProductArchiveDraft(db, item.draft_id)
+    const finalValidation = validation
     const finalCounts = validationSummaryCounts(finalValidation)
     if (finalCounts.blockerCount > 0) {
       const message = `提交预览后仍有阻断：${validationIssueSummary(objectValue(finalValidation).issues)}`
@@ -1220,8 +1217,6 @@ function createProductArchivePrecheckQueue({
       return
     }
 
-    const previewRecord = objectValue(preview)
-    const previewSummary = objectValue(previewRecord.summary)
     const result = {
       draftId: item.draft_id,
       spuCode: item.spu_code,
@@ -1230,11 +1225,11 @@ function createProductArchivePrecheckQueue({
       message: "预检通过，可批量发布到深绘",
       blockerCount: finalCounts.blockerCount,
       warningCount: finalCounts.warningCount,
-      fieldCount: Number(previewSummary.fieldCount ?? 0) || 0,
-      skuCount: Number(previewSummary.skuCount ?? 0) || 0,
+      fieldCount: arrayValue(prepared.payload.fields).length,
+      skuCount: arrayValue(prepared.payload.skus).length,
       duplicateFound: false,
       previewGenerated: true,
-      tradeSelectionAutoApplied: tradeRefresh.autoApplied,
+      tradeSelectionAutoApplied: Boolean(tradeRefresh.autoApplied),
     }
     try {
       writeOperationLog(db, {
