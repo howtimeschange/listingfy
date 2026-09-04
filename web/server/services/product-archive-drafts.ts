@@ -46,6 +46,11 @@ import {
   resolveShoeSizeChartMatch,
   shoeSandalVisualClassificationPrompt,
 } from "./shoe-size-chart-matching"
+import {
+  fieldRuleSpec,
+  insertRowsInBatches,
+  sourceRowSpec,
+} from "./product-archive-bulk-write"
 
 type JsonRecord = Record<string, unknown>
 
@@ -10101,57 +10106,27 @@ export function importProductArchiveSourceRows(db: SyncPostgresDatabase, input: 
     const sourceBatchId = Number(batch.lastInsertRowid)
 
     if (sourceType === "field_mapping") {
-      const insertRule = db.prepare(`
-        insert into product_archive_field_rule (
-          source_batch_id,
-          deepdraw_field,
-          source_type,
-          source_table,
-          source_field,
-          default_value,
-          transform_rule_json,
-          blocking,
-          notes,
-          updated_at
-        )
-        values (?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?::timestamptz)
-      `)
-      for (const row of normalizedRows) {
-        insertRule.run(
-          sourceBatchId,
-          row.deepdrawField,
-          row.sourceType,
-          row.sourceTable,
-          row.sourceField,
-          row.defaultValue,
-          jsonText(row.transformRule),
-          row.blocking,
-          row.notes,
-          now,
-        )
-      }
+      insertRowsInBatches(db, fieldRuleSpec, normalizedRows.map((row) => ({
+        sourceBatchId,
+        deepdrawField: row.deepdrawField,
+        sourceType: row.sourceType,
+        sourceTable: row.sourceTable,
+        sourceField: row.sourceField,
+        defaultValue: row.defaultValue,
+        transformRule: row.transformRule,
+        blocking: row.blocking,
+        notes: row.notes,
+        updatedAt: now,
+      })), { batchSize: 250 })
     } else {
-      const insertSourceRow = db.prepare(`
-        insert into product_archive_source_row (
-          source_batch_id,
-          source_type,
-          spu_code,
-          skc_code,
-          row_json,
-          created_at
-        )
-        values (?, ?, ?, ?, ?::jsonb, ?::timestamptz)
-      `)
-      for (const row of normalizedRows) {
-        insertSourceRow.run(
-          sourceBatchId,
-          row.sourceType,
-          row.spuCode,
-          row.skcCode,
-          jsonText(row.rowJson),
-          now,
-        )
-      }
+      insertRowsInBatches(db, sourceRowSpec, normalizedRows.map((row) => ({
+        sourceBatchId,
+        sourceType: row.sourceType,
+        spuCode: row.spuCode,
+        skcCode: row.skcCode,
+        rowJson: row.rowJson,
+        createdAt: now,
+      })), { batchSize: 500 })
     }
     return sourceBatchId
   })()
@@ -10218,32 +10193,19 @@ export async function importProductArchiveSourceRowsInChunks(
   ).lastInsertRowid)
 
   try {
-    const insertSourceRow = db.prepare(`
-      insert into product_archive_source_row (
-        source_batch_id,
-        source_type,
-        spu_code,
-        skc_code,
-        row_json,
-        created_at
-      )
-      values (?, ?, ?, ?, ?::jsonb, ?::timestamptz)
-    `)
     for (let start = 0; start < normalizedRows.length; start += chunkSize) {
       throwIfAborted(options.signal)
       const end = Math.min(start + chunkSize, normalizedRows.length)
+      const batchRows = normalizedRows.slice(start, end).map((row) => ({
+        sourceBatchId: batchId,
+        sourceType: row.sourceType,
+        spuCode: row.spuCode,
+        skcCode: row.skcCode,
+        rowJson: row.rowJson,
+        createdAt: now,
+      }))
       db.transaction(() => {
-        for (let index = start; index < end; index += 1) {
-          const row = normalizedRows[index]
-          insertSourceRow.run(
-            batchId,
-            row.sourceType,
-            row.spuCode,
-            row.skcCode,
-            jsonText(row.rowJson),
-            now,
-          )
-        }
+        insertRowsInBatches(db, sourceRowSpec, batchRows, { batchSize: 500 })
       })()
       await options.onProgress?.({
         sourceBatchId: batchId,

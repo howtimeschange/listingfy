@@ -3,6 +3,10 @@ import {
   normalizeListingLaunchPlanRows,
   normalizeListingLaunchPlanRowsInChunks,
 } from "../../../scripts/lib/listing_launch_plan_importer.mjs"
+import {
+  insertRowsInBatches,
+  listingLaunchPlanRowSpec,
+} from "./product-archive-bulk-write"
 
 type JsonRecord = Record<string, unknown>
 
@@ -198,85 +202,43 @@ function insertListingLaunchPlanImportRecord(
   return Number(inserted.lastInsertRowid)
 }
 
-function listingLaunchPlanRowStatement(db: SyncPostgresDatabase) {
-  return db.prepare(`
-    insert into listing_launch_plan_row (
-      import_id,
-      sheet_name,
-      row_number,
-      spu_code,
-      skc_code,
-      product_season,
-      product_line,
-      scene,
-      attribute,
-      age_group,
-      size_range,
-      gender,
-      category_name,
-      subcategory_name,
-      color_name,
-      color_code,
-      tag_price,
-      calculated_tag_price,
-      fabric,
-      fab,
-      launch_batch,
-      launch_date,
-      launch_date_text,
-      search_launch_date,
-      search_launch_date_text,
-      content_launch_date,
-      content_launch_date_text,
-      listing_channel,
-      official_category,
-      vip_category,
-      vip_style_category,
-      douyin_category,
-      raw_row_json,
-      created_at
-    )
-    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::date, ?, ?::date, ?, ?::date, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::timestamptz)
-  `)
-}
-
-function insertListingLaunchPlanRow(insertRow: ReturnType<SyncPostgresDatabase["prepare"]>, importId: number, row: JsonRecord, now: string) {
-  insertRow.run(
+function listingLaunchPlanDbRow(importId: number, row: JsonRecord, now: string) {
+  return {
     importId,
-    row.sheetName,
-    row.rowNumber,
-    row.spuCode,
-    row.skcCode,
-    row.productSeason,
-    row.productLine,
-    row.scene,
-    row.attribute,
-    row.ageGroup,
-    row.sizeRange,
-    row.gender,
-    row.categoryName,
-    row.subcategoryName,
-    row.colorName,
-    row.colorCode,
-    row.tagPrice,
-    row.calculatedTagPrice,
-    row.fabric,
-    row.fab,
-    row.launchBatch,
-    dateOnly(row.launchDateText),
-    row.launchDateText || null,
-    dateOnly(row.searchLaunchDateText),
-    row.searchLaunchDateText || null,
-    dateOnly(row.contentLaunchDateText),
-    row.contentLaunchDateText || null,
-    row.listingChannel,
-    row.officialCategory,
-    row.vipCategory,
-    row.vipStyleCategory,
-    row.douyinCategory,
-    jsonText(row.rawRowJson),
-    now,
-  )
+    sheetName: row.sheetName,
+    rowNumber: row.rowNumber,
+    spuCode: row.spuCode,
+    skcCode: row.skcCode,
+    productSeason: row.productSeason,
+    productLine: row.productLine,
+    scene: row.scene,
+    attribute: row.attribute,
+    ageGroup: row.ageGroup,
+    sizeRange: row.sizeRange,
+    gender: row.gender,
+    categoryName: row.categoryName,
+    subcategoryName: row.subcategoryName,
+    colorName: row.colorName,
+    colorCode: row.colorCode,
+    tagPrice: row.tagPrice,
+    calculatedTagPrice: row.calculatedTagPrice,
+    fabric: row.fabric,
+    fab: row.fab,
+    launchBatch: row.launchBatch,
+    launchDate: dateOnly(row.launchDateText),
+    launchDateText: row.launchDateText || null,
+    searchLaunchDate: dateOnly(row.searchLaunchDateText),
+    searchLaunchDateText: row.searchLaunchDateText || null,
+    contentLaunchDate: dateOnly(row.contentLaunchDateText),
+    contentLaunchDateText: row.contentLaunchDateText || null,
+    listingChannel: row.listingChannel,
+    officialCategory: row.officialCategory,
+    vipCategory: row.vipCategory,
+    vipStyleCategory: row.vipStyleCategory,
+    douyinCategory: row.douyinCategory,
+    rawRowJson: jsonText(row.rawRowJson),
+    createdAt: now,
+  }
 }
 
 function importResult(db: SyncPostgresDatabase, importId: number, prepared: ReturnType<typeof prepareListingLaunchPlanImport>) {
@@ -292,10 +254,12 @@ export function importListingLaunchPlanSheets(db: SyncPostgresDatabase, input: I
   const prepared = prepareListingLaunchPlanImport(input)
   const importId = db.transaction(() => {
     const id = insertListingLaunchPlanImportRecord(db, input, prepared)
-    const insertRow = listingLaunchPlanRowStatement(db)
-    for (const row of prepared.normalizedRows) {
-      insertListingLaunchPlanRow(insertRow, id, row, prepared.now)
-    }
+    insertRowsInBatches(
+      db,
+      listingLaunchPlanRowSpec,
+      prepared.normalizedRows.map((row) => listingLaunchPlanDbRow(id, row, prepared.now)),
+      { batchSize: 250 },
+    )
     return id
   })()
   return importResult(db, importId, prepared)
@@ -312,14 +276,14 @@ export async function importListingLaunchPlanSheetsInChunks(
   let importId: number | null = null
   try {
     importId = insertListingLaunchPlanImportRecord(db, input, prepared)
-    const insertRow = listingLaunchPlanRowStatement(db)
     for (let start = 0; start < prepared.normalizedRows.length; start += chunkSize) {
       throwIfAborted(options.signal)
       const end = Math.min(start + chunkSize, prepared.normalizedRows.length)
+      const batchRows = prepared.normalizedRows
+        .slice(start, end)
+        .map((row) => listingLaunchPlanDbRow(importId as number, row, prepared.now))
       db.transaction(() => {
-        for (let index = start; index < end; index += 1) {
-          insertListingLaunchPlanRow(insertRow, importId as number, prepared.normalizedRows[index], prepared.now)
-        }
+        insertRowsInBatches(db, listingLaunchPlanRowSpec, batchRows, { batchSize: 250 })
       })()
       await options.onProgress?.({
         importId,

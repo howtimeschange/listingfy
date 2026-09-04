@@ -464,7 +464,7 @@ async function processImportJob(job: ImportJob) {
         sourceBatchIds,
         createdBy: job.actor?.id ?? null,
       }, {
-        chunkSize: 50,
+        chunkSize: 250,
         signal,
         onProgress: ({ importId, insertedRowCount, totalRowCount }) => {
           const item = job.items[2]

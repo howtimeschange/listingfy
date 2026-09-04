@@ -10,6 +10,7 @@ const files = {
   server: path.join(PROJECT_ROOT, "web/server/index.ts"),
   route: path.join(PROJECT_ROOT, "web/server/routes/listing-launch-plans.ts"),
   service: path.join(PROJECT_ROOT, "web/server/services/listing-launch-plans.ts"),
+  bulkWriter: path.join(PROJECT_ROOT, "web/server/services/product-archive-bulk-write.ts"),
   importJobService: path.join(PROJECT_ROOT, "web/server/services/listing-launch-plan-import-jobs.ts"),
   spreadsheetWorkerService: path.join(PROJECT_ROOT, "web/server/services/spreadsheet-worker.ts"),
   spreadsheetParserWorker: path.join(PROJECT_ROOT, "scripts/lib/spreadsheet_parse_worker.mjs"),
@@ -45,10 +46,11 @@ test("listing launch plan schema stores imports and normalized rows separately f
 });
 
 test("listing launch plan API and page expose server-side upload and parsed row browsing", async () => {
-  const [server, route, service, importJobService, router, sidebar, page, draftRoute, draftService, draftListPage] = await Promise.all([
+  const [server, route, service, bulkWriter, importJobService, router, sidebar, page, draftRoute, draftService, draftListPage] = await Promise.all([
     readFile(files.server, "utf8"),
     readFile(files.route, "utf8"),
     readFile(files.service, "utf8"),
+    readFile(files.bulkWriter, "utf8"),
     readFile(files.importJobService, "utf8"),
     readFile(files.router, "utf8"),
     readFile(files.sidebar, "utf8"),
@@ -72,7 +74,9 @@ test("listing launch plan API and page expose server-side upload and parsed row 
   assert.match(service, /export async function importListingLaunchPlanSheetsInChunks/);
   assert.match(service, /normalizeListingLaunchPlanRows/);
   assert.match(service, /insert into listing_launch_plan_import/);
-  assert.match(service, /insert into listing_launch_plan_row/);
+  assert.match(service, /insertRowsInBatches/);
+  assert.match(bulkWriter, /insert into \$\{spec\.table\}/);
+  assert.match(bulkWriter, /listing_launch_plan_row/);
   assert.match(service, /export function listListingLaunchPlanRows/);
   assert.match(service, /max\(import_id\) as import_id/);
   assert.match(service, /latest\.spu_code = row\.spu_code/);
