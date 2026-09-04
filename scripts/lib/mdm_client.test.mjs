@@ -80,3 +80,44 @@ test("queryMdmProduct rejects a response that exceeds the configured page ceilin
     clearMdmTokenCache();
   }
 });
+
+test("queryMdmProduct reports aborted MDM page queries with a Chinese stage reason", async () => {
+  clearMdmTokenCache();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("/getToken")) {
+      return new Response(JSON.stringify({ RESULT: "S", token: "abort-token" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    const error = new Error("This operation was aborted");
+    error.name = "AbortError";
+    throw error;
+  };
+
+  try {
+    await assert.rejects(
+      queryMdmProduct({
+        config: {
+          baseUrl: "https://mdm.example.test",
+          appId: "app-id",
+          appKey: "app-key",
+        },
+        spuCode: "204426146013",
+        timeoutMs: 20,
+      }),
+      (error) => {
+        assert.equal(error.name, "AbortError");
+        assert.match(error.message, /MDM 主数据查询阶段超时/);
+        assert.match(error.message, /PRODUCT_/);
+        assert.equal(error.productArchiveSyncProvider, "mdm");
+        assert.equal(error.productArchiveSyncStage, "mdm_query");
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearMdmTokenCache();
+  }
+});

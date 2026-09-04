@@ -272,6 +272,8 @@ interface RefreshSourceBatchInput {
 
 interface RefreshSourceBatchChunkOptions {
   chunkSize?: number
+  yieldEvery?: number
+  yieldDelayMs?: number
   signal?: AbortSignal
   onProgress?: (progress: {
     sourceBatchId: number
@@ -10450,7 +10452,10 @@ export async function refreshProductArchiveDraftsFromSourceBatchInChunks(
   let autoAppliedTradeCount = 0
   let skippedNoTradeMatchCount = 0
   const failedDrafts: Array<{ draftId: number; spuCode: string; message: string }> = []
-  const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 10)))
+  const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 3)))
+  const yieldEvery = Math.max(1, Math.floor(Number(options.yieldEvery ?? 1)))
+  const yieldDelayMs = Math.max(0, Math.floor(Number(options.yieldDelayMs ?? 0)))
+  let processedDraftCount = 0
 
   for (let start = 0; start < drafts.length; start += chunkSize) {
     throwIfAborted(options.signal)
@@ -10486,11 +10491,16 @@ export async function refreshProductArchiveDraftsFromSourceBatchInChunks(
           message: error instanceof Error ? error.message : String(error),
         })
       }
+      processedDraftCount += 1
+      if (processedDraftCount % yieldEvery === 0) {
+        throwIfAborted(options.signal)
+        await wait(yieldDelayMs)
+      }
     }
     await options.onProgress?.({
       sourceBatchId,
       scannedDraftCount: drafts.length,
-      processedDraftCount: end,
+      processedDraftCount,
       refreshedDraftCount,
       autoAppliedTradeCount,
       skippedNoTradeMatchCount,

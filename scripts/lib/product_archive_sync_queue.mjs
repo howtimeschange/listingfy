@@ -57,7 +57,7 @@ export function isProductArchiveSyncLeaseError(error) {
 
 export function isRetryableProductArchiveSyncError(error) {
   const message = errorMessage(error);
-  return /访问频率过高|稍后重试|too many requests|rate.?limit|HTTP (408|425|429|500|502|503|504)\b|fetch failed|network|socket|timeout|timed out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|AbortError/i.test(message);
+  return /访问频率过高|稍后重试|超时|中止|已取消|too many requests|rate.?limit|HTTP (408|425|429|500|502|503|504)\b|fetch failed|network|socket|timeout|timed out|aborted|operation was aborted|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|AbortError/i.test(message);
 }
 
 export function parseSpuCodes(input, options = {}) {

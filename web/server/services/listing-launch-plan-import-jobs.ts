@@ -415,7 +415,9 @@ async function processImportJob(job: ImportJob) {
           sourceBatchId,
           sourceType: "launch_plan",
         }, {
-          chunkSize: 5,
+          chunkSize: 1,
+          yieldEvery: 1,
+          yieldDelayMs: 10,
           signal,
           onProgress: (progress) => {
             const item = job.items[3]

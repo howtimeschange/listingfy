@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   createPostgresProductArchiveSyncJobStore,
   createProductArchiveSyncQueue,
+  isRetryableProductArchiveSyncError,
   parseSpuCodes,
 } from "./product_archive_sync_queue.mjs";
 
@@ -178,6 +179,38 @@ test("queue retries transient rate-limit failures with bounded backoff", async (
   assert.equal(finished.items[0].attempt_count, 3);
   assert.equal(finished.items[0].max_attempts, 3);
   assert.deepEqual(waits, [200, 400]);
+});
+
+test("queue treats MDM abort messages as retryable and keeps the Chinese stage reason", async () => {
+  const waits = [];
+  let attempts = 0;
+  const queue = createProductArchiveSyncQueue({
+    maxAttempts: 2,
+    retryDelayMs: 100,
+    wait: async (ms) => waits.push(ms),
+    syncOne: async () => {
+      attempts += 1;
+      throw new Error("MDM 主数据查询阶段超时：PRODUCT_SPU 第 1 页查询超过 30000ms，已中止，可稍后重试");
+    },
+  });
+
+  assert.equal(isRetryableProductArchiveSyncError(new Error("This operation was aborted")), true);
+
+  const job = queue.enqueue({
+    source: "mdm",
+    rawCodes: ["204426146013"],
+    intervalMs: 0,
+  });
+  await queue.waitForIdle();
+
+  const finished = queue.getJob(job.id);
+  assert.equal(attempts, 2);
+  assert.equal(finished.completed_count, 0);
+  assert.equal(finished.failed_count, 1);
+  assert.equal(finished.items[0].attempt_count, 2);
+  assert.equal(finished.items[0].retryable, true);
+  assert.match(finished.items[0].error, /MDM 主数据查询阶段超时/);
+  assert.deepEqual(waits, [100]);
 });
 
 test("queue does not retry terminal not-found failures", async () => {

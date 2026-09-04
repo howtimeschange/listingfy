@@ -29,6 +29,24 @@ function tokenCacheKey(config) {
   return [config.baseUrl, config.appId, config.appKey].join("\n");
 }
 
+function mdmStageError(message, { stage, formCode, spuCode, page, timeoutMs, cause } = {}) {
+  const error = new Error(message, cause ? { cause } : undefined);
+  error.name = cause?.name === "AbortError" ? "AbortError" : "MdmClientError";
+  error.productArchiveSyncProvider = "mdm";
+  error.productArchiveSyncStage = stage || "mdm";
+  error.productArchiveSyncSource = "mdm";
+  error.mdmFormCode = formCode || null;
+  error.spuCode = spuCode || null;
+  error.page = page || null;
+  error.timeoutMs = timeoutMs || null;
+  return error;
+}
+
+function isAbortLikeError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return error?.name === "AbortError" || /aborted|operation was aborted|aborterror|中止|已取消/i.test(message);
+}
+
 export function clearMdmTokenCache() {
   tokenCache.clear();
 }
@@ -77,6 +95,15 @@ export async function getMdmToken({ config, timeoutMs = 30000 }) {
       expiresAt: Date.now() + TOKEN_CACHE_TTL_MS,
     });
     return value;
+  } catch (error) {
+    if (isAbortLikeError(error)) {
+      throw mdmStageError(`MDM 授权阶段超时：获取访问令牌超过 ${timeoutMs}ms，已中止，可稍后重试`, {
+        stage: "mdm_token",
+        timeoutMs,
+        cause: error,
+      });
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -120,6 +147,18 @@ async function queryMdmPage({
       throw new Error(`MDM ${formCode} query failed: ${payload.ERROR_CODE || payload.MESSAGE || payload.RESULT}`);
     }
     return payload;
+  } catch (error) {
+    if (isAbortLikeError(error)) {
+      throw mdmStageError(`MDM 主数据查询阶段超时：${formCode} 第 ${page} 页查询超过 ${timeoutMs}ms，已中止，可稍后重试`, {
+        stage: "mdm_query",
+        formCode,
+        spuCode,
+        page,
+        timeoutMs,
+        cause: error,
+      });
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
