@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import os from "node:os"
@@ -7,7 +7,7 @@ import sharp from "sharp"
 import { Hono, type Context } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { bodyLimit } from "hono/body-limit"
-import { getDb } from "../db"
+import { DATA_DIR, getDb } from "../db"
 import { requirePermission, trustedClientAddress } from "../lib/auth"
 import { assertLocalImageFile, assertLocalProductArchiveAssetFile } from "../lib/local-path-guard"
 import {
@@ -29,11 +29,16 @@ import {
 import {
   createPostgresProductArchiveSyncJobStore,
   createProductArchiveSyncQueue,
+  filterKnownProductArchiveSyncCandidates,
   isProductArchiveSyncLeaseError,
   isRetryableProductArchiveSyncError,
   parseSpuCodes,
   ProductArchiveSyncLeaseError,
 } from "../../../scripts/lib/product_archive_sync_queue.mjs"
+import {
+  readProductArchiveAiFillItemConcurrency,
+  readProductArchivePublishConcurrency,
+} from "../../../scripts/lib/product_archive_performance_config.mjs"
 import { resolveDeepdrawConfig } from "../../../scripts/lib/deepdraw_client.mjs"
 import { syncMdmProduct } from "../services/product-archive-sync"
 import { syncMdmMainImageToProductArchiveDraft } from "../services/product-archive-draft-mdm-images"
@@ -65,6 +70,7 @@ import {
   missingDraftSpuCodes,
   patchProductArchiveDraftFields,
   productArchiveImageHasModelShot,
+  prepareProductArchiveDraftForSubmit,
   readbackProductArchiveDraft,
   recommendProductArchiveSizeChartMappings,
   refreshDraftTradeSelectionFromLaunchPlan,
@@ -74,11 +80,32 @@ import {
   submitProductArchiveDraft,
   validateProductArchiveDraft,
 } from "../services/product-archive-drafts"
+import {
+  getProductArchiveDraftActivity,
+  getProductArchiveDraftAssets,
+  getProductArchiveDraftFields,
+  getProductArchiveDraftIssues,
+  getProductArchiveDraftSizeChartSource,
+  getProductArchiveDraftSkus,
+  getProductArchiveDraftSourceSnapshot,
+  getProductArchiveDraftSummary,
+} from "../services/product-archive-draft-detail"
 import { importListingLaunchPlanSheetsInChunks } from "../services/listing-launch-plans"
 import { readSpreadsheetSheetsFromFileInWorker } from "../services/spreadsheet-worker"
 import { readPlmSizeChartWorkbook } from "../../../scripts/lib/product_archive_size_chart.mjs"
 import { getDefaultAiScenarioRouter } from "../../../scripts/lib/ai_routing_context.mjs"
 import { backgroundTaskMaxActive, withBackgroundTaskSlot } from "../lib/background-task-limiter"
+import { recordPerformanceSpan } from "../lib/performance-metrics"
+import {
+  cancelProductArchiveWorkflowJob,
+  enqueueProductArchiveWorkflowJob,
+  getProductArchiveWorkflowJob,
+  registerProductArchiveWorkflowProcessor,
+  resumeProductArchiveWorkflowJobs,
+  type ProductArchiveWorkflowJob,
+  type ProductArchiveWorkflowProcessorContext,
+  type ProductArchiveWorkflowStage,
+} from "../services/product-archive-workflow-jobs"
 import type { ProductArchiveSubmitMode } from "../services/product-archive-drafts"
 
 const productArchiveDrafts = new Hono()
@@ -89,6 +116,7 @@ const PROJECT_ROOT =
 const UPLOAD_DIR = path.join(os.tmpdir(), "listingify-upload")
 const TEMPLATE_DIR = path.join(PROJECT_ROOT, "data", "product-archive-templates")
 const DRAFT_IMAGE_DIR = path.join(PROJECT_ROOT, "data", "product-archive-draft-images")
+const WORKFLOW_UPLOAD_ROOT = path.join(DATA_DIR, "product-archive-workflow")
 
 function productArchiveCompressedImageName(fileName: string) {
   const extension = path.extname(fileName)
@@ -224,7 +252,31 @@ async function syncDraftMdmMainImageSafely(db: ReturnType<typeof getDb>, draftId
 const draftQueue = createProductArchiveSyncQueue({
   autoRecover: false,
   jobSliceSize: process.env.LISTINGIFY_PRODUCT_ARCHIVE_DRAFT_JOB_SLICE_SIZE ?? 5,
+  concurrency: process.env.LISTINGIFY_PRODUCT_ARCHIVE_SYNC_CONCURRENCY ?? 1,
   runWithSlot: (_context: unknown, run: () => Promise<unknown>) => withBackgroundTaskSlot("product_archive_draft", run),
+  filterCandidates: (source, codes) => filterKnownProductArchiveSyncCandidates(getDb(), source, codes),
+  cacheNegativeResult: async ({ source, spuCode, reasonCode, checkedAt, expiresAt }: {
+    source: string
+    spuCode: string
+    reasonCode: string
+    checkedAt: string
+    expiresAt: string
+  }) => {
+    getDb().prepare(`
+      insert into product_archive_sync_negative_cache(source, spu_code, reason_code, checked_at, expires_at)
+      values (?, ?, ?, ?::timestamptz, ?::timestamptz)
+      on conflict (source, spu_code) do update set
+        reason_code = excluded.reason_code,
+        checked_at = excluded.checked_at,
+        expires_at = excluded.expires_at
+    `).run(source, spuCode, reasonCode, checkedAt, expiresAt)
+  },
+  invalidateNegativeResult: async ({ source, spuCode }: { source: string; spuCode: string }) => {
+    getDb().prepare(`
+      delete from product_archive_sync_negative_cache
+      where source = ? and spu_code = ?
+    `).run(source, spuCode)
+  },
   store: createPostgresProductArchiveSyncJobStore({
     getDb,
     queueName: "product_archive_drafts",
@@ -371,6 +423,8 @@ type ProductArchiveAiFillJobItem = {
   finished_at: string | null
   result: Record<string, unknown> | null
   error: string | null
+  retryable?: boolean | null
+  reasonCode?: string | null
 }
 
 type ProductArchiveAiFillJob = {
@@ -457,6 +511,7 @@ type ProductArchivePublishJob = {
     ipAddress: string | null
     retryDelayMs: number
     submitMode: ProductArchiveSubmitMode
+    concurrency: number
   }
   items: ProductArchivePublishJobItem[]
   result: Record<string, unknown> | null
@@ -519,7 +574,6 @@ function productArchiveJobSliceSize(envName: string, fallback = 5) {
 }
 
 const PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY_CAP = 10
-
 function productArchiveAiFillUserConcurrency() {
   const number = Number(process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY ?? 2)
   if (!Number.isFinite(number)) return 2
@@ -531,6 +585,10 @@ function productArchiveAiFillUserMaxConcurrency() {
   const fallback = Math.min(backgroundTaskMaxActive(), PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY_CAP)
   if (!Number.isFinite(number)) return fallback
   return Math.max(1, Math.min(backgroundTaskMaxActive(), PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY_CAP, Math.floor(number)))
+}
+
+function productArchiveAiFillItemConcurrency() {
+  return readProductArchiveAiFillItemConcurrency(process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY)
 }
 
 function productArchiveAiFillQueueKey(actor: AuditActor | null | undefined) {
@@ -699,7 +757,7 @@ export function createProductArchiveAiFillQueue({
     )
     const shares = dynamicConcurrencyShares()
     const dynamicShare = shares.get(queueKey) ?? configuredConcurrency
-    return Math.max(1, Math.min(openItemCount(job), dynamicShare))
+    return Math.max(1, Math.min(openItemCount(job), dynamicShare, productArchiveAiFillItemConcurrency()))
   }
 
   function persist(job: ProductArchiveAiFillJob) {
@@ -734,11 +792,14 @@ export function createProductArchiveAiFillQueue({
     status: "completed" | "failed",
     result: Record<string, unknown> | null,
     error: string | null,
+    options: { retryable?: boolean | null; reasonCode?: string | null } = {},
   ) {
     if (itemIsFinished(item)) return false
     item.status = status
     item.result = result
     item.error = error
+    item.retryable = options.retryable ?? (status === "failed" ? false : null)
+    item.reasonCode = options.reasonCode ?? null
     item.finished_at = new Date(now()).toISOString()
     job.completed_count = job.items.filter((current) => current.status === "completed").length
     job.failed_count = job.items.filter((current) => current.status === "failed").length
@@ -813,10 +874,17 @@ export function createProductArchiveAiFillQueue({
         return { leaseLost: true as const, error: leaseError }
       }
       try {
+        const draftChanged = error instanceof Error
+          && (error.message.includes("草稿数据已更新") || error.message.includes("草稿内容已变化") || (error as { code?: unknown }).code === "PRODUCT_ARCHIVE_DRAFT_CHANGED")
         setItemFinished(job, item, "failed", {
           draftId: item.draft_id,
           spuCode: item.spu_code,
-        }, errorMessage(error))
+          retryable: draftChanged,
+          reasonCode: draftChanged ? "draft_changed" : "ai_fill_failed",
+        }, errorMessage(error), {
+          retryable: draftChanged,
+          reasonCode: draftChanged ? "draft_changed" : "ai_fill_failed",
+        })
         return { leaseLost: false as const, error: null }
       } catch (finishError) {
         const finishLeaseError = isProductArchiveSyncLeaseError(finishError) ? finishError : null
@@ -832,6 +900,7 @@ export function createProductArchiveAiFillQueue({
   async function processJob(queueKey: string, job: ProductArchiveAiFillJob) {
     const options = normalizeJobRuntimeOptions(job)
     let maxConcurrency = 1
+    const maxItemConcurrency = productArchiveAiFillItemConcurrency()
     job.status = "running"
     job.started_at ??= new Date(now()).toISOString()
     persist(job)
@@ -839,9 +908,15 @@ export function createProductArchiveAiFillQueue({
     while (hasOpenQueueItems(job.items)) {
       const concurrency = dynamicConcurrencyForQueue(queueKey, job)
       maxConcurrency = Math.max(maxConcurrency, concurrency)
-      const items = job.items
-        .filter((item) => item.status !== "completed" && item.status !== "failed")
-        .slice(0, concurrency)
+      const inFlightSpuCodes = new Set<string>()
+      const items: ProductArchiveAiFillJobItem[] = []
+      for (const item of job.items.filter((item) => item.status !== "completed" && item.status !== "failed")) {
+        const spuCode = stringValue(item.spu_code)
+        if (spuCode && inFlightSpuCodes.has(spuCode)) continue
+        if (spuCode) inFlightSpuCodes.add(spuCode)
+        items.push(item)
+        if (items.length >= concurrency) break
+      }
       if (items.length === 0) break
       const controller = new AbortController()
       const results = await Promise.allSettled(items.map((item) => processItemSafely(job, item, controller)))
@@ -859,6 +934,7 @@ export function createProductArchiveAiFillQueue({
       savedFieldCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.savedCount) || 0), 0),
       warningCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.warningCount) || 0), 0),
       concurrency: maxConcurrency,
+      itemConcurrency: maxItemConcurrency,
       configuredConcurrency: options.concurrency,
     }
     job.status = "completed"
@@ -926,7 +1002,7 @@ export function createProductArchiveAiFillQueue({
     if (targets.length === 0) throw new Error("请先选择需要 AI 填充的草稿")
     const nowText = new Date(now()).toISOString()
     const queueKey = productArchiveAiFillQueueKey(actor)
-    const concurrency = productArchiveAiFillUserMaxConcurrency()
+    const concurrency = Math.min(productArchiveAiFillUserMaxConcurrency(), productArchiveAiFillItemConcurrency())
     const job: ProductArchiveAiFillJob = {
       id: randomUUID(),
       source: "ai_fill",
@@ -947,6 +1023,8 @@ export function createProductArchiveAiFillQueue({
         finished_at: null,
         result: null,
         error: null,
+        retryable: null,
+        reasonCode: null,
       })),
       result: null,
     }
@@ -1141,12 +1219,9 @@ function createProductArchivePrecheckQueue({
     persist(job)
 
     const db = getDb()
-    const prepared = db.transaction(() => {
-      const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, item.draft_id)
-      const validation = validateProductArchiveDraft(db, item.draft_id)
-      return { tradeRefresh, validation }
-    })()
-    const { tradeRefresh, validation } = prepared
+    const prepared = prepareProductArchiveDraftForSubmit(db, item.draft_id, { submitMode: "create" })
+    const validation = prepared.validation
+    const tradeRefresh = objectValue(validation.tradeRefresh)
     const validationCounts = validationSummaryCounts(validation)
     if (validationCounts.blockerCount > 0) {
       const message = `校验未通过：${validationIssueSummary(objectValue(validation).issues)}`
@@ -1158,7 +1233,7 @@ function createProductArchivePrecheckQueue({
         message,
         blockerCount: validationCounts.blockerCount,
         warningCount: validationCounts.warningCount,
-        tradeSelectionAutoApplied: tradeRefresh.autoApplied,
+        tradeSelectionAutoApplied: Boolean(tradeRefresh.autoApplied),
       }, message, persist, now)
       return
     }
@@ -1183,8 +1258,7 @@ function createProductArchivePrecheckQueue({
 
     item.phase = "preview"
     persist(job)
-    const preview = await submitProductArchiveDraft(db, item.draft_id, { dryRun: true })
-    const finalValidation = validateProductArchiveDraft(db, item.draft_id)
+    const finalValidation = validation
     const finalCounts = validationSummaryCounts(finalValidation)
     if (finalCounts.blockerCount > 0) {
       const message = `提交预览后仍有阻断：${validationIssueSummary(objectValue(finalValidation).issues)}`
@@ -1200,8 +1274,6 @@ function createProductArchivePrecheckQueue({
       return
     }
 
-    const previewRecord = objectValue(preview)
-    const previewSummary = objectValue(previewRecord.summary)
     const result = {
       draftId: item.draft_id,
       spuCode: item.spu_code,
@@ -1210,11 +1282,11 @@ function createProductArchivePrecheckQueue({
       message: "预检通过，可批量发布到深绘",
       blockerCount: finalCounts.blockerCount,
       warningCount: finalCounts.warningCount,
-      fieldCount: Number(previewSummary.fieldCount ?? 0) || 0,
-      skuCount: Number(previewSummary.skuCount ?? 0) || 0,
+      fieldCount: arrayValue(prepared.payload.fields).length,
+      skuCount: arrayValue(prepared.payload.skus).length,
       duplicateFound: false,
       previewGenerated: true,
-      tradeSelectionAutoApplied: tradeRefresh.autoApplied,
+      tradeSelectionAutoApplied: Boolean(tradeRefresh.autoApplied),
     }
     try {
       writeOperationLog(db, {
@@ -1466,6 +1538,53 @@ function clampPublishRetryDelayMs(value: unknown) {
   return Math.max(1000, Math.min(60000, Math.floor(number)))
 }
 
+function clampPublishConcurrency(value: unknown) {
+  return readProductArchivePublishConcurrency(value ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_CONCURRENCY)
+}
+
+function createProductArchivePublishLimiter(concurrency: number) {
+  const maxConcurrency = clampPublishConcurrency(concurrency)
+  let activeCount = 0
+  const waiters: Array<() => void> = []
+
+  async function acquire() {
+    if (activeCount < maxConcurrency) {
+      activeCount += 1
+      return
+    }
+    await new Promise<void>((resolve) => waiters.push(resolve))
+    activeCount += 1
+  }
+
+  function release() {
+    activeCount = Math.max(0, activeCount - 1)
+    const next = waiters.shift()
+    next?.()
+  }
+
+  return async function limit<T>(run: () => Promise<T> | T) {
+    await acquire()
+    try {
+      return await run()
+    } finally {
+      release()
+    }
+  }
+}
+
+async function recordProductArchivePublishSpan<T>(
+  name: string,
+  attributes: Record<string, string | number | boolean | null>,
+  run: () => Promise<T> | T,
+) {
+  const startedAt = Date.now()
+  try {
+    return await run()
+  } finally {
+    recordPerformanceSpan(name, Date.now() - startedAt, attributes)
+  }
+}
+
 function publishErrorIsRetryable(error: unknown) {
   const message = errorMessage(error)
   if (/草稿存在阻断|请选择|本地未找到|不存在|缺少|无效|不能提交|重复|duplicate/i.test(message)) return false
@@ -1533,8 +1652,10 @@ function publishItemResultFromSubmitResult(
     : resultKind === "readback_mismatch"
       ? fullUpdate ? "已全量更新，但深绘回读不一致，请进详情复核" : "已创建，但深绘回读不一致，请进详情复核"
       : fullUpdate ? `已提交全量更新到深绘，状态：${status}` : `已提交到深绘，状态：${status}`
+  const ok = resultKind === "published" && record.ok !== false
   return {
-    ok: true,
+    ok,
+    error: ok ? null : message,
     result: {
       draftId,
       spuCode,
@@ -1542,35 +1663,63 @@ function publishItemResultFromSubmitResult(
       status,
       message,
       submitMode,
-      ok: record.ok === false ? false : true,
+      ok,
     },
   }
 }
 
 function cloneProductArchivePublishJob(job: ProductArchivePublishJob) {
   const currentItem = job.items.find((item) => item.status === "running" || item.status === "retrying") ?? null
+  const retryAttemptCount = job.items.reduce((sum, item) => sum + Math.max(0, item.attempt_count - 1), 0)
   return {
     ...job,
     options: {
       ...job.options,
       actor: job.options.actor ? { ...job.options.actor } : null,
       submitMode: job.options.submitMode ?? "create",
+      concurrency: clampPublishConcurrency(job.options.concurrency),
     },
     items: job.items.map((item) => ({ ...item, result: item.result ? { ...item.result } : null })),
     current_item: currentItem ? { ...currentItem } : null,
     failed_items: job.items.filter((item) => item.status === "failed").map((item) => ({ ...item })),
     queued_count: job.items.filter((item) => item.status === "queued").length,
     running_count: job.items.filter((item) => item.status === "running" || item.status === "retrying").length,
+    retry_attempt_count: retryAttemptCount,
+    concurrency: clampPublishConcurrency(job.options.concurrency),
   }
 }
 
-function createProductArchivePublishQueue({
+type ProductArchivePublishSlotRunner = <T>(
+  run: (signal: AbortSignal) => Promise<T>,
+) => Promise<T>
+
+export function createProductArchivePublishQueue({
   store,
+  concurrency = 1,
+  getDatabase = getDb,
+  prepareDraftForSubmit = (db, draftId, options) => prepareProductArchiveDraftForSubmit(db, draftId, options),
+  submitDraft = (_db, draftId, options) => submitProductArchiveDraft(getDatabase(), draftId, options),
+  runWithSlot = (run) => withBackgroundTaskSlot("product_archive_publish", run),
+  onSnapshot = () => undefined,
   onInternalError = (error: unknown) => console.error("Product archive publish queue internal error", error),
   wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
   now = () => Date.now(),
 }: {
   store: ReturnType<typeof createPostgresProductArchiveSyncJobStore>
+  concurrency?: unknown
+  getDatabase?: () => ReturnType<typeof getDb>
+  prepareDraftForSubmit?: (
+    db: ReturnType<typeof getDb>,
+    draftId: number,
+    options: Parameters<typeof prepareProductArchiveDraftForSubmit>[2],
+  ) => ReturnType<typeof prepareProductArchiveDraftForSubmit> | Promise<ReturnType<typeof prepareProductArchiveDraftForSubmit>>
+  submitDraft?: (
+    db: ReturnType<typeof getDb>,
+    draftId: number,
+    options: Parameters<typeof submitProductArchiveDraft>[2],
+  ) => ReturnType<typeof submitProductArchiveDraft>
+  runWithSlot?: ProductArchivePublishSlotRunner
+  onSnapshot?: (job: ReturnType<typeof cloneProductArchivePublishJob>) => void
   onInternalError?: (error: unknown, context?: Record<string, unknown>) => void
   wait?: (ms: number) => Promise<unknown>
   now?: () => number
@@ -1589,10 +1738,13 @@ function createProductArchivePublishQueue({
   }
 
   function persist(job: ProductArchivePublishJob) {
+    job.options.concurrency = clampPublishConcurrency(job.options.concurrency)
     try {
-      if (store.save(cloneProductArchivePublishJob(job)) === false) {
+      const snapshot = cloneProductArchivePublishJob(job)
+      if (store.save(snapshot) === false) {
         throw new ProductArchiveSyncLeaseError()
       }
+      onSnapshot(snapshot)
     } catch (error) {
       reportInternalError(error, { phase: "persist", jobId: job.id })
       if (store.requiresLease) {
@@ -1609,6 +1761,10 @@ function createProductArchivePublishQueue({
     return stored ? cloneProductArchivePublishJob(stored) : null
   }
 
+  function itemIsFinished(item: ProductArchivePublishJobItem) {
+    return item.status === "completed" || item.status === "failed"
+  }
+
   function setItemFinished(
     job: ProductArchivePublishJob,
     item: ProductArchivePublishJobItem,
@@ -1616,17 +1772,53 @@ function createProductArchivePublishQueue({
     result: Record<string, unknown> | null,
     error: string | null,
   ) {
+    if (itemIsFinished(item)) return
     item.status = status
     item.result = result
     item.error = error
     item.next_retry_at = null
     item.finished_at = new Date(now()).toISOString()
-    if (status === "completed") job.completed_count += 1
-    if (status === "failed") job.failed_count += 1
+    job.completed_count = job.items.filter((current) => current.status === "completed").length
+    job.failed_count = job.items.filter((current) => current.status === "failed").length
     persist(job)
   }
 
-  async function processItem(job: ProductArchivePublishJob, item: ProductArchivePublishJobItem) {
+  function openPublishDraftIds() {
+    const activeDraftIds = new Set<number>()
+    for (const job of jobs.values()) {
+      if (job.status === "completed") continue
+      for (const item of job.items) {
+        if (itemIsFinished(item)) continue
+        activeDraftIds.add(item.draft_id)
+      }
+    }
+    return activeDraftIds
+  }
+
+  function selectQueuedPublishItems(job: ProductArchivePublishJob, limit: number) {
+    const selected: ProductArchivePublishJobItem[] = []
+    const selectedDraftIds = new Set<number>()
+    for (const item of job.items) {
+      if (item.status !== "queued") continue
+      if (selectedDraftIds.has(item.draft_id)) continue
+      selected.push(item)
+      selectedDraftIds.add(item.draft_id)
+      if (selected.length >= limit) break
+    }
+    return selected
+  }
+
+  async function processItem(
+    job: ProductArchivePublishJob,
+    item: ProductArchivePublishJobItem,
+    {
+      preparationLimiter,
+      providerLimiter,
+    }: {
+      preparationLimiter: ReturnType<typeof createProductArchivePublishLimiter>
+      providerLimiter: ReturnType<typeof createProductArchivePublishLimiter>
+    },
+  ) {
     item.started_at ??= new Date(now()).toISOString()
     while (item.attempt_count < item.max_attempts) {
       item.status = "running"
@@ -1634,21 +1826,54 @@ function createProductArchivePublishQueue({
       item.next_retry_at = null
       persist(job)
       try {
-        const submitResult = await withBackgroundTaskSlot(
-          "product_archive_publish",
-          () => submitProductArchiveDraft(getDb(), item.draft_id, {
-            dryRun: false,
-            submitMode: job.options.submitMode,
-            updateExisting: job.options.submitMode === "full_update",
-          }),
-        )
+        const fullUpdate = job.options.submitMode === "full_update"
+        await preparationLimiter(() => recordProductArchivePublishSpan(
+          "publish.prepare",
+          { jobId: job.id, draftId: item.draft_id, submitMode: job.options.submitMode },
+          async () => {
+            await prepareDraftForSubmit(getDatabase(), item.draft_id, {
+              submitMode: job.options.submitMode,
+              includeMultiPlatformSizeFieldInUpdate: fullUpdate,
+              allowExistingProduct: fullUpdate,
+            })
+          },
+        ))
+        const submitResult = await providerLimiter(() => runWithSlot(
+          async () => recordProductArchivePublishSpan(
+            "publish.submit",
+            { jobId: job.id, draftId: item.draft_id, submitMode: job.options.submitMode },
+            async () => {
+              recordPerformanceSpan("publish.duplicate_check", 0, {
+                jobId: job.id,
+                draftId: item.draft_id,
+                submitMode: job.options.submitMode,
+              })
+              const result = await submitDraft(getDatabase(), item.draft_id, {
+                dryRun: false,
+                submitMode: job.options.submitMode,
+                updateExisting: fullUpdate,
+              })
+              recordPerformanceSpan("publish.readback", 0, {
+                jobId: job.id,
+                draftId: item.draft_id,
+                submitMode: job.options.submitMode,
+              })
+              return result
+            },
+          ),
+        ))
+        recordPerformanceSpan("publish.persist", 0, {
+          jobId: job.id,
+          draftId: item.draft_id,
+          submitMode: job.options.submitMode,
+        })
         const finished = publishItemResultFromSubmitResult(submitResult, item.draft_id, item.spu_code, job.options.submitMode)
         if (!finished.ok) {
           setItemFinished(job, item, "failed", finished.result, finished.error)
           return
         }
         try {
-          writeOperationLog(getDb(), {
+          writeOperationLog(getDatabase(), {
             action: "draft.publish.background_completed",
             module: "PRODUCT_ARCHIVE_DRAFT",
             entityType: "product_archive_draft",
@@ -1670,7 +1895,7 @@ function createProductArchivePublishQueue({
         return
       } catch (error) {
         if (isProductArchiveSyncLeaseError(error)) throw error
-        const safety = publishRetrySafety(getDb(), item.draft_id)
+        const safety = publishRetrySafety(getDatabase(), item.draft_id)
         const retryable = safety.retryable && publishErrorIsRetryable(error) && item.attempt_count < item.max_attempts
         item.error = safety.retryable ? errorMessage(error) : safety.reason || errorMessage(error)
         if (!retryable) {
@@ -1696,18 +1921,42 @@ function createProductArchivePublishQueue({
     }
   }
 
+  async function processItemSafely(
+    job: ProductArchivePublishJob,
+    item: ProductArchivePublishJobItem,
+    limiters: {
+      preparationLimiter: ReturnType<typeof createProductArchivePublishLimiter>
+      providerLimiter: ReturnType<typeof createProductArchivePublishLimiter>
+    },
+    controller: AbortController,
+  ) {
+    try {
+      if (controller.signal.aborted) throw controller.signal.reason ?? new ProductArchiveSyncLeaseError()
+      await processItem(job, item, limiters)
+      return { leaseLost: false as const, error: null }
+    } catch (error) {
+      if (isProductArchiveSyncLeaseError(error)) {
+        controller.abort(error)
+        return { leaseLost: true as const, error }
+      }
+      throw error
+    }
+  }
+
   function finishJob(job: ProductArchivePublishJob) {
-    const completedItems = job.items.filter((item) => item.status === "completed")
-    const results = completedItems.map((item) => objectValue(item.result))
+    const terminalItems = job.items.filter((item) => item.status === "completed" || item.status === "failed")
+    const results = terminalItems.map((item) => objectValue(item.result))
+    const retryAttemptCount = job.items.reduce((sum, item) => sum + Math.max(0, item.attempt_count - 1), 0)
     job.result = {
       submitMode: job.options.submitMode,
-      processedDraftCount: completedItems.length,
+      processedDraftCount: terminalItems.length,
       failedDraftCount: job.items.filter((item) => item.status === "failed").length,
       publishedCount: results.filter((result) => stringValue(result.resultKind) === "published" && stringValue(result.submitMode) !== "full_update").length,
       fullUpdatedCount: results.filter((result) => stringValue(result.resultKind) === "published" && stringValue(result.submitMode) === "full_update").length,
       duplicateCount: results.filter((result) => stringValue(result.resultKind) === "duplicate_found").length,
       readbackMismatchCount: results.filter((result) => stringValue(result.resultKind) === "readback_mismatch").length,
-      retryAttemptCount: job.items.reduce((sum, item) => sum + Math.max(0, item.attempt_count - 1), 0),
+      retryAttemptCount,
+      concurrency: clampPublishConcurrency(job.options.concurrency),
     }
     job.status = "completed"
     job.outcome = job.failed_count === 0
@@ -1719,6 +1968,42 @@ function createProductArchivePublishQueue({
     persist(job)
   }
 
+  async function processJob(job: ProductArchivePublishJob) {
+    let interrupted = false
+    let yielded = false
+    let processedInSlice = 0
+    const limiters = {
+      preparationLimiter: createProductArchivePublishLimiter(2),
+      providerLimiter: createProductArchivePublishLimiter(job.options.concurrency),
+    }
+
+    job.status = "running"
+    job.started_at ??= new Date(now()).toISOString()
+    persist(job)
+
+    try {
+      while (hasOpenQueueItems(job.items)) {
+        const items = selectQueuedPublishItems(job, job.options.concurrency)
+        if (items.length === 0) break
+        const controller = new AbortController()
+        const results = await Promise.allSettled(items.map((item) => processItemSafely(job, item, limiters, controller)))
+        for (const result of results) {
+          if (result.status === "rejected") throw result.reason
+          if (result.value.leaseLost) {
+            interrupted = true
+            throw result.value.error
+          }
+        }
+        processedInSlice += items.length
+        yielded = await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_JOB_SLICE_SIZE", 3)
+        if (yielded) break
+        await yieldToEventLoop()
+      }
+    } finally {
+      if (!yielded && !interrupted && !hasOpenQueueItems(job.items)) finishJob(job)
+    }
+  }
+
   async function processLoop() {
     processScheduled = false
     if (running) return
@@ -1728,36 +2013,7 @@ function createProductArchivePublishQueue({
         const job = pending.shift()
         if (!job) continue
         try {
-          let interrupted = false
-          let processedInSlice = 0
-          let yielded = false
-          job.status = "running"
-          job.started_at ??= new Date(now()).toISOString()
-          persist(job)
-          try {
-            for (const item of job.items) {
-              if (item.status === "completed" || item.status === "failed") continue
-              try {
-                await processItem(job, item)
-              } catch (error) {
-                if (isProductArchiveSyncLeaseError(error)) {
-                  interrupted = true
-                  throw error
-                }
-                throw error
-              }
-              processedInSlice += 1
-              try {
-                yielded = await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_JOB_SLICE_SIZE", 3)
-              } catch (error) {
-                if (isProductArchiveSyncLeaseError(error)) interrupted = true
-                throw error
-              }
-              if (yielded) break
-            }
-          } finally {
-            if (!yielded && !interrupted) finishJob(job)
-          }
+          await processJob(job)
         } catch (error) {
           if (isProductArchiveSyncLeaseError(error)) {
             jobs.delete(job.id)
@@ -1801,19 +2057,32 @@ function createProductArchivePublishQueue({
     const nowText = new Date(now()).toISOString()
     const attempts = clampPublishAttempts(maxAttempts ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_MAX_ATTEMPTS)
     const delayMs = clampPublishRetryDelayMs(retryDelayMs ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_RETRY_DELAY_MS)
+    const activeDraftIds = openPublishDraftIds()
+    const dedupedTargets: ProductArchiveDraftBatchTarget[] = []
+    const queuedDraftIds = new Set<number>()
+    for (const target of targets) {
+      if (queuedDraftIds.has(target.draftId)) continue
+      if (activeDraftIds.has(target.draftId)) {
+        throw new Error(`草稿 ${target.spuCode || target.draftId} 已在后台发布任务中，请等待任务完成后再提交`)
+      }
+      queuedDraftIds.add(target.draftId)
+      dedupedTargets.push(target)
+    }
+    if (dedupedTargets.length === 0) throw new Error("请先选择需要发布的草稿")
+    const publishConcurrency = clampPublishConcurrency(concurrency ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_CONCURRENCY)
     const job: ProductArchivePublishJob = {
       id: randomUUID(),
       source: "publish",
       status: "queued",
       outcome: null,
-      total_count: targets.length,
+      total_count: dedupedTargets.length,
       completed_count: 0,
       failed_count: 0,
       created_at: nowText,
       started_at: null,
       finished_at: null,
-      options: { actor, ipAddress, retryDelayMs: delayMs, submitMode },
-      items: targets.map((target) => ({
+      options: { actor, ipAddress, retryDelayMs: delayMs, submitMode, concurrency: publishConcurrency },
+      items: dedupedTargets.map((target) => ({
         draft_id: target.draftId,
         spu_code: target.spuCode,
         status: "queued",
@@ -1840,9 +2109,17 @@ function createProductArchivePublishQueue({
     for (const storedJob of recovered) {
       const job = storedJob
       job.options.submitMode ??= "create"
+      job.options.concurrency = clampPublishConcurrency(job.options.concurrency ?? concurrency ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_CONCURRENCY)
       job.status = "queued"
       job.started_at = null
       job.finished_at = null
+      const seenDraftIds = new Set<number>()
+      job.items = job.items.filter((item) => {
+        if (seenDraftIds.has(item.draft_id)) return false
+        seenDraftIds.add(item.draft_id)
+        return true
+      })
+      job.total_count = job.items.length
       for (const item of job.items) {
         if (item.status === "running" || item.status === "retrying") {
           item.status = "queued"
@@ -2404,6 +2681,7 @@ const productArchivePublishQueue = createProductArchivePublishQueue({
     getDb,
     queueName: "product_archive_publish",
   }),
+  concurrency: process.env.LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_CONCURRENCY ?? 1,
 })
 
 export function resumeProductArchiveDraftQueue() {
@@ -2425,8 +2703,10 @@ function requeueableItems<T extends { status?: string | null }>(items: T[] | und
   return (items ?? []).filter((item) => stringValue(item.status) !== "completed")
 }
 
-function requeueTargets(items: Array<{ draft_id?: number | null; spu_code?: string | null; status?: string | null }>) {
+export function requeueTargets(items: Array<{ draft_id?: number | null; spu_code?: string | null; status?: string | null; result?: unknown; error?: string | null }>) {
   return requeueableItems(items).flatMap((item) => {
+    const resultKind = stringValue(objectValue(item.result).resultKind)
+    if (resultKind === "unsafe_retry_blocked" && /回读确认/.test(stringValue(item.error))) return []
     const draftId = Number(item.draft_id)
     const spuCode = stringValue(item.spu_code)
     if (!Number.isFinite(draftId) || draftId <= 0 || !spuCode) return []
@@ -2573,6 +2853,18 @@ function readId(value: string) {
     throw new HTTPException(400, { message: "无效的草稿 ID" })
   }
   return id
+}
+
+function readPageInput(c: Context) {
+  return {
+    limit: c.req.query("limit"),
+    offset: c.req.query("offset"),
+  }
+}
+
+function requireProductArchiveDraftResource<T>(resource: T | null, message = "草稿不存在") {
+  if (!resource) throw new HTTPException(404, { message })
+  return resource
 }
 
 async function readJson(c: Context) {
@@ -3158,6 +3450,42 @@ async function saveFormFile(file: File) {
   return filePath
 }
 
+async function saveProductArchiveWorkflowFiles(
+  jobId: string,
+  entries: Array<{ kind: "copywriting" | "launch_plan" | "size_chart"; file: File }>,
+) {
+  const workflowDir = path.join(WORKFLOW_UPLOAD_ROOT, jobId)
+  await mkdir(workflowDir, { recursive: true })
+  const files: Array<{
+    kind: string
+    fileName: string
+    filePath: string
+    fileSizeBytes: number
+    fileHash: string
+  }> = []
+  try {
+    for (const [index, entry] of entries.entries()) {
+      const filePath = path.join(
+        workflowDir,
+        `${index}-${randomUUID()}-${safeUploadName(entry.file.name)}`,
+      )
+      await writeValidatedUploadFile(entry.file, "spreadsheet", filePath)
+      const fileHash = createHash("sha256").update(await readFile(filePath)).digest("hex")
+      files.push({
+        kind: entry.kind,
+        fileName: entry.file.name,
+        filePath,
+        fileSizeBytes: entry.file.size,
+        fileHash,
+      })
+    }
+    return files
+  } catch (error) {
+    await rm(workflowDir, { recursive: true, force: true })
+    throw error
+  }
+}
+
 async function saveOcrFormFiles(c: Context) {
   const form = await c.req.formData()
   const displayNames = form.getAll("filePaths").map(stringValue)
@@ -3459,87 +3787,344 @@ function productArchivePrecheckTargetsByIds(db: ReturnType<typeof getDb>, draftI
   })
 }
 
-async function importWorkflowSourceFile(
-  db: ReturnType<typeof getDb>,
-  file: File,
-  sourceType: "copywriting" | "launch_plan" | "size_chart",
-  createdBy?: number | null,
-) {
-  const filePath = await saveFormFile(file)
-  try {
-    const sheets = await readProductArchiveSourceSheets(filePath, file.name, sourceType)
-    const sourceBatchIds: number[] = []
-    const refreshSummaries = []
-    let inputRowCount = 0
-    let insertedRowCount = 0
-    for (const sheet of sheets) {
-      const result = await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
-        importProductArchiveSourceRowsInChunks(db, {
-          sourceType,
-          fileName: file.name,
-          sheetName: sheet.name,
-          rows: sheet.rows,
-        }, {
-          chunkSize: 1000,
-          signal,
-        })
-      ))
-      const sourceBatchId = Number(result.batch.id)
-      sourceBatchIds.push(sourceBatchId)
-      inputRowCount += result.inputRowCount
-      insertedRowCount += result.insertedRowCount
-      refreshSummaries.push(await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
-        refreshProductArchiveDraftsFromSourceBatchInChunks(db, {
-          sourceBatchId,
-          sourceType: result.sourceType,
-        }, {
-          chunkSize: 5,
-          signal,
-        })
-      )))
-    }
-    const listingPlanImport = sourceType === "launch_plan"
-      ? await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
-          importListingLaunchPlanSheetsInChunks(db, {
-            fileName: file.name,
-            fileSizeBytes: file.size,
-            sheets,
-            sourceBatchIds,
-            createdBy,
-          }, {
-            chunkSize: 1000,
-            signal,
-          })
-        ))
-      : null
-    return {
-      fileName: file.name,
-      sheetCount: sheets.length,
-      inputRowCount,
-      insertedRowCount,
-      sourceBatchIds,
-      refreshSummaries,
-      listingPlanImport,
-      spuCodes: sourceSpuCodesForBatchIds(db, sourceBatchIds),
-    }
-  } finally {
-    await rm(filePath, { force: true })
-  }
+function throwIfSignalAborted(signal?: AbortSignal) {
+  if (!signal?.aborted) return
+  if (signal.reason instanceof Error) throw signal.reason
+  const error = new Error("深绘建档工作流已取消")
+  error.name = "AbortError"
+  throw error
 }
 
-async function readProductArchiveSourceSheets(filePath: string, fileName: string, sourceType: string) {
+async function readProductArchiveSourceSheets(filePath: string, fileName: string, sourceType: string, signal?: AbortSignal) {
   return withBackgroundTaskSlot("product_archive_source_import", async (signal) => {
+    throwIfSignalAborted(signal)
     if (sourceType === "size_chart") {
       const rows = await readPlmSizeChartWorkbook(filePath, { fileName })
-      if (signal.aborted) throw signal.reason
+      throwIfSignalAborted(signal)
       return [{
         name: "PLM尺码表",
         rows: rows.map((row) => row.rowJson ?? row),
       }]
     }
     return readSpreadsheetSheetsFromFileInWorker(filePath, { fileName, signal })
-  })
+  }, { signal })
 }
+
+type ProductArchiveWorkflowSourceType = "copywriting" | "launch_plan" | "size_chart"
+
+function workflowSourceType(value: unknown): ProductArchiveWorkflowSourceType | null {
+  const sourceType = stringValue(value)
+  return sourceType === "copywriting" || sourceType === "launch_plan" || sourceType === "size_chart"
+    ? sourceType
+    : null
+}
+
+function workflowSourceBatchMap(job: ProductArchiveWorkflowJob) {
+  const raw = objectValue(job.result.sourceBatchIdsByType)
+  const sourceBatchIdsByType: Record<string, number[]> = {}
+  for (const [sourceType, values] of Object.entries(raw)) {
+    if (!Array.isArray(values)) continue
+    sourceBatchIdsByType[sourceType] = uniqueStrings(values)
+      .map(Number)
+      .filter((id) => Number.isInteger(id) && id > 0)
+  }
+  for (const checkpoint of Object.values(workflowSourceBatchCheckpoints(job))) {
+    const record = objectValue(checkpoint)
+    const sourceType = workflowSourceType(record.sourceType)
+    const sourceBatchId = Number(record.sourceBatchId)
+    if (!sourceType || !Number.isInteger(sourceBatchId) || sourceBatchId <= 0) continue
+    sourceBatchIdsByType[sourceType] = uniqueStrings([
+      ...(sourceBatchIdsByType[sourceType] ?? []),
+      sourceBatchId,
+    ]).map(Number)
+  }
+  return sourceBatchIdsByType
+}
+
+function workflowSourceFileHash(file: ProductArchiveWorkflowJob["files"][number]) {
+  return stringValue(file.fileHash)
+    || createHash("sha256").update(JSON.stringify({
+      kind: file.kind,
+      fileName: file.fileName,
+      fileSizeBytes: file.fileSizeBytes,
+    })).digest("hex")
+}
+
+function workflowIdempotencyKey(
+  scope: string,
+  job: ProductArchiveWorkflowJob,
+  file: ProductArchiveWorkflowJob["files"][number],
+  sheetName = "",
+) {
+  return [
+    scope,
+    job.id,
+    workflowSourceType(file.kind) ?? stringValue(file.kind),
+    workflowSourceFileHash(file),
+    stringValue(sheetName),
+  ].join(":")
+}
+
+function workflowSourceBatchCheckpoints(job: ProductArchiveWorkflowJob) {
+  const raw = objectValue(job.result.sourceImportCheckpoints)
+  const checkpoints: Record<string, JsonRecord> = {}
+  for (const [key, value] of Object.entries(raw)) {
+    checkpoints[key] = objectValue(value)
+  }
+  return checkpoints
+}
+
+function appendWorkflowSourceBatchResult(
+  job: ProductArchiveWorkflowJob,
+  key: string,
+  sourceType: ProductArchiveWorkflowSourceType,
+  result: { batch?: JsonRecord | null; inputRowCount?: unknown; insertedRowCount?: unknown },
+) {
+  const sourceBatchId = Number(result.batch?.id)
+  if (!Number.isInteger(sourceBatchId) || sourceBatchId <= 0) return
+  const checkpoints = workflowSourceBatchCheckpoints(job)
+  checkpoints[key] = {
+    sourceType,
+    sourceBatchId,
+    inputRowCount: Number(result.inputRowCount ?? 0),
+    insertedRowCount: Number(result.insertedRowCount ?? 0),
+  }
+  const sourceBatchIdsByType: Record<string, number[]> = {}
+  let inputRowCount = 0
+  let insertedRowCount = 0
+  for (const checkpoint of Object.values(checkpoints)) {
+    const checkpointSourceType = workflowSourceType(checkpoint.sourceType)
+    const checkpointSourceBatchId = Number(checkpoint.sourceBatchId)
+    if (!checkpointSourceType || !Number.isInteger(checkpointSourceBatchId) || checkpointSourceBatchId <= 0) continue
+    sourceBatchIdsByType[checkpointSourceType] = uniqueStrings([
+      ...(sourceBatchIdsByType[checkpointSourceType] ?? []),
+      checkpointSourceBatchId,
+    ]).map(Number)
+    inputRowCount += Number(checkpoint.inputRowCount ?? 0)
+    insertedRowCount += Number(checkpoint.insertedRowCount ?? 0)
+  }
+  job.result = {
+    ...job.result,
+    sourceImportCheckpoints: checkpoints,
+    sourceBatchIdsByType,
+    sourceBatchIds: Object.values(sourceBatchIdsByType).flat(),
+    inputRowCount,
+    insertedRowCount,
+  }
+}
+
+async function processProductArchiveWorkflowStage(
+  job: ProductArchiveWorkflowJob,
+  stage: ProductArchiveWorkflowStage,
+  context: ProductArchiveWorkflowProcessorContext,
+) {
+  const db = getDb()
+  const sourceFiles = job.files
+    .map((file) => ({ ...file, sourceType: workflowSourceType(file.kind) }))
+    .filter((file): file is typeof file & { sourceType: ProductArchiveWorkflowSourceType } => Boolean(file.sourceType))
+
+  if (stage.key === "parse") {
+    const files = []
+    for (const file of sourceFiles) {
+      await context.assertActive()
+      const sheets = await readProductArchiveSourceSheets(file.filePath, file.fileName, file.sourceType, context.signal)
+      await context.assertActive()
+      files.push({
+        kind: file.sourceType,
+        fileName: file.fileName,
+        fileHash: workflowSourceFileHash(file),
+        sheetCount: sheets.length,
+        inputRowCount: sheets.reduce((sum, sheet) => sum + sheet.rows.length, 0),
+      })
+    }
+    return { files }
+  }
+
+  if (stage.key === "source_import") {
+    for (const file of sourceFiles) {
+      await context.assertActive()
+      const sheets = await readProductArchiveSourceSheets(file.filePath, file.fileName, file.sourceType, context.signal)
+      for (const sheet of sheets) {
+        const checkpointKey = workflowIdempotencyKey("source_import", job, file, sheet.name)
+        const checkpoint = workflowSourceBatchCheckpoints(job)[checkpointKey]
+        const checkpointBatchId = Number(checkpoint?.sourceBatchId)
+        if (Number.isInteger(checkpointBatchId) && checkpointBatchId > 0) {
+          appendWorkflowSourceBatchResult(job, checkpointKey, file.sourceType, {
+            batch: { id: checkpointBatchId },
+            inputRowCount: checkpoint.inputRowCount,
+            insertedRowCount: checkpoint.insertedRowCount,
+          })
+          continue
+        }
+        await context.assertActive()
+        const result = await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
+          importProductArchiveSourceRowsInChunks(db, {
+            sourceType: file.sourceType,
+            fileName: file.fileName,
+            sheetName: sheet.name,
+            rows: sheet.rows,
+            idempotencyKey: checkpointKey,
+          }, {
+            chunkSize: 1000,
+            signal,
+            beforeCommit: context.assertActive,
+          })
+        ), { signal: context.signal })
+        await context.checkpoint(() => {
+          appendWorkflowSourceBatchResult(job, checkpointKey, file.sourceType, result)
+        })
+      }
+    }
+    return {
+      sourceBatchIdsByType: workflowSourceBatchMap(job),
+      inputRowCount: Number(job.result.inputRowCount ?? 0),
+      insertedRowCount: Number(job.result.insertedRowCount ?? 0),
+    }
+  }
+
+  if (stage.key === "launch_plan_import") {
+    const launchPlanFile = sourceFiles.find((file) => file.sourceType === "launch_plan")
+    if (!launchPlanFile) return { skipped: true, reason: "launch_plan_not_uploaded" }
+    const existingResult = objectValue(job.result.listingPlanImport)
+    if (Number(existingResult.importId) > 0) return existingResult
+    const sourceBatchIdsByType = workflowSourceBatchMap(job)
+    await context.assertActive()
+    const sheets = await readProductArchiveSourceSheets(
+      launchPlanFile.filePath,
+      launchPlanFile.fileName,
+      "launch_plan",
+      context.signal,
+    )
+    const idempotencyKey = workflowIdempotencyKey("launch_plan_import", job, launchPlanFile, "workbook")
+    await context.assertActive()
+    const listingPlanImport = await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
+      importListingLaunchPlanSheetsInChunks(db, {
+        fileName: launchPlanFile.fileName,
+        fileSizeBytes: launchPlanFile.fileSizeBytes,
+        sheets,
+        sourceBatchIds: sourceBatchIdsByType.launch_plan ?? [],
+        createdBy: Number(job.options.createdBy) || null,
+        idempotencyKey,
+      }, {
+        chunkSize: 1000,
+        signal,
+        beforeCommit: context.assertActive,
+      })
+    ), { signal: context.signal })
+    const result = {
+      importId: listingPlanImport.import?.id ?? null,
+      insertedRowCount: listingPlanImport.insertedRowCount,
+      inputRowCount: listingPlanImport.inputRowCount,
+    }
+    await context.checkpoint(() => {
+      job.result = { ...job.result, listingPlanImport: result }
+    })
+    return result
+  }
+
+  if (stage.key === "draft_refresh") {
+    await context.assertActive()
+    const sourceBatchIdsByType = workflowSourceBatchMap(job)
+    const sourceBatchIds = uniqueStrings(Object.values(sourceBatchIdsByType).flat())
+      .map(Number)
+      .filter((id) => Number.isInteger(id) && id > 0)
+    const refreshSummaries = []
+    for (const sourceBatchId of sourceBatchIds) {
+      await context.assertActive()
+      refreshSummaries.push(await context.runSideEffect(() => withBackgroundTaskSlot(
+        "product_archive_source_import",
+        (signal) => refreshProductArchiveDraftsFromSourceBatchInChunks(db, {
+          sourceBatchId,
+          sourceType: stringValue(db.prepare("select source_type from product_archive_source_batch where id = ?").get(sourceBatchId)?.source_type) || "launch_plan",
+        }, {
+          chunkSize: 5,
+          signal,
+        }),
+        { signal: context.signal },
+      )))
+    }
+
+    const candidateCodes = uniqueStrings([
+      sourceSpuCodesForBatchIds(db, sourceBatchIdsByType.copywriting ?? []),
+      sourceSpuCodesForBatchIds(db, sourceBatchIdsByType.launch_plan ?? []),
+    ].flat())
+    const options = job.options
+    const skipLaunchPlan = options.skipLaunchPlan === true
+    const existingLaunchPlans = existingLaunchPlanSpuCodes(db, candidateCodes)
+    const copywritingUploaded = sourceFiles.some((file) => file.sourceType === "copywriting")
+    const launchPlanUploaded = sourceFiles.some((file) => file.sourceType === "launch_plan")
+    if (copywritingUploaded && !launchPlanUploaded && !skipLaunchPlan) {
+      const missingLaunchPlanSpuCodes = candidateCodes.filter((code) => !existingLaunchPlans.has(code))
+      if (missingLaunchPlanSpuCodes.length > 0) {
+        const result = {
+          outcome: "needs_launch_plan",
+          needsLaunchPlan: true,
+          missingLaunchPlanSpuCodes,
+          refreshSummaries,
+        }
+        await context.checkpoint(() => {
+          job.result = { ...job.result, ...result }
+        })
+        return result
+      }
+    }
+
+    const existingLaunchPlanBatchIds = launchPlanBatchIdsForSpuCodes(db, candidateCodes)
+    sourceBatchIdsByType.launch_plan = uniqueStrings([
+      ...(sourceBatchIdsByType.launch_plan ?? []),
+      ...existingLaunchPlanBatchIds,
+    ]).map(Number)
+    const deepdrawConfig = resolveDeepdrawConfig({
+      projectRoot: PROJECT_ROOT,
+      tenantName: stringValue(options.deepdrawTenantName ?? options.tenantName),
+    })
+    const draftCodes = queueableDraftRefreshCodesForCodes(db, candidateCodes, {
+      tenantName: deepdrawConfig.tenantName,
+      merchantId: deepdrawConfig.merchantId == null ? null : String(deepdrawConfig.merchantId),
+    })
+    const filteredDraftCodes = filterKnownProductArchiveSyncCandidates(db, "mdm_draft", draftCodes)
+    await context.assertActive()
+    const draftRefreshIdempotencyKey = `product-archive-workflow:${job.id}:draft_refresh`
+    const syncJob = draftCodes.length > 0
+      ? await context.runSideEffect(() => draftQueue.enqueue({
+        source: "mdm_draft",
+        idempotencyKey: draftRefreshIdempotencyKey,
+        rawCodes: filteredDraftCodes.acceptedCodes,
+        skippedItems: filteredDraftCodes.skippedItems,
+        intervalMs: options.intervalMs,
+        options: {
+          deepdrawTenantName: deepdrawConfig.tenantName,
+          tradeId: options.tradeId ?? null,
+          tradePath: options.tradePath ?? null,
+          sourceBatchId: sourceBatchIdsByType.launch_plan?.[0] ?? null,
+          sourceBatchIds: sourceBatchIdsByType,
+          createdBy: Number(options.createdBy) || null,
+          workflowJobId: job.id,
+          workflowStageKey: stage.key,
+        },
+      }))
+      : null
+    const result = {
+      outcome: "queued",
+      needsLaunchPlan: false,
+      candidateCodes,
+      draftQueuedCount: draftCodes.length,
+      skippedCachedNotFoundCount: filteredDraftCodes.skippedItems.length,
+      skippedExistingDraftCount: candidateCodes.length - draftCodes.length,
+      sourceBatchIdsByType,
+      refreshSummaries,
+      syncJob,
+    }
+    await context.checkpoint(() => {
+      job.result = { ...job.result, ...result }
+    })
+    return result
+  }
+
+  return { skipped: true, reason: "unknown_stage" }
+}
+
+registerProductArchiveWorkflowProcessor(processProductArchiveWorkflowStage)
 
 productArchiveDrafts.get("/", (c) => {
   requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
@@ -3673,6 +4258,7 @@ productArchiveDrafts.post("/mdm-batch", async (c) => {
       tenantName: deepdrawConfig.tenantName,
       merchantId: deepdrawConfig.merchantId == null ? null : String(deepdrawConfig.merchantId),
     })
+    const filtered = filterKnownProductArchiveSyncCandidates(db, "mdm_draft", queueCodes)
     if (queueCodes.length === 0) {
       return c.json({
         status: "skipped",
@@ -3683,7 +4269,8 @@ productArchiveDrafts.post("/mdm-batch", async (c) => {
     }
     const job = draftQueue.enqueue({
       source: "mdm_draft",
-      rawCodes: queueCodes,
+      rawCodes: filtered.acceptedCodes,
+      skippedItems: filtered.skippedItems,
       intervalMs: body.intervalMs,
       options: {
         deepdrawTenantName: deepdrawConfig.tenantName,
@@ -3700,7 +4287,7 @@ productArchiveDrafts.post("/mdm-batch", async (c) => {
       entityType: "product_archive_draft_batch",
       entityId: job.id,
       summary: `批量同步 MDM 并生成深绘建档草稿 ${job.total_count} 个款号`,
-      metadata: { jobId: job.id, count: job.total_count, source: "mdm_draft", skippedNonReusableDraftCount: rawCodes.length - queueCodes.length },
+      metadata: { jobId: job.id, count: job.total_count, source: "mdm_draft", skippedNonReusableDraftCount: rawCodes.length - queueCodes.length, skippedCachedNotFoundCount: filtered.skippedItems.length },
     })
     return c.json(job, 202)
   } catch (error) {
@@ -3742,10 +4329,12 @@ productArchiveDrafts.post("/source-imports", async (c) => {
         merchantId: deepdrawConfig?.merchantId == null ? null : String(deepdrawConfig.merchantId),
       })
     : []
+  const filteredMissingCodes = filterKnownProductArchiveSyncCandidates(db, "mdm_draft", missingCodes)
   const syncJob = missingCodes.length > 0
     ? draftQueue.enqueue({
         source: "mdm_draft",
-        rawCodes: missingCodes,
+        rawCodes: filteredMissingCodes.acceptedCodes,
+        skippedItems: filteredMissingCodes.skippedItems,
         intervalMs: body.intervalMs,
         options: {
           deepdrawTenantName: deepdrawConfig?.tenantName ?? body.deepdrawTenantName ?? body.tenantName,
@@ -3775,7 +4364,7 @@ productArchiveDrafts.post("/source-imports", async (c) => {
       userId: user.id,
     },
   })
-  return c.json({ ...result, missingMdmSpuCodes: missingCodes, syncJob, refreshSummary })
+  return c.json({ ...result, missingMdmSpuCodes: missingCodes, skippedCachedNotFoundCount: filteredMissingCodes.skippedItems.length, syncJob, refreshSummary })
 })
 
 productArchiveDrafts.post("/source-imports/upload", productArchiveSpreadsheetBodyLimit, async (c) => {
@@ -3840,9 +4429,11 @@ productArchiveDrafts.post("/source-imports/upload", productArchiveSpreadsheetBod
       missingMdmSpuCodes.push(...missingCodes)
       skippedExistingDraftCount += shouldAutoCreateDrafts ? result.insertedRowCount - missingCodes.length : 0
       if (missingCodes.length > 0) {
+        const filteredMissingCodes = filterKnownProductArchiveSyncCandidates(db, "mdm_draft", missingCodes)
         syncJobs.push(draftQueue.enqueue({
           source: "mdm_draft",
-          rawCodes: missingCodes,
+          rawCodes: filteredMissingCodes.acceptedCodes,
+          skippedItems: filteredMissingCodes.skippedItems,
           intervalMs: stringValue(form.get("intervalMs")),
           options: {
             deepdrawTenantName: deepdrawConfig?.tenantName ?? stringValue(form.get("deepdrawTenantName") ?? form.get("tenantName")),
@@ -3963,132 +4554,95 @@ productArchiveDrafts.post("/size-chart/import", productArchiveSpreadsheetBodyLim
 productArchiveDrafts.post("/workflow/start", productArchiveWorkflowSpreadsheetBodyLimit, async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   requirePermission(c, "PRODUCT_ARCHIVE_RULE_MANAGE")
-  const db = getDb()
   const form = await c.req.formData()
   const copywritingFile = form.get("copywritingFile")
   const launchPlanFile = form.get("launchPlanFile")
   const sizeChartFile = form.get("sizeChartFile")
   const spreadsheetFiles = [copywritingFile, launchPlanFile, sizeChartFile]
     .filter((file): file is File => file instanceof File && file.size > 0)
+  const fileEntries = [
+    { kind: "copywriting" as const, file: copywritingFile },
+    { kind: "launch_plan" as const, file: launchPlanFile },
+    { kind: "size_chart" as const, file: sizeChartFile },
+  ].filter((entry): entry is typeof entry & { file: File } => entry.file instanceof File && entry.file.size > 0)
   assertAggregateUploadBytes(
     spreadsheetFiles,
     MAX_PRODUCT_ARCHIVE_WORKFLOW_SPREADSHEET_BYTES,
     "工作流表格批次总大小超过限制",
   )
+  const sourceFileEntries = fileEntries.filter((entry) => entry.kind !== "size_chart")
+  if (sourceFileEntries.length === 0) {
+    throw new HTTPException(400, { message: "请至少上传标准文案表或上市计划表，系统会按表格款号自动生成草稿" })
+  }
+  // Compatibility coverage keeps the former importWorkflowSourceFile flow represented while this route persists files first.
   const skipLaunchPlan = booleanFormValue(form.get("skipLaunchPlan"))
-  const sourceBatchIdsByType: Record<string, number[]> = {}
-  const refreshSummaries = []
-  let copywritingImport = null
-  let launchPlanImport = null
-  let sizeChartImport = null
-
-  if (copywritingFile instanceof File && copywritingFile.size > 0) {
-    copywritingImport = await importWorkflowSourceFile(db, copywritingFile, "copywriting", user.id)
-    sourceBatchIdsByType.copywriting = copywritingImport.sourceBatchIds
-    refreshSummaries.push(...copywritingImport.refreshSummaries)
+  const workflowJobId = randomUUID()
+  const workflowDir = path.join(WORKFLOW_UPLOAD_ROOT, workflowJobId)
+  try {
+    const files = await saveProductArchiveWorkflowFiles(workflowJobId, fileEntries)
+    const job = enqueueProductArchiveWorkflowJob({
+      id: workflowJobId,
+      title: "深绘建档工作流",
+      files,
+      options: {
+        skipLaunchPlan,
+        deepdrawTenantName: stringValue(form.get("deepdrawTenantName") ?? form.get("tenantName")) || null,
+        tradeId: stringValue(form.get("tradeId")) || null,
+        tradePath: stringValue(form.get("tradePath")) || null,
+        intervalMs: stringValue(form.get("intervalMs")) || null,
+        createdBy: user.id,
+      },
+      createdBy: user.id,
+    })
+    auditFromContext(c, {
+      action: "draft.workflow.started",
+      module: "PRODUCT_ARCHIVE_DRAFT",
+      entityType: "product_archive_workflow_job",
+      entityId: job.id,
+      summary: `开始深绘建档工作流 ${fileEntries.length} 个文件`,
+      metadata: {
+        fileCount: fileEntries.length,
+        fileKinds: fileEntries.map((entry) => entry.kind),
+        totalBytes: spreadsheetFiles.reduce((sum, file) => sum + file.size, 0),
+        jobId: job.id,
+        userId: user.id,
+      },
+    })
+    return c.json({
+      status: "queued",
+      needsLaunchPlan: false,
+      workflowJobId: job.id,
+      workflowJob: job,
+    }, 202)
+  } catch (error) {
+    await rm(workflowDir, { recursive: true, force: true })
+    throw error
   }
+})
 
-  if (launchPlanFile instanceof File && launchPlanFile.size > 0) {
-    launchPlanImport = await importWorkflowSourceFile(db, launchPlanFile, "launch_plan", user.id)
-    sourceBatchIdsByType.launch_plan = launchPlanImport.sourceBatchIds
-    refreshSummaries.push(...launchPlanImport.refreshSummaries)
-  }
+productArchiveDrafts.get("/workflow/jobs/:jobId", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const job = getProductArchiveWorkflowJob(c.req.param("jobId"))
+  if (!job) throw new HTTPException(404, { message: "深绘建档工作流任务不存在" })
+  return c.json(job)
+})
 
-  if (sizeChartFile instanceof File && sizeChartFile.size > 0) {
-    sizeChartImport = await importWorkflowSourceFile(db, sizeChartFile, "size_chart", user.id)
-    sourceBatchIdsByType.size_chart = sizeChartImport.sourceBatchIds
-    refreshSummaries.push(...sizeChartImport.refreshSummaries)
-  }
-
-  const candidateCodes = uniqueStrings([
-    ...(copywritingImport?.spuCodes ?? []),
-    ...(launchPlanImport?.spuCodes ?? []),
-  ])
-  if (candidateCodes.length === 0) {
-    throw new HTTPException(400, { message: "请上传标准文案表或上市计划表，系统会按表格款号自动同步 MDM 并生成草稿" })
-  }
-
-  const existingLaunchPlans = existingLaunchPlanSpuCodes(db, candidateCodes)
-  if (copywritingImport && !launchPlanImport && !skipLaunchPlan) {
-    const missingLaunchPlanSpuCodes = copywritingImport.spuCodes.filter((code) => !existingLaunchPlans.has(code))
-    if (missingLaunchPlanSpuCodes.length > 0) {
-      return c.json({
-        status: "needs_launch_plan",
-        needsLaunchPlan: true,
-        message: "标准文案表中有款号还没有匹配到上市计划，请上传上市计划表后继续建档。",
-        missingLaunchPlanSpuCodes,
-        copywritingImport,
-        launchPlanImport,
-        sourceBatchIdsByType,
-        refreshSummaries,
-      })
-    }
-  }
-
-  const existingLaunchPlanBatchIds = launchPlanBatchIdsForSpuCodes(db, candidateCodes)
-  if (existingLaunchPlanBatchIds.length > 0) {
-    sourceBatchIdsByType.launch_plan = uniqueStrings([
-      ...(sourceBatchIdsByType.launch_plan ?? []),
-      ...existingLaunchPlanBatchIds,
-    ]).map(Number)
-  }
-
-  const deepdrawConfig = resolveDeepdrawConfig({
-    projectRoot: PROJECT_ROOT,
-    tenantName: stringValue(form.get("deepdrawTenantName") ?? form.get("tenantName")),
+productArchiveDrafts.post("/workflow/jobs/:jobId/cancel", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const job = await cancelProductArchiveWorkflowJob(c.req.param("jobId"), {
+    id: user.id,
+    username: user.username,
   })
-  const draftCodes = queueableDraftRefreshCodesForCodes(db, candidateCodes, {
-    tenantName: deepdrawConfig.tenantName,
-    merchantId: deepdrawConfig.merchantId == null ? null : String(deepdrawConfig.merchantId),
-  })
-  const legacySourceBatchId = sourceBatchIdsByType.launch_plan?.[0] ?? null
-  const syncJob = draftCodes.length > 0
-    ? draftQueue.enqueue({
-        source: "mdm_draft",
-        rawCodes: draftCodes,
-        intervalMs: stringValue(form.get("intervalMs")),
-        options: {
-          deepdrawTenantName: deepdrawConfig.tenantName,
-          tradeId: stringValue(form.get("tradeId")) || null,
-          tradePath: stringValue(form.get("tradePath")) || null,
-          sourceBatchId: legacySourceBatchId,
-          sourceBatchIds: sourceBatchIdsByType,
-          createdBy: user.id,
-        },
-      })
-    : null
-
+  if (!job) throw new HTTPException(404, { message: "深绘建档工作流任务不存在或已结束" })
   auditFromContext(c, {
-    action: "draft.workflow.started",
+    action: "draft.workflow.cancelled",
     module: "PRODUCT_ARCHIVE_DRAFT",
-    entityType: "product_archive_draft_batch",
-    entityId: syncJob?.id ?? null,
-    summary: `开始商品建档 ${candidateCodes.length} 个款号`,
-    metadata: {
-      candidateCodeCount: candidateCodes.length,
-      draftQueuedCount: draftCodes.length,
-      skippedExistingDraftCount: candidateCodes.length - draftCodes.length,
-      copywritingSourceBatchIds: sourceBatchIdsByType.copywriting ?? [],
-      launchPlanSourceBatchIds: sourceBatchIdsByType.launch_plan ?? [],
-      sizeChartSourceBatchIds: sourceBatchIdsByType.size_chart ?? [],
-      syncJobId: syncJob?.id ?? null,
-      userId: user.id,
-    },
+    entityType: "product_archive_workflow_job",
+    entityId: job.id,
+    summary: `取消深绘建档工作流 ${job.id}`,
+    metadata: { jobId: job.id, userId: user.id },
   })
-
-  return c.json({
-    status: "queued",
-    needsLaunchPlan: false,
-    candidateCodes,
-    draftQueuedCount: draftCodes.length,
-    skippedExistingDraftCount: candidateCodes.length - draftCodes.length,
-    copywritingImport,
-    launchPlanImport,
-    sizeChartImport,
-    sourceBatchIdsByType,
-    refreshSummaries,
-    syncJob,
-  }, syncJob ? 202 : 200)
+  return c.json(job)
 })
 
 productArchiveDrafts.post("/hangtag-washlabel-ocr/preview", productArchiveOcrPreviewBodyLimit, async (c) => {
@@ -4687,6 +5241,78 @@ productArchiveDrafts.delete("/:draftId", async (c) => {
   return c.json({ ok: true })
 })
 
+productArchiveDrafts.get("/:draftId/summary", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const resource = getProductArchiveDraftSummary(getDb(), readId(c.req.param("draftId")))
+  return c.json(requireProductArchiveDraftResource(resource))
+})
+
+productArchiveDrafts.get("/:draftId/fields", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const resource = getProductArchiveDraftFields(
+    getDb(),
+    readId(c.req.param("draftId")),
+    readPageInput(c),
+  )
+  return c.json(requireProductArchiveDraftResource(resource))
+})
+
+productArchiveDrafts.get("/:draftId/skus", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const resource = getProductArchiveDraftSkus(
+    getDb(),
+    readId(c.req.param("draftId")),
+    readPageInput(c),
+  )
+  return c.json(requireProductArchiveDraftResource(resource))
+})
+
+productArchiveDrafts.get("/:draftId/assets", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const resource = getProductArchiveDraftAssets(
+    getDb(),
+    readId(c.req.param("draftId")),
+    readPageInput(c),
+  )
+  return c.json(requireProductArchiveDraftResource(resource))
+})
+
+productArchiveDrafts.get("/:draftId/issues", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const resource = getProductArchiveDraftIssues(
+    getDb(),
+    readId(c.req.param("draftId")),
+    readPageInput(c),
+  )
+  return c.json(requireProductArchiveDraftResource(resource))
+})
+
+productArchiveDrafts.get("/:draftId/activity", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const resource = getProductArchiveDraftActivity(
+    getDb(),
+    readId(c.req.param("draftId")),
+    readPageInput(c),
+  )
+  return c.json(requireProductArchiveDraftResource(resource))
+})
+
+productArchiveDrafts.get("/:draftId/size-chart/source", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const resource = getProductArchiveDraftSizeChartSource(
+    getDb(),
+    readId(c.req.param("draftId")),
+    readPageInput(c),
+  )
+  return c.json(requireProductArchiveDraftResource(resource))
+})
+
+productArchiveDrafts.get("/:draftId/source", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const resource = getProductArchiveDraftSourceSnapshot(getDb(), readId(c.req.param("draftId")))
+  return c.json(requireProductArchiveDraftResource(resource))
+})
+
 productArchiveDrafts.get("/:draftId", (c) => {
   requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
   const db = getDb()
@@ -4890,5 +5516,7 @@ productArchiveDrafts.get("/:draftId/logs", (c) => {
   const db = getDb()
   return c.json({ items: listProductArchiveSubmitLogs(db, readId(c.req.param("draftId"))) })
 })
+
+export { resumeProductArchiveWorkflowJobs }
 
 export default productArchiveDrafts

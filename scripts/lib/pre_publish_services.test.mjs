@@ -1557,6 +1557,13 @@ test("deployment writes product archive background and OCR concurrency environme
   }
 });
 
+test("DeepDraw publish queue documents the guarded publish concurrency environment variable", async () => {
+  const draftRoute = await readFile(path.join(PROJECT_ROOT, "web/server/routes/product-archive-drafts.ts"), "utf8");
+
+  assert.match(draftRoute, /LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_CONCURRENCY/);
+  assert.match(draftRoute, /clampPublishConcurrency/);
+});
+
 test("deployment prepares a complete release before publishing to the live app directory", async () => {
   const deployScript = await readFile(path.join(PROJECT_ROOT, "ci/yunxiao-deploy.sh"), "utf8");
   const publishBlock = deployScript.slice(deployScript.indexOf("===== Publish prepared release ====="));

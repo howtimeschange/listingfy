@@ -29,7 +29,7 @@ export interface AsyncTaskJobItem {
 
 export interface AsyncTaskJob {
   id: string
-  status: "queued" | "running" | "completed"
+  status: "queued" | "running" | "completed" | "failed" | "cancelled"
   outcome?: "succeeded" | "partial_failure" | "failed" | string | null
   total_count: number
   completed_count: number

@@ -1,12 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { FileSpreadsheet, Search } from "lucide-react"
+import { ChevronLeft, ChevronRight, FileSpreadsheet, Loader2, Search } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
-import { ImportDialog } from "@/components/import-dialog"
-import { ServerPagination } from "@/components/server-pagination"
 import { useAsyncTasks, type AsyncTaskJob } from "@/lib/async-task-context"
 import {
   CompactListCard,
@@ -37,6 +35,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+
+const SpreadsheetImportDialog = lazy(() =>
+  import("@/components/import-dialog").then((module) => ({ default: module.ImportDialog })),
+)
 
 interface ListingLaunchPlanRow {
   id: number
@@ -69,6 +71,7 @@ interface ListingLaunchPlanRow {
 interface LaunchPlanRowsResponse {
   items: ListingLaunchPlanRow[]
   sheets: Array<{ sheet_name: string; count: number }>
+  nextCursor: { afterSpuCode: string; afterRowId: number } | null
   pagination: { total: number; limit: number; offset: number }
 }
 
@@ -93,22 +96,151 @@ function categoryText(row: ListingLaunchPlanRow) {
   return row.official_category || row.vip_category || row.douyin_category || "-"
 }
 
+function CursorPagination({
+  total,
+  limit,
+  hasPrevious,
+  hasNext,
+  isLoading,
+  onPrevious,
+  onNext,
+  onLimitChange,
+}: {
+  total: number
+  limit: number
+  hasPrevious: boolean
+  hasNext: boolean
+  isLoading: boolean
+  onPrevious: () => void
+  onNext: () => void
+  onLimitChange: (limit: number) => void
+}) {
+  return (
+    <div className="mt-4 border-t pt-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-sm text-muted-foreground tabular-nums">
+          共 {formatNumber(total)} 条，按款号游标翻页
+          {isLoading ? (
+            <span className="ml-2 inline-flex items-center gap-1 text-xs">
+              <Loader2 className="size-3 animate-spin" />
+              更新中
+            </span>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <Select value={String(limit)} onValueChange={(value) => onLimitChange(Number(value))}>
+            <SelectTrigger className="h-8 w-[88px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {[10, 20, 50, 100, 200].map((option) => (
+                <SelectItem key={option} value={String(option)}>
+                  {option}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <div className="flex items-center gap-1">
+            <Button type="button" variant="outline" size="sm" className="h-8" onClick={onPrevious} disabled={!hasPrevious}>
+              <ChevronLeft className="mr-1 size-4" />
+              上一页
+            </Button>
+            <Button type="button" variant="outline" size="sm" className="h-8" onClick={onNext} disabled={!hasNext}>
+              下一页
+              <ChevronRight className="ml-1 size-4" />
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DeferredSpreadsheetImportDialog({
+  disabled,
+  onImport,
+}: {
+  disabled: boolean
+  onImport: (file: File) => void | Promise<void>
+}) {
+  const [shouldLoad, setShouldLoad] = useState(false)
+  const openPendingRef = useRef(false)
+
+  if (!shouldLoad) {
+    return (
+      <Button
+        type="button"
+        size="sm"
+        disabled={disabled}
+        onClick={() => {
+          openPendingRef.current = true
+          setShouldLoad(true)
+        }}
+      >
+        <FileSpreadsheet className="size-4" />
+        导入上市计划表
+      </Button>
+    )
+  }
+
+  return (
+    <Suspense
+      fallback={(
+        <Button type="button" size="sm" disabled>
+          <Loader2 className="size-4 animate-spin" />
+          导入上市计划表
+        </Button>
+      )}
+    >
+      <SpreadsheetImportDialog
+        title="导入上市计划表"
+        description="服务端解析大体积 .xlsx / .csv，按模板表头匹配款号、款色、官方发布类目和上市时间；重复上传会覆盖同款号的生效明细。"
+        trigger={
+          <Button
+            ref={(element) => {
+              if (!element || !openPendingRef.current) return
+              openPendingRef.current = false
+              element.click()
+            }}
+            type="button"
+            size="sm"
+            disabled={disabled}
+          >
+            <FileSpreadsheet className="size-4" />
+            导入上市计划表
+          </Button>
+        }
+        onImport={onImport}
+      />
+    </Suspense>
+  )
+}
+
 export default function ListingLaunchPlansPage() {
   const queryClient = useQueryClient()
   const { addTask, getTaskByJobId, openTaskCenter } = useAsyncTasks()
   const [searchText, setSearchText] = useState("")
   const [sheetName, setSheetName] = useState("all")
-  const [pagination, setPagination] = useState({ limit: 50, offset: 0 })
+  const [pagination, setPagination] = useState<{ limit: number; afterSpuCode: string | null; afterRowId: number | null }>({
+    limit: 50,
+    afterSpuCode: null,
+    afterRowId: null,
+  })
+  const [cursorStack, setCursorStack] = useState<Array<{ afterSpuCode: string | null; afterRowId: number | null }>>([])
   const [importJobId, setImportJobId] = useState<string | null>(null)
   const handledImportJobIdRef = useRef<string | null>(null)
   const debouncedQuery = useDebounce(searchText, 300)
 
   const rows = useQuery<LaunchPlanRowsResponse>({
     queryKey: ["listing-launch-plan-rows", debouncedQuery, sheetName, pagination],
-    queryFn: () =>
-      api.get<LaunchPlanRowsResponse>(
-        `/listing-launch-plans/rows?q=${encodeURIComponent(debouncedQuery)}&sheetName=${encodeURIComponent(sheetName)}&limit=${pagination.limit}&offset=${pagination.offset}`,
-      ),
+    queryFn: () => {
+      const cursorParams = pagination.afterSpuCode && pagination.afterRowId
+        ? `&afterSpuCode=${encodeURIComponent(pagination.afterSpuCode)}&afterRowId=${pagination.afterRowId}`
+        : ""
+      return api.get<LaunchPlanRowsResponse>(
+        `/listing-launch-plans/rows?q=${encodeURIComponent(debouncedQuery)}&sheetName=${encodeURIComponent(sheetName)}&limit=${pagination.limit}${cursorParams}`,
+      )
+    },
   })
 
   const importLaunchPlan = useMutation({
@@ -141,7 +273,7 @@ export default function ListingLaunchPlansPage() {
     enabled: Boolean(importJobId),
     refetchInterval: (query) => {
       const job = query.state.data
-      return job && job.status !== "completed" ? 1500 : false
+      return job && !["completed", "failed", "cancelled"].includes(job.status) ? 1500 : false
     },
     refetchOnWindowFocus: false,
   })
@@ -149,14 +281,20 @@ export default function ListingLaunchPlansPage() {
   const trackedImportJob = (getTaskByJobId(importJobId)?.job ?? importJob.data) as LaunchPlanImportJob | null | undefined
 
   useEffect(() => {
-    if (!trackedImportJob || trackedImportJob.status !== "completed") return
+    if (!trackedImportJob || !["completed", "failed", "cancelled"].includes(trackedImportJob.status)) return
     if (handledImportJobIdRef.current === trackedImportJob.id) return
     handledImportJobIdRef.current = trackedImportJob.id
-    if (trackedImportJob.failed_count > 0) {
+    if (trackedImportJob.status === "cancelled") {
+      toast.warning("上市计划表导入任务已取消")
+      queryClient.invalidateQueries({ queryKey: ["listing-launch-plan-rows"] })
+      return
+    }
+    if (trackedImportJob.status === "failed" || trackedImportJob.failed_count > 0) {
       const message = trackedImportJob.error
         || trackedImportJob.items?.find((item) => item.status === "failed")?.error
         || "导入上市计划表失败"
       toast.error(message)
+      queryClient.invalidateQueries({ queryKey: ["listing-launch-plan-rows"] })
       return
     }
     const result = trackedImportJob.result
@@ -166,7 +304,6 @@ export default function ListingLaunchPlansPage() {
       `导入上市计划表完成：${formatNumber(result?.insertedRowCount ?? 0)} / ${formatNumber(result?.inputRowCount ?? 0)} 行，${formatNumber(result?.sheetCount ?? 0)} 个页签，自动应用类目 ${formatNumber(autoAppliedTradeCount)} 个`,
     )
     queryClient.invalidateQueries({ queryKey: ["listing-launch-plan-rows"] })
-    queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
   }, [queryClient, trackedImportJob])
 
   const summary = useMemo(() => {
@@ -182,15 +319,8 @@ export default function ListingLaunchPlansPage() {
         description="存放上市计划表导入后的结构化明细，供深绘建档草稿匹配类目、上市时间和商品基础字段；支持重复上传，同款号以最近一次导入为准。"
         summary={summary}
         actions={
-          <ImportDialog
-            title="导入上市计划表"
-            description="服务端解析大体积 .xlsx / .csv，按模板表头匹配款号、款色、官方发布类目和上市时间；重复上传会覆盖同款号的生效明细。"
-            trigger={
-              <Button type="button" size="sm" disabled={importLaunchPlan.isPending}>
-                <FileSpreadsheet className="size-4" />
-                导入上市计划表
-              </Button>
-            }
+          <DeferredSpreadsheetImportDialog
+            disabled={importLaunchPlan.isPending}
             onImport={async (file) => {
               await importLaunchPlan.mutateAsync(file)
             }}
@@ -214,7 +344,8 @@ export default function ListingLaunchPlansPage() {
                   value={searchText}
                   onChange={(event) => {
                     setSearchText(event.target.value)
-                    setPagination((current) => ({ ...current, offset: 0 }))
+                    setCursorStack([])
+                    setPagination((current) => ({ ...current, afterSpuCode: null, afterRowId: null }))
                   }}
                   placeholder="搜索款号、款色、类目"
                   className="pl-8"
@@ -224,7 +355,8 @@ export default function ListingLaunchPlansPage() {
                 value={sheetName}
                 onValueChange={(value) => {
                   setSheetName(value)
-                  setPagination((current) => ({ ...current, offset: 0 }))
+                  setCursorStack([])
+                  setPagination((current) => ({ ...current, afterSpuCode: null, afterRowId: null }))
                 }}
               >
                 <SelectTrigger className="w-[180px]">
@@ -292,11 +424,37 @@ export default function ListingLaunchPlansPage() {
               </TableBody>
             </Table>
           </CompactListTableFrame>
-          <ServerPagination
-            pagination={rows.data?.pagination}
-            onLimitChange={(limit) => setPagination({ limit, offset: 0 })}
-            onOffsetChange={(offset) => setPagination((current) => ({ ...current, offset }))}
+          <CursorPagination
+            total={rows.data?.pagination.total ?? 0}
+            limit={pagination.limit}
+            hasPrevious={cursorStack.length > 0}
+            hasNext={Boolean(rows.data?.nextCursor)}
             isLoading={rows.isFetching}
+            onPrevious={() => {
+              const previous = cursorStack.at(-1)
+              setCursorStack((current) => current.slice(0, -1))
+              setPagination((current) => ({
+                ...current,
+                afterSpuCode: previous?.afterSpuCode ?? null,
+                afterRowId: previous?.afterRowId ?? null,
+              }))
+            }}
+            onNext={() => {
+              if (!rows.data?.nextCursor) return
+              setCursorStack((current) => [...current, {
+                afterSpuCode: pagination.afterSpuCode,
+                afterRowId: pagination.afterRowId,
+              }])
+              setPagination((current) => ({
+                ...current,
+                afterSpuCode: rows.data.nextCursor?.afterSpuCode ?? null,
+                afterRowId: rows.data.nextCursor?.afterRowId ?? null,
+              }))
+            }}
+            onLimitChange={(limit) => {
+              setCursorStack([])
+              setPagination({ limit, afterSpuCode: null, afterRowId: null })
+            }}
           />
         </CompactListCardContent>
       </CompactListCard>

@@ -6,6 +6,7 @@ import {
   createPostgresProductArchiveSyncJobStore,
   createProductArchiveSyncQueue,
   isRetryableProductArchiveSyncError,
+  filterKnownProductArchiveSyncCandidates,
   parseSpuCodes,
 } from "./product_archive_sync_queue.mjs";
 
@@ -151,6 +152,76 @@ test("queue slices long jobs so later jobs can run between chunks", async () => 
   assert.equal(queue.getJob(quickJob.id).status, "completed");
 });
 
+test("queue reuses a persisted workflow idempotency key after restart", async () => {
+  const storedJobs = new Map();
+  const store = {
+    save(job) {
+      storedJobs.set(job.id, structuredClone(job));
+      return true;
+    },
+    get(id) {
+      const job = storedJobs.get(id);
+      return job ? structuredClone(job) : null;
+    },
+  };
+  let syncCount = 0;
+  const queueOptions = {
+    autoRecover: false,
+    store,
+    wait: async () => {},
+    syncOne: async () => {
+      syncCount += 1;
+      return { ok: true };
+    },
+  };
+  const firstQueue = createProductArchiveSyncQueue(queueOptions);
+  const first = firstQueue.enqueue({
+    source: "mdm",
+    rawCodes: ["A001"],
+    intervalMs: 0,
+    idempotencyKey: "workflow:job-1:draft_refresh",
+  });
+  const restartedQueue = createProductArchiveSyncQueue(queueOptions);
+  const replayed = restartedQueue.enqueue({
+    source: "mdm",
+    rawCodes: ["A001"],
+    intervalMs: 0,
+    idempotencyKey: "workflow:job-1:draft_refresh",
+  });
+
+  assert.equal(replayed.id, first.id);
+  await Promise.all([firstQueue.waitForIdle(), restartedQueue.waitForIdle()]);
+  assert.equal(syncCount, 1);
+});
+
+test("retrying a failed idempotent workflow job creates a new sync job", async () => {
+  let attempts = 0;
+  const queue = createProductArchiveSyncQueue({
+    maxAttempts: 1,
+    retryDelayMs: 0,
+    wait: async () => {},
+    syncOne: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("访问频率过高，请稍后重试");
+      return { ok: true };
+    },
+  });
+  const failed = queue.enqueue({
+    source: "mdm",
+    rawCodes: ["A001"],
+    intervalMs: 0,
+    idempotencyKey: "workflow:job-2:draft_refresh",
+  });
+  await queue.waitForIdle();
+
+  const retried = queue.retryFailed(failed.id);
+
+  assert.notEqual(retried.id, failed.id);
+  await queue.waitForIdle();
+  assert.equal(attempts, 2);
+  assert.equal(queue.getJob(retried.id).completed_count, 1);
+});
+
 test("queue retries transient rate-limit failures with bounded backoff", async () => {
   const waits = [];
   let attempts = 0;
@@ -240,6 +311,221 @@ test("queue does not retry terminal not-found failures", async () => {
   assert.equal(finished.items[0].retryable, false);
 });
 
+test("terminal MDM not-found is persisted once and is not retried", async () => {
+  const cached = [];
+  const queue = createProductArchiveSyncQueue({
+    concurrency: 2,
+    maxAttempts: 3,
+    retryDelayMs: 0,
+    wait: async () => {},
+    cacheNegativeResult: async (entry) => {
+      cached.push(entry);
+    },
+    syncOne: async () => {
+      throw new Error("请求的资源未在服务器上发现");
+    },
+  });
+
+  const job = queue.enqueue({ source: "mdm", rawCodes: ["A001"], intervalMs: 0 });
+  await queue.waitForIdle();
+
+  const finished = queue.getJob(job.id);
+  assert.equal(finished.items[0].attempt_count, 1);
+  assert.equal(finished.items[0].retryable, false);
+  assert.equal(finished.items[0].reasonCode, "mdm_spu_not_found");
+  assert.equal(cached.length, 1);
+  assert.equal(cached[0].source, "mdm");
+  assert.equal(cached[0].spuCode, "A001");
+  assert.equal(cached[0].reasonCode, "mdm_spu_not_found");
+});
+
+test("generic MDM HTTP 404 is not persisted as a terminal SPU miss", async () => {
+  const cached = [];
+  const queue = createProductArchiveSyncQueue({
+    maxAttempts: 1,
+    wait: async () => {},
+    cacheNegativeResult: async (entry) => {
+      cached.push(entry);
+    },
+    syncOne: async () => {
+      throw new Error("HTTP 404");
+    },
+  });
+
+  const job = queue.enqueue({ source: "mdm", rawCodes: ["A001"], intervalMs: 0 });
+  await queue.waitForIdle();
+
+  const finished = queue.getJob(job.id);
+  assert.equal(finished.items[0].reasonCode, "sync_failed");
+  assert.equal(finished.items[0].retryable, false);
+  assert.equal(cached.length, 0);
+});
+
+test("different valid codes can overlap but one code cannot overlap itself", async () => {
+  let active = 0;
+  let maxActive = 0;
+  const activeCodes = new Set();
+  let sameCodeOverlap = false;
+  const starts = [];
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const queue = createProductArchiveSyncQueue({
+    concurrency: 2,
+    wait: async () => {},
+    syncOne: async ({ spuCode }) => {
+      starts.push(spuCode);
+      if (activeCodes.has(spuCode)) sameCodeOverlap = true;
+      activeCodes.add(spuCode);
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await wait(25);
+      active -= 1;
+      activeCodes.delete(spuCode);
+      return { ok: true };
+    },
+  });
+
+  const job = queue.enqueue({ source: "mdm", rawCodes: ["A001", "B001", "A001"], intervalMs: 0 });
+  await queue.waitForIdle();
+
+  assert.deepEqual(job.codes, ["A001", "B001"]);
+  assert.ok(maxActive >= 2, `expected two distinct codes to overlap; maxActive=${maxActive}`);
+  assert.equal(sameCodeOverlap, false);
+  assert.deepEqual(starts.sort(), ["A001", "B001"]);
+});
+
+test("negative MDM cache skips candidates before external sync", () => {
+  const calls = [];
+  const now = "2026-09-04T00:00:00.000Z";
+  const db = {
+    prepare(sql) {
+      return {
+        all(...args) {
+          calls.push({ sql, args });
+          return [{ spu_code: "A001", reason_code: "mdm_spu_not_found" }];
+        },
+      };
+    },
+  };
+
+  const filtered = filterKnownProductArchiveSyncCandidates(db, "mdm", ["A001", "B001", "A001"], { now });
+
+  assert.deepEqual(filtered.acceptedCodes, ["B001"]);
+  assert.deepEqual(filtered.skippedItems, [{
+    spu_code: "A001",
+    status: "failed",
+    reasonCode: "mdm_spu_not_found_cached",
+    retryable: false,
+    attempt_count: 0,
+  }]);
+  assert.match(calls[0].sql, /product_archive_sync_negative_cache/i);
+  assert.match(calls[0].sql, /expires_at > \?::timestamptz/i);
+  assert.deepEqual(calls[0].args, ["mdm", ["A001", "B001"], now]);
+});
+
+test("retryFailed only retries retryable items and reapplies negative-cache filtering", async () => {
+  const syncCalls = [];
+  const queue = createProductArchiveSyncQueue({
+    maxAttempts: 1,
+    wait: async () => {},
+    filterCandidates: (_source, codes) => ({
+      acceptedCodes: [],
+      skippedItems: codes.map((code) => ({
+        spu_code: code,
+        status: "failed",
+        reasonCode: "mdm_spu_not_found_cached",
+        retryable: false,
+        attempt_count: 0,
+      })),
+    }),
+    syncOne: async ({ spuCode }) => {
+      syncCalls.push(spuCode);
+      if (spuCode === "A001") throw new Error("network timeout");
+      throw new Error("请求的资源未在服务器上发现");
+    },
+  });
+
+  const original = queue.enqueue({
+    source: "mdm",
+    rawCodes: ["A001", "B001"],
+    intervalMs: 0,
+  });
+  await queue.waitForIdle();
+
+  const finished = queue.getJob(original.id);
+  assert.equal(finished.items.find((item) => item.spu_code === "A001")?.retryable, true);
+  assert.equal(finished.items.find((item) => item.spu_code === "B001")?.retryable, false);
+
+  const retry = queue.retryFailed(original.id);
+  await queue.waitForIdle();
+
+  const retried = queue.getJob(retry.id);
+  assert.deepEqual(retry.codes, []);
+  assert.equal(retried.total_count, 1);
+  assert.equal(retried.failed_count, 1);
+  assert.equal(retried.items[0].spu_code, "A001");
+  assert.equal(retried.items[0].reasonCode, "mdm_spu_not_found_cached");
+  assert.deepEqual(syncCalls, ["A001", "B001"]);
+});
+
+test("mdm_deepdraw deepdraw-stage 404 does not write MDM negative cache", async () => {
+  const cached = [];
+  const queue = createProductArchiveSyncQueue({
+    maxAttempts: 1,
+    wait: async () => {},
+    cacheNegativeResult: async (entry) => {
+      cached.push(entry);
+    },
+    syncOne: async () => {
+      const error = new Error("HTTP 404");
+      error.productArchiveSyncStage = "deepdraw";
+      error.productArchiveSyncProvider = "deepdraw";
+      throw error;
+    },
+  });
+
+  const job = queue.enqueue({
+    source: "mdm_deepdraw",
+    rawCodes: ["A001"],
+    intervalMs: 0,
+  });
+  await queue.waitForIdle();
+
+  const finished = queue.getJob(job.id);
+  assert.equal(finished.items[0].reasonCode, "sync_failed");
+  assert.equal(finished.items[0].retryable, false);
+  assert.equal(cached.length, 0);
+});
+
+test("mdm_draft source does not override explicit deepdraw not-found context", async () => {
+  const cached = [];
+  const queue = createProductArchiveSyncQueue({
+    allowedSources: ["draft", "mdm_draft"],
+    maxAttempts: 1,
+    wait: async () => {},
+    cacheNegativeResult: async (entry) => {
+      cached.push(entry);
+    },
+    syncOne: async () => {
+      const error = new Error("请求的资源未在服务器上发现");
+      error.productArchiveSyncStage = "deepdraw";
+      error.productArchiveSyncProvider = "deepdraw";
+      throw error;
+    },
+  });
+
+  const job = queue.enqueue({
+    source: "mdm_draft",
+    rawCodes: ["A001"],
+    intervalMs: 0,
+  });
+  await queue.waitForIdle();
+
+  const finished = queue.getJob(job.id);
+  assert.equal(finished.items[0].reasonCode, "sync_failed");
+  assert.equal(finished.items[0].retryable, false);
+  assert.equal(cached.length, 0);
+});
+
 test("queue continues when one persistence write fails", async () => {
   let saveCount = 0;
   const seen = [];
@@ -277,7 +563,7 @@ test("queue can enqueue only the failed items from a completed job", async () =>
     maxAttempts: 1,
     wait: async () => {},
     syncOne: async ({ spuCode }) => {
-      if (failedOnce.delete(spuCode)) throw new Error("temporary upstream failure");
+      if (failedOnce.delete(spuCode)) throw new Error("network timeout");
       return { ok: true };
     },
   });

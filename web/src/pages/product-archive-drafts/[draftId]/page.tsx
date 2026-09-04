@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useRef, useState, type ReactNode } from "react"
 import { Link, useParams } from "react-router"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, ClipboardCheck, ExternalLink, FileText, Images, ListTree, Loader2, Maximize2, Pin, PinOff, RefreshCw, Save, Search, Send, Sparkles, Trash2, Upload, X } from "lucide-react"
 import { toast } from "sonner"
 import { api, ApiError } from "@/lib/api-client"
@@ -60,9 +60,9 @@ interface Draft {
   title: string | null
   retail_price: number | null
   status: string
-  source_snapshot_json: unknown
+  source_snapshot_json?: unknown
   validation_summary_json: { blocker_count?: number; warning_count?: number; validated_at?: string }
-  duplicate_result_json: unknown
+  duplicate_result_json?: unknown
   created_product_id: string | null
   updated_at: string
 }
@@ -132,6 +132,10 @@ interface DraftImage {
   width: number | null
   height: number | null
   preview_url: string | null
+  thumbnail_url?: string | null
+  full_url?: string | null
+  asset_kind?: string | null
+  kind?: DraftAssetKind
   raw_payload_json?: unknown
   created_at: string
 }
@@ -145,16 +149,59 @@ type DraftAssetPreviewTarget = {
 
 interface DraftDetail {
   draft: Draft
-  tradeSelectionDecision: TradeSelectionDecision
+  tradeSelectionDecision: TradeSelectionDecision | null
   tradePlatforms?: string[]
   launchPlanReference?: LaunchPlanReference
   sizeChartMappings?: SizeChartMapping[]
   sizeChartSourceRows?: SizeChartSourceRow[]
+  counts?: DraftSummaryCounts
   fields: DraftField[]
   skus: DraftSku[]
   issues: DraftIssue[]
   images?: DraftImage[]
   logs: DraftLog[]
+}
+
+interface DraftSummaryCounts {
+  fields: number
+  skus: number
+  issues: number
+  images: number
+  referenceImages: number
+  hangtagImages: number
+  washlabelImages: number
+}
+
+interface DraftSummary {
+  draft: Draft
+  tradeSelectionDecision: TradeSelectionDecision | null
+  tradePlatforms: string[]
+  launchPlanReference: LaunchPlanReference
+  sizeChartMappings: SizeChartMapping[]
+  counts: DraftSummaryCounts
+  thumbnail: DraftImage | null
+}
+
+interface DraftResourcePage<T> {
+  items: T[]
+  pagination: {
+    total: number
+    limit: number
+    offset: number
+  }
+}
+
+interface DraftAssetsResponse extends DraftResourcePage<DraftImage> {
+  counts: {
+    reference: number
+    hangtag: number
+    washlabel: number
+  }
+}
+
+interface DraftSourceSnapshotResponse {
+  source: unknown
+  duplicate: unknown
 }
 
 interface DraftFieldPatch {
@@ -277,15 +324,77 @@ function draftSubmitModeLabel(mode: DraftSubmitMode) {
   return "确认发布到深绘"
 }
 
-function useDraftDetail(draftId: string | undefined) {
-  return useQuery<DraftDetail>({
-    queryKey: ["product-archive-drafts", draftId],
+const DRAFT_RESOURCE_PAGE_SIZE = 100
+
+function useDraftSummary(draftId: string | undefined) {
+  return useQuery<DraftSummary>({
+    queryKey: ["product-archive-draft-summary", draftId],
     enabled: Boolean(draftId),
-    queryFn: () => api.get<DraftDetail>(`/product-archive-drafts/${draftId}`),
+    staleTime: 15000,
+    queryFn: () => api.get<DraftSummary>(`/product-archive-drafts/${draftId}/summary`),
   })
 }
 
-function draftDetailFallbackDescription(detail: ReturnType<typeof useDraftDetail>) {
+function useDraftPagedResource<T>(input: {
+  draftId: string | undefined
+  queryKey: string
+  path: string
+  enabled: boolean
+}) {
+  const query = useInfiniteQuery<DraftResourcePage<T>>({
+    queryKey: [input.queryKey, input.draftId],
+    enabled: Boolean(input.draftId) && input.enabled,
+    staleTime: 15000,
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) => api.get<DraftResourcePage<T>>(
+      `${input.path}?limit=${DRAFT_RESOURCE_PAGE_SIZE}&offset=${pageParam}`,
+    ),
+    getNextPageParam: (lastPage) => {
+      const nextOffset = lastPage.pagination.offset + lastPage.items.length
+      return nextOffset < lastPage.pagination.total ? nextOffset : undefined
+    },
+  })
+  const items = useMemo(() => query.data?.pages.flatMap((page) => page.items) ?? [], [query.data])
+  return {
+    ...query,
+    items,
+    total: query.data?.pages[0]?.pagination.total ?? 0,
+  }
+}
+
+function useDraftAssets(draftId: string | undefined) {
+  const query = useInfiniteQuery<DraftAssetsResponse>({
+    queryKey: ["product-archive-draft-assets", draftId],
+    enabled: Boolean(draftId),
+    staleTime: 15000,
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) => api.get<DraftAssetsResponse>(
+      `/product-archive-drafts/${draftId}/assets?limit=${DRAFT_RESOURCE_PAGE_SIZE}&offset=${pageParam}`,
+    ),
+    getNextPageParam: (lastPage) => {
+      const nextOffset = lastPage.pagination.offset + lastPage.items.length
+      return nextOffset < lastPage.pagination.total ? nextOffset : undefined
+    },
+  })
+  const items = useMemo(() => query.data?.pages.flatMap((page) => page.items) ?? [], [query.data])
+  return {
+    ...query,
+    items,
+    total: query.data?.pages[0]?.pagination.total ?? 0,
+    counts: query.data?.pages[0]?.counts ?? { reference: 0, hangtag: 0, washlabel: 0 },
+  }
+}
+
+function useDraftSourceSnapshot(draftId: string | undefined, enabled: boolean) {
+  return useQuery<DraftSourceSnapshotResponse>({
+    queryKey: ["product-archive-draft-source", draftId],
+    enabled: Boolean(draftId) && enabled,
+    staleTime: 15000,
+    queryFn: () => api.get<DraftSourceSnapshotResponse>(`/product-archive-drafts/${draftId}/source`),
+  })
+}
+
+function draftDetailFallbackDescription(detail: ReturnType<typeof useDraftSummary>) {
   if (detail.isLoading) return "正在加载草稿详情"
   if (detail.error instanceof ApiError && detail.error.status === 404) return "草稿不存在"
   if (detail.isError) {
@@ -1154,7 +1263,7 @@ function DraftAssetThumbnail({ image, label }: { image: DraftImage; label: strin
       src={src}
       alt={label}
       className="h-full w-full object-contain"
-      loading="eager"
+      loading="lazy"
       onError={() => setFailed(true)}
     />
   )
@@ -1377,7 +1486,6 @@ export default function ProductArchiveDraftDetailPage() {
   const canWrite = hasPermission("PRODUCT_ARCHIVE_DRAFT_WRITE")
   const { draftId } = useParams()
   const queryClient = useQueryClient()
-  const detail = useDraftDetail(draftId)
   const pageScrollRef = useRef<HTMLDivElement | null>(null)
   const validationLocatorRef = useRef<HTMLDivElement | null>(null)
   const fieldRowRefs = useRef<Record<string, HTMLTableRowElement | null>>({})
@@ -1401,6 +1509,57 @@ export default function ProductArchiveDraftDetailPage() {
   const [previewTarget, setPreviewTarget] = useState<DraftAssetPreviewTarget | null>(null)
   const debouncedTradeSearch = useDebounce(tradeSearch, 250)
 
+  const summaryQuery = useDraftSummary(draftId)
+  const fieldsQuery = useDraftPagedResource<DraftField>({
+    draftId,
+    queryKey: "product-archive-draft-fields",
+    path: `/product-archive-drafts/${draftId}/fields`,
+    enabled: activeTab === "fields" || activeTab === "size-chart",
+  })
+  const skusQuery = useDraftPagedResource<DraftSku>({
+    draftId,
+    queryKey: "product-archive-draft-skus",
+    path: `/product-archive-drafts/${draftId}/skus`,
+    enabled: activeTab === "skus" || activeTab === "size-chart",
+  })
+  const issuesQuery = useDraftPagedResource<DraftIssue>({
+    draftId,
+    queryKey: "product-archive-draft-issues",
+    path: `/product-archive-drafts/${draftId}/issues`,
+    enabled: activeTab === "fields" || activeTab === "issues",
+  })
+  const activityQuery = useDraftPagedResource<DraftLog>({
+    draftId,
+    queryKey: "product-archive-draft-activity",
+    path: `/product-archive-drafts/${draftId}/activity`,
+    enabled: activeTab === "logs",
+  })
+  const sizeChartSourceQuery = useDraftPagedResource<SizeChartSourceRow>({
+    draftId,
+    queryKey: "product-archive-draft-size-chart-source",
+    path: `/product-archive-drafts/${draftId}/size-chart/source`,
+    enabled: activeTab === "size-chart",
+  })
+  const assetsQuery = useDraftAssets(draftId)
+  const sourceSnapshotQuery = useDraftSourceSnapshot(draftId, activeTab === "source")
+  const detailData = useMemo<DraftDetail | undefined>(() => {
+    if (!summaryQuery.data) return undefined
+    const fallbackImages = summaryQuery.data.thumbnail ? [summaryQuery.data.thumbnail] : []
+    const pageItems = <T,>(data: { pages: DraftResourcePage<T>[] } | undefined) => (
+      data?.pages.flatMap((page) => page.items) ?? []
+    )
+    return {
+      ...summaryQuery.data,
+      counts: summaryQuery.data.counts,
+      fields: pageItems(fieldsQuery.data),
+      skus: pageItems(skusQuery.data),
+      issues: pageItems(issuesQuery.data),
+      images: assetsQuery.items.length > 0 ? assetsQuery.items : fallbackImages,
+      logs: pageItems(activityQuery.data),
+      sizeChartSourceRows: pageItems(sizeChartSourceQuery.data),
+    }
+  }, [activityQuery.data, assetsQuery.items, fieldsQuery.data, issuesQuery.data, sizeChartSourceQuery.data, skusQuery.data, summaryQuery.data])
+  const detail = { ...summaryQuery, data: detailData }
   const draft = detail.data?.draft
   const summary = draft?.validation_summary_json ?? {}
   const tradeSelectionDecision = detail.data?.tradeSelectionDecision
@@ -1409,7 +1568,7 @@ export default function ProductArchiveDraftDetailPage() {
     && tradeSelectionDecision.recommendedTrade.tradeId !== tradeSelectionDecision.appliedTrade?.tradeId,
   )
   const launchPlanReference = detail.data?.launchPlanReference ?? { matched: false, fields: [] }
-  const draftAssets = useMemo(() => groupDraftAssets(detail.data?.images ?? []), [detail.data?.images])
+  const draftAssets = useMemo(() => groupDraftAssets(detailData?.images ?? []), [detailData])
   const trades = useQuery<TradeListResponse>({
     queryKey: ["deepdraw-metadata-trades", draft?.tenant_name, debouncedTradeSearch],
     enabled: Boolean(draft && tradeDialogOpen),
@@ -1420,7 +1579,7 @@ export default function ProductArchiveDraftDetailPage() {
     return (trades.data?.items ?? []).find((trade) => trade.trade_id === selectedTradeId) ?? null
   }, [selectedTradeId, trades.data?.items])
   const changedFields = useMemo(() => {
-    const currentFields = new Map((detail.data?.fields ?? []).map((field) => [field.id, field]))
+    const currentFields = new Map((detailData?.fields ?? []).map((field) => [field.id, field]))
     return Object.entries(fieldValues)
       .filter(([id, value]) => value !== (currentFields.get(Number(id))?.value_text ?? ""))
       .flatMap(([id, valueText]) => {
@@ -1433,10 +1592,10 @@ export default function ProductArchiveDraftDetailPage() {
           valueText,
         }]
       })
-  }, [detail.data?.fields, fieldValues])
+  }, [detailData, fieldValues])
   const unresolvedIssues = useMemo(() => {
-    return (detail.data?.issues ?? []).filter((issue) => !issue.resolved_at)
-  }, [detail.data?.issues])
+    return (detailData?.issues ?? []).filter((issue) => !issue.resolved_at)
+  }, [detailData])
   const unresolvedFieldIssues = useMemo(() => {
     return unresolvedIssues.filter((issue) => Boolean(issue.field_name))
   }, [unresolvedIssues])
@@ -1453,14 +1612,14 @@ export default function ProductArchiveDraftDetailPage() {
   const fieldIssueNames = useMemo(() => {
     const orderedNames: string[] = []
     const seen = new Set<string>()
-    for (const field of detail.data?.fields ?? []) {
+    for (const field of detailData?.fields ?? []) {
       if (!fieldIssueMap.has(field.field_name) || seen.has(field.field_name)) continue
       orderedNames.push(field.field_name)
       seen.add(field.field_name)
     }
     return orderedNames
-  }, [detail.data?.fields, fieldIssueMap])
-  const fieldGroups = useMemo(() => groupDraftFieldsByPlatform(detail.data?.fields ?? []), [detail.data?.fields])
+  }, [detailData, fieldIssueMap])
+  const fieldGroups = useMemo(() => groupDraftFieldsByPlatform(detailData?.fields ?? []), [detailData])
   const normalizedActiveIssueIndex = fieldIssueNames.length > 0
     ? Math.min(activeIssueIndex, fieldIssueNames.length - 1)
     : 0
@@ -1474,7 +1633,7 @@ export default function ProductArchiveDraftDetailPage() {
       preview.fieldName,
       recordValue(preview.valueJson),
     ]))
-    return (detail.data?.fields ?? [])
+    return (detailData?.fields ?? [])
       .filter((field) => isProductArchiveSizeChartField(field))
       .map((field) => {
         const persistedValueJson = recordValue(field.value_json)
@@ -1483,7 +1642,7 @@ export default function ProductArchiveDraftDetailPage() {
           ? recommendedValueJson
           : hasStructuredSizeChartValue(persistedValueJson)
             ? persistedValueJson
-            : defaultSizeChartValueJson(field, detail.data?.skus ?? [])
+            : defaultSizeChartValueJson(field, detailData?.skus ?? [])
         const parsed = sizeChartRows(valueJson)
         return {
           fieldId: field.id,
@@ -1495,11 +1654,11 @@ export default function ProductArchiveDraftDetailPage() {
           titles: parsed.titles,
         }
       })
-  }, [detail.data?.fields, detail.data?.skus, sizeChartRecommendation?.previews])
+  }, [detailData, sizeChartRecommendation?.previews])
   const activeSizeChartMappings = sizeChartRecommendation?.mappings ?? detail.data?.sizeChartMappings ?? []
   const sizeChartImportedMatrix = useMemo(() => (
-    sizeChartSourceMatrix(detail.data?.sizeChartSourceRows ?? [])
-  ), [detail.data?.sizeChartSourceRows])
+    sizeChartSourceMatrix(detailData?.sizeChartSourceRows ?? [])
+  ), [detailData])
   const sizeChartChangedFields = useMemo(() => {
     return sizeChartPreview
       .map((preview) => {
@@ -1516,6 +1675,28 @@ export default function ProductArchiveDraftDetailPage() {
       })
       .filter(Boolean) as DraftFieldPatch[]
   }, [sizeChartCellValues, sizeChartPreview])
+
+  const invalidateDraftSummary = () => {
+    queryClient.invalidateQueries({ queryKey: ["product-archive-draft-summary", draftId] })
+  }
+  const invalidateDraftFields = () => {
+    queryClient.invalidateQueries({ queryKey: ["product-archive-draft-fields", draftId] })
+  }
+  const invalidateDraftIssues = () => {
+    queryClient.invalidateQueries({ queryKey: ["product-archive-draft-issues", draftId] })
+  }
+  const invalidateDraftAssets = () => {
+    queryClient.invalidateQueries({ queryKey: ["product-archive-draft-assets", draftId] })
+  }
+  const invalidateDraftActivity = () => {
+    queryClient.invalidateQueries({ queryKey: ["product-archive-draft-activity", draftId] })
+  }
+  const invalidateDraftSource = () => {
+    queryClient.invalidateQueries({ queryKey: ["product-archive-draft-source", draftId] })
+  }
+  const invalidateDraftSizeChartSource = () => {
+    queryClient.invalidateQueries({ queryKey: ["product-archive-draft-size-chart-source", draftId] })
+  }
   const scrollToFieldIssue = (nextIndex: number) => {
     if (fieldIssueNames.length === 0) return
     const normalizedIndex = ((nextIndex % fieldIssueNames.length) + fieldIssueNames.length) % fieldIssueNames.length
@@ -1572,7 +1753,9 @@ export default function ProductArchiveDraftDetailPage() {
         return next
       })
       queryClient.setQueryData(["product-archive-drafts", draftId], result)
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+      invalidateDraftSummary()
+      invalidateDraftFields()
+      invalidateDraftIssues()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "保存字段失败")
@@ -1597,7 +1780,9 @@ export default function ProductArchiveDraftDetailPage() {
         return next
       })
       queryClient.setQueryData(["product-archive-drafts", draftId], result)
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+      invalidateDraftSummary()
+      invalidateDraftFields()
+      invalidateDraftIssues()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "保存尺码表数值失败")
@@ -1615,7 +1800,9 @@ export default function ProductArchiveDraftDetailPage() {
       setTradeDialogOpen(false)
       setSelectedTradeId(null)
       setFieldValues({})
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+      invalidateDraftSummary()
+      invalidateDraftFields()
+      invalidateDraftIssues()
     },
   })
 
@@ -1626,6 +1813,9 @@ export default function ProductArchiveDraftDetailPage() {
     onSuccess: (result) => {
       queryClient.setQueryData(["product-archive-drafts", draftId], result)
       toast.success("推荐类目已确认")
+      invalidateDraftSummary()
+      invalidateDraftFields()
+      invalidateDraftIssues()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "确认推荐类目失败")
@@ -1645,7 +1835,9 @@ export default function ProductArchiveDraftDetailPage() {
     },
     onSuccess: () => {
       toast.success("校验已完成")
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+      invalidateDraftSummary()
+      invalidateDraftFields()
+      invalidateDraftIssues()
     },
   })
 
@@ -1669,7 +1861,9 @@ export default function ProductArchiveDraftDetailPage() {
         )
         if (warningMessage) toast.warning(warningMessage)
       }
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+      invalidateDraftSummary()
+      invalidateDraftFields()
+      invalidateDraftIssues()
     },
   })
 
@@ -1683,7 +1877,8 @@ export default function ProductArchiveDraftDetailPage() {
       setImageUploadFiles([])
       setImageUploadDialogOpen(false)
       toast.success(`已上传 ${formatNumber(result.imported_count)} 张 SPU 参考图`)
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+      invalidateDraftSummary()
+      invalidateDraftAssets()
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
     },
     onError: (error) => {
@@ -1699,7 +1894,8 @@ export default function ProductArchiveDraftDetailPage() {
     onSuccess: (result) => {
       queryClient.setQueryData(["product-archive-drafts", draftId], result.detail)
       toast.success("参考图已删除")
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+      invalidateDraftSummary()
+      invalidateDraftAssets()
       queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
     },
     onError: (error) => {
@@ -1730,7 +1926,9 @@ export default function ProductArchiveDraftDetailPage() {
     }),
     onSuccess: () => {
       toast.success("尺码表映射审核已保存")
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+      invalidateDraftSummary()
+      invalidateDraftIssues()
+      invalidateDraftSizeChartSource()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "保存尺码表映射失败")
@@ -1746,7 +1944,10 @@ export default function ProductArchiveDraftDetailPage() {
       if (result.detail) queryClient.setQueryData(["product-archive-drafts", draftId], result.detail)
       setSizeChartCellValues({})
       toast.success("尺码表映射已应用到草稿")
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+      invalidateDraftSummary()
+      invalidateDraftFields()
+      invalidateDraftIssues()
+      invalidateDraftSizeChartSource()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "应用尺码表映射失败")
@@ -1760,7 +1961,9 @@ export default function ProductArchiveDraftDetailPage() {
     ),
     onSuccess: () => {
       toast.success("已生成提交预览")
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+      invalidateDraftSummary()
+      invalidateDraftActivity()
+      invalidateDraftSource()
     },
   })
 
@@ -1785,7 +1988,9 @@ export default function ProductArchiveDraftDetailPage() {
       } else {
         toast.error(`深绘已受理但回读未确认，当前状态：${result.status || "unknown"}`)
       }
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts", draftId] })
+      invalidateDraftSummary()
+      invalidateDraftActivity()
+      invalidateDraftSource()
     },
     onError: (error, variables) => {
       toast.error(error instanceof Error ? error.message : `${draftSubmitModeLabel(variables.submitMode)}失败`)
@@ -1804,7 +2009,7 @@ export default function ProductArchiveDraftDetailPage() {
   if (!draft) {
     return (
       <PageContainer>
-        <PageHeader title="深绘建档草稿" description={draftDetailFallbackDescription(detail)} />
+        <PageHeader title="深绘建档草稿" description={draftDetailFallbackDescription(summaryQuery)} />
       </PageContainer>
     )
   }
@@ -1820,7 +2025,7 @@ export default function ProductArchiveDraftDetailPage() {
     { label: "草稿编号", value: draft.draft_no },
     { label: "商户 ID", value: draft.merchant_id },
     { label: "吊牌价", value: draft.retail_price ?? "-" },
-    { label: "字段数", value: formatNumber(detail.data?.fields.length ?? 0) },
+    { label: "字段数", value: formatNumber(detail.data?.counts?.fields ?? 0) },
     { label: "最近校验", value: summary.validated_at ? formatDateTime(summary.validated_at) : "-" },
     { label: "更新时间", value: formatDateTime(draft.updated_at) },
     { label: "深绘类目", value: draft.trade_path || "待确认类目" },
@@ -2052,6 +2257,20 @@ export default function ProductArchiveDraftDetailPage() {
           onPreview={setPreviewTarget}
         />
       </div>
+      {assetsQuery.hasNextPage ? (
+        <div className="flex justify-center">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={assetsQuery.isFetchingNextPage}
+            onClick={() => assetsQuery.fetchNextPage()}
+          >
+            {assetsQuery.isFetchingNextPage ? <Loader2 className="size-4 animate-spin" /> : null}
+            加载更多附件（{formatNumber(assetsQuery.items.length)} / {formatNumber(assetsQuery.total)}）
+          </Button>
+        </div>
+      ) : null}
 
       <DraftAssetPreviewDialog target={previewTarget} onClose={() => setPreviewTarget(null)} />
 
@@ -2334,7 +2553,12 @@ export default function ProductArchiveDraftDetailPage() {
                   </div>
                 ) : null}
               </div>
-              {(detail.data?.fields.length ?? 0) === 0 ? (
+              {fieldsQuery.isLoading ? (
+                <div className="mx-6 mt-4 flex items-center justify-center gap-2 rounded-lg border border-dashed p-8 text-sm text-muted-foreground">
+                  <Loader2 className="size-4 animate-spin" />
+                  正在加载字段
+                </div>
+              ) : (detail.data?.fields.length ?? 0) === 0 ? (
                 <div className="mx-6 mt-4 rounded-lg border border-dashed p-8 text-center">
                   <div className="text-sm font-medium">还没有字段模板</div>
                   <div className="mt-2 text-sm text-muted-foreground">
@@ -2532,6 +2756,20 @@ export default function ProductArchiveDraftDetailPage() {
                   })}
                 </div>
               )}
+              {fieldsQuery.hasNextPage ? (
+                <div className="flex justify-center px-6 pt-4">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={fieldsQuery.isFetchingNextPage}
+                    onClick={() => fieldsQuery.fetchNextPage()}
+                  >
+                    {fieldsQuery.isFetchingNextPage ? <Loader2 className="size-4 animate-spin" /> : null}
+                    加载更多字段（{formatNumber(fieldsQuery.items.length)} / {formatNumber(fieldsQuery.total)}）
+                  </Button>
+                </div>
+              ) : null}
             </CardContent>
           </Card>
           </TabsContent>
@@ -2694,10 +2932,15 @@ export default function ProductArchiveDraftDetailPage() {
                         </Button>
                       </CollapsibleTrigger>
                     </div>
-                  </div>
-                  <CollapsibleContent>
-                    {sizeChartImportedMatrix.rows.length > 0 ? (
-                      <Table className="w-max min-w-full">
+                      </div>
+                      <CollapsibleContent>
+                        {sizeChartSourceQuery.isLoading ? (
+                          <div className="flex items-center justify-center gap-2 px-4 py-6 text-sm text-muted-foreground">
+                            <Loader2 className="size-4 animate-spin" />
+                            正在加载 PLM 来源行
+                          </div>
+                        ) : sizeChartImportedMatrix.rows.length > 0 ? (
+                          <Table className="w-max min-w-full">
                         <TableHeader>
                           <TableRow>
                             <TableHead className="w-24">尺码</TableHead>
@@ -2718,10 +2961,24 @@ export default function ProductArchiveDraftDetailPage() {
                         </TableBody>
                       </Table>
                     ) : (
-                      <div className="px-4 py-6 text-sm text-muted-foreground">当前草稿未关联 PLM 尺码表导入字段。</div>
-                    )}
-                  </CollapsibleContent>
-                </Collapsible>
+                          <div className="px-4 py-6 text-sm text-muted-foreground">当前草稿未关联 PLM 尺码表导入字段。</div>
+                        )}
+                      </CollapsibleContent>
+                      {sizeChartSourceQuery.hasNextPage ? (
+                        <div className="flex justify-center border-t px-4 py-3">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={sizeChartSourceQuery.isFetchingNextPage}
+                            onClick={() => sizeChartSourceQuery.fetchNextPage()}
+                          >
+                            {sizeChartSourceQuery.isFetchingNextPage ? <Loader2 className="size-4 animate-spin" /> : null}
+                            加载更多来源行（{formatNumber(sizeChartSourceQuery.items.length)} / {formatNumber(sizeChartSourceQuery.total)}）
+                          </Button>
+                        </div>
+                      ) : null}
+                    </Collapsible>
 
                 {sizeChartPreview.length > 0 ? (
                   sizeChartPreview.map((preview) => (
@@ -2809,101 +3066,165 @@ export default function ProductArchiveDraftDetailPage() {
               <CardTitle>SKU/颜色尺码</CardTitle>
             </CardHeader>
             <CardContent>
-                  <Table className="w-max min-w-full">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>SKC</TableHead>
-                    <TableHead>SKU</TableHead>
-                    <TableHead>颜色</TableHead>
-                    <TableHead>尺码</TableHead>
-                    <TableHead>条码</TableHead>
-                    <TableHead>价格</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {detail.data?.skus.map((sku) => (
-                    <TableRow key={sku.id}>
-                      <TableCell>{sku.skc_code}</TableCell>
-                      <TableCell>{sku.sku_code}</TableCell>
-                      <TableCell>{sku.color_name}</TableCell>
-                      <TableCell>{sku.size_name}</TableCell>
-                      <TableCell>{sku.barcode || sku.seller_code}</TableCell>
-                      <TableCell>{sku.price ?? "-"}</TableCell>
+              {skusQuery.isLoading ? (
+                <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                  <Loader2 className="size-4 animate-spin" />
+                  正在加载 SKU
+                </div>
+              ) : null}
+              {!skusQuery.isLoading ? (
+                <Table className="w-max min-w-full">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>SKC</TableHead>
+                      <TableHead>SKU</TableHead>
+                      <TableHead>颜色</TableHead>
+                      <TableHead>尺码</TableHead>
+                      <TableHead>条码</TableHead>
+                      <TableHead>价格</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {detail.data?.skus.map((sku) => (
+                      <TableRow key={sku.id}>
+                        <TableCell>{sku.skc_code}</TableCell>
+                        <TableCell>{sku.sku_code}</TableCell>
+                        <TableCell>{sku.color_name}</TableCell>
+                        <TableCell>{sku.size_name}</TableCell>
+                        <TableCell>{sku.barcode || sku.seller_code}</TableCell>
+                        <TableCell>{sku.price ?? "-"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              ) : null}
+              {skusQuery.hasNextPage ? (
+                <div className="flex justify-center pt-4">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={skusQuery.isFetchingNextPage}
+                    onClick={() => skusQuery.fetchNextPage()}
+                  >
+                    {skusQuery.isFetchingNextPage ? <Loader2 className="size-4 animate-spin" /> : null}
+                    加载更多 SKU（{formatNumber(skusQuery.items.length)} / {formatNumber(skusQuery.total)}）
+                  </Button>
+                </div>
+              ) : null}
             </CardContent>
           </Card>
         </TabsContent>
 
         <TabsContent value="issues" className="min-w-0">
           <Card className="min-w-0 overflow-hidden">
-            <CardHeader>
-              <CardTitle>校验问题</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Table className="w-max min-w-full">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>级别</TableHead>
-                    <TableHead>类型</TableHead>
-                    <TableHead>字段/SKU</TableHead>
-                    <TableHead>说明</TableHead>
-                    <TableHead>状态</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {detail.data?.issues.map((issue) => (
-                    <TableRow key={issue.id}>
-                      <TableCell>{issue.severity}</TableCell>
-                      <TableCell>{issue.issue_type}</TableCell>
-                      <TableCell>{issue.field_name || issue.sku_code || "-"}</TableCell>
-                      <TableCell>{issue.message}</TableCell>
-                      <TableCell>{issue.resolved_at ? "已解决" : "未解决"}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
+                <CardHeader>
+                  <CardTitle>校验问题</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {issuesQuery.isLoading ? (
+                    <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                      <Loader2 className="size-4 animate-spin" />
+                      正在加载校验问题
+                    </div>
+                  ) : (
+                    <Table className="w-max min-w-full">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>级别</TableHead>
+                          <TableHead>类型</TableHead>
+                          <TableHead>字段/SKU</TableHead>
+                          <TableHead>说明</TableHead>
+                          <TableHead>状态</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {detail.data?.issues.map((issue) => (
+                          <TableRow key={issue.id}>
+                            <TableCell>{issue.severity}</TableCell>
+                            <TableCell>{issue.issue_type}</TableCell>
+                            <TableCell>{issue.field_name || issue.sku_code || "-"}</TableCell>
+                            <TableCell>{issue.message}</TableCell>
+                            <TableCell>{issue.resolved_at ? "已解决" : "未解决"}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                  {issuesQuery.hasNextPage ? (
+                    <div className="flex justify-center pt-4">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={issuesQuery.isFetchingNextPage}
+                        onClick={() => issuesQuery.fetchNextPage()}
+                      >
+                        {issuesQuery.isFetchingNextPage ? <Loader2 className="size-4 animate-spin" /> : null}
+                        加载更多问题（{formatNumber(issuesQuery.items.length)} / {formatNumber(issuesQuery.total)}）
+                      </Button>
+                    </div>
+                  ) : null}
+                </CardContent>
           </Card>
         </TabsContent>
 
         <TabsContent value="logs" className="min-w-0">
           <Card className="min-w-0 overflow-hidden">
-            <CardHeader>
-              <CardTitle>提交记录</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Table className="w-max min-w-full">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>操作</TableHead>
-                    <TableHead>HTTP</TableHead>
-                    <TableHead>业务码</TableHead>
-                    <TableHead>原因</TableHead>
-                    <TableHead>request id</TableHead>
-                    <TableHead>productId</TableHead>
-                    <TableHead>时间</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {detail.data?.logs.map((log) => (
-                    <TableRow key={log.id}>
-                      <TableCell>{log.operation}</TableCell>
-                      <TableCell>{log.http_status ?? "-"}</TableCell>
-                      <TableCell>{log.response_code || "-"}</TableCell>
-                      <TableCell className="max-w-[420px] whitespace-normal break-words">
-                        {log.response_reason || "-"}
-                      </TableCell>
-                      <TableCell>{log.request_id || "-"}</TableCell>
-                      <TableCell>{log.product_id || "-"}</TableCell>
-                      <TableCell>{formatDateTime(log.created_at)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
+                <CardHeader>
+                  <CardTitle>提交记录</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {activityQuery.isLoading ? (
+                    <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                      <Loader2 className="size-4 animate-spin" />
+                      正在加载提交记录
+                    </div>
+                  ) : (
+                    <Table className="w-max min-w-full">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>操作</TableHead>
+                          <TableHead>HTTP</TableHead>
+                          <TableHead>业务码</TableHead>
+                          <TableHead>原因</TableHead>
+                          <TableHead>request id</TableHead>
+                          <TableHead>productId</TableHead>
+                          <TableHead>时间</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {detail.data?.logs.map((log) => (
+                          <TableRow key={log.id}>
+                            <TableCell>{log.operation}</TableCell>
+                            <TableCell>{log.http_status ?? "-"}</TableCell>
+                            <TableCell>{log.response_code || "-"}</TableCell>
+                            <TableCell className="max-w-[420px] whitespace-normal break-words">
+                              {log.response_reason || "-"}
+                            </TableCell>
+                            <TableCell>{log.request_id || "-"}</TableCell>
+                            <TableCell>{log.product_id || "-"}</TableCell>
+                            <TableCell>{formatDateTime(log.created_at)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                  {activityQuery.hasNextPage ? (
+                    <div className="flex justify-center pt-4">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={activityQuery.isFetchingNextPage}
+                        onClick={() => activityQuery.fetchNextPage()}
+                      >
+                        {activityQuery.isFetchingNextPage ? <Loader2 className="size-4 animate-spin" /> : null}
+                        加载更多记录（{formatNumber(activityQuery.items.length)} / {formatNumber(activityQuery.total)}）
+                      </Button>
+                    </div>
+                  ) : null}
+                </CardContent>
           </Card>
         </TabsContent>
 
@@ -2915,10 +3236,12 @@ export default function ProductArchiveDraftDetailPage() {
             </CardHeader>
             <CardContent>
               <pre className="max-h-[520px] overflow-auto rounded-md bg-muted p-3 text-xs">
-                {JSON.stringify({
-                  source: draft.source_snapshot_json,
-                  duplicate: draft.duplicate_result_json,
-                }, null, 2)}
+                {sourceSnapshotQuery.isLoading
+                  ? "正在加载来源快照…"
+                  : JSON.stringify({
+                    source: sourceSnapshotQuery.data?.source,
+                    duplicate: sourceSnapshotQuery.data?.duplicate,
+                  }, null, 2)}
               </pre>
             </CardContent>
           </Card>

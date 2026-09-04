@@ -2,11 +2,12 @@ import { Hono } from "hono"
 import { serve } from "@hono/node-server"
 import { cors } from "hono/cors"
 import { loadLocalEnv } from "../../scripts/lib/local_env.mjs"
+import { validateProductArchivePerformanceEnv } from "../../scripts/lib/product_archive_performance_config.mjs"
 import { errorHandler, logger } from "./middleware/error-handler"
 import metadata from "./routes/metadata"
 import categoryMapping from "./routes/category-mapping"
 import productArchives, { resumeProductArchiveSyncQueue } from "./routes/product-archives"
-import productArchiveDrafts, { resumeProductArchiveDraftQueue } from "./routes/product-archive-drafts"
+import productArchiveDrafts, { resumeProductArchiveDraftQueue, resumeProductArchiveWorkflowJobs } from "./routes/product-archive-drafts"
 import deepdrawFieldMappings from "./routes/deepdraw-field-mappings"
 import shoeSizeCharts from "./routes/shoe-size-charts"
 import mdmProducts from "./routes/mdm-products"
@@ -27,7 +28,7 @@ import auth from "./routes/auth"
 import users from "./routes/users"
 import platformIntegrations from "./routes/platform-integrations"
 import system from "./routes/system"
-import { applyPendingMigrations, DB_DSN_SAFE, DB_PROVIDER, getDb } from "./db"
+import { applyPendingMigrations, closeAsyncPool, closeDb, DB_DSN_SAFE, DB_PROVIDER, getDb } from "./db"
 import { ensureAdminUser, requireAuth } from "./lib/auth"
 import { withRequestPerformanceContext } from "./lib/performance-metrics"
 import {
@@ -38,6 +39,7 @@ import {
 import { randomUUID } from "node:crypto"
 
 loadLocalEnv()
+validateProductArchivePerformanceEnv()
 assertCredentialEncryptionConfigured()
 
 const db = getDb()
@@ -47,6 +49,7 @@ const sheinConfigSeeded = ensurePlatformIntegrationBootstrap(db)
 const encryptedPlatformCredentials = encryptStoredPlatformCredentials(db)
 resumeProductArchiveSyncQueue()
 resumeProductArchiveDraftQueue()
+resumeProductArchiveWorkflowJobs()
 resumeDeepdrawMetadataSyncJobs()
 
 const app = new Hono()
@@ -129,4 +132,24 @@ if (sheinConfigSeeded) console.log("Migrated SHEIN env credentials into platform
 if (encryptedPlatformCredentials) console.log(`Encrypted platform credentials: ${encryptedPlatformCredentials}`)
 
 startPlatformProductNightlyFullSyncScheduler()
-serve({ fetch: app.fetch, port })
+const server = serve({ fetch: app.fetch, port })
+
+let shuttingDown = false
+async function shutdown(signal: string) {
+  if (shuttingDown) return
+  shuttingDown = true
+  console.log(`Received ${signal}; closing database pools`)
+  server.close(() => {
+    closeAsyncPool()
+      .catch((error) => {
+        console.error("Failed to close async database pool", error)
+      })
+      .finally(() => {
+        closeDb()
+        process.exit(0)
+      })
+  })
+}
+
+process.once("SIGINT", () => void shutdown("SIGINT"))
+process.once("SIGTERM", () => void shutdown("SIGTERM"))

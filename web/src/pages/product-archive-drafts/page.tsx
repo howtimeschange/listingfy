@@ -247,6 +247,8 @@ interface WorkflowImportSummary {
 interface ProductArchiveWorkflowResponse {
   status: "queued" | "needs_launch_plan"
   needsLaunchPlan: boolean
+  workflowJobId?: string
+  workflowJob?: ProductArchiveWorkflowJob | null
   message?: string
   candidateCodes?: string[]
   draftQueuedCount?: number
@@ -262,6 +264,24 @@ interface ProductArchiveWorkflowResponse {
     autoAppliedTradeCount: number
     skippedNoTradeMatchCount: number
   }>
+}
+
+interface ProductArchiveWorkflowJob {
+  id: string
+  status: "queued" | "running" | "completed" | "failed" | "cancelled"
+  title: string
+  stages: Array<{
+    key: string
+    label: string
+    status: "queued" | "running" | "completed" | "failed"
+    error_message?: string | null
+  }>
+  result?: Record<string, unknown>
+  error_code?: string | null
+  error_message?: string | null
+  completed_stage_count: number
+  total_stage_count: number
+  current_stage: string | null
 }
 
 interface SourceImportUploadResponse {
@@ -2360,6 +2380,8 @@ export default function ProductArchiveDraftsPage() {
   const [sizeChartFile, setSizeChartFile] = useState<File | null>(null)
   const [skipLaunchPlan, setSkipLaunchPlan] = useState(false)
   const [workflowResult, setWorkflowResult] = useState<ProductArchiveWorkflowResponse | null>(null)
+  const [workflowJobId, setWorkflowJobId] = useState<string | null>(null)
+  const handledWorkflowJobIdRef = useRef<string | null>(null)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
   const [batchSubmitMode, setBatchSubmitMode] = useState<DraftSubmitMode>("create")
   const [batchJobId, setBatchJobId] = useState<string | null>(null)
@@ -2384,6 +2406,16 @@ export default function ProductArchiveDraftsPage() {
     },
     refetchOnWindowFocus: false,
   })
+  const { data: workflowJob } = useQuery<ProductArchiveWorkflowJob>({
+    queryKey: ["product-archive-workflow-job", workflowJobId],
+    queryFn: () => api.get<ProductArchiveWorkflowJob>(`/product-archive-drafts/workflow/jobs/${workflowJobId}`),
+    enabled: Boolean(workflowJobId),
+    refetchInterval: (query) => {
+      const job = query.state.data
+      return job && (job.status === "queued" || job.status === "running") ? 1000 : false
+    },
+    refetchOnWindowFocus: false,
+  })
   const activeDetailDraft = tradeEditorDraft ?? fieldEditorDraft
   const activeDetailDraftId = activeDetailDraft?.id
   const activeDraftDetail = useQuery<DraftDetail>({
@@ -2401,6 +2433,12 @@ export default function ProductArchiveDraftsPage() {
   const selectedTrade = useMemo(() => {
     return (trades.data?.items ?? []).find((trade) => trade.trade_id === selectedTradeId) ?? null
   }, [selectedTradeId, trades.data?.items])
+
+  function refetchDraftQueries() {
+    return queryClient.invalidateQueries({
+      predicate: (query) => query.queryKey[0] === "product-archive-drafts" && query.queryKey.length !== 2,
+    })
+  }
 
   const summary = useMemo(() => {
     const items = drafts.data?.items ?? []
@@ -2420,9 +2458,26 @@ export default function ProductArchiveDraftsPage() {
   const allVisibleSelected = visibleItems.length > 0 && visibleItems.every((item) => selectedDraftIds.has(item.id))
   const trackedTask = getTaskByJobId(batchJobId)
   const trackedJob = (trackedTask?.job ?? batchJob) as DraftBatchJob | null | undefined
+  const trackedWorkflowJob = workflowJob
+  const trackedWorkflowResult = useMemo<ProductArchiveWorkflowResponse | null>(() => {
+    if (!trackedWorkflowJob) return null
+    const result = recordResultValue(trackedWorkflowJob.result)
+    if (result?.needsLaunchPlan !== true) return null
+    return {
+      status: "needs_launch_plan",
+      needsLaunchPlan: true,
+      message: "标准文案表中有款号还没有匹配到上市计划，请上传上市计划表后继续建档。",
+      missingLaunchPlanSpuCodes: Array.isArray(result.missingLaunchPlanSpuCodes)
+        ? result.missingLaunchPlanSpuCodes.map(String)
+        : [],
+    }
+  }, [trackedWorkflowJob])
   const trackedOcrJob = (getTaskByJobId(ocrJobId)?.job ?? null) as AsyncTaskJob | null
   const trackedJobProgress = trackedJob?.total_count
     ? Math.round(((trackedJob.completed_count + trackedJob.failed_count) / trackedJob.total_count) * 100)
+    : 0
+  const trackedWorkflowProgress = trackedWorkflowJob?.total_stage_count
+    ? Math.round((trackedWorkflowJob.completed_stage_count / trackedWorkflowJob.total_stage_count) * 100)
     : 0
   const failedJobItems = trackedJob?.items?.filter((item) => item.status === "failed") ?? []
   const appliedMultiLineCount = multiLineCodeCount(appliedMultiLineSpuCodes)
@@ -2439,6 +2494,26 @@ export default function ProductArchiveDraftsPage() {
     }
     return map
   }, [unresolvedQuickIssues])
+
+  useEffect(() => {
+    if (!trackedWorkflowJob || ["queued", "running"].includes(trackedWorkflowJob.status)) return
+    if (handledWorkflowJobIdRef.current === trackedWorkflowJob.id) return
+    handledWorkflowJobIdRef.current = trackedWorkflowJob.id
+    const result = recordResultValue(trackedWorkflowJob.result)
+    if (result?.needsLaunchPlan === true) {
+      toast.warning("工作流已完成，请补充上市计划表后继续")
+    } else if (trackedWorkflowJob.status === "failed") {
+      toast.error(trackedWorkflowJob.error_message || "深绘建档工作流失败")
+    } else if (trackedWorkflowJob.status === "cancelled") {
+      toast.warning("深绘建档工作流已取消")
+    } else {
+      toast.success("深绘建档工作流已完成")
+    }
+    refetchDraftQueries()
+    queryClient.invalidateQueries({ queryKey: ["listing-launch-plan-rows"] })
+    queryClient.invalidateQueries({ queryKey: ["product-archive-draft-batch-job"] })
+  }, [queryClient, trackedWorkflowJob])
+
   const quickRequiredBlockerFields = useMemo(() => {
     return (activeDraftDetail.data?.fields ?? []).filter((field) => (
       field.required
@@ -2477,7 +2552,7 @@ export default function ProductArchiveDraftsPage() {
     ))
     if (completedOcrTasks.length === 0) return
     for (const task of completedOcrTasks) refreshedOcrJobIds.current.add(task.id)
-    queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    refetchDraftQueries()
   }, [queryClient, tasks])
 
   useEffect(() => {
@@ -2488,7 +2563,7 @@ export default function ProductArchiveDraftsPage() {
     ))
     if (completedAiFillTasks.length === 0) return
     for (const task of completedAiFillTasks) refreshedAiFillJobIds.current.add(task.id)
-    queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    refetchDraftQueries()
   }, [queryClient, tasks])
 
   useEffect(() => {
@@ -2499,7 +2574,7 @@ export default function ProductArchiveDraftsPage() {
     ))
     if (completedPrecheckTasks.length === 0) return
     for (const task of completedPrecheckTasks) refreshedPrecheckJobIds.current.add(task.id)
-    queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    refetchDraftQueries()
   }, [queryClient, tasks])
 
   useEffect(() => {
@@ -2510,7 +2585,7 @@ export default function ProductArchiveDraftsPage() {
     ))
     if (completedPublishTasks.length === 0) return
     for (const task of completedPublishTasks) refreshedPublishJobIds.current.add(task.id)
-    queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    refetchDraftQueries()
   }, [queryClient, tasks])
 
   const syncMdmAndCreateBatch = useMutation({
@@ -2561,7 +2636,7 @@ export default function ProductArchiveDraftsPage() {
       toast.success(
         `导入标准文案表完成：${formatNumber(result.insertedRowCount)} / ${formatNumber(result.inputRowCount)} 行${latestJob ? "，缺失草稿已自动同步" : ""}`,
       )
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+      refetchDraftQueries()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "导入标准文案表失败")
@@ -2577,7 +2652,7 @@ export default function ProductArchiveDraftsPage() {
     },
     onSuccess: (result) => {
       toast.success(`导入尺码表完成：${formatNumber(result.insertedRowCount)} / ${formatNumber(result.inputRowCount)} 行，已刷新对应草稿`)
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+      refetchDraftQueries()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "导入尺码表失败")
@@ -2669,7 +2744,7 @@ export default function ProductArchiveDraftsPage() {
       setOcrScmSupplementFile(null)
       setOcrPreview(null)
       setOcrOverwriteExisting(false)
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+      refetchDraftQueries()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "写入吊牌/洗唛/平铺图字段失败")
@@ -2687,6 +2762,18 @@ export default function ProductArchiveDraftsPage() {
     },
     onSuccess: (result) => {
       setWorkflowResult(result)
+      if (result.workflowJobId) {
+        handledWorkflowJobIdRef.current = null
+        setWorkflowJobId(result.workflowJobId)
+        setWorkflowProgressDialogOpen(true)
+        setWorkflowDialogOpen(false)
+        setCopywritingFile(null)
+        setLaunchPlanFile(null)
+        setSizeChartFile(null)
+        setSkipLaunchPlan(false)
+        toast.success("深绘建档工作流已加入后台队列")
+        return
+      }
       if (result.needsLaunchPlan) {
         toast.warning(result.message ?? "请上传上市计划表后继续建档")
         return
@@ -2709,7 +2796,7 @@ export default function ProductArchiveDraftsPage() {
       setLaunchPlanFile(null)
       setSizeChartFile(null)
       setSkipLaunchPlan(false)
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+      refetchDraftQueries()
     },
   })
 
@@ -2742,7 +2829,7 @@ export default function ProductArchiveDraftsPage() {
         job,
         type: "product_archive_publish_precheck",
         title: "批量发布预检",
-        description: `待预检 ${formatNumber(job.total_count)} 个深绘建档草稿，按校验、查重、提交预览串行执行`,
+        description: `待预检 ${formatNumber(job.total_count)} 个深绘建档草稿，按校验、查重、提交预览执行`,
         endpoint: `/product-archive-drafts/precheck-jobs/${job.id}`,
       })
       toast.success("已加入任务中心：批量发布预检")
@@ -2764,7 +2851,7 @@ export default function ProductArchiveDraftsPage() {
         job,
         type: "product_archive_publish",
         title: draftSubmitModeTaskTitle(variables.submitMode),
-        description: `待逐条${draftSubmitModeLabel(variables.submitMode)} ${formatNumber(job.total_count)} 个深绘建档草稿，接口繁忙会自动延迟重试`,
+        description: `待${draftSubmitModeLabel(variables.submitMode)} ${formatNumber(job.total_count)} 个深绘建档草稿，提交后继续等待深绘回读校验，接口繁忙会自动延迟重试`,
         endpoint: `/product-archive-drafts/publish-jobs/${job.id}`,
       })
       setPublishDialogOpen(false)
@@ -2792,7 +2879,7 @@ export default function ProductArchiveDraftsPage() {
       setSelectedTradeId(null)
       setTradeSearch("")
       setQuickFieldValues({})
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+      refetchDraftQueries()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "应用类目失败")
@@ -2819,7 +2906,7 @@ export default function ProductArchiveDraftsPage() {
           return next
         })
       }
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+      refetchDraftQueries()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "保存字段失败")
@@ -2838,7 +2925,7 @@ export default function ProductArchiveDraftsPage() {
       if ((drafts.data?.items.length ?? 0) <= 1 && pagination.offset > 0) {
         setPagination((current) => ({ ...current, offset: Math.max(0, current.offset - current.limit) }))
       }
-      await queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+      await refetchDraftQueries()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "删除建档草稿失败")
@@ -2847,7 +2934,7 @@ export default function ProductArchiveDraftsPage() {
 
   useEffect(() => {
     if (trackedJob?.status !== "completed") return
-    void queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    void refetchDraftQueries()
   }, [trackedJob?.status, queryClient])
 
   function toggleDraft(draftId: number, checked: boolean | "indeterminate") {
@@ -3014,7 +3101,7 @@ export default function ProductArchiveDraftsPage() {
                 <DialogHeader>
                   <DialogTitle>{draftSubmitModeTaskTitle(batchSubmitMode)}</DialogTitle>
                   <DialogDescription>
-                    将对已选择的 {formatNumber(selectedDrafts.length)} 个草稿提交后台{draftSubmitModeLabel(batchSubmitMode)}任务。系统会逐个查重、提交并回读校验；接口繁忙会自动延迟重试，单款失败不会中断整批。
+                    将对已选择的 {formatNumber(selectedDrafts.length)} 个草稿提交后台{draftSubmitModeLabel(batchSubmitMode)}任务。系统会查重、提交并保持提交中/回读中状态直到深绘资源回读校验完成；接口繁忙会自动延迟重试，单款失败不会中断整批。
                   </DialogDescription>
                 </DialogHeader>
                 <div className="grid gap-2">
@@ -3507,7 +3594,7 @@ export default function ProductArchiveDraftsPage() {
                 onSizeChartFileChange={setSizeChartFile}
                 skipLaunchPlan={skipLaunchPlan}
                 onSkipLaunchPlanChange={setSkipLaunchPlan}
-                workflowResult={workflowResult}
+                workflowResult={trackedWorkflowResult ?? workflowResult}
                 isPending={startProductArchiveWorkflow.isPending}
                 canWrite={canWrite}
                 onSubmit={() => startProductArchiveWorkflow.mutate()}
@@ -3673,42 +3760,67 @@ export default function ProductArchiveDraftsPage() {
     <Dialog open={workflowProgressDialogOpen} onOpenChange={setWorkflowProgressDialogOpen}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>MDM 同步进度</DialogTitle>
+          <DialogTitle>{trackedWorkflowJob ? "深绘建档工作流进度" : "MDM 同步进度"}</DialogTitle>
           <DialogDescription>
-            正在按未建档款号同步 MDM 并生成深绘建档草稿，关闭弹窗后可从任务中心继续查看。
+            {trackedWorkflowJob
+              ? "表格解析、来源导入、上市计划和草稿刷新均在后台执行，关闭弹窗后任务仍会继续。"
+              : "正在按未建档款号同步 MDM 并生成深绘建档草稿，关闭弹窗后可从任务中心继续查看。"}
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4">
-          <div className="rounded-lg border bg-muted/30 p-4">
-            <div className="mb-2 flex items-center justify-between text-sm">
-              <span>
-                已处理 {formatNumber((trackedJob?.completed_count ?? 0) + (trackedJob?.failed_count ?? 0))} / {formatNumber(trackedJob?.total_count ?? 0)}
-              </span>
-              <span>{trackedJobProgress}%</span>
-            </div>
-            <Progress value={trackedJobProgress} />
-            <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
-              <div className="rounded-md bg-background px-3 py-2">成功 {formatNumber(trackedJob?.completed_count ?? 0)}</div>
-              <div className="rounded-md bg-background px-3 py-2">失败 {formatNumber(trackedJob?.failed_count ?? 0)}</div>
-              <div className="rounded-md bg-background px-3 py-2">总数 {formatNumber(trackedJob?.total_count ?? 0)}</div>
-            </div>
-          </div>
-          {failedJobItems.length > 0 ? (
-            <div className="rounded-lg border border-[#f1cccc] bg-[#fff8f8] p-3">
-              <div className="mb-2 text-sm font-medium text-[#d45656]">失败原因</div>
-              <div className="max-h-52 overflow-auto rounded-md border bg-background">
-                {failedJobItems.map((item) => (
-                  <div key={item.spu_code} className="grid grid-cols-[160px_1fr] gap-3 border-b px-3 py-2 text-sm last:border-b-0">
-                    <span className="font-mono">{item.spu_code}</span>
-                    <span className="text-muted-foreground">{item.error || "未知失败原因"}</span>
+          {trackedWorkflowJob ? (
+            <div className="rounded-lg border bg-muted/30 p-4">
+              <div className="mb-2 flex items-center justify-between text-sm">
+                <span>已完成 {formatNumber(trackedWorkflowJob.completed_stage_count)} / {formatNumber(trackedWorkflowJob.total_stage_count)} 个阶段</span>
+                <span>{trackedWorkflowProgress}%</span>
+              </div>
+              <Progress value={trackedWorkflowProgress} />
+              <div className="mt-3 grid gap-2 text-sm">
+                {trackedWorkflowJob.stages.map((stage) => (
+                  <div key={stage.key} className="flex items-center justify-between rounded-md bg-background px-3 py-2">
+                    <span>{stage.label}</span>
+                    <span className="text-muted-foreground">
+                      {stage.status === "completed" ? "已完成" : stage.status === "running" ? "处理中" : stage.status === "failed" ? "失败" : "等待中"}
+                    </span>
                   </div>
                 ))}
               </div>
+              {trackedWorkflowJob.error_message ? <p className="mt-3 text-sm text-destructive">{trackedWorkflowJob.error_message}</p> : null}
             </div>
           ) : (
-            <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
-              暂无失败款号。
-            </div>
+            <>
+              <div className="rounded-lg border bg-muted/30 p-4">
+                <div className="mb-2 flex items-center justify-between text-sm">
+                  <span>
+                    已处理 {formatNumber((trackedJob?.completed_count ?? 0) + (trackedJob?.failed_count ?? 0))} / {formatNumber(trackedJob?.total_count ?? 0)}
+                  </span>
+                  <span>{trackedJobProgress}%</span>
+                </div>
+                <Progress value={trackedJobProgress} />
+                <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
+                  <div className="rounded-md bg-background px-3 py-2">成功 {formatNumber(trackedJob?.completed_count ?? 0)}</div>
+                  <div className="rounded-md bg-background px-3 py-2">失败 {formatNumber(trackedJob?.failed_count ?? 0)}</div>
+                  <div className="rounded-md bg-background px-3 py-2">总数 {formatNumber(trackedJob?.total_count ?? 0)}</div>
+                </div>
+              </div>
+              {failedJobItems.length > 0 ? (
+                <div className="rounded-lg border border-[#f1cccc] bg-[#fff8f8] p-3">
+                  <div className="mb-2 text-sm font-medium text-[#d45656]">失败原因</div>
+                  <div className="max-h-52 overflow-auto rounded-md border bg-background">
+                    {failedJobItems.map((item) => (
+                      <div key={item.spu_code} className="grid grid-cols-[160px_1fr] gap-3 border-b px-3 py-2 text-sm last:border-b-0">
+                        <span className="font-mono">{item.spu_code}</span>
+                        <span className="text-muted-foreground">{item.error || "未知失败原因"}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+                  暂无失败款号。
+                </div>
+              )}
+            </>
           )}
         </div>
         <DialogFooter>
@@ -3726,7 +3838,7 @@ export default function ProductArchiveDraftsPage() {
             查看任务中心
           </Button>
           <Button type="button" onClick={() => setWorkflowProgressDialogOpen(false)}>
-            {trackedJob?.status === "completed" ? "关闭" : "后台处理"}
+            {(trackedWorkflowJob?.status === "completed" || trackedWorkflowJob?.status === "failed" || trackedWorkflowJob?.status === "cancelled" || trackedJob?.status === "completed") ? "关闭" : "后台处理"}
           </Button>
         </DialogFooter>
       </DialogContent>

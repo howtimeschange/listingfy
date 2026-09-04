@@ -72,6 +72,9 @@ listingLaunchPlans.get("/rows", (c) => {
     sheetName: c.req.query("sheetName"),
     limit: c.req.query("limit"),
     offset: c.req.query("offset"),
+    afterSpuCode: c.req.query("afterSpuCode"),
+    afterRowId: c.req.query("afterRowId"),
+    includeTotal: c.req.query("includeTotal"),
   }))
 })
 

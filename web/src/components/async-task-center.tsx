@@ -273,10 +273,10 @@ function publishItemResultKind(item: AsyncTaskJobItem) {
 }
 
 function publishItemStatusLabel(item: AsyncTaskJobItem) {
+  const resultKind = publishItemResultKind(item)
+  if (resultKind === "readback_mismatch") return "需复核"
   if (item.status === "completed") {
-    const resultKind = publishItemResultKind(item)
     if (resultKind === "duplicate_found") return "已存在"
-    if (resultKind === "readback_mismatch") return "需复核"
     if (resultKind === "submitted") return "已提交"
     return "成功"
   }
@@ -287,10 +287,10 @@ function publishItemStatusLabel(item: AsyncTaskJobItem) {
 }
 
 function publishItemStatusClass(item: AsyncTaskJobItem) {
-  if (item.status === "failed") return "text-[#d45656]"
-  if (item.status !== "completed") return "text-[#3772cf]"
   const resultKind = publishItemResultKind(item)
   if (resultKind === "readback_mismatch") return "text-[#a66b00]"
+  if (item.status === "failed") return "text-[#d45656]"
+  if (item.status !== "completed") return "text-[#3772cf]"
   if (resultKind === "duplicate_found" || resultKind === "submitted") return "text-[#3772cf]"
   return "text-[#0f7f58]"
 }
@@ -740,8 +740,12 @@ function AsyncTaskDrawer({
                     </div>
                   ) : null}
                   {publishSummary ? (
-                    <div className="mt-3 rounded-md border border-[#b9f4d8] bg-[#f2fff8] px-2 py-1.5 text-xs text-[#0f7f58]">
-                      发布成功 {formatNumber(publishSummary.publishedCount)} 个，
+                    <div className={`mt-3 rounded-md border px-2 py-1.5 text-xs ${
+                      publishSummary.readbackMismatchCount > 0
+                        ? "border-[#f2d28d] bg-[#fff8e8] text-[#8a5a00]"
+                        : "border-[#b9f4d8] bg-[#f2fff8] text-[#0f7f58]"
+                    }`}>
+                      回读通过 {formatNumber(publishSummary.publishedCount)} 个，
                       已存在 {formatNumber(publishSummary.duplicateCount)} 个，
                       回读不一致 {formatNumber(publishSummary.readbackMismatchCount)} 个，
                       自动重试 {formatNumber(publishSummary.retryAttemptCount)} 次。

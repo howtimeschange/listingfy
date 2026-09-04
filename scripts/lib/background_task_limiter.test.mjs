@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 import {
   BackgroundTaskTimeoutError,
@@ -137,4 +139,18 @@ test("background limiter keeps a timed-out slot until the underlying task settle
     if (previousMax == null) delete process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
     else process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = previousMax;
   }
+});
+
+test("product archive AI item concurrency keeps OCR on its separate lane", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const route = await readFile(path.join(root, "web/server/routes/product-archive-drafts.ts"), "utf8");
+  const aiQueueStart = route.indexOf("export function createProductArchiveAiFillQueue");
+  const ocrQueueStart = route.indexOf("function cloneHangtagWashlabelOcrJob");
+  const aiQueueSection = route.slice(aiQueueStart, ocrQueueStart);
+  const ocrQueueSection = route.slice(ocrQueueStart);
+
+  assert.match(route, /LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY/);
+  assert.match(aiQueueSection, /product_archive_ai_fill/);
+  assert.doesNotMatch(aiQueueSection, /product_archive_ocr/);
+  assert.match(ocrQueueSection, /withBackgroundTaskSlot\("product_archive_ocr"/);
 });

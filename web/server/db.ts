@@ -3,6 +3,7 @@ import path from "node:path"
 import { getDatabaseConfig } from "../../scripts/lib/database_config.mjs"
 import { loadLocalEnv } from "../../scripts/lib/local_env.mjs"
 import { SyncPostgresDatabase } from "../../scripts/lib/postgres_db.mjs"
+import { createPostgresPool } from "../../scripts/lib/postgres_db.mjs"
 import { listMigrationFiles } from "../../scripts/lib/migration_files.mjs"
 import { recordDatabaseQuery } from "./lib/performance-metrics"
 
@@ -28,6 +29,7 @@ function redactDatabaseUrl(url: string | null): string | null {
 }
 
 let _db: SyncPostgresDatabase | null = null
+let _asyncPool: ReturnType<typeof createPostgresPool> | null = null
 
 export function getDb(): SyncPostgresDatabase {
   if (_db) return _db
@@ -36,6 +38,16 @@ export function getDb(): SyncPostgresDatabase {
   })
   _db = db
   return db
+}
+
+export function getAsyncPool(): ReturnType<typeof createPostgresPool> {
+  if (_asyncPool) return _asyncPool
+  _asyncPool = createPostgresPool(databaseConfig.url, {
+    max: process.env.DATABASE_POOL_MAX,
+    idleTimeoutMillis: process.env.DATABASE_IDLE_TIMEOUT_MS,
+    connectionTimeoutMillis: process.env.DATABASE_CONNECT_TIMEOUT_MS,
+  })
+  return _asyncPool
 }
 
 export function applyPendingMigrations(db = getDb()): string[] {
@@ -69,6 +81,13 @@ export function closeDb(): void {
     _db.close()
     _db = null
   }
+}
+
+export async function closeAsyncPool(): Promise<void> {
+  if (!_asyncPool) return
+  const pool = _asyncPool
+  _asyncPool = null
+  await pool.end()
 }
 
 export const DB_DSN_SAFE = redactDatabaseUrl(databaseConfig.url)

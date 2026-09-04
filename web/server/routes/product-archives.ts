@@ -20,7 +20,9 @@ import {
 import {
   createPostgresProductArchiveSyncJobStore,
   createProductArchiveSyncQueue,
+  filterKnownProductArchiveSyncCandidates,
 } from "../../../scripts/lib/product_archive_sync_queue.mjs"
+import { readProductArchiveSyncConcurrency } from "../../../scripts/lib/product_archive_performance_config.mjs"
 import {
   assertAllowedProductArchiveQuery,
   assertSafeProductArchiveCode,
@@ -78,6 +80,15 @@ function errorStatus(error: unknown) {
     return 400
   }
   return 500
+}
+
+function withProductArchiveSyncErrorContext(error: unknown, context: { source: string; stage: string; provider: string }) {
+  if (error && typeof error === "object") {
+    error.productArchiveSyncSource = context.source
+    error.productArchiveSyncStage = context.stage
+    error.productArchiveSyncProvider = context.provider
+  }
+  return error
 }
 
 function readIntervalMs(value: unknown) {
@@ -170,9 +181,33 @@ async function syncDeepdrawProduct(
 const syncQueue = createProductArchiveSyncQueue({
   autoRecover: false,
   jobSliceSize: process.env.LISTINGIFY_PRODUCT_ARCHIVE_SYNC_JOB_SLICE_SIZE ?? 5,
+  concurrency: readProductArchiveSyncConcurrency(process.env.LISTINGIFY_PRODUCT_ARCHIVE_SYNC_CONCURRENCY),
   runWithSlot: (_context: unknown, run: () => Promise<unknown>) => withBackgroundTaskSlot("product_archive_sync", run),
+  filterCandidates: (source, codes) => filterKnownProductArchiveSyncCandidates(getDb(), source, codes),
   maxAttempts: 3,
   retryDelayMs: 3000,
+  cacheNegativeResult: async ({ source, spuCode, reasonCode, checkedAt, expiresAt }: {
+    source: string
+    spuCode: string
+    reasonCode: string
+    checkedAt: string
+    expiresAt: string
+  }) => {
+    getDb().prepare(`
+      insert into product_archive_sync_negative_cache(source, spu_code, reason_code, checked_at, expires_at)
+      values (?, ?, ?, ?::timestamptz, ?::timestamptz)
+      on conflict (source, spu_code) do update set
+        reason_code = excluded.reason_code,
+        checked_at = excluded.checked_at,
+        expires_at = excluded.expires_at
+    `).run(source, spuCode, reasonCode, checkedAt, expiresAt)
+  },
+  invalidateNegativeResult: async ({ source, spuCode }: { source: string; spuCode: string }) => {
+    getDb().prepare(`
+      delete from product_archive_sync_negative_cache
+      where source = ? and spu_code = ?
+    `).run(source, spuCode)
+  },
   store: createPostgresProductArchiveSyncJobStore({
     getDb,
     queueName: "product_archives",
@@ -181,9 +216,21 @@ const syncQueue = createProductArchiveSyncQueue({
     const db = getDb()
     if (source === "mdm") return syncMdmProduct(db, spuCode)
     if (source === "deepdraw") return syncDeepdrawProduct(db, spuCode, options)
+    let mdm
+    try {
+      mdm = await syncMdmProduct(db, spuCode)
+    } catch (error) {
+      throw withProductArchiveSyncErrorContext(error, { source, stage: "mdm", provider: "mdm" })
+    }
+    let deepdraw
+    try {
+      deepdraw = await syncDeepdrawProduct(db, spuCode, options)
+    } catch (error) {
+      throw withProductArchiveSyncErrorContext(error, { source, stage: "deepdraw", provider: "deepdraw" })
+    }
     return {
-      mdm: await syncMdmProduct(db, spuCode),
-      deepdraw: await syncDeepdrawProduct(db, spuCode, options),
+      mdm,
+      deepdraw,
     }
   },
 })
@@ -403,9 +450,12 @@ productArchives.post("/sync-jobs", async (c) => {
   }
 
   try {
+    const db = getDb()
+    const filtered = filterKnownProductArchiveSyncCandidates(db, body.source, body.codes ?? body.rawCodes)
     const job = syncQueue.enqueue({
       source: body.source,
-      rawCodes: body.codes ?? body.rawCodes,
+      rawCodes: filtered.acceptedCodes,
+      skippedItems: filtered.skippedItems,
       intervalMs: readIntervalMs(body.intervalMs),
       options: {
         deepdrawTenantName: body.deepdrawTenantName,

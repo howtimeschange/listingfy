@@ -1330,6 +1330,36 @@ test("trade selection expands launch-plan category aliases used by production ba
   }
 });
 
+test("trade selection keeps official snow boot leaf above leisure-shoe aliases", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const platforms = `${BALA_TRADE_TEST_PLATFORMS},VIP,DOUYINXSG`;
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    {
+      source_batch_id: 18,
+      source_type: "launch_plan",
+      row_json: {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>雪地靴",
+        "发布类目 (唯品)": "儿童板鞋/休闲鞋",
+        "主款式 （唯品四级品类）": "棉鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋",
+      },
+    },
+  ], [
+    deepdrawRoot("531", "童鞋/亲子鞋"),
+    deepdrawChild("10381", "531", "板鞋", "童鞋/亲子鞋 / 板鞋"),
+    deepdrawChild("534", "531", "雪地靴", "童鞋/亲子鞋 / 雪地靴"),
+  ].map((trade) => ({ ...trade, third_platforms: platforms })), {
+    tenantName: "电商巴拉巴拉",
+    evaluatedAt: "2026-09-04T00:00:00.000Z",
+  });
+
+  assert.equal(decision.recommendedTrade?.tradeId, "534");
+  assert.equal(decision.matchedField, "官方发布类目");
+  assert.equal(decision.confidence, "high");
+});
+
 test("trade selection breaks generic launch-plan ties with child-apparel context", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const platforms = BALA_TRADE_TEST_PLATFORMS;
@@ -2406,7 +2436,9 @@ test("mutable draft writes keep the row lock and mutation in one transaction", a
     "function prepareProductArchiveDraftDryRun",
     "export async function submitProductArchiveDraft",
   );
-  assert.match(dryRun, /return db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*syncProductArchiveDownFillWeightSizeCharts\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)[\s\S]*productPayload\(db, draftId(?:, [^)]*)?\)/);
+  assert.match(dryRun, /prepareProductArchiveDraftDryRun[\s\S]*prepareProductArchiveDraftForSubmit\(db, draftId/);
+  assert.match(dryRun, /export function prepareProductArchiveDraftForSubmit[\s\S]*prepareReusableProductArchiveDraft\(db, draftId/);
+  assert.match(dryRun, /prepare: \(\) => db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId, \{ claimToken: options\.claimToken \?\? null \}\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*syncProductArchiveDownFillWeightSizeCharts\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId[\s\S]*productPayload\(db, draftId/);
 
   const productPayload = section(
     "function productPayload",
@@ -2437,7 +2469,10 @@ test("mutable draft writes keep the row lock and mutation in one transaction", a
     "export async function submitProductArchiveDraft",
     "export async function readbackProductArchiveDraft",
   );
-  assert.match(submit, /refreshDraftTradeSelectionFromLaunchPlan\(db, draftId, \{ claimToken \}\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*syncProductArchiveDownFillWeightSizeCharts\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId/);
+  assert.match(submit, /prepareProductArchiveDraftForSubmit\(db, draftId, \{[\s\S]*claimToken,[\s\S]*submitMode,[\s\S]*allowExistingProduct:[\s\S]*\}\)/);
+  assert.match(submit, /const reusablePreparedBeforeClaim = updateExisting[\s\S]*loadCurrentReusablePreparedProductArchiveDraft\(db, draftId, \{ submitMode \}\)[\s\S]*const claimedDraft = claimProductArchiveDraftForSubmit/);
+  assert.match(submit, /const revalidatedPrepared = revalidatePreparedProductArchiveDraftForClaim\([\s\S]*reusablePreparedBeforeClaim,[\s\S]*claimedDraftUpdatedAt: stringValue\(claimedDraft\.submit_claim_previous_updated_at\)/);
+  assert.match(submit, /const prepared = revalidatedPrepared \?\? prepareProductArchiveDraftForSubmit\(db, draftId, \{[\s\S]*claimToken,/);
 });
 
 test("claimed drafts reject image mutation before any image insert", async () => {
@@ -2514,7 +2549,8 @@ test("trade refresh and submit preparation keep validation behind the submit fen
     "export async function submitProductArchiveDraft",
     "export async function readbackProductArchiveDraft",
   );
-  assert.match(submit, /const prepared = db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId, \{ claimToken \}\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId, \{ claimToken \}\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId, \{[\s\S]*claimToken,[\s\S]*allowExistingProduct:[\s\S]*\}\)[\s\S]*productPayload\(db, draftId(?:, [^)]*)?\)/);
+  assert.match(submit, /const prepared = prepareProductArchiveDraftForSubmit\(db, draftId, \{[\s\S]*claimToken,[\s\S]*submitMode,[\s\S]*includeMultiPlatformSizeFieldInUpdate:[\s\S]*allowExistingProduct:[\s\S]*\}\)/);
+  assert.match(source, /export function prepareProductArchiveDraftForSubmit[\s\S]*assertProductArchiveDraftMutable\(db, draftId, \{ claimToken: options\.claimToken \?\? null \}\)[\s\S]*validateProductArchiveDraft\(db, draftId, \{[\s\S]*claimToken: options\.claimToken[\s\S]*allowExistingProduct: options\.allowExistingProduct[\s\S]*\}\)/);
 });
 
 test("ordinary validation and trade refresh reject an active submit claim before writes", async () => {
@@ -2590,7 +2626,7 @@ test("product archive AI fill skips fields that already have JSON values", async
   assert.match(service, /hasSizeChartValue[\s\S]*stringValue\(sizeChartDerived\.valueText\)[\s\S]*skuSizeField/);
 });
 
-test("AI fill skips a field changed during provider wait but saves an unchanged field", async () => {
+test("AI fill fails closed when a field changes during provider wait", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const draft = {
     id: 901,
@@ -2656,22 +2692,27 @@ test("AI fill skips a field changed during provider wait but saves an unchanged 
     },
   };
 
-  const result = await service.fillProductArchiveDraftFieldsWithAi(db, draft.id, {
-    router: {
-      callJson: async () => ({
-        json: {
-          fills: [
-            { field_id: 1, field_value: "休闲", confidence: 0.95 },
-            { field_id: 2, field_value: "休闲", confidence: 0.95 },
-          ],
-        },
-      }),
+  await assert.rejects(
+    () => service.fillProductArchiveDraftFieldsWithAi(db, draft.id, {
+      router: {
+        callJson: async () => ({
+          json: {
+            fills: [
+              { field_id: 1, field_value: "休闲", confidence: 0.95 },
+              { field_id: 2, field_value: "休闲", confidence: 0.95 },
+            ],
+          },
+        }),
+      },
+    }),
+    (error) => {
+      assert.equal(error.code, "PRODUCT_ARCHIVE_DRAFT_CHANGED");
+      assert.match(error.message, /草稿数据已更新/);
+      return true;
     },
-  });
+  );
 
   assert.deepEqual(fieldUpdates.map((update) => update.fieldId), [1, 2]);
-  assert.deepEqual(result.saved.map((field) => field.field_id), [2]);
-  assert.equal(result.warnings.filter((warning) => warning.code === "draft_changed").length, 1);
 });
 
 test("product archive AI fill prompt uses trusted draft MDM and source context only", async () => {
@@ -3126,8 +3167,10 @@ test("batch AI fill queue isolates user queues and runs style items concurrently
   const { createProductArchiveAiFillQueue } = await import("../../web/server/routes/product-archive-drafts.ts");
   const previousConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY;
   const previousMaxConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
+  const previousItemConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY;
   const previousBackgroundMax = process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
   process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY = "2";
+  process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY = "2";
   delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
   process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = "4";
   const savedJobs = new Map();
@@ -3224,6 +3267,8 @@ test("batch AI fill queue isolates user queues and runs style items concurrently
     else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY = previousConcurrency;
     if (previousMaxConcurrency == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
     else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY = previousMaxConcurrency;
+    if (previousItemConcurrency == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY;
+    else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY = previousItemConcurrency;
     if (previousBackgroundMax == null) delete process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
     else process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = previousBackgroundMax;
   }
@@ -3233,8 +3278,10 @@ test("batch AI fill queue lets a single busy user borrow idle global slots", asy
   const { createProductArchiveAiFillQueue } = await import("../../web/server/routes/product-archive-drafts.ts");
   const previousConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY;
   const previousMaxConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
+  const previousItemConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY;
   const previousBackgroundMax = process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
   process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY = "2";
+  process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY = "2";
   process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY = "10";
   process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = "16";
   const savedJobs = new Map();
@@ -3302,14 +3349,16 @@ test("batch AI fill queue lets a single busy user borrow idle global slots", asy
 
     assert.equal(finalJob?.status, "completed");
     assert.equal(finalJob?.completed_count, 12);
-    assert.equal(finalJob?.result.concurrency, 10);
-    assert.ok(maxActive >= 10, `expected single user to borrow idle slots up to the cap; maxActive=${maxActive}`);
-    assert.ok(maxActive <= 10, `expected single user cap to hold at 10; maxActive=${maxActive}`);
+    assert.equal(finalJob?.result.concurrency, 2);
+    assert.ok(maxActive >= 2, `expected single user to use the configured item slots; maxActive=${maxActive}`);
+    assert.ok(maxActive <= 2, `expected item concurrency cap to hold at 2; maxActive=${maxActive}`);
   } finally {
     if (previousConcurrency == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY;
     else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY = previousConcurrency;
     if (previousMaxConcurrency == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
     else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY = previousMaxConcurrency;
+    if (previousItemConcurrency == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY;
+    else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY = previousItemConcurrency;
     if (previousBackgroundMax == null) delete process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
     else process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = previousBackgroundMax;
   }
@@ -3753,7 +3802,7 @@ test("product archive service derives core sales fields from MDM master data", a
 
 test("product archive appends the full washlabel down filler to down-jacket color aliases", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
-  const result = service.buildProductArchiveMdmDerivedFieldValue("颜色", {
+  const input = {
     spu: {
       spu_code: "202426107128",
       product_line_name: "中童服装",
@@ -3775,9 +3824,14 @@ test("product archive appends the full washlabel down filler to down-jacket colo
       source_type: "washlabel_ocr",
       value_json: {},
     }],
-  });
+  };
+  const result = service.buildProductArchiveMdmDerivedFieldValue("颜色", input);
 
-  assert.equal(result.valueText, "灰色,浅灰20047-白鸭绒;黑色,黑色90001-白鸭绒");
+  assert.equal(result.valueText, "浅灰,浅灰20047-白鸭绒;黑色,黑色90001-白鸭绒");
+  assert.equal(
+    service.buildProductArchiveMdmDerivedFieldValue("颜色(文本)", input).valueText,
+    "浅灰,浅灰20047;黑色,黑色90001",
+  );
 });
 
 test("product archive preserves the exact duck and goose filler name recognized from the washlabel", async () => {
@@ -3800,11 +3854,11 @@ test("product archive preserves the exact duck and goose filler name recognized 
       }],
     });
 
-    assert.equal(result.valueText, `灰色,浅灰20047-${filler}`);
+    assert.equal(result.valueText, `浅灰,浅灰20047-${filler}`);
   }
 });
 
-test("product archive does not append a filler without washlabel OCR evidence", async () => {
+test("product archive falls back to the standard copywriting washlabel when OCR cannot recognize a filler", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const result = service.buildProductArchiveMdmDerivedFieldValue("颜色", {
     spu: {
@@ -3820,7 +3874,31 @@ test("product archive does not append a filler without washlabel OCR evidence", 
     skus: [{ color_name: "浅灰20047" }],
   });
 
-  assert.equal(result.valueText, "灰色,浅灰20047");
+  assert.equal(result.valueText, "浅灰,浅灰20047-白鸭绒");
+});
+
+test("product archive keeps recognized washlabel OCR filler above the standard copywriting fallback", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const result = service.buildProductArchiveMdmDerivedFieldValue("颜色", {
+    spu: {
+      spu_code: "202426107128",
+      product_line_name: "中童服装",
+      subclass_name: "羽绒服",
+    },
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: { "面料成分": "填充物:白鸭绒" },
+    }],
+    existingFields: [{
+      field_name: "成分含量(文本)",
+      value_text: "填充物:灰鸭绒",
+      source_type: "washlabel_ocr",
+      value_json: {},
+    }],
+    skus: [{ color_name: "浅灰20047" }],
+  });
+
+  assert.equal(result.valueText, "浅灰,浅灰20047-灰鸭绒");
 });
 
 test("product archive does not append a washlabel filler to non-down apparel colors", async () => {
@@ -3841,7 +3919,7 @@ test("product archive does not append a washlabel filler to non-down apparel col
     }],
   });
 
-  assert.equal(result.valueText, "灰色,浅灰20047");
+  assert.equal(result.valueText, "浅灰,浅灰20047");
 });
 
 test("product archive service derives DeepDraw size-chart fields from PLM source rows", async () => {
@@ -4168,6 +4246,16 @@ test("field rebuild keeps trusted DeepDraw resource scalar values when rules can
   assert.equal(service.shouldPreserveProductArchiveDeepdrawResourceFieldValue("尺码表", {
     source_type: "deepdraw_resource",
     value_text: "140cm32g",
+    value_json: {},
+  }), false);
+  assert.equal(service.shouldPreserveProductArchiveDeepdrawResourceFieldValue("是否婴童", {
+    source_type: "deepdraw_resource",
+    value_text: "否",
+    value_json: {},
+  }), false);
+  assert.equal(service.shouldPreserveProductArchiveDeepdrawResourceFieldValue("25服装母婴标准", {
+    source_type: "deepdraw_resource",
+    value_text: "25母婴标准",
     value_json: {},
   }), false);
   assert.equal(service.shouldPreserveProductArchiveDeepdrawResourceFieldValue("小红书商家编码", {
@@ -5076,7 +5164,10 @@ test("product archive routes fence prechecks, owned image files, and mutation co
   };
 
   const precheck = section("async function runPrecheckItemOnce", "function finishJob(job");
-  assert.match(precheck, /const prepared = db\.transaction\(\(\) => \{[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, item\.draft_id\)[\s\S]*validateProductArchiveDraft\(db, item\.draft_id\)[\s\S]*return \{ tradeRefresh, validation \}/);
+  assert.match(precheck, /const prepared = prepareProductArchiveDraftForSubmit\(db, item\.draft_id, \{ submitMode: "create" \}\)/);
+  assert.match(precheck, /const validation = prepared\.validation[\s\S]*const tradeRefresh = objectValue\(validation\.tradeRefresh\)/);
+  assert.match(precheck, /item\.phase = "duplicate"[\s\S]*checkDuplicateProductArchiveDraft\(db, item\.draft_id\)/);
+  assert.doesNotMatch(precheck, /submitProductArchiveDraft\(db, item\.draft_id, \{ dryRun: true \}\)[\s\S]*validateProductArchiveDraft\(db, item\.draft_id\)/);
 
   const queueableRefresh = section("function queueableDraftRefreshCodesForCodes", "function numericIdValue");
   assert.match(queueableRefresh, /isReusableProductArchiveDraftStatus\(row\.status\)/);
@@ -5097,7 +5188,7 @@ test("product archive routes fence prechecks, owned image files, and mutation co
   );
   assert.match(mdmBatchRoute, /const rawCodes = parseSpuCodes\(body\.codes \?\? body\.rawCodes\)/);
   assert.match(mdmBatchRoute, /const queueCodes = queueableDraftRefreshCodesForCodes/);
-  assert.match(mdmBatchRoute, /rawCodes: queueCodes/);
+  assert.match(mdmBatchRoute, /rawCodes: filtered\.acceptedCodes/);
 
   const validateRoute = section(
     'productArchiveDrafts.post("/:draftId/validate"',
@@ -5206,6 +5297,19 @@ test("product archive routes fence prechecks, owned image files, and mutation co
     assert.ok(end > start, `missing route end for ${marker}`);
     assert.match(route.slice(start, end), /productArchiveDraftMutationException/);
   }
+});
+
+test("product archive draft refresh gives its sync job a stable workflow idempotency key", async () => {
+  const route = await readText(files.draftRoute);
+  const start = route.indexOf('if (stage.key === "draft_refresh")');
+  const end = route.indexOf('return { skipped: true, reason: "unknown_stage" }', start);
+  assert.ok(start >= 0, "missing draft_refresh stage");
+  assert.ok(end > start, "missing draft_refresh stage end");
+  const draftRefresh = route.slice(start, end);
+
+  assert.match(draftRefresh, /const draftRefreshIdempotencyKey = `product-archive-workflow:\$\{job\.id\}:draft_refresh`/);
+  assert.match(draftRefresh, /draftQueue\.enqueue\(\{[\s\S]*idempotencyKey:\s*draftRefreshIdempotencyKey/);
+  assert.match(draftRefresh, /options:\s*\{[\s\S]*workflowJobId:\s*job\.id[\s\S]*workflowStageKey:\s*stage\.key/);
 });
 
 test("product archive field option validation supports multi-value strings and object SKU payloads", async () => {
@@ -5517,11 +5621,73 @@ test("product archive service derives remaining field values from launch plan an
     sourceRows,
     skus: [],
   }), {
-    valueText: "",
-    valueJson: { title: "购买数量,产品单价（元）", 1: "1,359" },
+    valueText: "1:359",
+    valueJson: {},
   });
   assert.equal(derive("微信视频小店标题", "内容平台标题"), "【balaOne】巴拉巴拉儿童外套男女2026新秋卡通萌趣满印防护上衣");
   assert.equal(derive("商品详情"), "潮流满印外套，防风防泼水透湿");
+});
+
+test("product archive service leaves metadata-identified generic tag and Youzan strikethrough prices blank", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const spu = {
+    spu_code: "209326100001",
+    product_line_name: "生活用品",
+    price_tag: 359,
+  };
+  const multiPlatformTagPrice = {
+    field_type: "TEXT",
+    required: true,
+    raw_payload_json: { attributes: { thirdPlatform: "TAOBAO,TMALL" } },
+  };
+  const youzanStrikethroughPrice = {
+    field_type: "TEXT",
+    required: true,
+    raw_payload_json: { attributes: { thirdPlatform: "YOUZAN" } },
+  };
+
+  assert.equal(service.isProductArchiveBusinessBlankField(
+    "吊牌价",
+    spu,
+    [],
+    "TAOBAO,TMALL",
+    multiPlatformTagPrice,
+  ), true);
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("吊牌价", {
+    spu,
+    sourceRows: [],
+    sourceField: "固定吊牌价",
+    templatePlatform: "TAOBAO,TMALL",
+    templateField: multiPlatformTagPrice,
+  }), "");
+  assert.equal(service.isProductArchiveBusinessBlankField(
+    "划线价",
+    spu,
+    [],
+    "YOUZAN",
+    youzanStrikethroughPrice,
+  ), true);
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("划线价", {
+    spu,
+    sourceRows: [],
+    sourceField: "固定吊牌价",
+    templatePlatform: "YOUZAN",
+    templateField: youzanStrikethroughPrice,
+  }), "");
+  assert.equal(service.isProductArchiveBusinessBlankField(
+    "吊牌价",
+    spu,
+    [],
+    "TMALL",
+    { field_type: "TEXT", raw_payload_json: { attributes: { thirdPlatform: "TMALL" } } },
+  ), false);
+  assert.equal(service.isProductArchiveBusinessBlankField(
+    "划线价",
+    spu,
+    [],
+    "YOUZAN",
+    { field_type: "SELECT", raw_payload_json: { attributes: { thirdPlatform: "YOUZAN" } } },
+  ), false);
 });
 
 test("product archive service fills material composition text fields from copywriting", async () => {
@@ -5674,6 +5840,10 @@ test("product archive derives VIP usage scenes from the current VIP template opt
   );
   assert.equal(
     derive("TAOBAO,TMALL", [{ value: "日常" }, { value: "休闲" }]),
+    "日常",
+  );
+  assert.equal(
+    derive("TAOBAO,TMALL", [{ value: "运动" }, { value: "户外" }]),
     "",
   );
   assert.equal(
@@ -7320,6 +7490,11 @@ test("product archive service maps every main-fabric component for 208326105206-
   assert.equal(derive("面料"), "棉混纺");
   assert.equal(derive("材质"), "棉混纺");
   assert.equal(derive("面料俗称", "根据面料成分填主材质"), "棉混纺");
+  assert.equal(derive("抖音面料材质"), "棉,68.4;聚酯纤维,31.6");
+  assert.equal(
+    service.normalizeProductArchiveDeepdrawFieldValue("抖音面料材质", "面料：80%聚酯纤维 20%棉", []),
+    "聚酯纤维,80;棉,20",
+  );
   assert.equal(derive("京东材质成分", "吊牌成分"), "棉,68.4;涤纶(聚酯纤维),31.6");
   assert.equal(derive("材质成分(文本)"), "68.4%棉；31.6%聚酯纤维");
   assert.equal(derive("袖长", ""), "长袖");
@@ -7532,8 +7707,8 @@ test("product archive shoe required fields derive from trusted launch and brand 
     sourceRows,
     skus: [],
   }), {
-    valueText: "",
-    valueJson: { title: "购买数量,产品单价（元）", 1: "1,359" },
+    valueText: "1:359",
+    valueJson: {},
   });
   assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("价格区间", {
     spu: { ...spu, price_tag: 359.9 },
@@ -7548,8 +7723,8 @@ test("product archive shoe required fields derive from trusted launch and brand 
     ],
     skus: [],
   }), {
-    valueText: "",
-    valueJson: { title: "购买数量,产品单价（元）", 1: "1,359.9" },
+    valueText: "1:359.9",
+    valueJson: {},
   });
   assert.equal(derive("专柜价"), "10000");
   assert.equal(derive("是否商场同款"), "否");
@@ -8654,6 +8829,108 @@ test("product archive AI fill admits shoe enum fields without admitting structur
   ]);
 });
 
+test("product archive AI fill prioritizes shoe visual enum blockers, including skipped template fields", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const shoeVisualFields = [
+    "材质(1688)",
+    "靴筒高度",
+    "鞋垫材质",
+    "厚薄",
+    "里绒情况",
+    "闭合方式",
+    "款式(单选)",
+    "类型",
+    "类型(多选)",
+    "适用人群(多选)",
+    "风格",
+  ];
+
+  for (const fieldName of shoeVisualFields) {
+    assert.equal(service.isProductArchiveShoeVisualEnumField(fieldName), true, fieldName);
+  }
+  assert.equal(service.isProductArchiveShoeVisualEnumField("服装版型"), false);
+
+  const candidates = service.buildProductArchiveAiFillCandidateFields(
+    shoeVisualFields.map((field_name, index) => ({
+      id: 900 + index,
+      field_name,
+      source_type: "skip",
+      value_text: "",
+      value_json: {},
+      required: true,
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [{ value: "枚举值一" }, { value: "枚举值二" }],
+    })),
+    [],
+    [],
+  );
+
+  assert.deepEqual(new Set(candidates.map((field) => field.fieldName)), new Set(shoeVisualFields));
+  const candidatePriorityByName = new Map(candidates.map((field) => [field.fieldName, field.strategy?.priority]));
+  assert.deepEqual(shoeVisualFields.map((fieldName) => [fieldName, candidatePriorityByName.get(fieldName)]), [
+    ["材质(1688)", "P1"],
+    ["靴筒高度", "P0"],
+    ["鞋垫材质", "P1"],
+    ["厚薄", "P1"],
+    ["里绒情况", "P1"],
+    ["闭合方式", "P0"],
+    ["款式(单选)", "P0"],
+    ["类型", "P0"],
+    ["类型(多选)", "P0"],
+    ["适用人群(多选)", "P1"],
+    ["风格", "P1"],
+  ]);
+
+  const source = await readText(files.draftService);
+  assert.match(source, /isProductArchiveShoeVisualEnumField\(field\.fieldName\)/);
+  assert.match(source, /shoeVisualEnumClassificationPrompt\(\)/);
+});
+
+test("product archive AI fallback admits unmapped skipped enums but excludes fact-bound fields", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(service.shouldProductArchiveAiFallbackSkippedField("适用场景"), true);
+  assert.equal(service.shouldProductArchiveAiFallbackSkippedField("鞋跟形状"), true);
+  assert.equal(service.shouldProductArchiveAiFallbackSkippedField("执行标准"), false);
+  assert.equal(service.shouldProductArchiveAiFallbackSkippedField("生产企业名称"), false);
+  assert.equal(service.shouldProductArchiveAiFallbackSkippedField("原产国"), false);
+  assert.equal(service.shouldProductArchiveAiFallbackSkippedField("价格区间"), false);
+  assert.equal(service.shouldProductArchiveAiFallbackSkippedField("商品包装重量"), false);
+  assert.equal(service.shouldProductArchiveAiFallbackSkippedField("尺码表"), false);
+
+  const candidates = service.buildProductArchiveAiFillCandidateFields([
+    "适用场景",
+    "鞋跟形状",
+    "执行标准",
+    "生产企业名称",
+    "原产国",
+    "尺码表",
+  ].map((field_name, index) => ({
+    id: 950 + index,
+    field_name,
+    source_type: ["执行标准", "生产企业名称", "原产国", "价格区间", "商品包装重量"].includes(field_name)
+      ? "manual"
+      : "skip",
+    value_text: "",
+    value_json: {},
+    required: true,
+    validation_status: "missing",
+    validation_message: "必填字段缺失",
+    options_json: [{ value: "选项一" }, { value: "选项二" }],
+  })), [], []);
+
+  assert.deepEqual(new Set(candidates.map((field) => field.fieldName)), new Set([
+    "适用场景",
+    "鞋跟形状",
+  ]));
+  assert.ok(candidates.every((field) => field.strategy === null));
+
+  const source = await readText(files.draftService);
+  assert.match(source, /field_strategy 为 null 的单选\/多选字段是通用 AI 兜底/);
+  assert.match(source, /商品主图、平铺图、吊牌、洗唛、商品档案、标题和已填字段/);
+});
+
 test("product archive AI fill normalizes color choices back to DeepDraw alias values", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
@@ -8741,6 +9018,21 @@ test("product archive color field rebuild prefers concrete MDM SKU colors over s
     { value: "绿色" },
     { value: "粉红" },
   ]), "黑色,黑色调00399;军绿,军绿40601;粉红,粉红60001");
+});
+
+test("product archive text color preserves the shallow-gray SKU shade", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("颜色(文本)", {
+    spu: {},
+    skus: [
+      { color_name: "浅灰20047" },
+      { color_name: "黑色90001" },
+    ],
+  }), {
+    valueText: "浅灰,浅灰20047;黑色,黑色90001",
+    valueJson: {},
+  });
 });
 
 test("product archive draft reference image upload extracts style codes from folder paths", async () => {
@@ -8877,6 +9169,22 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "锦纶/尼龙" },
     { value: "聚酯纤维（涤纶）" },
   ]), "锦纶/尼龙");
+  const washlabelComposition = [
+    "面料/挂面:100%聚酯纤维",
+    "里料:100%锦纶",
+    "(配料除外)",
+    "填充物",
+    "大身/袖子:白鸭绒",
+    "绒子含量:90%",
+  ].join("\n");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("里料材质(多选)", washlabelComposition, [
+    { value: "锦纶" },
+    { value: "羊剪绒毛皮革" },
+  ]), "锦纶");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("里料材质成分含量(多选)", washlabelComposition, [
+    { value: "95%及以上" },
+    { value: "81%(含)-90%(含)" },
+  ]), "95%及以上");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("衣门襟", "系扣", [
     { value: "魔术贴" },
     { value: "肩开扣" },

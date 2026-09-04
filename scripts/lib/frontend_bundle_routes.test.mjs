@@ -6,6 +6,7 @@ import { test } from "node:test";
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const ROUTER_FILE = path.join(PROJECT_ROOT, "web/src/router.tsx");
 const LAZY_ROUTES_FILE = path.join(PROJECT_ROOT, "web/src/router-lazy-pages.tsx");
+const LISTING_LAUNCH_PLANS_PAGE_FILE = path.join(PROJECT_ROOT, "web/src/pages/listing-launch-plans/page.tsx");
 
 const HEAVY_PAGE_IMPORTS = [
   "@/pages/product-archive-drafts/page",
@@ -37,4 +38,16 @@ test("heavy operator routes are lazy-loaded out of the initial bundle", async ()
       `${modulePath} should be imported through React.lazy`,
     );
   }
+});
+
+test("listing launch plan spreadsheet import dialog is split out of the route chunk", async () => {
+  const page = await readFile(LISTING_LAUNCH_PLANS_PAGE_FILE, "utf8");
+
+  assert.doesNotMatch(page, /import \{ ImportDialog \} from "@\/components\/import-dialog"/);
+  assert.match(page, /const SpreadsheetImportDialog = lazy\(\(\) =>\s*import\("@\/components\/import-dialog"\)/);
+  assert.match(page, /function DeferredSpreadsheetImportDialog/);
+  assert.match(page, /if \(!shouldLoad\)/);
+  assert.match(page, /openPendingRef/);
+  assert.match(page, /ref=\{\(element\) => \{/);
+  assert.doesNotMatch(page, /window\.setTimeout\(\(\) => \{[\s\S]*triggerRef\.current\?\.click\(\)/);
 });

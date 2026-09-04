@@ -411,6 +411,71 @@ test("buildDeepdrawSdkProductInput keeps template color aliases instead of appen
   assert.equal(input.product.fields["颜色"], "扩展选项,浅驼50002;扩展选项,胡桃棕51006");
 });
 
+test("buildDeepdrawSdkProductInput treats down-decorated color aliases as their SKU source colors", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+    },
+    payload: {
+      code: "202426107128-test",
+      title: "儿童羽绒服",
+      tradeId: "12390",
+      fields: [
+        { name: "颜色", value: "浅灰,浅灰20047-白鸭绒;黑色,黑色90001-白鸭绒" },
+      ],
+      skus: [
+        { skuCode: "202426107128-test-20047-140", color: "浅灰20047", size: "140" },
+        { skuCode: "202426107128-test-90001-140", color: "黑色90001", size: "140" },
+      ],
+    },
+  });
+
+  assert.equal(input.product.fields["颜色"], "浅灰,浅灰20047-白鸭绒;黑色,黑色90001-白鸭绒");
+});
+
+test("buildDeepdrawSdkProductInput encodes Douyin material rows as the UI-required JSON array text", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+    },
+    payload: {
+      code: "202426107128-test",
+      title: "儿童羽绒服",
+      tradeId: "12390",
+      fields: [
+        { name: "抖音面料材质", fieldType: "TEXT", value: "聚酯纤维,100" },
+      ],
+    },
+  });
+
+  assert.equal(input.product.fields["抖音面料材质"], '["聚酯纤维,100"]');
+
+  const compoundInput = buildDeepdrawSdkProductInput({
+    config: {},
+    payload: {
+      fields: [{ name: "抖音面料材质", value: "棉,68.4;聚酯纤维,31.6" }],
+    },
+  });
+  assert.equal(compoundInput.product.fields["抖音面料材质"], '["棉,68.4","聚酯纤维,31.6"]');
+});
+
+test("buildDeepdrawSdkProductInput keeps the 1688 price range as quantity:tag-price text", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {},
+    payload: {
+      fields: [{ name: "价格区间", fieldType: "MULTI_TEXT", value: "1:999.9" }],
+    },
+  });
+
+  assert.equal(input.product.fields["价格区间"], "1:999.9");
+});
+
 test("buildDeepdrawSdkProductInput normalizes size table keys to SDK size values", () => {
   const input = buildDeepdrawSdkProductInput({
     config: {
