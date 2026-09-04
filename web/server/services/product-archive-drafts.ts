@@ -12992,13 +12992,15 @@ function productPayload(db: SyncPostgresDatabase, draftId: number, options: {
         value: alignProductArchivePayloadSizeFieldValue(field.name, field.value, saleSizeValueText),
       }))
     : allFields
+  const includeMultiPlatformSizeFieldInUpdate = stagedSizeTablePublish
+    || options.includeMultiPlatformSizeFieldInUpdate === true
   const legacyUpdateFields = shoeProduct
     ? selectDeepdrawLegacyShoeUpdateFields(alignedAllFields, {
-      includeMultiPlatformSizeField: options.includeMultiPlatformSizeFieldInUpdate === true,
+      includeMultiPlatformSizeField: includeMultiPlatformSizeFieldInUpdate,
     })
     : apparelProduct
     ? selectDeepdrawStableSizeUpdateFields(alignedAllFields, {
-      includeMultiPlatformSizeField: options.includeMultiPlatformSizeFieldInUpdate === true,
+      includeMultiPlatformSizeField: includeMultiPlatformSizeFieldInUpdate,
     })
     : alignedFields
   const createFields = shoeProduct
@@ -13045,7 +13047,7 @@ function productPayload(db: SyncPostgresDatabase, draftId: number, options: {
     ...(stagedSizeTablePublish ? {
       withSizeRemarks: true,
     } : {}),
-    ...(options.includeMultiPlatformSizeFieldInUpdate ? {
+    ...(includeMultiPlatformSizeFieldInUpdate ? {
       includeMultiPlatformSizeField: true,
     } : {}),
     ...(stagedSizeTablePublish ? {

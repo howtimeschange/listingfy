@@ -1054,7 +1054,7 @@ test("buildDeepdrawSdkProductInput can emit bare shoe multi-platform row keys fo
   });
 });
 
-test("legacy v1 shoe publish creates with the main table then updates the remaining supported platform tables", () => {
+test("legacy v1 shoe publish creates with the main table then post-create updates the remaining supported platform tables and multi-platform sizes", () => {
   const fields = [
     { name: "尺码", value: "26码;27码" },
     { name: "尺码表", fieldType: "MULTI_TEXT", value: { title: "尺码,适合脚长,鞋内长", "26码": "26,16,17", "27码": "27,16.5,17.7" } },
@@ -1072,22 +1072,22 @@ test("legacy v1 shoe publish creates with the main table then updates the remain
     },
     { name: "淘宝尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长", "26码": "16", "27码": "16.5" } },
   ];
-  const legacyUpdateFields = selectDeepdrawLegacyShoeUpdateFields(fields);
-  const probeUpdateFields = selectDeepdrawLegacyShoeUpdateFields(fields, { includeMultiPlatformSizeField: true });
+  const defaultUpdateFields = selectDeepdrawLegacyShoeUpdateFields(fields);
+  const postCreateUpdateFields = selectDeepdrawLegacyShoeUpdateFields(fields, { includeMultiPlatformSizeField: true });
   const createFields = selectDeepdrawLegacyShoeCreateFields(fields);
   assert.deepEqual(
     createFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
     ["尺码表", "多平台尺码"],
   );
   assert.deepEqual(
-    legacyUpdateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
+    defaultUpdateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
     ["尺码表", "唯品会尺码表", "天猫尺码表", "抖音尺码表"],
   );
   assert.deepEqual(
-    probeUpdateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
+    postCreateUpdateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
     ["尺码表", "唯品会尺码表", "天猫尺码表", "抖音尺码表", "多平台尺码"],
   );
-  assert.equal(deepdrawLegacyShoePostCreateUpdateRequired(createFields, legacyUpdateFields), true);
+  assert.equal(deepdrawLegacyShoePostCreateUpdateRequired(createFields, postCreateUpdateFields), true);
 
   const createInput = buildDeepdrawSdkProductInput({
     config: {
@@ -1117,10 +1117,34 @@ test("legacy v1 shoe publish creates with the main table then updates the remain
     "27码": "27,27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7),27码(脚长16.3-16.7/内长17.7)",
   });
 
+  const updateInput = buildDeepdrawProductFullUpdateInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+      merchantId: "1162",
+    },
+    productId: "6514510",
+    payload: {
+      code: "204426140121-create-probe",
+      title: "童鞋创建探针",
+      tradeId: "546",
+      shoeSizes: true,
+      includeMultiPlatformSizeField: true,
+      fields: createFields,
+      legacyUpdateFields: postCreateUpdateFields,
+    },
+  });
+  assert.deepEqual(
+    Object.keys(updateInput.product.fields).filter((name) => /尺码表|多平台尺码/.test(name)),
+    ["尺码表", "唯品会尺码表", "天猫尺码表", "抖音尺码表", "多平台尺码"],
+  );
+
   const payload = {
     shoeSizes: true,
     fields: fields.slice(0, 2),
-    legacyUpdateFields,
+    legacyUpdateFields: defaultUpdateFields,
     skus: [
       { color: "黑紫色调00397", size: "26码" },
       { color: "黑紫色调00397", size: "27码" },
@@ -1130,7 +1154,7 @@ test("legacy v1 shoe publish creates with the main table then updates the remain
     colors: { optionAliases: { 紫色: "黑紫色调00397" } },
     sizes: { options: ["26", "27"] },
     skus: { skuItems: [{ color: "紫色", size: "26" }, { color: "紫色", size: "27" }] },
-    sizeTables: legacyUpdateFields
+    sizeTables: defaultUpdateFields
       .filter((field) => /尺码表|多平台尺码/.test(field.name))
       .map((field) => ({
         field: { name: field.name },
@@ -1485,7 +1509,7 @@ test("DeepDraw resource scalar preservation keeps trusted text and choice fields
   assert.equal(merged.payload.legacyUpdateFields.find((field) => field.name === "多平台尺码")?.value["140cm"], "140");
 });
 
-test("apparel staged size publish creates with the main table then updates stable platform tables", () => {
+test("apparel staged size publish creates with the main table then post-create updates stable platform tables and multi-platform sizes", () => {
   const fields = [
     { name: "尺码", value: "130cm;140cm" },
     { name: "尺码表", fieldType: "MULTI_TEXT", value: { title: "尺码,身高,胸围", "130cm": "130,130,70", "140cm": "140,140,74" } },
@@ -1497,22 +1521,22 @@ test("apparel staged size publish creates with the main table then updates stabl
     { name: "多平台尺码", fieldType: "MULTI_TEXT", value: { title: "京东", "130cm": "130", "140cm": "140" } },
   ];
   const createFields = selectDeepdrawStableSizeCreateFields(fields);
-  const updateFields = selectDeepdrawStableSizeUpdateFields(fields);
-  const fullUpdateFields = selectDeepdrawStableSizeUpdateFields(fields, { includeMultiPlatformSizeField: true });
+  const defaultUpdateFields = selectDeepdrawStableSizeUpdateFields(fields);
+  const postCreateUpdateFields = selectDeepdrawStableSizeUpdateFields(fields, { includeMultiPlatformSizeField: true });
 
   assert.deepEqual(
     createFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
     ["尺码表", "多平台尺码"],
   );
   assert.deepEqual(
-    updateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
+    defaultUpdateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
     ["尺码表", "唯品会尺码表", "天猫尺码表", "抖音尺码表"],
   );
   assert.deepEqual(
-    fullUpdateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
+    postCreateUpdateFields.filter((field) => /尺码表|多平台尺码/.test(field.name)).map((field) => field.name),
     ["尺码表", "唯品会尺码表", "天猫尺码表", "抖音尺码表", "多平台尺码"],
   );
-  assert.equal(deepdrawLegacyShoePostCreateUpdateRequired(createFields, updateFields), true);
+  assert.equal(deepdrawLegacyShoePostCreateUpdateRequired(createFields, postCreateUpdateFields), true);
 
   const createInput = buildDeepdrawSdkProductInput({
     config: {
@@ -1556,12 +1580,12 @@ test("apparel staged size publish creates with the main table then updates stabl
       title: "童装创建探针",
       tradeId: "9652",
       fields: createFields,
-      legacyUpdateFields: updateFields,
+      legacyUpdateFields: postCreateUpdateFields,
     },
   });
   assert.deepEqual(
     Object.keys(updateInput.product.fields).filter((name) => /尺码表|多平台尺码/.test(name)),
-    ["尺码表", "唯品会尺码表", "天猫尺码表", "抖音尺码表"],
+    ["尺码表", "唯品会尺码表", "天猫尺码表", "抖音尺码表", "多平台尺码"],
   );
 });
 
