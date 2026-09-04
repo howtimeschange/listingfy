@@ -448,7 +448,7 @@ export function listListingLaunchPlanRows(db: SyncPostgresDatabase, input: ListR
     join listing_launch_plan_spu_latest latest on latest.row_id = row.id
     join listing_launch_plan_import imp on imp.id = row.import_id
   `
-  const itemParams = useCursor ? [...params, limit + 1] : [...params, limit, offset]
+  const itemParams = useCursor ? [...params, limit + 1] : [...params, limit + 1, offset]
   const items = db.prepare(`
     select
       row.id,
@@ -482,13 +482,13 @@ export function listListingLaunchPlanRows(db: SyncPostgresDatabase, input: ListR
     order by row.spu_code, row.id
     limit ?${useCursor ? "" : " offset ?"}
   `).all(...itemParams)
-  const pageItems = useCursor ? items.slice(0, limit) : items
+  const pageItems = items.slice(0, limit)
   const lastItem = pageItems.at(-1) as { spu_code?: string; id?: number } | undefined
   const nextCursor = useCursor
     ? items.length > limit && lastItem?.spu_code && lastItem.id
       ? { afterSpuCode: lastItem.spu_code, afterRowId: Number(lastItem.id) }
       : null
-    : pageItems.length === limit && lastItem?.spu_code && lastItem.id
+    : items.length > limit && lastItem?.spu_code && lastItem.id
       ? { afterSpuCode: lastItem.spu_code, afterRowId: Number(lastItem.id) }
       : null
   let total = 0

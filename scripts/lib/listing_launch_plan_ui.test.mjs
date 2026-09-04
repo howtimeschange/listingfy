@@ -302,6 +302,21 @@ test("cursor pagination does not repeat or skip rows after a newer import is add
   assert.deepEqual([...first.items, ...second.items].map((item) => item.spu_code), ["A", "B", "C", "D"]);
 });
 
+test("offset compatibility does not expose a next cursor for an exactly full final page", async () => {
+  const { importListingLaunchPlanSheets, listListingLaunchPlanRows } = await listingLaunchPlanService();
+  const db = new ListingLaunchPlanMemoryDb();
+
+  importListingLaunchPlanSheets(db, {
+    fileName: "exact.xlsx",
+    sheets: [{ name: "Exact", rows: ["A", "B"].map((spu) => launchPlanRow(spu, `${spu}-base`, "Exact")) }],
+  });
+
+  const result = listListingLaunchPlanRows(db, { limit: 2, offset: 0, includeTotal: false });
+
+  assert.equal(result.items.length, 2);
+  assert.equal(result.nextCursor, null);
+});
+
 test("failed listing launch plan imports do not alter latest summaries", async () => {
   const { importListingLaunchPlanSheets, listListingLaunchPlanRows } = await listingLaunchPlanService();
   const db = new ListingLaunchPlanMemoryDb();
