@@ -1688,15 +1688,37 @@ function cloneProductArchivePublishJob(job: ProductArchivePublishJob) {
   }
 }
 
-function createProductArchivePublishQueue({
+type ProductArchivePublishSlotRunner = <T>(
+  run: (signal: AbortSignal) => Promise<T>,
+) => Promise<T>
+
+export function createProductArchivePublishQueue({
   store,
   concurrency = 1,
+  getDatabase = getDb,
+  prepareDraftForSubmit = (db, draftId, options) => prepareProductArchiveDraftForSubmit(db, draftId, options),
+  submitDraft = (_db, draftId, options) => submitProductArchiveDraft(getDatabase(), draftId, options),
+  runWithSlot = (run) => withBackgroundTaskSlot("product_archive_publish", run),
+  onSnapshot = () => undefined,
   onInternalError = (error: unknown) => console.error("Product archive publish queue internal error", error),
   wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
   now = () => Date.now(),
 }: {
   store: ReturnType<typeof createPostgresProductArchiveSyncJobStore>
   concurrency?: unknown
+  getDatabase?: () => ReturnType<typeof getDb>
+  prepareDraftForSubmit?: (
+    db: ReturnType<typeof getDb>,
+    draftId: number,
+    options: Parameters<typeof prepareProductArchiveDraftForSubmit>[2],
+  ) => ReturnType<typeof prepareProductArchiveDraftForSubmit> | Promise<ReturnType<typeof prepareProductArchiveDraftForSubmit>>
+  submitDraft?: (
+    db: ReturnType<typeof getDb>,
+    draftId: number,
+    options: Parameters<typeof submitProductArchiveDraft>[2],
+  ) => ReturnType<typeof submitProductArchiveDraft>
+  runWithSlot?: ProductArchivePublishSlotRunner
+  onSnapshot?: (job: ReturnType<typeof cloneProductArchivePublishJob>) => void
   onInternalError?: (error: unknown, context?: Record<string, unknown>) => void
   wait?: (ms: number) => Promise<unknown>
   now?: () => number
@@ -1717,9 +1739,11 @@ function createProductArchivePublishQueue({
   function persist(job: ProductArchivePublishJob) {
     job.options.concurrency = clampPublishConcurrency(job.options.concurrency)
     try {
-      if (store.save(cloneProductArchivePublishJob(job)) === false) {
+      const snapshot = cloneProductArchivePublishJob(job)
+      if (store.save(snapshot) === false) {
         throw new ProductArchiveSyncLeaseError()
       }
+      onSnapshot(snapshot)
     } catch (error) {
       reportInternalError(error, { phase: "persist", jobId: job.id })
       if (store.requiresLease) {
@@ -1806,15 +1830,14 @@ function createProductArchivePublishQueue({
           "publish.prepare",
           { jobId: job.id, draftId: item.draft_id, submitMode: job.options.submitMode },
           async () => {
-            prepareProductArchiveDraftForSubmit(getDb(), item.draft_id, {
+            await prepareDraftForSubmit(getDatabase(), item.draft_id, {
               submitMode: job.options.submitMode,
               includeMultiPlatformSizeFieldInUpdate: fullUpdate,
               allowExistingProduct: fullUpdate,
             })
           },
         ))
-        const submitResult = await providerLimiter(() => withBackgroundTaskSlot(
-          "product_archive_publish",
+        const submitResult = await providerLimiter(() => runWithSlot(
           async () => recordProductArchivePublishSpan(
             "publish.submit",
             { jobId: job.id, draftId: item.draft_id, submitMode: job.options.submitMode },
@@ -1824,7 +1847,7 @@ function createProductArchivePublishQueue({
                 draftId: item.draft_id,
                 submitMode: job.options.submitMode,
               })
-              const result = await submitProductArchiveDraft(getDb(), item.draft_id, {
+              const result = await submitDraft(getDatabase(), item.draft_id, {
                 dryRun: false,
                 submitMode: job.options.submitMode,
                 updateExisting: fullUpdate,
@@ -1849,7 +1872,7 @@ function createProductArchivePublishQueue({
           return
         }
         try {
-          writeOperationLog(getDb(), {
+          writeOperationLog(getDatabase(), {
             action: "draft.publish.background_completed",
             module: "PRODUCT_ARCHIVE_DRAFT",
             entityType: "product_archive_draft",
@@ -1871,7 +1894,7 @@ function createProductArchivePublishQueue({
         return
       } catch (error) {
         if (isProductArchiveSyncLeaseError(error)) throw error
-        const safety = publishRetrySafety(getDb(), item.draft_id)
+        const safety = publishRetrySafety(getDatabase(), item.draft_id)
         const retryable = safety.retryable && publishErrorIsRetryable(error) && item.attempt_count < item.max_attempts
         item.error = safety.retryable ? errorMessage(error) : safety.reason || errorMessage(error)
         if (!retryable) {
@@ -2679,7 +2702,7 @@ function requeueableItems<T extends { status?: string | null }>(items: T[] | und
   return (items ?? []).filter((item) => stringValue(item.status) !== "completed")
 }
 
-function requeueTargets(items: Array<{ draft_id?: number | null; spu_code?: string | null; status?: string | null; result?: unknown; error?: string | null }>) {
+export function requeueTargets(items: Array<{ draft_id?: number | null; spu_code?: string | null; status?: string | null; result?: unknown; error?: string | null }>) {
   return requeueableItems(items).flatMap((item) => {
     const resultKind = stringValue(objectValue(item.result).resultKind)
     if (resultKind === "unsafe_retry_blocked" && /回读确认/.test(stringValue(item.error))) return []

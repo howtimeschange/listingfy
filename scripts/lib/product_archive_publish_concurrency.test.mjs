@@ -3,6 +3,11 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
+import {
+  createProductArchivePublishQueue,
+  requeueTargets,
+} from "../../web/server/routes/product-archive-drafts.ts";
+
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const ROUTE_PATH = path.join(PROJECT_ROOT, "web/server/routes/product-archive-drafts.ts");
 const PAGE_PATH = path.join(PROJECT_ROOT, "web/src/pages/product-archive-drafts/page.tsx");
@@ -12,96 +17,171 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function runPublishQueue({ concurrency, draftIds, networkDelayMs }) {
-  const uniqueDraftIds = [...new Set(draftIds)];
-  const queued = uniqueDraftIds.map((draftId) => ({ draftId, status: "queued" }));
-  const activeDrafts = new Set();
-  const readbacks = [];
-  let maxInFlight = 0;
-  let sameDraftOverlap = false;
-  let cursor = 0;
-
-  async function processItem(item) {
-    if (activeDrafts.has(item.draftId)) sameDraftOverlap = true;
-    activeDrafts.add(item.draftId);
-    maxInFlight = Math.max(maxInFlight, activeDrafts.size);
-    item.status = "running";
-    await delay(networkDelayMs);
-    readbacks.push(item.draftId);
-    item.status = "completed";
-    activeDrafts.delete(item.draftId);
-  }
-
-  const workers = Array.from({ length: concurrency }, async () => {
-    while (cursor < queued.length) {
-      const item = queued[cursor];
-      cursor += 1;
-      await processItem(item);
-    }
-  });
-  await Promise.all(workers);
-
-  return { sameDraftOverlap, maxInFlight, readbacks };
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
 }
 
-async function runPublishQueueWithUnknownTransport({ concurrency }) {
-  void concurrency;
+function createMemoryStore() {
+  const rows = new Map();
+  const saves = [];
   return {
-    items: [
-      {
-        draft_id: 1,
-        status: "failed",
-        error: "创建请求结果未知，已保持 submitting 防重复；请先在详情页回读确认后再处理",
-      },
-    ],
+    requiresLease: false,
+    saves,
+    save(job) {
+      const snapshot = clone(job);
+      rows.set(job.id, snapshot);
+      saves.push(snapshot);
+      return true;
+    },
+    get(id) {
+      const row = rows.get(id);
+      return row ? clone(row) : null;
+    },
+    recover() {
+      return [...rows.values()].map(clone);
+    },
   };
 }
 
-test("publish queue runs two distinct drafts concurrently when configured to two", async () => {
-  const trace = await runPublishQueue({ concurrency: 2, draftIds: [1, 2], networkDelayMs: 20 });
-  assert.equal(trace.sameDraftOverlap, false);
-  assert.ok(trace.maxInFlight >= 2);
-  assert.deepEqual(trace.readbacks, [1, 2]);
+function createFakeDb({ transportUnknown = false } = {}) {
+  return {
+    prepare(sql) {
+      return {
+        get() {
+          if (/from product_archive_draft/i.test(sql)) {
+            return transportUnknown
+              ? { status: "submitting", duplicate_result_json: { submit_transport_unknown: "socket timeout" } }
+              : { status: "ready", duplicate_result_json: {} };
+          }
+          return {};
+        },
+        run() {
+          return { changes: 1 };
+        },
+      };
+    },
+  };
+}
+
+async function waitForCompletedJob(queue, jobId) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const job = queue.getJob(jobId);
+    if (job?.status === "completed") return job;
+    await delay(5);
+  }
+  assert.fail("publish queue did not finish");
+}
+
+test("publish queue runs two distinct drafts concurrently and completes only after readback_verified", async () => {
+  const store = createMemoryStore();
+  const activeDrafts = new Set();
+  const readbackVerified = new Set();
+  const completedBeforeReadback = [];
+  const trace = [];
+  let maxInFlight = 0;
+  let sameDraftOverlap = false;
+
+  const queue = createProductArchivePublishQueue({
+    store,
+    concurrency: 2,
+    wait: delay,
+    getDatabase: () => createFakeDb(),
+    prepareDraftForSubmit: (_db, draftId) => {
+      trace.push(`prepare:${draftId}`);
+      return { payload: {}, validation: { summary: { blocker_count: 0 } } };
+    },
+    submitDraft: async (_db, draftId) => {
+      if (activeDrafts.has(draftId)) sameDraftOverlap = true;
+      activeDrafts.add(draftId);
+      maxInFlight = Math.max(maxInFlight, activeDrafts.size);
+      trace.push(`submit:start:${draftId}`);
+      await delay(25);
+      readbackVerified.add(draftId);
+      trace.push(`readback:verified:${draftId}`);
+      activeDrafts.delete(draftId);
+      return { ok: true, status: "readback_verified" };
+    },
+    runWithSlot: async (run) => await run(new AbortController().signal),
+    onSnapshot: (job) => {
+      for (const item of job.items ?? []) {
+        if (item.status === "completed" && !readbackVerified.has(item.draft_id)) {
+          completedBeforeReadback.push(item.draft_id);
+        }
+      }
+    },
+  });
+
+  const queued = queue.enqueue({
+    targets: [
+      { draftId: 1, spuCode: "SPU-1" },
+      { draftId: 1, spuCode: "SPU-1-DUP" },
+      { draftId: 2, spuCode: "SPU-2" },
+    ],
+    actor: null,
+    ipAddress: null,
+    maxAttempts: 1,
+    retryDelayMs: 1,
+    submitMode: "create",
+  });
+  const finalJob = await waitForCompletedJob(queue, queued.id);
+
+  assert.equal(finalJob.total_count, 2);
+  assert.equal(sameDraftOverlap, false);
+  assert.ok(maxInFlight >= 2);
+  assert.deepEqual([...readbackVerified].sort(), [1, 2]);
+  assert.deepEqual(completedBeforeReadback, []);
+  assert.equal(finalJob.completed_count, 2);
+  assert.equal(finalJob.failed_count, 0);
+  assert.equal(finalJob.result.publishedCount, 2);
+  assert.equal(finalJob.result.concurrency, 2);
+  assert.deepEqual(trace.filter((entry) => entry.startsWith("prepare:")), ["prepare:1", "prepare:2"]);
 });
 
-test("transport-unknown remains blocked until explicit readback", async () => {
-  const result = await runPublishQueueWithUnknownTransport({ concurrency: 2 });
-  assert.equal(result.items[0].status, "failed");
-  assert.match(result.items[0].error, /回读确认/);
+test("submit_transport_unknown remains unsafe_retry_blocked and is not requeued before explicit readback", async () => {
+  const store = createMemoryStore();
+  const queue = createProductArchivePublishQueue({
+    store,
+    concurrency: 2,
+    wait: delay,
+    getDatabase: () => createFakeDb({ transportUnknown: true }),
+    prepareDraftForSubmit: () => ({ payload: {}, validation: { summary: { blocker_count: 0 } } }),
+    submitDraft: async () => {
+      throw new Error("socket timeout");
+    },
+    runWithSlot: async (run) => await run(new AbortController().signal),
+  });
+
+  const queued = queue.enqueue({
+    targets: [{ draftId: 10, spuCode: "SPU-10" }],
+    actor: null,
+    ipAddress: null,
+    maxAttempts: 2,
+    retryDelayMs: 1,
+    submitMode: "create",
+  });
+  const finalJob = await waitForCompletedJob(queue, queued.id);
+
+  assert.equal(finalJob.failed_count, 1);
+  assert.equal(finalJob.items[0].status, "failed");
+  assert.equal(finalJob.items[0].result.resultKind, "unsafe_retry_blocked");
+  assert.match(finalJob.items[0].error, /回读确认/);
+  assert.deepEqual(requeueTargets(finalJob.items), []);
 });
 
-test("publish queue source exposes bounded provider concurrency and keeps processItem as the submission boundary", async () => {
+test("publish queue source keeps submitProductArchiveDraft as the single production submission boundary", async () => {
   const source = await readFile(ROUTE_PATH, "utf8");
   const queueStart = source.indexOf("function createProductArchivePublishQueue");
   const queueEnd = source.indexOf("function cloneHangtagWashlabelOcrJob", queueStart);
   const queueSource = source.slice(queueStart, queueEnd);
 
-  assert.match(queueSource, /concurrency = 1/);
+  assert.match(queueSource, /submitDraft = \(_db,\s*draftId/);
+  assert.match(queueSource, /submitProductArchiveDraft\(getDatabase\(\),\s*draftId/);
   assert.match(queueSource, /LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_CONCURRENCY/);
-  assert.match(source, /Math\.max\(1,\s*Math\.min\(4/);
-  assert.match(queueSource, /preparationLimiter:\s*createProductArchivePublishLimiter\(2\)/);
-  assert.match(queueSource, /providerLimiter:\s*createProductArchivePublishLimiter\(job\.options\.concurrency\)/);
   assert.match(queueSource, /Promise\.allSettled/);
-  assert.match(queueSource, /processItem\(job,\s*item,\s*limiters\)/);
 
-  const submitCalls = [...queueSource.matchAll(/submitProductArchiveDraft\(/g)].length;
-  assert.equal(submitCalls, 1);
   const serviceSource = await readFile(SERVICE_PATH, "utf8");
   assert.match(serviceSource, /submit_claim_token/);
-  assert.match(source, /submit_transport_unknown/);
-});
-
-test("publish job snapshot reports concurrency and live outcome counters", async () => {
-  const source = await readFile(ROUTE_PATH, "utf8");
-  const cloneStart = source.indexOf("function cloneProductArchivePublishJob");
-  const queueEnd = source.indexOf("function createProductArchivePublishQueue", cloneStart);
-  const cloneSource = source.slice(cloneStart, queueEnd);
-
-  assert.match(cloneSource, /failed_items/);
-  assert.match(cloneSource, /queued_count/);
-  assert.match(cloneSource, /running_count/);
-  assert.match(cloneSource, /retry_attempt_count/);
-  assert.match(cloneSource, /concurrency/);
+  assert.match(serviceSource, /return await readbackProductArchiveDraft/);
 });
 
 test("publish page describes submitting and readback instead of accepted-submit success", async () => {
