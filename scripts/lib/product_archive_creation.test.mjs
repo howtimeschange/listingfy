@@ -2596,7 +2596,7 @@ test("product archive AI fill skips fields that already have JSON values", async
   assert.match(service, /hasSizeChartValue[\s\S]*stringValue\(sizeChartDerived\.valueText\)[\s\S]*skuSizeField/);
 });
 
-test("AI fill skips a field changed during provider wait but saves an unchanged field", async () => {
+test("AI fill fails closed when a field changes during provider wait", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const draft = {
     id: 901,
@@ -2662,22 +2662,27 @@ test("AI fill skips a field changed during provider wait but saves an unchanged 
     },
   };
 
-  const result = await service.fillProductArchiveDraftFieldsWithAi(db, draft.id, {
-    router: {
-      callJson: async () => ({
-        json: {
-          fills: [
-            { field_id: 1, field_value: "休闲", confidence: 0.95 },
-            { field_id: 2, field_value: "休闲", confidence: 0.95 },
-          ],
-        },
-      }),
+  await assert.rejects(
+    () => service.fillProductArchiveDraftFieldsWithAi(db, draft.id, {
+      router: {
+        callJson: async () => ({
+          json: {
+            fills: [
+              { field_id: 1, field_value: "休闲", confidence: 0.95 },
+              { field_id: 2, field_value: "休闲", confidence: 0.95 },
+            ],
+          },
+        }),
+      },
+    }),
+    (error) => {
+      assert.equal(error.code, "PRODUCT_ARCHIVE_DRAFT_CHANGED");
+      assert.match(error.message, /草稿数据已更新/);
+      return true;
     },
-  });
+  );
 
   assert.deepEqual(fieldUpdates.map((update) => update.fieldId), [1, 2]);
-  assert.deepEqual(result.saved.map((field) => field.field_id), [2]);
-  assert.equal(result.warnings.filter((warning) => warning.code === "draft_changed").length, 1);
 });
 
 test("product archive AI fill prompt uses trusted draft MDM and source context only", async () => {

@@ -1,8 +1,10 @@
-# Product Archive Performance Rollout Handoff - 2026-09-04
+# Product Archive Performance Local-Readiness Handoff - 2026-09-04
 
 ## Scope
 
-This handoff covers the local Task 11 readiness work for the Product Archive performance branch. It does not record a production deployment, bastion readback, provider write, or live DeepDraw submission.
+This handoff covers Task 11 development/local-readiness for the Product Archive performance branch. The local code/config/documentation artifact is ready for controller review, but operational Task 11 is not complete in this worker session.
+
+Deployment, gray rollout, live provider calls, live DeepDraw submit/readback, bastion readback, and the full benchmark matrix remain pending external authorization and the next operational phase. This document must not be read as proof that the branch is deployed, that migration `055_product_archive_performance.sql` is live, or that production behavior has been measured beyond any read-only evidence separately collected by the controller.
 
 ## Safety Defaults
 
@@ -16,9 +18,9 @@ This handoff covers the local Task 11 readiness work for the Product Archive per
 
 Invalid values fail closed to the default above and emit a redacted warning containing only the env name, reason, default, and allowed range. Raw env values, secrets, and provider payloads are not logged.
 
-## Local Verification
+## Local Development Verification
 
-Safe local verification completed on this branch:
+Safe local development verification completed on this branch:
 
 | Check | Result |
 | --- | --- |
@@ -27,7 +29,7 @@ Safe local verification completed on this branch:
 | `git diff --check` | Passed |
 | `npm run web:build` | Passed |
 
-The local benchmark command was limited to unit/in-process aggregate evidence. It did not execute bastion queries, browser TTFB/LCP capture, live provider calls, live DeepDraw readback, or production Nginx log analysis.
+The local benchmark command was limited to unit/in-process aggregate evidence. It did not execute bastion queries, browser TTFB/LCP capture, live provider calls, live DeepDraw readback, gray rollout steps, deployment, or production Nginx log analysis.
 
 ## Local Aggregate Evidence
 
@@ -68,10 +70,12 @@ Use the compatibility import/workflow/read paths where available. Keep additive 
 | Item | Status |
 | --- | --- |
 | Local commit SHA | Recorded in the Task 11 report after commit. |
-| Production deployment | Not performed by this worker. |
-| Deployed SHA readback | Reserved for the controller after deployment. |
-| Migration version readback | Reserved for the controller after deployment. |
-| Worker startup logs | Startup now validates Product Archive performance env values and emits redacted default warnings for invalid values. Production log readback is reserved for the controller. |
+| Production deployment | Pending external authorization; not performed by this worker. |
+| Gray rollout | Pending next operational phase; not performed by this worker. |
+| Deployed SHA readback | Pending controller deployment/readback; not performed by this worker. |
+| Migration version readback | Pending controller deployment/readback; not performed by this worker. |
+| Live provider/readback matrix | Pending controller-owned operational validation; not performed by this worker. |
+| Worker startup logs | Startup now validates Product Archive performance env values locally and emits redacted default warnings for invalid values. Production log readback is reserved for the controller. |
 | Metric event format | Existing request/query performance metrics remain aggregate-only and do not include SQL parameters or provider payloads. |
 
 ## Controller Checklist
