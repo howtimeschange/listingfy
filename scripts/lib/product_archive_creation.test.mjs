@@ -5550,6 +5550,138 @@ test("product archive service fills material composition text fields from copywr
   assert.equal(compositionValue, "100%棉（配料除外）");
 });
 
+test("product archive list prices do not fall back to source rows when SPU price is missing", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const sourceRows = [{
+    source_type: "launch_plan",
+    row_json: { "吊牌价": "999", "吊牌价格": "999" },
+  }];
+  const spu = {
+    spu_code: "202326104110",
+    product_line_name: "童装服饰",
+    price_tag: 359,
+  };
+  const sku = {
+    sku_code: "202326104110-SKU-160",
+    skc_code: "202326104110-SKC-1",
+    inner_code: "INNER-160",
+    color_name: "藏青",
+    size_name: "160",
+    price_tag: 299,
+  };
+  const columns = [
+    "价格",
+    "供货价",
+    "零售价",
+    "京东价",
+    "划线价",
+    "拼多多单买价",
+    "拼多多团购价",
+    "采购价",
+    "抖音结算价格",
+    "爱库存供货价",
+    "好衣库结算价",
+    "好衣库供货价",
+    "快手价",
+  ];
+  const buildMerchantSku = (priceSpu) => service.buildProductArchiveMdmDerivedFieldValue("商家SKU", {
+    spu: priceSpu,
+    sourceRows,
+    templateOptions: columns,
+    skus: [sku],
+  });
+  const valuesByColumn = (result) => {
+    const title = result.valueJson.title.split(",");
+    const values = result.valueJson.藏青["160cm"].split(",");
+    return Object.fromEntries(title.map((column, index) => [column, values[index]]));
+  };
+
+  assert.deepEqual(valuesByColumn(buildMerchantSku(spu)), {
+    价格: "299",
+    供货价: "299",
+    零售价: "359",
+    京东价: "359",
+    划线价: "359",
+    拼多多单买价: "358",
+    拼多多团购价: "357",
+    采购价: "299",
+    抖音结算价格: "299",
+    爱库存供货价: "299",
+    好衣库结算价: "299",
+    好衣库供货价: "299",
+    快手价: "359",
+  });
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("京东市场价", {
+    spu: { ...spu, price_tag: null },
+    sourceRows,
+  }), "");
+  assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("价格区间", {
+    spu: { ...spu, price_tag: null },
+    sourceRows,
+    skus: [],
+  }), { valueText: "", valueJson: {} });
+
+  assert.deepEqual(valuesByColumn(buildMerchantSku({ ...spu, price_tag: null })), {
+    价格: "299",
+    供货价: "299",
+    零售价: "",
+    京东价: "",
+    划线价: "",
+    拼多多单买价: "",
+    拼多多团购价: "",
+    采购价: "299",
+    抖音结算价格: "299",
+    爱库存供货价: "299",
+    好衣库结算价: "299",
+    好衣库供货价: "299",
+    快手价: "",
+  });
+});
+
+test("product archive derives VIP usage scenes from the current VIP template options", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const spu = {
+    spu_code: "202326104110",
+    product_line_name: "童装服饰",
+  };
+  const sourceRows = [];
+  const derive = (templatePlatform, templateOptions, fieldName = "适用场景") => (
+    service.buildProductArchiveSourceDerivedFieldValue(fieldName, {
+      spu,
+      sourceRows,
+      templatePlatform,
+      templateOptions,
+    })
+  );
+
+  assert.equal(
+    derive("VIP", [{ value: "运动" }, { value: "日常" }, { value: "日常休闲" }]),
+    "日常",
+  );
+  assert.equal(
+    derive("VIP", [{ value: "运动" }, { value: "日常休闲" }]),
+    "日常休闲",
+  );
+  assert.equal(
+    service.resolveProductArchiveSourceRuleValue("适用场景", {
+      spu,
+      sourceRows,
+      templatePlatform: "VIP",
+      templateOptions: [{ value: "运动" }, { value: "日常休闲" }],
+      rule: { source_type: "manual", default_value: "" },
+    }),
+    "日常休闲",
+  );
+  assert.equal(
+    derive("TAOBAO,TMALL", [{ value: "日常" }, { value: "休闲" }]),
+    "",
+  );
+  assert.equal(
+    derive("VIP", [{ value: "运动" }, { value: "日常休闲" }], "唯品会适用场景"),
+    "日常休闲",
+  );
+});
+
 test("product archive service derives down and platform text fields before AI fill", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const spu = {
@@ -5582,7 +5714,29 @@ test("product archive service derives down and platform text fields before AI fi
   assert.equal(derive("绒子含量(文本)"), "85%");
   assert.equal(derive("里料成分含量"), "100%锦纶");
   assert.equal(derive("里料材质成分含量(多选)"), "100%聚酰胺纤维");
-  assert.equal(derive("羽绒服洗涤说明"), "请根据产品面料特性进行清洗养护，具体方法可参考产品水洗唛/标签");
+  assert.equal(derive("羽绒服洗涤说明"), "羽绒服洗涤说明");
+  assert.equal(
+    service.normalizeProductArchiveTemplateFieldValue(
+      "羽绒服洗涤说明",
+      derive("羽绒服洗涤说明"),
+      [{ value: "羽绒服洗涤说明" }],
+    ),
+    "羽绒服洗涤说明",
+  );
+  assert.equal(
+    service.buildProductArchiveSourceDerivedFieldValue("羽绒服洗涤说明", {
+      spu: {
+        spu_code: "202426120999",
+        spu_name: "儿童棉服",
+        product_line_name: "童装服饰",
+      },
+      sourceRows: [{
+        source_type: "copywriting",
+        row_json: { "面料成分": "填充物\n100%聚酯纤维" },
+      }],
+    }),
+    "",
+  );
   assert.equal(derive("唯品会温馨提示"), "数据仅供参考手工测量难免1-2cm误差；插肩袖(肩膀无明确肩点)款袖长从后领中量至袖口");
   assert.equal(derive("快手标题"), "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖");
   assert.equal(derive("拼多多标题"), "");
