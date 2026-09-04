@@ -236,6 +236,28 @@ test("terminal MDM not-found is persisted once and is not retried", async () => 
   assert.equal(cached[0].reasonCode, "mdm_spu_not_found");
 });
 
+test("generic MDM HTTP 404 is not persisted as a terminal SPU miss", async () => {
+  const cached = [];
+  const queue = createProductArchiveSyncQueue({
+    maxAttempts: 1,
+    wait: async () => {},
+    cacheNegativeResult: async (entry) => {
+      cached.push(entry);
+    },
+    syncOne: async () => {
+      throw new Error("HTTP 404");
+    },
+  });
+
+  const job = queue.enqueue({ source: "mdm", rawCodes: ["A001"], intervalMs: 0 });
+  await queue.waitForIdle();
+
+  const finished = queue.getJob(job.id);
+  assert.equal(finished.items[0].reasonCode, "sync_failed");
+  assert.equal(finished.items[0].retryable, false);
+  assert.equal(cached.length, 0);
+});
+
 test("different valid codes can overlap but one code cannot overlap itself", async () => {
   let active = 0;
   let maxActive = 0;

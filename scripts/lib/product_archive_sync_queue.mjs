@@ -72,6 +72,10 @@ function normalizeSyncContextValue(value) {
   return text || null;
 }
 
+function isExplicitMdmSpuNotFoundMessage(message) {
+  return /请求的资源未在服务器上发现|资源未在服务器上发现|\b(?:mdm|business|spu|product)\s+(?:is\s+)?not[ -]?found\b|\bnot[ -]?found\s+(?:in\s+mdm|for\s+(?:spu|product))\b/i.test(message);
+}
+
 export function classifyProductArchiveSyncError(error, context = {}) {
   const message = errorMessage(error);
   const source = normalizeSyncContextValue(context.source ?? error?.productArchiveSyncSource);
@@ -81,7 +85,7 @@ export function classifyProductArchiveSyncError(error, context = {}) {
     || stage === "mdm"
     || source === "mdm"
     || source === "mdm_draft";
-  if (mdmNotFoundContext && /请求的资源未在服务器上发现|资源未在服务器上发现|not.?found|HTTP 404\b/i.test(message)) {
+  if (mdmNotFoundContext && isExplicitMdmSpuNotFoundMessage(message)) {
     return { retryable: false, reasonCode: "mdm_spu_not_found" };
   }
   if (isRetryableProductArchiveSyncError(error)) {
