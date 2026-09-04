@@ -1766,6 +1766,33 @@ function isProductArchiveVipPlatform(value: unknown) {
     .some((part) => /^(?:vip|vipshop|唯品会)$/i.test(part))
 }
 
+function productArchiveTemplatePlatformSet(templatePlatform: unknown, templateField: JsonRecord = {}) {
+  const rawPayload = recordValue(templateField.raw_payload_json ?? templateField.rawPayload)
+  const rawAttributes = recordValue(rawPayload.attributes)
+  const platformValue = templateField.third_platform
+    ?? templateField.thirdPlatform
+    ?? rawAttributes.thirdPlatform
+    ?? templatePlatform
+  const values = Array.isArray(platformValue) ? platformValue : [platformValue]
+  return new Set(values
+    .flatMap((value) => stringValue(value).split(/[,，;；、\s]+/))
+    .map((value) => value.trim().toUpperCase())
+    .filter(Boolean))
+}
+
+function isProductArchiveTemplateMetadataBlankField(
+  fieldName: string,
+  templatePlatform: unknown,
+  templateField: JsonRecord = {},
+) {
+  const key = compactFieldKey(fieldName)
+  const fieldType = stringValue(templateField.field_type ?? templateField.fieldType).toUpperCase()
+  if (fieldType !== "TEXT") return false
+  const platforms = productArchiveTemplatePlatformSet(templatePlatform, templateField)
+  return (key === "吊牌价" && platforms.size > 1)
+    || (key === "划线价" && platforms.size === 1 && platforms.has("YOUZAN"))
+}
+
 function isProductArchiveVipUsageSceneField(fieldName: unknown, templatePlatform: unknown) {
   if (!isProductArchiveVipPlatform(templatePlatform)) return false
   const key = businessRuleFieldKey(fieldName)
@@ -1812,10 +1839,12 @@ export function isProductArchiveBusinessBlankField(
   spu: JsonRecord = {},
   sourceRows: JsonRecord[] = [],
   templatePlatform: unknown = "",
+  templateField: JsonRecord = {},
 ) {
   const key = businessRuleFieldKey(fieldName)
   const shoeProduct = isShoeProduct(spu, sourceRows)
   const apparelProduct = isApparelProduct(spu, sourceRows)
+  if (isProductArchiveTemplateMetadataBlankField(fieldName, templatePlatform, templateField)) return true
   if (isProductArchiveVipShoeWarmTipField(fieldName, templatePlatform, spu, sourceRows)) return true
   if (key === "羽绒服洗涤说明") {
     return !hasProductArchiveDownEvidence({ spu, sourceRows })
@@ -3205,6 +3234,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   sourceRows: JsonRecord[]
   sourceField?: string | null
   templatePlatform?: unknown
+  templateField?: JsonRecord
   templateOptions?: unknown[]
 }) {
   const key = compactFieldKey(fieldName)
@@ -3215,7 +3245,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (isProductArchiveVipUsageSceneField(fieldName, input.templatePlatform)) {
     return vipUsageSceneValue(input.templateOptions ?? [])
   }
-  if (isProductArchiveBusinessBlankField(fieldName, input.spu, sourceRows, input.templatePlatform)) return ""
+  if (isProductArchiveBusinessBlankField(fieldName, input.spu, sourceRows, input.templatePlatform, input.templateField)) return ""
   if (key === "羽绒服洗涤说明") {
     return hasProductArchiveDownEvidence({ spu: input.spu, sourceRows })
       ? PRODUCT_ARCHIVE_DOWN_WASH_INSTRUCTION_OPTION
@@ -6761,17 +6791,19 @@ function readMdmField(spu: JsonRecord, sourceField: string) {
 
 function readSourceValue(spu: JsonRecord, rule: JsonRecord, sourceRows: JsonRecord[] = [], fieldName = "", input: {
   templatePlatform?: unknown
+  templateField?: JsonRecord
   templateOptions?: unknown[]
 } = {}) {
   const sourceType = stringValue(rule.source_type)
   const defaultValue = stringValue(rule.default_value)
   const sourceField = stringValue(rule.source_field)
-  if (isProductArchiveBusinessBlankField(fieldName, spu, sourceRows, input.templatePlatform)) return ""
+  if (isProductArchiveBusinessBlankField(fieldName, spu, sourceRows, input.templatePlatform, input.templateField)) return ""
   const derived = buildProductArchiveSourceDerivedFieldValue(fieldName, {
     spu,
     sourceRows,
     sourceField: sourceField || defaultValue,
     templatePlatform: input.templatePlatform,
+    templateField: input.templateField,
     templateOptions: input.templateOptions,
   })
   if (derived && isProductArchiveForcedFixedDerivedField(fieldName, spu, sourceRows, input.templatePlatform)) return derived
@@ -6824,10 +6856,12 @@ export function resolveProductArchiveSourceRuleValue(fieldName: string, input: {
   sourceRows?: JsonRecord[]
   rule?: JsonRecord
   templatePlatform?: unknown
+  templateField?: JsonRecord
   templateOptions?: unknown[]
 }) {
   return readSourceValue(input.spu, input.rule ?? {}, input.sourceRows ?? [], fieldName, {
     templatePlatform: input.templatePlatform,
+    templateField: input.templateField,
     templateOptions: input.templateOptions,
   })
 }
@@ -9489,7 +9523,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
     const existing = existingByName.get(fieldName) ?? {}
     const templatePlatform = template.third_platform
       ?? recordValue(recordValue(template.raw_payload_json).attributes).thirdPlatform
-    const businessBlank = isProductArchiveBusinessBlankField(fieldName, spu, sourceRows, templatePlatform)
+    const businessBlank = isProductArchiveBusinessBlankField(fieldName, spu, sourceRows, templatePlatform, template)
     const originCountryField = isProductArchiveOriginCountryField(fieldName)
     const shoe1688OriginField = shoeProduct && compactFieldKey(fieldName) === "产地"
     const apparelOriginAreaField = apparelProduct && isProductArchiveMainlandOriginField(fieldName)
@@ -9506,6 +9540,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
       : stringValue(rule.source_type) || (originCountryField || shoe1688OriginField || apparelOriginAreaField ? "fixed" : "manual")
     const sourceValueText = categoryPriceRangeField ? "" : readSourceValue(spu, rule, sourceRows, fieldName, {
       templatePlatform,
+      templateField: template,
       templateOptions,
     })
     const apparelLiningSource = apparelProduct

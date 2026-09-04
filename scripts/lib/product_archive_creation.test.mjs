@@ -5589,6 +5589,68 @@ test("product archive service derives remaining field values from launch plan an
   assert.equal(derive("商品详情"), "潮流满印外套，防风防泼水透湿");
 });
 
+test("product archive service leaves metadata-identified generic tag and Youzan strikethrough prices blank", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const spu = {
+    spu_code: "209326100001",
+    product_line_name: "生活用品",
+    price_tag: 359,
+  };
+  const multiPlatformTagPrice = {
+    field_type: "TEXT",
+    required: true,
+    raw_payload_json: { attributes: { thirdPlatform: "TAOBAO,TMALL" } },
+  };
+  const youzanStrikethroughPrice = {
+    field_type: "TEXT",
+    required: true,
+    raw_payload_json: { attributes: { thirdPlatform: "YOUZAN" } },
+  };
+
+  assert.equal(service.isProductArchiveBusinessBlankField(
+    "吊牌价",
+    spu,
+    [],
+    "TAOBAO,TMALL",
+    multiPlatformTagPrice,
+  ), true);
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("吊牌价", {
+    spu,
+    sourceRows: [],
+    sourceField: "固定吊牌价",
+    templatePlatform: "TAOBAO,TMALL",
+    templateField: multiPlatformTagPrice,
+  }), "");
+  assert.equal(service.isProductArchiveBusinessBlankField(
+    "划线价",
+    spu,
+    [],
+    "YOUZAN",
+    youzanStrikethroughPrice,
+  ), true);
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("划线价", {
+    spu,
+    sourceRows: [],
+    sourceField: "固定吊牌价",
+    templatePlatform: "YOUZAN",
+    templateField: youzanStrikethroughPrice,
+  }), "");
+  assert.equal(service.isProductArchiveBusinessBlankField(
+    "吊牌价",
+    spu,
+    [],
+    "TMALL",
+    { field_type: "TEXT", raw_payload_json: { attributes: { thirdPlatform: "TMALL" } } },
+  ), false);
+  assert.equal(service.isProductArchiveBusinessBlankField(
+    "划线价",
+    spu,
+    [],
+    "YOUZAN",
+    { field_type: "SELECT", raw_payload_json: { attributes: { thirdPlatform: "YOUZAN" } } },
+  ), false);
+});
+
 test("product archive service fills material composition text fields from copywriting", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const sourceRows = [
