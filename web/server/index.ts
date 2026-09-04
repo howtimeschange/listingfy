@@ -29,11 +29,13 @@ import platformIntegrations from "./routes/platform-integrations"
 import system from "./routes/system"
 import { applyPendingMigrations, DB_DSN_SAFE, DB_PROVIDER, getDb } from "./db"
 import { ensureAdminUser, requireAuth } from "./lib/auth"
+import { withRequestPerformanceContext } from "./lib/performance-metrics"
 import {
   assertCredentialEncryptionConfigured,
   encryptStoredPlatformCredentials,
   ensurePlatformIntegrationBootstrap,
 } from "./lib/platform-config"
+import { randomUUID } from "node:crypto"
 
 loadLocalEnv()
 assertCredentialEncryptionConfigured()
@@ -73,6 +75,12 @@ const corsOptions = {
   credentials: true,
 }
 
+app.use("*", async (c, next) => {
+  const incomingRequestId = c.req.header("x-request-id")?.trim()
+  const requestId = incomingRequestId && incomingRequestId.length <= 128 ? incomingRequestId : randomUUID()
+  c.header("x-request-id", requestId)
+  await withRequestPerformanceContext(requestId, `${c.req.method} ${c.req.path}`, () => next())
+})
 app.use("*", cors(corsOptions))
 app.use("*", logger)
 app.onError(errorHandler)

@@ -4,6 +4,7 @@ import { getDatabaseConfig } from "../../scripts/lib/database_config.mjs"
 import { loadLocalEnv } from "../../scripts/lib/local_env.mjs"
 import { SyncPostgresDatabase } from "../../scripts/lib/postgres_db.mjs"
 import { listMigrationFiles } from "../../scripts/lib/migration_files.mjs"
+import { recordDatabaseQuery } from "./lib/performance-metrics"
 
 const localEnv = loadLocalEnv()
 const projectRoot = localEnv.filePath
@@ -30,7 +31,9 @@ let _db: SyncPostgresDatabase | null = null
 
 export function getDb(): SyncPostgresDatabase {
   if (_db) return _db
-  const db = new SyncPostgresDatabase(databaseConfig.url)
+  const db = new SyncPostgresDatabase(databaseConfig.url, {
+    onQuery: recordDatabaseQuery,
+  })
   _db = db
   return db
 }

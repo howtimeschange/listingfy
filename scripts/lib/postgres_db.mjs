@@ -812,6 +812,7 @@ class SyncPostgresWorker {
 
 export class SyncPostgresDatabase {
   constructor(databaseUrl, options = {}) {
+    this.onQuery = typeof options.onQuery === "function" ? options.onQuery : null;
     this.worker = new SyncPostgresWorker(databaseUrl, options);
   }
 
@@ -824,7 +825,27 @@ export class SyncPostgresDatabase {
   }
 
   queryResult(sql, params = []) {
-    return this.worker.query(sql, params);
+    const startedAt = performance.now();
+    let result = null;
+    try {
+      result = this.worker.query(sql, params);
+      return result;
+    } finally {
+      if (this.onQuery) {
+        const operation = String(sql).trim().match(/^(select|insert|update|delete)\b/i)?.[1]?.toLowerCase() ?? "other";
+        const durationMs = Math.max(0, performance.now() - startedAt);
+        const rowCount = Number(result?.rowCount ?? result?.rows?.length ?? 0);
+        try {
+          this.onQuery({
+            durationMs,
+            rowCount: Number.isFinite(rowCount) ? rowCount : 0,
+            operation,
+          });
+        } catch {
+          // Metrics must never change the database response or error behavior.
+        }
+      }
+    }
   }
 
   tableHasColumn(tableName, columnName) {
