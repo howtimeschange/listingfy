@@ -616,11 +616,31 @@ export function productArchiveImageHasModelShot(value: unknown) {
   return /有模拍/.test(uploadBaseName(value))
 }
 
-function productArchiveLegacyWashlabelName(value: unknown) {
+function productArchiveLegacyYqFileKind(value: unknown): "hangtag" | "washlabel" | null {
   const base = uploadBaseName(value)
   const ext = uploadExtension(base)
   const stem = ext ? base.slice(0, -ext.length) : base
-  return /^yq(?:[-_ ]?\d+|\s*\(\d+\))?$/i.test(stem)
+  // Crawshrimp's apparel asset package convention reserves YQ1 for the
+  // hang tag and YQ2 (plus later YQ files) for wash-label evidence. Keep
+  // this after explicit name markers so a descriptive filename wins.
+  if (/^yq(?:[-_ ]?1|\s*\(1\))$/i.test(stem)) return "hangtag"
+  if (/^yq(?:[-_ ]?\d+|\s*\(\d+\))?$/i.test(stem)) return "washlabel"
+  return null
+}
+
+function productArchiveShoePackageImageKind(value: unknown): "hangtag" | "reference_image" | null {
+  const text = uploadPathText(value)
+  // Crawshrimp has already reduced a shoe SPU directory to colour images and
+  // shoe-box/label evidence. Within that contract, only a `204…-NNNNN` image
+  // is a colour image; every other image is shoe-box evidence and belongs in
+  // the hangtag OCR group.
+  if (!/(?:^|\/)204\d{9}(?:\/|$)/.test(text)) return null
+  const base = uploadBaseName(text)
+  const ext = uploadExtension(base)
+  const stem = ext ? base.slice(0, -ext.length) : base
+  return /^204\d{9}\s*[-_－]\s*\d{5}(?:[-_－].*)?$/i.test(stem)
+    ? "reference_image"
+    : "hangtag"
 }
 
 export function classifyProductArchiveAssetPackageFileName(value: unknown): ProductArchiveAssetPackageFileKind {
@@ -636,7 +656,10 @@ export function classifyProductArchiveAssetPackageFileName(value: unknown): Prod
   if ([".jpg", ".jpeg", ".png"].includes(ext)) {
     if (/(洗唛|洗标|水洗|wash)/i.test(base)) return "washlabel"
     if (/(吊牌|合格证|鞋盒|hangtag|tag|shoe[-_ ]?box)/i.test(base)) return "hangtag"
-    if (productArchiveLegacyWashlabelName(base)) return "washlabel"
+    const legacyYqKind = productArchiveLegacyYqFileKind(base)
+    if (legacyYqKind) return legacyYqKind
+    const shoePackageKind = productArchiveShoePackageImageKind(text)
+    if (shoePackageKind) return shoePackageKind
     return "reference_image"
   }
   if (ext === ".webp") return "reference_image"

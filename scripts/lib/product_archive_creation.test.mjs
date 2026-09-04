@@ -7160,11 +7160,16 @@ test("product archive asset package helpers classify reference images and model 
   ]);
 
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_洗唛_1.jpg"), "washlabel");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("202426100001/yq1.jpg"), "hangtag");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("202426100001/yq (1).jpg"), "hangtag");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("202426107205/yq2.jpg"), "washlabel");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("202426107205/yq (3).png"), "washlabel");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_吊牌_yq1.jpg"), "hangtag");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426140204/208426140204_鞋盒.jpg"), "hangtag");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426140204/shoebox.png"), "hangtag");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("204426140121/204426140121-00414.jpg"), "reference_image");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("204426140121/GUDO4332.jpg"), "hangtag");
+  assert.equal(service.classifyProductArchiveAssetPackageFileName("202426107128/unlabelled.jpg"), "reference_image");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_洗唛.pdf"), "washlabel");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013_吊牌.pdf"), "hangtag");
   assert.equal(service.classifyProductArchiveAssetPackageFileName("208426108013/208426108013-00455_有模拍.jpg"), "reference_image");
