@@ -248,6 +248,7 @@ const draftQueue = createProductArchiveSyncQueue({
   jobSliceSize: process.env.LISTINGIFY_PRODUCT_ARCHIVE_DRAFT_JOB_SLICE_SIZE ?? 5,
   concurrency: process.env.LISTINGIFY_PRODUCT_ARCHIVE_SYNC_CONCURRENCY ?? 1,
   runWithSlot: (_context: unknown, run: () => Promise<unknown>) => withBackgroundTaskSlot("product_archive_draft", run),
+  filterCandidates: (source, codes) => filterKnownProductArchiveSyncCandidates(getDb(), source, codes),
   cacheNegativeResult: async ({ source, spuCode, reasonCode, checkedAt, expiresAt }: {
     source: string
     spuCode: string

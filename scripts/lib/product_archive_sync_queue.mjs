@@ -67,9 +67,21 @@ export function isRetryableProductArchiveSyncError(error) {
   return /访问频率过高|稍后重试|too many requests|rate.?limit|HTTP (408|425|429|500|502|503|504)\b|fetch failed|network|socket|timeout|timed out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|AbortError/i.test(message);
 }
 
-export function classifyProductArchiveSyncError(error) {
+function normalizeSyncContextValue(value) {
+  const text = String(value ?? "").trim().toLowerCase();
+  return text || null;
+}
+
+export function classifyProductArchiveSyncError(error, context = {}) {
   const message = errorMessage(error);
-  if (/请求的资源未在服务器上发现|资源未在服务器上发现|not.?found|HTTP 404\b/i.test(message)) {
+  const source = normalizeSyncContextValue(context.source ?? error?.productArchiveSyncSource);
+  const stage = normalizeSyncContextValue(context.stage ?? error?.productArchiveSyncStage);
+  const provider = normalizeSyncContextValue(context.provider ?? error?.productArchiveSyncProvider);
+  const mdmNotFoundContext = provider === "mdm"
+    || stage === "mdm"
+    || source === "mdm"
+    || source === "mdm_draft";
+  if (mdmNotFoundContext && /请求的资源未在服务器上发现|资源未在服务器上发现|not.?found|HTTP 404\b/i.test(message)) {
     return { retryable: false, reasonCode: "mdm_spu_not_found" };
   }
   if (isRetryableProductArchiveSyncError(error)) {
@@ -140,6 +152,7 @@ export function createProductArchiveSyncQueue({
   jobSliceSize = process.env.LISTINGIFY_PRODUCT_ARCHIVE_JOB_SLICE_SIZE ?? DEFAULT_JOB_SLICE_SIZE,
   concurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_SYNC_CONCURRENCY ?? DEFAULT_SYNC_CONCURRENCY,
   runWithSlot = async (_context, run) => run(),
+  filterCandidates = null,
   cacheNegativeResult = async () => {},
   invalidateNegativeResult = async () => {},
   setIntervalFn = setInterval,
@@ -270,7 +283,7 @@ export function createProductArchiveSyncQueue({
         return true;
       } catch (error) {
         if (leaseIsLost()) break;
-        const classification = classifyProductArchiveSyncError(error);
+        const classification = classifyProductArchiveSyncError(error, { source: job.source });
         const retryable = classification.reasonCode === "mdm_spu_not_found"
           ? false
           : Boolean(isRetryableError?.(error));
@@ -548,13 +561,17 @@ export function createProductArchiveSyncQueue({
     if (!original) throw new Error("Sync job not found");
     if (original.status !== "completed") throw new Error("Sync job is still running");
     const failedCodes = original.items
-      .filter((item) => item.status === "failed")
+      .filter((item) => item.status === "failed" && item.retryable === true)
       .map((item) => item.spu_code);
-    if (failedCodes.length === 0) throw new Error("Sync job has no failed items");
+    if (failedCodes.length === 0) throw new Error("Sync job has no retryable failed items");
+    const filtered = typeof filterCandidates === "function"
+      ? filterCandidates(original.source, failedCodes, { job: original, mode: "retry_failed" }) ?? {}
+      : {};
 
     return enqueue({
       source: original.source,
-      rawCodes: failedCodes,
+      rawCodes: filtered.acceptedCodes ?? failedCodes,
+      skippedItems: filtered.skippedItems ?? [],
       intervalMs: intervalMs ?? original.interval_ms,
       options: {
         ...original.options,

@@ -297,6 +297,80 @@ test("negative MDM cache skips candidates before external sync", () => {
   assert.deepEqual(calls[0].args, ["mdm", ["A001", "B001"], now]);
 });
 
+test("retryFailed only retries retryable items and reapplies negative-cache filtering", async () => {
+  const syncCalls = [];
+  const queue = createProductArchiveSyncQueue({
+    maxAttempts: 1,
+    wait: async () => {},
+    filterCandidates: (_source, codes) => ({
+      acceptedCodes: [],
+      skippedItems: codes.map((code) => ({
+        spu_code: code,
+        status: "failed",
+        reasonCode: "mdm_spu_not_found_cached",
+        retryable: false,
+        attempt_count: 0,
+      })),
+    }),
+    syncOne: async ({ spuCode }) => {
+      syncCalls.push(spuCode);
+      if (spuCode === "A001") throw new Error("network timeout");
+      throw new Error("请求的资源未在服务器上发现");
+    },
+  });
+
+  const original = queue.enqueue({
+    source: "mdm",
+    rawCodes: ["A001", "B001"],
+    intervalMs: 0,
+  });
+  await queue.waitForIdle();
+
+  const finished = queue.getJob(original.id);
+  assert.equal(finished.items.find((item) => item.spu_code === "A001")?.retryable, true);
+  assert.equal(finished.items.find((item) => item.spu_code === "B001")?.retryable, false);
+
+  const retry = queue.retryFailed(original.id);
+  await queue.waitForIdle();
+
+  const retried = queue.getJob(retry.id);
+  assert.deepEqual(retry.codes, []);
+  assert.equal(retried.total_count, 1);
+  assert.equal(retried.failed_count, 1);
+  assert.equal(retried.items[0].spu_code, "A001");
+  assert.equal(retried.items[0].reasonCode, "mdm_spu_not_found_cached");
+  assert.deepEqual(syncCalls, ["A001", "B001"]);
+});
+
+test("mdm_deepdraw deepdraw-stage 404 does not write MDM negative cache", async () => {
+  const cached = [];
+  const queue = createProductArchiveSyncQueue({
+    maxAttempts: 1,
+    wait: async () => {},
+    cacheNegativeResult: async (entry) => {
+      cached.push(entry);
+    },
+    syncOne: async () => {
+      const error = new Error("HTTP 404");
+      error.productArchiveSyncStage = "deepdraw";
+      error.productArchiveSyncProvider = "deepdraw";
+      throw error;
+    },
+  });
+
+  const job = queue.enqueue({
+    source: "mdm_deepdraw",
+    rawCodes: ["A001"],
+    intervalMs: 0,
+  });
+  await queue.waitForIdle();
+
+  const finished = queue.getJob(job.id);
+  assert.equal(finished.items[0].reasonCode, "sync_failed");
+  assert.equal(finished.items[0].retryable, false);
+  assert.equal(cached.length, 0);
+});
+
 test("queue continues when one persistence write fails", async () => {
   let saveCount = 0;
   const seen = [];
@@ -334,7 +408,7 @@ test("queue can enqueue only the failed items from a completed job", async () =>
     maxAttempts: 1,
     wait: async () => {},
     syncOne: async ({ spuCode }) => {
-      if (failedOnce.delete(spuCode)) throw new Error("temporary upstream failure");
+      if (failedOnce.delete(spuCode)) throw new Error("network timeout");
       return { ok: true };
     },
   });

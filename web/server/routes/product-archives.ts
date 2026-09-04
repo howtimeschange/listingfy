@@ -81,6 +81,15 @@ function errorStatus(error: unknown) {
   return 500
 }
 
+function withProductArchiveSyncErrorContext(error: unknown, context: { source: string; stage: string; provider: string }) {
+  if (error && typeof error === "object") {
+    error.productArchiveSyncSource = context.source
+    error.productArchiveSyncStage = context.stage
+    error.productArchiveSyncProvider = context.provider
+  }
+  return error
+}
+
 function readIntervalMs(value: unknown) {
   const number = Number(value ?? process.env.PRODUCT_ARCHIVE_SYNC_INTERVAL_MS ?? 1500)
   if (!Number.isFinite(number)) return 1500
@@ -173,6 +182,7 @@ const syncQueue = createProductArchiveSyncQueue({
   jobSliceSize: process.env.LISTINGIFY_PRODUCT_ARCHIVE_SYNC_JOB_SLICE_SIZE ?? 5,
   concurrency: process.env.LISTINGIFY_PRODUCT_ARCHIVE_SYNC_CONCURRENCY ?? 1,
   runWithSlot: (_context: unknown, run: () => Promise<unknown>) => withBackgroundTaskSlot("product_archive_sync", run),
+  filterCandidates: (source, codes) => filterKnownProductArchiveSyncCandidates(getDb(), source, codes),
   maxAttempts: 3,
   retryDelayMs: 3000,
   cacheNegativeResult: async ({ source, spuCode, reasonCode, checkedAt, expiresAt }: {
@@ -205,9 +215,21 @@ const syncQueue = createProductArchiveSyncQueue({
     const db = getDb()
     if (source === "mdm") return syncMdmProduct(db, spuCode)
     if (source === "deepdraw") return syncDeepdrawProduct(db, spuCode, options)
+    let mdm
+    try {
+      mdm = await syncMdmProduct(db, spuCode)
+    } catch (error) {
+      throw withProductArchiveSyncErrorContext(error, { source, stage: "mdm", provider: "mdm" })
+    }
+    let deepdraw
+    try {
+      deepdraw = await syncDeepdrawProduct(db, spuCode, options)
+    } catch (error) {
+      throw withProductArchiveSyncErrorContext(error, { source, stage: "deepdraw", provider: "deepdraw" })
+    }
     return {
-      mdm: await syncMdmProduct(db, spuCode),
-      deepdraw: await syncDeepdrawProduct(db, spuCode, options),
+      mdm,
+      deepdraw,
     }
   },
 })
