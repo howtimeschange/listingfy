@@ -247,6 +247,8 @@ interface WorkflowImportSummary {
 interface ProductArchiveWorkflowResponse {
   status: "queued" | "needs_launch_plan"
   needsLaunchPlan: boolean
+  workflowJobId?: string
+  workflowJob?: ProductArchiveWorkflowJob | null
   message?: string
   candidateCodes?: string[]
   draftQueuedCount?: number
@@ -262,6 +264,24 @@ interface ProductArchiveWorkflowResponse {
     autoAppliedTradeCount: number
     skippedNoTradeMatchCount: number
   }>
+}
+
+interface ProductArchiveWorkflowJob {
+  id: string
+  status: "queued" | "running" | "completed" | "failed" | "cancelled"
+  title: string
+  stages: Array<{
+    key: string
+    label: string
+    status: "queued" | "running" | "completed" | "failed"
+    error_message?: string | null
+  }>
+  result?: Record<string, unknown>
+  error_code?: string | null
+  error_message?: string | null
+  completed_stage_count: number
+  total_stage_count: number
+  current_stage: string | null
 }
 
 interface SourceImportUploadResponse {
@@ -2360,6 +2380,8 @@ export default function ProductArchiveDraftsPage() {
   const [sizeChartFile, setSizeChartFile] = useState<File | null>(null)
   const [skipLaunchPlan, setSkipLaunchPlan] = useState(false)
   const [workflowResult, setWorkflowResult] = useState<ProductArchiveWorkflowResponse | null>(null)
+  const [workflowJobId, setWorkflowJobId] = useState<string | null>(null)
+  const handledWorkflowJobIdRef = useRef<string | null>(null)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
   const [batchSubmitMode, setBatchSubmitMode] = useState<DraftSubmitMode>("create")
   const [batchJobId, setBatchJobId] = useState<string | null>(null)
@@ -2381,6 +2403,16 @@ export default function ProductArchiveDraftsPage() {
     refetchInterval: (query) => {
       const job = query.state.data
       return job && job.status !== "completed" ? 1500 : false
+    },
+    refetchOnWindowFocus: false,
+  })
+  const { data: workflowJob } = useQuery<ProductArchiveWorkflowJob>({
+    queryKey: ["product-archive-workflow-job", workflowJobId],
+    queryFn: () => api.get<ProductArchiveWorkflowJob>(`/product-archive-drafts/workflow/jobs/${workflowJobId}`),
+    enabled: Boolean(workflowJobId),
+    refetchInterval: (query) => {
+      const job = query.state.data
+      return job && (job.status === "queued" || job.status === "running") ? 1000 : false
     },
     refetchOnWindowFocus: false,
   })
@@ -2420,9 +2452,13 @@ export default function ProductArchiveDraftsPage() {
   const allVisibleSelected = visibleItems.length > 0 && visibleItems.every((item) => selectedDraftIds.has(item.id))
   const trackedTask = getTaskByJobId(batchJobId)
   const trackedJob = (trackedTask?.job ?? batchJob) as DraftBatchJob | null | undefined
+  const trackedWorkflowJob = workflowJob
   const trackedOcrJob = (getTaskByJobId(ocrJobId)?.job ?? null) as AsyncTaskJob | null
   const trackedJobProgress = trackedJob?.total_count
     ? Math.round(((trackedJob.completed_count + trackedJob.failed_count) / trackedJob.total_count) * 100)
+    : 0
+  const trackedWorkflowProgress = trackedWorkflowJob?.total_stage_count
+    ? Math.round((trackedWorkflowJob.completed_stage_count / trackedWorkflowJob.total_stage_count) * 100)
     : 0
   const failedJobItems = trackedJob?.items?.filter((item) => item.status === "failed") ?? []
   const appliedMultiLineCount = multiLineCodeCount(appliedMultiLineSpuCodes)
@@ -2439,6 +2475,34 @@ export default function ProductArchiveDraftsPage() {
     }
     return map
   }, [unresolvedQuickIssues])
+
+  useEffect(() => {
+    if (!trackedWorkflowJob || ["queued", "running"].includes(trackedWorkflowJob.status)) return
+    if (handledWorkflowJobIdRef.current === trackedWorkflowJob.id) return
+    handledWorkflowJobIdRef.current = trackedWorkflowJob.id
+    const result = recordResultValue(trackedWorkflowJob.result)
+    if (result?.needsLaunchPlan === true) {
+      setWorkflowResult({
+        status: "needs_launch_plan",
+        needsLaunchPlan: true,
+        message: "标准文案表中有款号还没有匹配到上市计划，请上传上市计划表后继续建档。",
+        missingLaunchPlanSpuCodes: Array.isArray(result.missingLaunchPlanSpuCodes)
+          ? result.missingLaunchPlanSpuCodes.map(String)
+          : [],
+      })
+      toast.warning("工作流已完成，请补充上市计划表后继续")
+    } else if (trackedWorkflowJob.status === "failed") {
+      toast.error(trackedWorkflowJob.error_message || "深绘建档工作流失败")
+    } else if (trackedWorkflowJob.status === "cancelled") {
+      toast.warning("深绘建档工作流已取消")
+    } else {
+      toast.success("深绘建档工作流已完成")
+    }
+    queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    queryClient.invalidateQueries({ queryKey: ["listing-launch-plan-rows"] })
+    queryClient.invalidateQueries({ queryKey: ["product-archive-draft-batch-job"] })
+  }, [queryClient, trackedWorkflowJob])
+
   const quickRequiredBlockerFields = useMemo(() => {
     return (activeDraftDetail.data?.fields ?? []).filter((field) => (
       field.required
@@ -2687,6 +2751,18 @@ export default function ProductArchiveDraftsPage() {
     },
     onSuccess: (result) => {
       setWorkflowResult(result)
+      if (result.workflowJobId) {
+        handledWorkflowJobIdRef.current = null
+        setWorkflowJobId(result.workflowJobId)
+        setWorkflowProgressDialogOpen(true)
+        setWorkflowDialogOpen(false)
+        setCopywritingFile(null)
+        setLaunchPlanFile(null)
+        setSizeChartFile(null)
+        setSkipLaunchPlan(false)
+        toast.success("深绘建档工作流已加入后台队列")
+        return
+      }
       if (result.needsLaunchPlan) {
         toast.warning(result.message ?? "请上传上市计划表后继续建档")
         return
@@ -3673,42 +3749,67 @@ export default function ProductArchiveDraftsPage() {
     <Dialog open={workflowProgressDialogOpen} onOpenChange={setWorkflowProgressDialogOpen}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>MDM 同步进度</DialogTitle>
+          <DialogTitle>{trackedWorkflowJob ? "深绘建档工作流进度" : "MDM 同步进度"}</DialogTitle>
           <DialogDescription>
-            正在按未建档款号同步 MDM 并生成深绘建档草稿，关闭弹窗后可从任务中心继续查看。
+            {trackedWorkflowJob
+              ? "表格解析、来源导入、上市计划和草稿刷新均在后台执行，关闭弹窗后任务仍会继续。"
+              : "正在按未建档款号同步 MDM 并生成深绘建档草稿，关闭弹窗后可从任务中心继续查看。"}
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4">
-          <div className="rounded-lg border bg-muted/30 p-4">
-            <div className="mb-2 flex items-center justify-between text-sm">
-              <span>
-                已处理 {formatNumber((trackedJob?.completed_count ?? 0) + (trackedJob?.failed_count ?? 0))} / {formatNumber(trackedJob?.total_count ?? 0)}
-              </span>
-              <span>{trackedJobProgress}%</span>
-            </div>
-            <Progress value={trackedJobProgress} />
-            <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
-              <div className="rounded-md bg-background px-3 py-2">成功 {formatNumber(trackedJob?.completed_count ?? 0)}</div>
-              <div className="rounded-md bg-background px-3 py-2">失败 {formatNumber(trackedJob?.failed_count ?? 0)}</div>
-              <div className="rounded-md bg-background px-3 py-2">总数 {formatNumber(trackedJob?.total_count ?? 0)}</div>
-            </div>
-          </div>
-          {failedJobItems.length > 0 ? (
-            <div className="rounded-lg border border-[#f1cccc] bg-[#fff8f8] p-3">
-              <div className="mb-2 text-sm font-medium text-[#d45656]">失败原因</div>
-              <div className="max-h-52 overflow-auto rounded-md border bg-background">
-                {failedJobItems.map((item) => (
-                  <div key={item.spu_code} className="grid grid-cols-[160px_1fr] gap-3 border-b px-3 py-2 text-sm last:border-b-0">
-                    <span className="font-mono">{item.spu_code}</span>
-                    <span className="text-muted-foreground">{item.error || "未知失败原因"}</span>
+          {trackedWorkflowJob ? (
+            <div className="rounded-lg border bg-muted/30 p-4">
+              <div className="mb-2 flex items-center justify-between text-sm">
+                <span>已完成 {formatNumber(trackedWorkflowJob.completed_stage_count)} / {formatNumber(trackedWorkflowJob.total_stage_count)} 个阶段</span>
+                <span>{trackedWorkflowProgress}%</span>
+              </div>
+              <Progress value={trackedWorkflowProgress} />
+              <div className="mt-3 grid gap-2 text-sm">
+                {trackedWorkflowJob.stages.map((stage) => (
+                  <div key={stage.key} className="flex items-center justify-between rounded-md bg-background px-3 py-2">
+                    <span>{stage.label}</span>
+                    <span className="text-muted-foreground">
+                      {stage.status === "completed" ? "已完成" : stage.status === "running" ? "处理中" : stage.status === "failed" ? "失败" : "等待中"}
+                    </span>
                   </div>
                 ))}
               </div>
+              {trackedWorkflowJob.error_message ? <p className="mt-3 text-sm text-destructive">{trackedWorkflowJob.error_message}</p> : null}
             </div>
           ) : (
-            <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
-              暂无失败款号。
-            </div>
+            <>
+              <div className="rounded-lg border bg-muted/30 p-4">
+                <div className="mb-2 flex items-center justify-between text-sm">
+                  <span>
+                    已处理 {formatNumber((trackedJob?.completed_count ?? 0) + (trackedJob?.failed_count ?? 0))} / {formatNumber(trackedJob?.total_count ?? 0)}
+                  </span>
+                  <span>{trackedJobProgress}%</span>
+                </div>
+                <Progress value={trackedJobProgress} />
+                <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
+                  <div className="rounded-md bg-background px-3 py-2">成功 {formatNumber(trackedJob?.completed_count ?? 0)}</div>
+                  <div className="rounded-md bg-background px-3 py-2">失败 {formatNumber(trackedJob?.failed_count ?? 0)}</div>
+                  <div className="rounded-md bg-background px-3 py-2">总数 {formatNumber(trackedJob?.total_count ?? 0)}</div>
+                </div>
+              </div>
+              {failedJobItems.length > 0 ? (
+                <div className="rounded-lg border border-[#f1cccc] bg-[#fff8f8] p-3">
+                  <div className="mb-2 text-sm font-medium text-[#d45656]">失败原因</div>
+                  <div className="max-h-52 overflow-auto rounded-md border bg-background">
+                    {failedJobItems.map((item) => (
+                      <div key={item.spu_code} className="grid grid-cols-[160px_1fr] gap-3 border-b px-3 py-2 text-sm last:border-b-0">
+                        <span className="font-mono">{item.spu_code}</span>
+                        <span className="text-muted-foreground">{item.error || "未知失败原因"}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+                  暂无失败款号。
+                </div>
+              )}
+            </>
           )}
         </div>
         <DialogFooter>
@@ -3726,7 +3827,7 @@ export default function ProductArchiveDraftsPage() {
             查看任务中心
           </Button>
           <Button type="button" onClick={() => setWorkflowProgressDialogOpen(false)}>
-            {trackedJob?.status === "completed" ? "关闭" : "后台处理"}
+            {(trackedWorkflowJob?.status === "completed" || trackedWorkflowJob?.status === "failed" || trackedWorkflowJob?.status === "cancelled" || trackedJob?.status === "completed") ? "关闭" : "后台处理"}
           </Button>
         </DialogFooter>
       </DialogContent>

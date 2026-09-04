@@ -6,7 +6,7 @@ import { errorHandler, logger } from "./middleware/error-handler"
 import metadata from "./routes/metadata"
 import categoryMapping from "./routes/category-mapping"
 import productArchives, { resumeProductArchiveSyncQueue } from "./routes/product-archives"
-import productArchiveDrafts, { resumeProductArchiveDraftQueue } from "./routes/product-archive-drafts"
+import productArchiveDrafts, { resumeProductArchiveDraftQueue, resumeProductArchiveWorkflowJobs } from "./routes/product-archive-drafts"
 import deepdrawFieldMappings from "./routes/deepdraw-field-mappings"
 import shoeSizeCharts from "./routes/shoe-size-charts"
 import mdmProducts from "./routes/mdm-products"
@@ -47,6 +47,7 @@ const sheinConfigSeeded = ensurePlatformIntegrationBootstrap(db)
 const encryptedPlatformCredentials = encryptStoredPlatformCredentials(db)
 resumeProductArchiveSyncQueue()
 resumeProductArchiveDraftQueue()
+resumeProductArchiveWorkflowJobs()
 resumeDeepdrawMetadataSyncJobs()
 
 const app = new Hono()

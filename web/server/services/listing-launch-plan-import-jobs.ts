@@ -9,7 +9,7 @@ import { readSpreadsheetSheetsFromFileInWorker } from "./spreadsheet-worker"
 import type { AuditActor } from "../lib/audit"
 
 type JsonRecord = Record<string, unknown>
-type ImportJobStatus = "queued" | "running" | "completed"
+type ImportJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled"
 type ImportJobItemStatus = "queued" | "running" | "completed" | "failed"
 
 interface ImportJobItem {
@@ -39,6 +39,12 @@ interface ImportJob {
   created_at: string
   started_at: string | null
   finished_at: string | null
+  claim_token: string | null
+  claim_version: number
+  lease_expires_at: number | null
+  last_heartbeat_at: string | null
+  current_stage: number
+  error_code: string | null
 }
 
 const JOB_STAGE_LABELS = [
@@ -48,6 +54,8 @@ const JOB_STAGE_LABELS = [
   "刷新建档草稿",
 ]
 const RUNNING_JOB_STALE_MS = 30 * 60 * 1000
+const JOB_LEASE_MS = 60 * 1000
+const JOB_HEARTBEAT_INTERVAL_MS = 20 * 1000
 
 let running = false
 
@@ -105,7 +113,7 @@ function isJobClaimLostError(error: unknown) {
 
 function jobStatus(value: unknown): ImportJobStatus {
   const status = stringValue(value)
-  return status === "running" || status === "completed" ? status : "queued"
+  return status === "running" || status === "completed" || status === "failed" || status === "cancelled" ? status : "queued"
 }
 
 function itemStatus(value: unknown): ImportJobItemStatus {
@@ -179,6 +187,14 @@ function jobFromRow(row: JsonRecord): ImportJob {
     created_at: stringValue(row.created_at) || nowIso(),
     started_at: stringValue(row.started_at) || null,
     finished_at: stringValue(row.finished_at) || null,
+    claim_token: stringValue(row.claim_token) || null,
+    claim_version: Math.max(0, Math.floor(numberValue(row.claim_version))),
+    lease_expires_at: row.lease_expires_at instanceof Date
+      ? row.lease_expires_at.getTime()
+      : (Number.isFinite(Number(row.lease_expires_at)) ? Number(row.lease_expires_at) : null),
+    last_heartbeat_at: stringValue(row.last_heartbeat_at) || null,
+    current_stage: Math.max(0, Math.floor(numberValue(row.current_stage))),
+    error_code: stringValue(row.error_code) || null,
   }
 }
 
@@ -187,6 +203,12 @@ function snapshot(job: ImportJob) {
   delete publicJob.filePath
   delete publicJob.payload
   delete publicJob.actor
+  delete publicJob.claim_token
+  delete publicJob.claim_version
+  delete publicJob.lease_expires_at
+  delete publicJob.last_heartbeat_at
+  delete publicJob.current_stage
+  delete publicJob.error_code
   return {
     ...publicJob,
     items: job.items.map((item) => ({ ...item })),
@@ -209,11 +231,18 @@ function saveListingLaunchPlanImportJob(job: ImportJob) {
       file_size_bytes = ?,
       file_path = ?,
       error_message = ?,
+      error_code = ?,
       started_at = ?,
       finished_at = ?,
+      claim_token = case when ? then null else ? end,
+      lease_expires_at = case when ? then null else clock_timestamp() + (?::double precision * interval '1 millisecond') end,
+      last_heartbeat_at = clock_timestamp(),
+      current_stage = ?,
       updated_at = ?
     where id = ?
       and started_at is not distinct from ?
+      and claim_token = ?
+      and claim_version = ?
     returning *
   `).get(
     job.status,
@@ -229,11 +258,19 @@ function saveListingLaunchPlanImportJob(job: ImportJob) {
     job.fileSizeBytes,
     job.filePath ?? null,
     job.error ?? null,
+    job.error_code,
     job.started_at,
     job.finished_at,
+    ["completed", "failed", "cancelled"].includes(job.status),
+    job.claim_token,
+    ["completed", "failed", "cancelled"].includes(job.status),
+    JOB_LEASE_MS,
+    job.current_stage,
     nowIso(),
     job.id,
     job.started_at,
+    job.claim_token,
+    job.claim_version,
   ) as JsonRecord | undefined
   if (!row) throw new Error("上市计划导入任务 claim 已失效，拒绝旧 worker 写入")
   return jobFromRow(row)
@@ -247,6 +284,7 @@ function loadListingLaunchPlanImportJob(id: string) {
 function claimNextListingLaunchPlanImportJob() {
   const now = nowIso()
   const staleBefore = new Date(Date.now() - RUNNING_JOB_STALE_MS).toISOString()
+  const claimToken = randomUUID()
   const row = getDb().prepare(`
     with next_job as (
       select id
@@ -255,7 +293,11 @@ function claimNextListingLaunchPlanImportJob() {
         or (
           status = 'running'
           and finished_at is null
-          and updated_at < ?
+          and (
+            lease_expires_at is null
+            or lease_expires_at <= clock_timestamp()
+            or updated_at < ?
+          )
         )
       order by created_at asc
       limit 1
@@ -264,12 +306,33 @@ function claimNextListingLaunchPlanImportJob() {
     update listing_launch_plan_import_job as job
     set status = 'running',
       started_at = ?,
-      updated_at = ?
+      updated_at = ?,
+      claim_token = ?,
+      claim_version = job.claim_version + 1,
+      lease_expires_at = clock_timestamp() + (?::double precision * interval '1 millisecond'),
+      last_heartbeat_at = clock_timestamp(),
+      current_stage = 0,
+      error_code = null
     from next_job
     where job.id = next_job.id
     returning job.*
-  `).get(staleBefore, now, now) as JsonRecord | undefined
+  `).get(staleBefore, now, now, claimToken, JOB_LEASE_MS) as JsonRecord | undefined
   return row ? jobFromRow(row) : null
+}
+
+function renewListingLaunchPlanImportJob(job: ImportJob) {
+  const row = getDb().prepare(`
+    update listing_launch_plan_import_job
+    set lease_expires_at = clock_timestamp() + (?::double precision * interval '1 millisecond'),
+        last_heartbeat_at = clock_timestamp(),
+        updated_at = clock_timestamp()
+    where id = ?
+      and status = 'running'
+      and claim_token = ?
+      and claim_version = ?
+    returning id
+  `).get(JOB_LEASE_MS, job.id, job.claim_token, job.claim_version) as JsonRecord | undefined
+  if (!row) throw new Error("上市计划导入任务 claim 已失效，拒绝旧 worker 写入")
 }
 
 function setStageRunning(job: ImportJob, index: number) {
@@ -278,6 +341,7 @@ function setStageRunning(job: ImportJob, index: number) {
   item.status = "running"
   item.error = null
   item.started_at = item.started_at ?? nowIso()
+  job.current_stage = index
   job.completed_count = job.items.filter((current) => current.status === "completed").length
   job.failed_count = job.items.filter((current) => current.status === "failed").length
 }
@@ -288,6 +352,7 @@ function setStageCompleted(job: ImportJob, index: number, result?: unknown) {
   item.status = "completed"
   item.result = result ?? null
   item.finished_at = nowIso()
+  job.current_stage = Math.min(JOB_STAGE_LABELS.length - 1, index + 1)
   job.completed_count = job.items.filter((current) => current.status === "completed").length
   job.failed_count = job.items.filter((current) => current.status === "failed").length
 }
@@ -300,6 +365,7 @@ function setJobDone(job: ImportJob) {
 async function markJobFailed(job: ImportJob, error: unknown) {
   const message = error instanceof Error ? error.message : String(error)
   job.error = message
+  job.error_code = /文件不存在|导入文件不存在|source file/i.test(message) ? "source_file_missing" : "import_failed"
   const runningItem = job.items.find((item) => item.status === "running")
   const failedItem = runningItem ?? job.items.find((item) => item.status === "queued") ?? job.items[0]
   if (failedItem) {
@@ -314,7 +380,8 @@ async function markJobFailed(job: ImportJob, error: unknown) {
   }
   job.completed_count = job.items.filter((item) => item.status === "completed").length
   job.failed_count = Math.max(1, job.items.filter((item) => item.status === "failed").length)
-  setJobDone(job)
+  job.status = "failed"
+  job.finished_at = nowIso()
   saveListingLaunchPlanImportJob(job)
 }
 
@@ -326,9 +393,20 @@ async function processImportJob(job: ImportJob) {
   job.completed_count = 0
   job.failed_count = 0
   job.error = null
-  saveListingLaunchPlanImportJob(job)
+  job.error_code = null
+  let leaseLost = false
+  const heartbeat = setInterval(() => {
+    if (leaseLost) return
+    try {
+      renewListingLaunchPlanImportJob(job)
+    } catch {
+      leaseLost = true
+    }
+  }, JOB_HEARTBEAT_INTERVAL_MS)
+  heartbeat.unref?.()
 
   try {
+    saveListingLaunchPlanImportJob(job)
     setStageRunning(job, 0)
     saveListingLaunchPlanImportJob(job)
     const sheets = await withBackgroundTaskSlot(
@@ -458,6 +536,7 @@ async function processImportJob(job: ImportJob) {
       },
     }, auditActorFromJobActor(job.actor))
   } finally {
+    clearInterval(heartbeat)
     await rm(job.filePath, { force: true })
   }
 }
@@ -530,6 +609,12 @@ export function enqueueListingLaunchPlanImportJob(input: {
     created_at: now,
     started_at: null,
     finished_at: null,
+    claim_token: null,
+    claim_version: 0,
+    lease_expires_at: null,
+    last_heartbeat_at: null,
+    current_stage: 0,
+    error_code: null,
   }
   const row = getDb().prepare(`
     insert into listing_launch_plan_import_job (

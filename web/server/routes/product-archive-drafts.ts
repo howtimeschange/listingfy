@@ -7,7 +7,7 @@ import sharp from "sharp"
 import { Hono, type Context } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { bodyLimit } from "hono/body-limit"
-import { getDb } from "../db"
+import { DATA_DIR, getDb } from "../db"
 import { requirePermission, trustedClientAddress } from "../lib/auth"
 import { assertLocalImageFile, assertLocalProductArchiveAssetFile } from "../lib/local-path-guard"
 import {
@@ -79,6 +79,15 @@ import { readSpreadsheetSheetsFromFileInWorker } from "../services/spreadsheet-w
 import { readPlmSizeChartWorkbook } from "../../../scripts/lib/product_archive_size_chart.mjs"
 import { getDefaultAiScenarioRouter } from "../../../scripts/lib/ai_routing_context.mjs"
 import { backgroundTaskMaxActive, withBackgroundTaskSlot } from "../lib/background-task-limiter"
+import {
+  cancelProductArchiveWorkflowJob,
+  enqueueProductArchiveWorkflowJob,
+  getProductArchiveWorkflowJob,
+  registerProductArchiveWorkflowProcessor,
+  resumeProductArchiveWorkflowJobs,
+  type ProductArchiveWorkflowJob,
+  type ProductArchiveWorkflowStage,
+} from "../services/product-archive-workflow-jobs"
 import type { ProductArchiveSubmitMode } from "../services/product-archive-drafts"
 
 const productArchiveDrafts = new Hono()
@@ -89,6 +98,7 @@ const PROJECT_ROOT =
 const UPLOAD_DIR = path.join(os.tmpdir(), "listingify-upload")
 const TEMPLATE_DIR = path.join(PROJECT_ROOT, "data", "product-archive-templates")
 const DRAFT_IMAGE_DIR = path.join(PROJECT_ROOT, "data", "product-archive-draft-images")
+const WORKFLOW_UPLOAD_ROOT = path.join(DATA_DIR, "product-archive-workflow")
 
 function productArchiveCompressedImageName(fileName: string) {
   const extension = path.extname(fileName)
@@ -3158,6 +3168,39 @@ async function saveFormFile(file: File) {
   return filePath
 }
 
+async function saveProductArchiveWorkflowFiles(
+  jobId: string,
+  entries: Array<{ kind: "copywriting" | "launch_plan" | "size_chart"; file: File }>,
+) {
+  const workflowDir = path.join(WORKFLOW_UPLOAD_ROOT, jobId)
+  await mkdir(workflowDir, { recursive: true })
+  const files: Array<{
+    kind: string
+    fileName: string
+    filePath: string
+    fileSizeBytes: number
+  }> = []
+  try {
+    for (const [index, entry] of entries.entries()) {
+      const filePath = path.join(
+        workflowDir,
+        `${index}-${randomUUID()}-${safeUploadName(entry.file.name)}`,
+      )
+      await writeValidatedUploadFile(entry.file, "spreadsheet", filePath)
+      files.push({
+        kind: entry.kind,
+        fileName: entry.file.name,
+        filePath,
+        fileSizeBytes: entry.file.size,
+      })
+    }
+    return files
+  } catch (error) {
+    await rm(workflowDir, { recursive: true, force: true })
+    throw error
+  }
+}
+
 async function saveOcrFormFiles(c: Context) {
   const form = await c.req.formData()
   const displayNames = form.getAll("filePaths").map(stringValue)
@@ -3540,6 +3583,204 @@ async function readProductArchiveSourceSheets(filePath: string, fileName: string
     return readSpreadsheetSheetsFromFileInWorker(filePath, { fileName, signal })
   })
 }
+
+type ProductArchiveWorkflowSourceType = "copywriting" | "launch_plan" | "size_chart"
+
+function workflowSourceType(value: unknown): ProductArchiveWorkflowSourceType | null {
+  const sourceType = stringValue(value)
+  return sourceType === "copywriting" || sourceType === "launch_plan" || sourceType === "size_chart"
+    ? sourceType
+    : null
+}
+
+function workflowSourceBatchMap(job: ProductArchiveWorkflowJob) {
+  const raw = objectValue(job.result.sourceBatchIdsByType)
+  const sourceBatchIdsByType: Record<string, number[]> = {}
+  for (const [sourceType, values] of Object.entries(raw)) {
+    if (!Array.isArray(values)) continue
+    sourceBatchIdsByType[sourceType] = uniqueStrings(values)
+      .map(Number)
+      .filter((id) => Number.isInteger(id) && id > 0)
+  }
+  return sourceBatchIdsByType
+}
+
+async function processProductArchiveWorkflowStage(
+  job: ProductArchiveWorkflowJob,
+  stage: ProductArchiveWorkflowStage,
+) {
+  const db = getDb()
+  const sourceFiles = job.files
+    .map((file) => ({ ...file, sourceType: workflowSourceType(file.kind) }))
+    .filter((file): file is typeof file & { sourceType: ProductArchiveWorkflowSourceType } => Boolean(file.sourceType))
+
+  if (stage.key === "parse") {
+    const files = []
+    for (const file of sourceFiles) {
+      const sheets = await readProductArchiveSourceSheets(file.filePath, file.fileName, file.sourceType)
+      files.push({
+        kind: file.sourceType,
+        fileName: file.fileName,
+        sheetCount: sheets.length,
+        inputRowCount: sheets.reduce((sum, sheet) => sum + sheet.rows.length, 0),
+      })
+    }
+    return { files }
+  }
+
+  if (stage.key === "source_import") {
+    const sourceBatchIdsByType: Record<string, number[]> = {}
+    let inputRowCount = 0
+    let insertedRowCount = 0
+    for (const file of sourceFiles) {
+      const sheets = await readProductArchiveSourceSheets(file.filePath, file.fileName, file.sourceType)
+      const batchIds = sourceBatchIdsByType[file.sourceType] ?? []
+      for (const sheet of sheets) {
+        const result = await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
+          importProductArchiveSourceRowsInChunks(db, {
+            sourceType: file.sourceType,
+            fileName: file.fileName,
+            sheetName: sheet.name,
+            rows: sheet.rows,
+          }, {
+            chunkSize: 1000,
+            signal,
+          })
+        ))
+        batchIds.push(Number(result.batch.id))
+        inputRowCount += Number(result.inputRowCount ?? 0)
+        insertedRowCount += Number(result.insertedRowCount ?? 0)
+      }
+      sourceBatchIdsByType[file.sourceType] = batchIds
+    }
+    job.result = {
+      ...job.result,
+      sourceBatchIdsByType,
+      sourceBatchIds: Object.values(sourceBatchIdsByType).flat(),
+      inputRowCount,
+      insertedRowCount,
+    }
+    return { sourceBatchIdsByType, inputRowCount, insertedRowCount }
+  }
+
+  if (stage.key === "launch_plan_import") {
+    const launchPlanFile = sourceFiles.find((file) => file.sourceType === "launch_plan")
+    if (!launchPlanFile) return { skipped: true, reason: "launch_plan_not_uploaded" }
+    const sourceBatchIdsByType = workflowSourceBatchMap(job)
+    const sheets = await readProductArchiveSourceSheets(
+      launchPlanFile.filePath,
+      launchPlanFile.fileName,
+      "launch_plan",
+    )
+    const listingPlanImport = await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
+      importListingLaunchPlanSheetsInChunks(db, {
+        fileName: launchPlanFile.fileName,
+        fileSizeBytes: launchPlanFile.fileSizeBytes,
+        sheets,
+        sourceBatchIds: sourceBatchIdsByType.launch_plan ?? [],
+        createdBy: Number(job.options.createdBy) || null,
+      }, {
+        chunkSize: 1000,
+        signal,
+      })
+    ))
+    const result = {
+      importId: listingPlanImport.import?.id ?? null,
+      insertedRowCount: listingPlanImport.insertedRowCount,
+      inputRowCount: listingPlanImport.inputRowCount,
+    }
+    job.result = { ...job.result, listingPlanImport: result }
+    return result
+  }
+
+  if (stage.key === "draft_refresh") {
+    const sourceBatchIdsByType = workflowSourceBatchMap(job)
+    const sourceBatchIds = uniqueStrings(Object.values(sourceBatchIdsByType).flat())
+      .map(Number)
+      .filter((id) => Number.isInteger(id) && id > 0)
+    const refreshSummaries = []
+    for (const sourceBatchId of sourceBatchIds) {
+      refreshSummaries.push(await withBackgroundTaskSlot(
+        "product_archive_source_import",
+        (signal) => refreshProductArchiveDraftsFromSourceBatchInChunks(db, {
+          sourceBatchId,
+          sourceType: stringValue(db.prepare("select source_type from product_archive_source_batch where id = ?").get(sourceBatchId)?.source_type) || "launch_plan",
+        }, {
+          chunkSize: 5,
+          signal,
+        }),
+      ))
+    }
+
+    const candidateCodes = uniqueStrings([
+      sourceSpuCodesForBatchIds(db, sourceBatchIdsByType.copywriting ?? []),
+      sourceSpuCodesForBatchIds(db, sourceBatchIdsByType.launch_plan ?? []),
+    ].flat())
+    const options = job.options
+    const skipLaunchPlan = options.skipLaunchPlan === true
+    const existingLaunchPlans = existingLaunchPlanSpuCodes(db, candidateCodes)
+    const copywritingUploaded = sourceFiles.some((file) => file.sourceType === "copywriting")
+    const launchPlanUploaded = sourceFiles.some((file) => file.sourceType === "launch_plan")
+    if (copywritingUploaded && !launchPlanUploaded && !skipLaunchPlan) {
+      const missingLaunchPlanSpuCodes = candidateCodes.filter((code) => !existingLaunchPlans.has(code))
+      if (missingLaunchPlanSpuCodes.length > 0) {
+        const result = {
+          outcome: "needs_launch_plan",
+          needsLaunchPlan: true,
+          missingLaunchPlanSpuCodes,
+          refreshSummaries,
+        }
+        job.result = { ...job.result, ...result }
+        return result
+      }
+    }
+
+    const existingLaunchPlanBatchIds = launchPlanBatchIdsForSpuCodes(db, candidateCodes)
+    sourceBatchIdsByType.launch_plan = uniqueStrings([
+      ...(sourceBatchIdsByType.launch_plan ?? []),
+      ...existingLaunchPlanBatchIds,
+    ]).map(Number)
+    const deepdrawConfig = resolveDeepdrawConfig({
+      projectRoot: PROJECT_ROOT,
+      tenantName: stringValue(options.deepdrawTenantName ?? options.tenantName),
+    })
+    const draftCodes = queueableDraftRefreshCodesForCodes(db, candidateCodes, {
+      tenantName: deepdrawConfig.tenantName,
+      merchantId: deepdrawConfig.merchantId == null ? null : String(deepdrawConfig.merchantId),
+    })
+    const syncJob = draftCodes.length > 0
+      ? draftQueue.enqueue({
+          source: "mdm_draft",
+          rawCodes: draftCodes,
+          intervalMs: options.intervalMs,
+          options: {
+            deepdrawTenantName: deepdrawConfig.tenantName,
+            tradeId: options.tradeId ?? null,
+            tradePath: options.tradePath ?? null,
+            sourceBatchId: sourceBatchIdsByType.launch_plan?.[0] ?? null,
+            sourceBatchIds: sourceBatchIdsByType,
+            createdBy: Number(options.createdBy) || null,
+          },
+        })
+      : null
+    const result = {
+      outcome: "queued",
+      needsLaunchPlan: false,
+      candidateCodes,
+      draftQueuedCount: draftCodes.length,
+      skippedExistingDraftCount: candidateCodes.length - draftCodes.length,
+      sourceBatchIdsByType,
+      refreshSummaries,
+      syncJob,
+    }
+    job.result = { ...job.result, ...result }
+    return result
+  }
+
+  return { skipped: true, reason: "unknown_stage" }
+}
+
+registerProductArchiveWorkflowProcessor(processProductArchiveWorkflowStage)
 
 productArchiveDrafts.get("/", (c) => {
   requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
@@ -3963,132 +4204,95 @@ productArchiveDrafts.post("/size-chart/import", productArchiveSpreadsheetBodyLim
 productArchiveDrafts.post("/workflow/start", productArchiveWorkflowSpreadsheetBodyLimit, async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
   requirePermission(c, "PRODUCT_ARCHIVE_RULE_MANAGE")
-  const db = getDb()
   const form = await c.req.formData()
   const copywritingFile = form.get("copywritingFile")
   const launchPlanFile = form.get("launchPlanFile")
   const sizeChartFile = form.get("sizeChartFile")
   const spreadsheetFiles = [copywritingFile, launchPlanFile, sizeChartFile]
     .filter((file): file is File => file instanceof File && file.size > 0)
+  const fileEntries = [
+    { kind: "copywriting" as const, file: copywritingFile },
+    { kind: "launch_plan" as const, file: launchPlanFile },
+    { kind: "size_chart" as const, file: sizeChartFile },
+  ].filter((entry): entry is typeof entry & { file: File } => entry.file instanceof File && entry.file.size > 0)
   assertAggregateUploadBytes(
     spreadsheetFiles,
     MAX_PRODUCT_ARCHIVE_WORKFLOW_SPREADSHEET_BYTES,
     "工作流表格批次总大小超过限制",
   )
+  const sourceFileEntries = fileEntries.filter((entry) => entry.kind !== "size_chart")
+  if (sourceFileEntries.length === 0) {
+    throw new HTTPException(400, { message: "请至少上传标准文案表或上市计划表，系统会按表格款号自动生成草稿" })
+  }
+  // Keep importWorkflowSourceFile available for the compatibility endpoints; this route now persists files first.
   const skipLaunchPlan = booleanFormValue(form.get("skipLaunchPlan"))
-  const sourceBatchIdsByType: Record<string, number[]> = {}
-  const refreshSummaries = []
-  let copywritingImport = null
-  let launchPlanImport = null
-  let sizeChartImport = null
-
-  if (copywritingFile instanceof File && copywritingFile.size > 0) {
-    copywritingImport = await importWorkflowSourceFile(db, copywritingFile, "copywriting", user.id)
-    sourceBatchIdsByType.copywriting = copywritingImport.sourceBatchIds
-    refreshSummaries.push(...copywritingImport.refreshSummaries)
+  const workflowJobId = randomUUID()
+  const workflowDir = path.join(WORKFLOW_UPLOAD_ROOT, workflowJobId)
+  try {
+    const files = await saveProductArchiveWorkflowFiles(workflowJobId, fileEntries)
+    const job = enqueueProductArchiveWorkflowJob({
+      id: workflowJobId,
+      title: "深绘建档工作流",
+      files,
+      options: {
+        skipLaunchPlan,
+        deepdrawTenantName: stringValue(form.get("deepdrawTenantName") ?? form.get("tenantName")) || null,
+        tradeId: stringValue(form.get("tradeId")) || null,
+        tradePath: stringValue(form.get("tradePath")) || null,
+        intervalMs: stringValue(form.get("intervalMs")) || null,
+        createdBy: user.id,
+      },
+      createdBy: user.id,
+    })
+    auditFromContext(c, {
+      action: "draft.workflow.started",
+      module: "PRODUCT_ARCHIVE_DRAFT",
+      entityType: "product_archive_workflow_job",
+      entityId: job.id,
+      summary: `开始深绘建档工作流 ${fileEntries.length} 个文件`,
+      metadata: {
+        fileCount: fileEntries.length,
+        fileKinds: fileEntries.map((entry) => entry.kind),
+        totalBytes: spreadsheetFiles.reduce((sum, file) => sum + file.size, 0),
+        jobId: job.id,
+        userId: user.id,
+      },
+    })
+    return c.json({
+      status: "queued",
+      needsLaunchPlan: false,
+      workflowJobId: job.id,
+      workflowJob: job,
+    }, 202)
+  } catch (error) {
+    await rm(workflowDir, { recursive: true, force: true })
+    throw error
   }
+})
 
-  if (launchPlanFile instanceof File && launchPlanFile.size > 0) {
-    launchPlanImport = await importWorkflowSourceFile(db, launchPlanFile, "launch_plan", user.id)
-    sourceBatchIdsByType.launch_plan = launchPlanImport.sourceBatchIds
-    refreshSummaries.push(...launchPlanImport.refreshSummaries)
-  }
+productArchiveDrafts.get("/workflow/jobs/:jobId", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const job = getProductArchiveWorkflowJob(c.req.param("jobId"))
+  if (!job) throw new HTTPException(404, { message: "深绘建档工作流任务不存在" })
+  return c.json(job)
+})
 
-  if (sizeChartFile instanceof File && sizeChartFile.size > 0) {
-    sizeChartImport = await importWorkflowSourceFile(db, sizeChartFile, "size_chart", user.id)
-    sourceBatchIdsByType.size_chart = sizeChartImport.sourceBatchIds
-    refreshSummaries.push(...sizeChartImport.refreshSummaries)
-  }
-
-  const candidateCodes = uniqueStrings([
-    ...(copywritingImport?.spuCodes ?? []),
-    ...(launchPlanImport?.spuCodes ?? []),
-  ])
-  if (candidateCodes.length === 0) {
-    throw new HTTPException(400, { message: "请上传标准文案表或上市计划表，系统会按表格款号自动同步 MDM 并生成草稿" })
-  }
-
-  const existingLaunchPlans = existingLaunchPlanSpuCodes(db, candidateCodes)
-  if (copywritingImport && !launchPlanImport && !skipLaunchPlan) {
-    const missingLaunchPlanSpuCodes = copywritingImport.spuCodes.filter((code) => !existingLaunchPlans.has(code))
-    if (missingLaunchPlanSpuCodes.length > 0) {
-      return c.json({
-        status: "needs_launch_plan",
-        needsLaunchPlan: true,
-        message: "标准文案表中有款号还没有匹配到上市计划，请上传上市计划表后继续建档。",
-        missingLaunchPlanSpuCodes,
-        copywritingImport,
-        launchPlanImport,
-        sourceBatchIdsByType,
-        refreshSummaries,
-      })
-    }
-  }
-
-  const existingLaunchPlanBatchIds = launchPlanBatchIdsForSpuCodes(db, candidateCodes)
-  if (existingLaunchPlanBatchIds.length > 0) {
-    sourceBatchIdsByType.launch_plan = uniqueStrings([
-      ...(sourceBatchIdsByType.launch_plan ?? []),
-      ...existingLaunchPlanBatchIds,
-    ]).map(Number)
-  }
-
-  const deepdrawConfig = resolveDeepdrawConfig({
-    projectRoot: PROJECT_ROOT,
-    tenantName: stringValue(form.get("deepdrawTenantName") ?? form.get("tenantName")),
+productArchiveDrafts.post("/workflow/jobs/:jobId/cancel", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const job = cancelProductArchiveWorkflowJob(c.req.param("jobId"), {
+    id: user.id,
+    username: user.username,
   })
-  const draftCodes = queueableDraftRefreshCodesForCodes(db, candidateCodes, {
-    tenantName: deepdrawConfig.tenantName,
-    merchantId: deepdrawConfig.merchantId == null ? null : String(deepdrawConfig.merchantId),
-  })
-  const legacySourceBatchId = sourceBatchIdsByType.launch_plan?.[0] ?? null
-  const syncJob = draftCodes.length > 0
-    ? draftQueue.enqueue({
-        source: "mdm_draft",
-        rawCodes: draftCodes,
-        intervalMs: stringValue(form.get("intervalMs")),
-        options: {
-          deepdrawTenantName: deepdrawConfig.tenantName,
-          tradeId: stringValue(form.get("tradeId")) || null,
-          tradePath: stringValue(form.get("tradePath")) || null,
-          sourceBatchId: legacySourceBatchId,
-          sourceBatchIds: sourceBatchIdsByType,
-          createdBy: user.id,
-        },
-      })
-    : null
-
+  if (!job) throw new HTTPException(404, { message: "深绘建档工作流任务不存在或已结束" })
   auditFromContext(c, {
-    action: "draft.workflow.started",
+    action: "draft.workflow.cancelled",
     module: "PRODUCT_ARCHIVE_DRAFT",
-    entityType: "product_archive_draft_batch",
-    entityId: syncJob?.id ?? null,
-    summary: `开始商品建档 ${candidateCodes.length} 个款号`,
-    metadata: {
-      candidateCodeCount: candidateCodes.length,
-      draftQueuedCount: draftCodes.length,
-      skippedExistingDraftCount: candidateCodes.length - draftCodes.length,
-      copywritingSourceBatchIds: sourceBatchIdsByType.copywriting ?? [],
-      launchPlanSourceBatchIds: sourceBatchIdsByType.launch_plan ?? [],
-      sizeChartSourceBatchIds: sourceBatchIdsByType.size_chart ?? [],
-      syncJobId: syncJob?.id ?? null,
-      userId: user.id,
-    },
+    entityType: "product_archive_workflow_job",
+    entityId: job.id,
+    summary: `取消深绘建档工作流 ${job.id}`,
+    metadata: { jobId: job.id, userId: user.id },
   })
-
-  return c.json({
-    status: "queued",
-    needsLaunchPlan: false,
-    candidateCodes,
-    draftQueuedCount: draftCodes.length,
-    skippedExistingDraftCount: candidateCodes.length - draftCodes.length,
-    copywritingImport,
-    launchPlanImport,
-    sizeChartImport,
-    sourceBatchIdsByType,
-    refreshSummaries,
-    syncJob,
-  }, syncJob ? 202 : 200)
+  return c.json(job)
 })
 
 productArchiveDrafts.post("/hangtag-washlabel-ocr/preview", productArchiveOcrPreviewBodyLimit, async (c) => {
@@ -4890,5 +5094,7 @@ productArchiveDrafts.get("/:draftId/logs", (c) => {
   const db = getDb()
   return c.json({ items: listProductArchiveSubmitLogs(db, readId(c.req.param("draftId"))) })
 })
+
+export { resumeProductArchiveWorkflowJobs }
 
 export default productArchiveDrafts
