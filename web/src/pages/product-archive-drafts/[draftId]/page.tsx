@@ -325,6 +325,7 @@ function draftSubmitModeLabel(mode: DraftSubmitMode) {
 }
 
 const DRAFT_RESOURCE_PAGE_SIZE = 100
+const SIZE_CHART_READBACK_FIELD_PAGE_SIZE = 500
 
 function useDraftSummary(draftId: string | undefined) {
   return useQuery<DraftSummary>({
@@ -340,14 +341,16 @@ function useDraftPagedResource<T>(input: {
   queryKey: string
   path: string
   enabled: boolean
+  pageSize?: number
 }) {
+  const pageSize = input.pageSize ?? DRAFT_RESOURCE_PAGE_SIZE
   const query = useInfiniteQuery<DraftResourcePage<T>>({
-    queryKey: [input.queryKey, input.draftId],
+    queryKey: [input.queryKey, input.draftId, pageSize],
     enabled: Boolean(input.draftId) && input.enabled,
     staleTime: 15000,
     initialPageParam: 0,
     queryFn: ({ pageParam }) => api.get<DraftResourcePage<T>>(
-      `${input.path}?limit=${DRAFT_RESOURCE_PAGE_SIZE}&offset=${pageParam}`,
+      `${input.path}?limit=${pageSize}&offset=${pageParam}`,
     ),
     getNextPageParam: (lastPage) => {
       const nextOffset = lastPage.pagination.offset + lastPage.items.length
@@ -626,6 +629,234 @@ function recordValue(value: unknown): Record<string, unknown> {
 
 function compactFieldKey(value: string) {
   return value.replace(/\s+/g, "").replace(/[()（）]/g, "").toLowerCase()
+}
+
+interface DeepdrawSkuPresentationRow {
+  sku: DraftSku
+  size: string
+  tableSize: string
+  values: string[]
+}
+
+interface DeepdrawSkuPresentationGroup {
+  color: string
+  rows: DeepdrawSkuPresentationRow[]
+}
+
+interface DeepdrawSkuPresentation {
+  colors: string[]
+  sizes: string[]
+  columns: string[]
+  groups: DeepdrawSkuPresentationGroup[]
+}
+
+const DEEPDRAW_MERCHANT_SKU_FALLBACK_COLUMNS = [
+  "价格",
+  "货号",
+  "数量",
+  "商家编码",
+  "条形码",
+  "零售价",
+  "供货价",
+  "单品货号",
+]
+
+function uniqueNonEmptyTexts(values: unknown[]) {
+  return Array.from(new Set(values.map(stringOptionValue).filter(Boolean)))
+}
+
+function merchantSkuColumnNames(value: unknown) {
+  const record = recordValue(value)
+  const title = record.title ?? record.columns
+  if (Array.isArray(title)) {
+    const columns = uniqueNonEmptyTexts(title.map(fieldOptionCanonicalValue))
+    if (columns.length > 0) return columns
+  }
+  const titleText = stringOptionValue(title)
+  if (titleText) {
+    const columns = uniqueNonEmptyTexts(titleText.split(/[,，]/))
+    if (columns.length > 0) return columns
+  }
+  const valuesByColumn = recordValue(record.valuesByColumn)
+  const columns = uniqueNonEmptyTexts(Object.keys(valuesByColumn))
+  return columns.length > 0 ? columns : DEEPDRAW_MERCHANT_SKU_FALLBACK_COLUMNS
+}
+
+function merchantSkuSizeKey(value: unknown) {
+  return stringOptionValue(value)
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/(?:cm|码)$/i, "")
+    .replace(/^0+(?=\d)/, "")
+}
+
+function merchantSkuRawRowValue(value: unknown, sku: DraftSku) {
+  const merchantSku = recordValue(value)
+  const color = stringOptionValue(sku.color_name)
+  const colorBucket = recordValue(merchantSku[color])
+  const sizeCandidates = [sku.size_name, sku.size_code].map(stringOptionValue).filter(Boolean)
+  for (const size of sizeCandidates) {
+    if (size in colorBucket) return colorBucket[size]
+  }
+  const sizeKeys = new Set(sizeCandidates.map(merchantSkuSizeKey).filter(Boolean))
+  for (const [size, rowValue] of Object.entries(colorBucket)) {
+    if (sizeKeys.has(merchantSkuSizeKey(size))) return rowValue
+  }
+
+  const valuesByColumn = recordValue(merchantSku.valuesByColumn)
+  for (const key of [sku.sku_code, `${color}|${sizeCandidates[0] ?? ""}`, `${color}:${sizeCandidates[0] ?? ""}`]) {
+    if (key && key in valuesByColumn) return valuesByColumn[key]
+  }
+  return undefined
+}
+
+function merchantSkuFallbackValue(column: string, sku: DraftSku) {
+  if (/(?:价格|价$)/.test(column)) return sku.price == null ? "" : String(sku.price)
+  if (/条形码|条码/.test(column)) return sku.barcode ?? ""
+  if (/商家编码/.test(column)) return sku.seller_code || sku.sku_code
+  if (/单品货号|SKU/i.test(column)) return sku.sku_code
+  if (/货号/.test(column)) return sku.skc_code || sku.sku_code
+  return ""
+}
+
+function merchantSkuRowValues(rawRowValue: unknown, columns: string[], sku: DraftSku) {
+  if (Array.isArray(rawRowValue)) return columns.map((_, index) => stringOptionValue(rawRowValue[index]))
+  if (typeof rawRowValue === "string") return columns.map((_, index) => rawRowValue.split(/[,，]/)[index]?.trim() ?? "")
+  const rowRecord = recordValue(rawRowValue)
+  if (Object.keys(rowRecord).length > 0) {
+    const valuesByColumn = recordValue(rowRecord.valuesByColumn)
+    return columns.map((column) => stringOptionValue(rowRecord[column] ?? valuesByColumn[column]))
+  }
+  return columns.map((column) => merchantSkuFallbackValue(column, sku))
+}
+
+function productArchiveSkuColorKey(value: unknown) {
+  return stringOptionValue(value).toLocaleLowerCase().replace(/\s+/g, "")
+}
+
+function productArchiveSkuSizeKey(value: unknown) {
+  const text = stringOptionValue(value).replace(/[（(].*?[）)]/g, "").trim()
+  if (!text) return ""
+  const numeric = text.match(/^0*(\d+(?:\.\d+)?)\s*(?:cm|厘米|公分|码)?$/i)
+  if (numeric) return `number:${Number(numeric[1])}`
+  return `text:${compactFieldKey(text)}`
+}
+
+function productArchiveSkuColorDisplayByRawValue(fields: DraftField[]) {
+  const displayByRawValue = new Map<string, string>()
+  const colorField = fields.find((field) => compactFieldKey(field.field_name) === "颜色")
+  for (const option of stringOptionValue(colorField?.value_text).split(/[;；\n]+/)) {
+    const values = option.split(/[,，]/).map((value) => value.trim()).filter(Boolean)
+    const display = values.at(-1) ?? ""
+    if (!display) continue
+    const rawCandidates = [
+      ...values,
+      display.replace(/[-—–－](?:白鸭绒|灰鸭绒|白鹅绒|灰鹅绒|鸭绒|鹅绒|羽绒)$/, ""),
+    ]
+    for (const rawValue of rawCandidates) {
+      const key = productArchiveSkuColorKey(rawValue)
+      if (key && !displayByRawValue.has(key)) displayByRawValue.set(key, display)
+    }
+  }
+  return displayByRawValue
+}
+
+function productArchiveSkuSizeDisplayByRawValue(fields: DraftField[]) {
+  const displayByRawValue = new Map<string, string>()
+  const sizeField = fields.find((field) => {
+    const key = compactFieldKey(field.field_name)
+    return key === "尺码" || key === "尺寸"
+  })
+  for (const display of stringOptionValue(sizeField?.value_text).split(/[;；\n]+/).map((value) => value.trim()).filter(Boolean)) {
+    const key = productArchiveSkuSizeKey(display)
+    if (key && !displayByRawValue.has(key)) displayByRawValue.set(key, display)
+  }
+  return displayByRawValue
+}
+
+function productArchiveDownFillSizeRemark(value: unknown, title = "") {
+  const text = stringOptionValue(value)
+  const explicit = text.match(/充绒量\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(g|克)?/i)
+  if (explicit) return `充绒量${explicit[1]}${explicit[2] || "g"}`
+  if (!/充绒量/.test(title)) return ""
+  const weight = text.match(/\d+(?:\.\d+)?/)?.[0]
+  return weight ? `充绒量${weight}g` : ""
+}
+
+function productArchiveSkuSizeRemarkByRawValue(fields: DraftField[]) {
+  const remarksByRawValue = new Map<string, string>()
+  for (const field of fields) {
+    if (!isProductArchiveSizeChartField(field) && !isProductArchiveMultiPlatformSizeField(field)) continue
+    const parsed = sizeChartRows(field.value_json)
+    const downFillIndex = parsed.titles.findIndex((title) => /充绒量/.test(title))
+    for (const row of parsed.rows) {
+      const explicitRemark = [row.size, ...row.values]
+        .map((value) => productArchiveDownFillSizeRemark(value))
+        .find(Boolean)
+      const downFillRemark = downFillIndex >= 0
+        ? productArchiveDownFillSizeRemark(row.values[downFillIndex], parsed.titles[downFillIndex])
+        : ""
+      const remark = explicitRemark || downFillRemark
+      const key = productArchiveSkuSizeKey(row.size)
+      if (key && remark && !remarksByRawValue.has(key)) remarksByRawValue.set(key, remark)
+    }
+  }
+  return remarksByRawValue
+}
+
+function skuDisplayColor(sku: DraftSku, colorDisplayByRawValue: Map<string, string>) {
+  const rawValue = stringOptionValue(sku.color_name)
+  return colorDisplayByRawValue.get(productArchiveSkuColorKey(rawValue)) || rawValue || "未填写颜色"
+}
+
+function skuBaseSize(sku: DraftSku, sizeDisplayByRawValue: Map<string, string>) {
+  const rawValue = stringOptionValue(sku.size_name) || stringOptionValue(sku.size_code)
+  if (!rawValue) return "未填写尺码"
+  return sizeDisplayByRawValue.get(productArchiveSkuSizeKey(rawValue)) || rawValue
+}
+
+function skuDisplaySize(
+  sku: DraftSku,
+  sizeDisplayByRawValue: Map<string, string>,
+  sizeRemarksByRawValue: Map<string, string>,
+) {
+  const baseSize = skuBaseSize(sku, sizeDisplayByRawValue)
+  const rawValue = stringOptionValue(sku.size_name) || stringOptionValue(sku.size_code)
+  const remark = sizeRemarksByRawValue.get(productArchiveSkuSizeKey(rawValue))
+  return remark && !baseSize.includes(remark) ? `${baseSize}（${remark}）` : baseSize
+}
+
+function buildDeepdrawSkuPresentation(fields: DraftField[], skus: DraftSku[]): DeepdrawSkuPresentation {
+  const merchantSkuField = fields.find((field) => compactFieldKey(field.field_name) === "商家sku")
+  const merchantSkuValue = merchantSkuField?.value_json
+  const columns = merchantSkuColumnNames(merchantSkuValue)
+  const colorDisplayByRawValue = productArchiveSkuColorDisplayByRawValue(fields)
+  const sizeDisplayByRawValue = productArchiveSkuSizeDisplayByRawValue(fields)
+  const sizeRemarksByRawValue = productArchiveSkuSizeRemarkByRawValue(fields)
+  const groupsByColor = new Map<string, DeepdrawSkuPresentationGroup>()
+  const sizes: string[] = []
+
+  for (const sku of skus) {
+    const color = skuDisplayColor(sku, colorDisplayByRawValue)
+    const size = skuDisplaySize(sku, sizeDisplayByRawValue, sizeRemarksByRawValue)
+    const tableSize = skuBaseSize(sku, sizeDisplayByRawValue)
+    const group = groupsByColor.get(color) ?? { color, rows: [] }
+    group.rows.push({
+      sku,
+      size,
+      tableSize,
+      values: merchantSkuRowValues(merchantSkuRawRowValue(merchantSkuValue, sku), columns, sku),
+    })
+    groupsByColor.set(color, group)
+    if (!sizes.includes(size)) sizes.push(size)
+  }
+
+  return {
+    colors: [...groupsByColor.keys()],
+    sizes,
+    columns,
+    groups: [...groupsByColor.values()],
+  }
 }
 
 const FIELD_GROUP_DEFAULT_LABEL = "通用字段"
@@ -1028,10 +1259,22 @@ function MultiChoiceFieldEditor({
   )
 }
 
-function MultiPlatformSizeTablePreview({ field, selectedValue }: { field: DraftField; selectedValue: string }) {
+function MultiPlatformSizeTablePreview({
+  field,
+  selectedValue,
+  showAllPlatforms = false,
+}: {
+  field: DraftField
+  selectedValue: string
+  showAllPlatforms?: boolean
+}) {
   const parsed = sizeChartRows(field.value_json)
   const selectedPlatforms = splitMultiFieldValue(selectedValue)
-  const visiblePlatforms = selectedPlatforms.length > 0 ? selectedPlatforms : parsed.titles
+  const visiblePlatforms = showAllPlatforms
+    ? parsed.titles
+    : selectedPlatforms.length > 0
+      ? selectedPlatforms
+      : parsed.titles
   const columnIndexes = visiblePlatforms.map((platform) => (
     parsed.titles.findIndex((title) => compactFieldKey(title) === compactFieldKey(platform))
   ))
@@ -1040,39 +1283,42 @@ function MultiPlatformSizeTablePreview({ field, selectedValue }: { field: DraftF
   ), 0)
 
   return (
-    <div className="min-w-[720px] overflow-hidden rounded-md border bg-background">
+    <div className="min-w-0 overflow-hidden rounded-md border bg-background">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b bg-muted/30 px-3 py-2">
         <div>
           <div className="text-xs font-medium text-foreground">多平台尺码填值明细</div>
           <div className="mt-1 text-[11px] leading-4 text-muted-foreground">
-            表格列与上方平台选择对应；未单独填值时，深绘按销售尺码值处理。
+            {showAllPlatforms
+              ? "完整回读所有平台列；留空的平台在深绘上货或同步时沿用尺码字段的值。"
+              : "表格列与上方平台选择对应；未单独填值时，深绘按销售尺码值处理。"}
           </div>
         </div>
         <div className="flex flex-wrap gap-1.5">
           <Badge variant="outline">{formatNumber(visiblePlatforms.length)} 个平台</Badge>
+          {showAllPlatforms ? <Badge variant="outline">完整回读</Badge> : null}
           <Badge variant="outline">{formatNumber(parsed.rows.length)} 个尺码</Badge>
           <Badge variant="outline">已填 {formatNumber(filledCellCount)} 项</Badge>
         </div>
       </div>
       {parsed.rows.length > 0 && visiblePlatforms.length > 0 ? (
         <div className="max-h-80 overflow-auto">
-          <Table className="w-max min-w-full text-xs">
+          <Table className="w-full table-auto text-xs">
             <TableHeader>
               <TableRow>
-                <TableHead className="sticky left-0 z-10 min-w-24 bg-background">尺码</TableHead>
+                <TableHead className="sticky left-0 z-10 whitespace-nowrap bg-background px-3">尺码</TableHead>
                 {visiblePlatforms.map((platform) => (
-                  <TableHead key={platform} className="min-w-[190px] normal-case tracking-normal">{platform}</TableHead>
+                  <TableHead key={platform} className="whitespace-nowrap px-3 normal-case tracking-normal">{platform}</TableHead>
                 ))}
               </TableRow>
             </TableHeader>
             <TableBody>
               {parsed.rows.map((row) => (
                 <TableRow key={row.size}>
-                  <TableCell className="sticky left-0 z-10 bg-background font-mono font-medium">{row.size}</TableCell>
+                  <TableCell className="sticky left-0 z-10 whitespace-nowrap bg-background px-3 font-mono font-medium">{row.size}</TableCell>
                   {visiblePlatforms.map((platform, index) => {
                     const cell = columnIndexes[index] >= 0 ? row.values[columnIndexes[index]] ?? "" : ""
                     return (
-                      <TableCell key={`${row.size}-${platform}`} className="max-w-[320px] whitespace-normal break-words">
+                      <TableCell key={`${row.size}-${platform}`} className="max-w-[320px] whitespace-normal break-words px-3">
                         {cell || <span className="text-muted-foreground">沿用尺码：{row.size}</span>}
                       </TableCell>
                     )
@@ -1514,7 +1760,8 @@ export default function ProductArchiveDraftDetailPage() {
     draftId,
     queryKey: "product-archive-draft-fields",
     path: `/product-archive-drafts/${draftId}/fields`,
-    enabled: activeTab === "fields" || activeTab === "size-chart",
+    enabled: activeTab === "fields" || activeTab === "size-chart" || activeTab === "skus",
+    pageSize: activeTab === "size-chart" ? SIZE_CHART_READBACK_FIELD_PAGE_SIZE : undefined,
   })
   const skusQuery = useDraftPagedResource<DraftSku>({
     draftId,
@@ -1562,6 +1809,10 @@ export default function ProductArchiveDraftDetailPage() {
   const detail = { ...summaryQuery, data: detailData }
   const draft = detail.data?.draft
   const summary = draft?.validation_summary_json ?? {}
+  const deepdrawSkuPresentation = useMemo(
+    () => buildDeepdrawSkuPresentation(detailData?.fields ?? [], detailData?.skus ?? []),
+    [detailData?.fields, detailData?.skus],
+  )
   const tradeSelectionDecision = detail.data?.tradeSelectionDecision
   const recommendationNeedsApply = Boolean(
     tradeSelectionDecision?.recommendedTrade
@@ -1655,6 +1906,9 @@ export default function ProductArchiveDraftDetailPage() {
         }
       })
   }, [detailData, sizeChartRecommendation?.previews])
+  const multiPlatformSizeField = useMemo(() => (
+    (detailData?.fields ?? []).find((field) => isProductArchiveMultiPlatformSizeField(field)) ?? null
+  ), [detailData?.fields])
   const activeSizeChartMappings = sizeChartRecommendation?.mappings ?? detail.data?.sizeChartMappings ?? []
   const sizeChartImportedMatrix = useMemo(() => (
     sizeChartSourceMatrix(detailData?.sizeChartSourceRows ?? [])
@@ -2391,7 +2645,7 @@ export default function ProductArchiveDraftDetailPage() {
       </section>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="min-h-0 min-w-0">
-        <TabsList>
+        <TabsList className="max-w-full overflow-x-auto">
           <TabsTrigger value="fields" className={cn(fieldIssueNames.length > 0 && "pr-5")}>
             字段填充
             {fieldIssueNames.length > 0 ? (
@@ -2980,6 +3234,16 @@ export default function ProductArchiveDraftDetailPage() {
                       ) : null}
                     </Collapsible>
 
+                {multiPlatformSizeField ? (
+                  <section data-deepdraw-multi-platform-size-chart="true" className="min-w-0">
+                    <MultiPlatformSizeTablePreview
+                      field={multiPlatformSizeField}
+                      selectedValue={fieldValues[multiPlatformSizeField.id] ?? multiPlatformSizeField.value_text ?? ""}
+                      showAllPlatforms
+                    />
+                  </section>
+                ) : null}
+
                 {sizeChartPreview.length > 0 ? (
                   sizeChartPreview.map((preview) => (
                     <div key={preview.fieldName} className="min-w-0 overflow-hidden rounded-md border">
@@ -3062,59 +3326,130 @@ export default function ProductArchiveDraftDetailPage() {
 
           <TabsContent value="skus" className="min-w-0">
             <Card className="min-w-0 overflow-hidden">
-            <CardHeader>
-              <CardTitle>SKU/颜色尺码</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {skusQuery.isLoading ? (
-                <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
-                  <Loader2 className="size-4 animate-spin" />
-                  正在加载 SKU
-                </div>
-              ) : null}
-              {!skusQuery.isLoading ? (
-                <Table className="w-max min-w-full">
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>SKC</TableHead>
-                      <TableHead>SKU</TableHead>
-                      <TableHead>颜色</TableHead>
-                      <TableHead>尺码</TableHead>
-                      <TableHead>条码</TableHead>
-                      <TableHead>价格</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {detail.data?.skus.map((sku) => (
-                      <TableRow key={sku.id}>
-                        <TableCell>{sku.skc_code}</TableCell>
-                        <TableCell>{sku.sku_code}</TableCell>
-                        <TableCell>{sku.color_name}</TableCell>
-                        <TableCell>{sku.size_name}</TableCell>
-                        <TableCell>{sku.barcode || sku.seller_code}</TableCell>
-                        <TableCell>{sku.price ?? "-"}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              ) : null}
-              {skusQuery.hasNextPage ? (
-                <div className="flex justify-center pt-4">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={skusQuery.isFetchingNextPage}
-                    onClick={() => skusQuery.fetchNextPage()}
-                  >
-                    {skusQuery.isFetchingNextPage ? <Loader2 className="size-4 animate-spin" /> : null}
-                    加载更多 SKU（{formatNumber(skusQuery.items.length)} / {formatNumber(skusQuery.total)}）
-                  </Button>
-                </div>
-              ) : null}
-            </CardContent>
-          </Card>
-        </TabsContent>
+              <CardHeader>
+                <CardTitle>SKU/颜色尺码</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {skusQuery.isLoading ? (
+                  <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                    <Loader2 className="size-4 animate-spin" />
+                    正在加载 SKU
+                  </div>
+                ) : null}
+                {!skusQuery.isLoading && deepdrawSkuPresentation.groups.length > 0 ? (
+                  <>
+                    <div className="grid gap-5 rounded-lg border bg-muted/20 p-4 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
+                      <section data-deepdraw-sku-colors="true" aria-labelledby="deepdraw-sku-colors-title" className="min-w-0">
+                        <div id="deepdraw-sku-colors-title" className="text-sm font-semibold">颜色</div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {deepdrawSkuPresentation.colors.map((color) => (
+                            <div key={color} className="flex min-w-[132px] items-center gap-2 rounded-md border bg-background px-2.5 py-2 text-xs shadow-sm">
+                              <span className="min-w-0 truncate font-medium">{color}</span>
+                              <CheckCircle2 aria-hidden="true" className="ml-auto size-3.5 shrink-0 text-[#0fa76e]" />
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                      <section data-deepdraw-sku-sizes="true" aria-labelledby="deepdraw-sku-sizes-title" className="min-w-0">
+                        <div id="deepdraw-sku-sizes-title" className="text-sm font-semibold">尺码</div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {deepdrawSkuPresentation.sizes.map((size) => (
+                            <div key={size} className="flex min-w-[82px] items-center justify-between gap-2 rounded-md border bg-background px-2.5 py-2 text-xs shadow-sm">
+                              <span className="font-medium">{size}</span>
+                              <CheckCircle2 aria-hidden="true" className="size-3.5 shrink-0 text-[#0fa76e]" />
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    </div>
+
+                    <section aria-labelledby="deepdraw-merchant-sku-title" className="min-w-0">
+                      <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+                        <div>
+                          <h3 id="deepdraw-merchant-sku-title" className="text-sm font-semibold">商家 SKU</h3>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            按颜色和尺码展示当前草稿已生成的商家 SKU 字段；表格可向右滚动查看全部列。
+                          </p>
+                        </div>
+                        <span className="text-xs text-muted-foreground">
+                          {formatNumber(deepdrawSkuPresentation.colors.length)} 个颜色 · {formatNumber(skusQuery.items.length)} 个 SKU
+                        </span>
+                      </div>
+                      <div
+                        data-deepdraw-merchant-sku-table="true"
+                        className="overflow-x-auto overflow-y-hidden rounded-md border bg-background"
+                      >
+                        <div className="w-max min-w-[1500px]">
+                          <Table className="w-max min-w-[1500px] border-separate border-spacing-0 text-xs">
+                            <TableHeader>
+                              <TableRow className="hover:bg-transparent">
+                                <TableHead className="h-10 min-w-[150px] border-b border-r bg-muted/70 px-3 normal-case tracking-normal">颜色</TableHead>
+                                <TableHead className="h-10 min-w-[92px] border-b border-r bg-muted/70 px-3 normal-case tracking-normal">尺码</TableHead>
+                                {deepdrawSkuPresentation.columns.map((column) => (
+                                  <TableHead key={column} className="h-10 min-w-[144px] border-b border-r bg-muted/70 px-3 normal-case tracking-normal">
+                                    {column}
+                                  </TableHead>
+                                ))}
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {deepdrawSkuPresentation.groups.map((group) => (
+                                <Fragment key={group.color}>
+                                  {group.rows.map((row, index) => (
+                                    <TableRow key={row.sku.id} className="hover:bg-muted/30">
+                                      {index === 0 ? (
+                                        <TableCell
+                                          rowSpan={group.rows.length}
+                                          className="min-w-[150px] border-b border-r bg-muted/20 px-3 align-middle font-medium"
+                                        >
+                                          <span className="break-all">{group.color}</span>
+                                        </TableCell>
+                                      ) : null}
+                                      <TableCell className="min-w-[92px] border-b border-r px-3 font-medium">{row.tableSize}</TableCell>
+                                      {row.values.map((value, valueIndex) => (
+                                        <TableCell key={`${row.sku.id}-${deepdrawSkuPresentation.columns[valueIndex]}`} className="min-w-[144px] border-b border-r px-2 py-1.5">
+                                          <Input
+                                            aria-label={`${group.color} ${row.size} ${deepdrawSkuPresentation.columns[valueIndex]}`}
+                                            readOnly
+                                            tabIndex={-1}
+                                            value={value}
+                                            className="h-8 min-w-[120px] border-border/80 bg-background px-2 text-xs shadow-none focus-visible:ring-0"
+                                          />
+                                        </TableCell>
+                                      ))}
+                                    </TableRow>
+                                  ))}
+                                </Fragment>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </div>
+                    </section>
+                  </>
+                ) : null}
+                {!skusQuery.isLoading && deepdrawSkuPresentation.groups.length === 0 ? (
+                  <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+                    当前草稿还没有可展示的 SKU。
+                  </div>
+                ) : null}
+                {skusQuery.hasNextPage ? (
+                  <div className="flex justify-center pt-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={skusQuery.isFetchingNextPage}
+                      onClick={() => skusQuery.fetchNextPage()}
+                    >
+                      {skusQuery.isFetchingNextPage ? <Loader2 className="size-4 animate-spin" /> : null}
+                      加载更多 SKU（{formatNumber(skusQuery.items.length)} / {formatNumber(skusQuery.total)}）
+                    </Button>
+                  </div>
+                ) : null}
+              </CardContent>
+            </Card>
+          </TabsContent>
 
         <TabsContent value="issues" className="min-w-0">
           <Card className="min-w-0 overflow-hidden">

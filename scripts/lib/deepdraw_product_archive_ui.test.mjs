@@ -231,6 +231,76 @@ test("draft list provides a confirmed full rebuild action that does not publish 
   assert.match(page, /ConfirmDialog/);
 });
 
+test("draft detail renders DeepDraw-style color, size, and merchant SKU preview from stored field values", async () => {
+  const page = await readFile(files.draftDetailPage, "utf8");
+
+  assert.match(page, /function buildDeepdrawSkuPresentation/);
+  assert.match(page, /field\.field_name\) === "商家sku"/);
+  assert.match(page, /data-deepdraw-sku-colors/);
+  assert.match(page, /data-deepdraw-sku-sizes/);
+  assert.match(page, /data-deepdraw-merchant-sku-table/);
+  assert.match(page, /overflow-x-auto/);
+  assert.match(page, /min-w-\[1500px\]/);
+  assert.match(page, /rowSpan=\{group\.rows\.length\}/);
+  assert.match(page, /activeTab === "fields" \|\| activeTab === "size-chart" \|\| activeTab === "skus"/);
+  assert.match(page, /TabsList className="max-w-full overflow-x-auto"/);
+});
+
+test("size chart configuration fully reads back the multi-platform size field", async () => {
+  const page = await readFile(files.draftDetailPage, "utf8");
+
+  assert.match(page, /const multiPlatformSizeField = useMemo/);
+  assert.match(page, /function MultiPlatformSizeTablePreview/);
+  assert.match(page, /showAllPlatforms = false/);
+  assert.match(page, /data-deepdraw-multi-platform-size-chart/);
+  assert.match(
+    page,
+    /<MultiPlatformSizeTablePreview\s+field=\{multiPlatformSizeField\}\s+selectedValue=\{fieldValues\[multiPlatformSizeField\.id\] \?\? multiPlatformSizeField\.value_text \?\? ""\}\s+showAllPlatforms/,
+  );
+  assert.ok(
+    page.indexOf("PLM 导入字段对照") < page.indexOf("data-deepdraw-multi-platform-size-chart")
+      && page.indexOf("data-deepdraw-multi-platform-size-chart") < page.indexOf("sizeChartPreview.length > 0 ?"),
+    "expected multi-platform size readback to appear after PLM evidence and before individual size tables",
+  );
+});
+
+test("multi-platform size readback uses content-adaptive table columns", async () => {
+  const page = await readFile(files.draftDetailPage, "utf8");
+
+  assert.match(page, /<div className="min-w-0 overflow-hidden rounded-md border bg-background">/);
+  assert.match(page, /<Table className="w-full table-auto text-xs">/);
+  assert.match(page, /<TableHead key=\{platform\} className="whitespace-nowrap px-3 normal-case tracking-normal">/);
+  assert.doesNotMatch(page, /min-w-\[190px\]/);
+});
+
+test("SKU display maps constructed color aliases and size remarks without changing merchant SKU lookup keys", async () => {
+  const page = await readFile(files.draftDetailPage, "utf8");
+
+  assert.match(page, /function productArchiveSkuColorDisplayByRawValue/);
+  assert.match(page, /function productArchiveSkuSizeDisplayByRawValue/);
+  assert.match(page, /function productArchiveSkuSizeRemarkByRawValue/);
+  assert.match(page, /function skuDisplayColor\(sku: DraftSku, colorDisplayByRawValue: Map<string, string>\)/);
+  assert.match(page, /function skuDisplaySize\(\s*sku: DraftSku,\s*sizeDisplayByRawValue: Map<string, string>,\s*sizeRemarksByRawValue: Map<string, string>,/);
+  assert.match(page, /const colorDisplayByRawValue = productArchiveSkuColorDisplayByRawValue\(fields\)/);
+  assert.match(page, /const sizeDisplayByRawValue = productArchiveSkuSizeDisplayByRawValue\(fields\)/);
+  assert.match(page, /const sizeRemarksByRawValue = productArchiveSkuSizeRemarkByRawValue\(fields\)/);
+  assert.match(page, /const color = skuDisplayColor\(sku, colorDisplayByRawValue\)/);
+  assert.match(page, /const size = skuDisplaySize\(sku, sizeDisplayByRawValue, sizeRemarksByRawValue\)/);
+  assert.match(page, /merchantSkuRawRowValue\(merchantSkuValue, sku\)/);
+  assert.match(page, /充绒量/);
+});
+
+test("SKU preview removes color swatches and keeps merchant-table sizes free of remarks", async () => {
+  const page = await readFile(files.draftDetailPage, "utf8");
+
+  assert.doesNotMatch(page, /function deepdrawColorSwatch/);
+  assert.doesNotMatch(page, /色块/);
+  assert.match(page, /tableSize: string/);
+  assert.match(page, /function skuBaseSize/);
+  assert.match(page, /const tableSize = skuBaseSize\(sku, sizeDisplayByRawValue\)/);
+  assert.match(page, /<TableCell className="min-w-\[92px\] border-b border-r px-3 font-medium">\{row\.tableSize\}<\/TableCell>/);
+});
+
 test("product archive background jobs start after the enqueue response can flush", async () => {
   const [draftRoute, syncQueue] = await Promise.all([
     readFile(files.draftRoute, "utf8"),
