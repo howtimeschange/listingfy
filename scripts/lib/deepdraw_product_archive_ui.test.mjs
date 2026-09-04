@@ -97,6 +97,7 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
     /productArchiveDrafts\.patch\("\/:draftId\/trade\/confirm"/,
     /productArchiveDrafts\.patch\("\/:draftId\/fields"/,
     /productArchiveDrafts\.post\("\/:draftId\/validate"/,
+    /productArchiveDrafts\.post\("\/:draftId\/rebuild"/,
     /productArchiveDrafts\.post\("\/:draftId\/check-duplicate"/,
     /productArchiveDrafts\.post\("\/:draftId\/ai-fill"/,
     /productArchiveDrafts\.post\("\/:draftId\/submit"/,
@@ -107,6 +108,7 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
     assert.match(draftRoute, routePattern);
   }
   assert.match(draftRoute, /syncMdmProduct/);
+  assert.match(draftRoute, /rebuildProductArchiveDraftFromSources/);
   assert.match(draftRoute, /mdm_draft/);
   assert.match(draftRoute, /autoSyncMissingMdm/);
   assert.match(draftRoute, /missingMdmSpuCodes/);
@@ -190,6 +192,45 @@ test("backend registers product archive draft and deepdraw metadata APIs", async
   assert.match(metadataService, /runFieldWorker/);
 });
 
+test("batch rebuild fields is a durable sequential task with a confirmed task-center entry", async () => {
+  const [draftRoute, draftListPage, asyncTaskCenter, asyncTaskContext] = await Promise.all([
+    readFile(files.draftRoute, "utf8"),
+    readFile(files.draftListPage, "utf8"),
+    readFile(files.asyncTaskCenter, "utf8"),
+    readFile(path.join(PROJECT_ROOT, "web/src/lib/async-task-context.ts"), "utf8"),
+  ]);
+
+  assert.match(draftRoute, /function createProductArchiveRebuildQueue/);
+  assert.match(draftRoute, /rebuildProductArchiveDraftFromSources\(db, draftId, \{ signal \}\)/);
+  assert.match(draftRoute, /withBackgroundTaskSlot\("product_archive_draft_rebuild", \(signal\) => run\(signal\), \{ signal \}\)/);
+  assert.match(draftRoute, /const concurrency = source === "rebuild"\s*\? 1/);
+  assert.match(draftRoute, /await yieldToEventLoop\(\)/);
+  assert.match(draftRoute, /productArchiveDrafts\.post\("\/rebuild-jobs"/);
+  assert.match(draftRoute, /productArchiveDrafts\.get\("\/rebuild-jobs\/:jobId"/);
+  assert.match(draftRoute, /productArchiveRebuildQueue\.resume\(\)/);
+  assert.match(draftRoute, /product_archive_rebuild/);
+
+  assert.match(asyncTaskContext, /"product_archive_rebuild"/);
+  assert.match(asyncTaskCenter, /case "product_archive_rebuild":\s*return `\/product-archive-drafts\/rebuild-jobs\/\$\{jobId\}`/);
+  assert.match(asyncTaskCenter, /重新构建明细/);
+
+  assert.match(draftListPage, /批量重新构建字段/);
+  assert.match(draftListPage, /重新构建会清除当前草稿中的手工和 AI 覆盖/);
+  assert.match(draftListPage, /type: "product_archive_rebuild"/);
+  assert.doesNotMatch(draftListPage, /批量发布预检\{selectedDrafts\.length/);
+});
+
+test("draft list provides a confirmed full rebuild action that does not publish to DeepDraw", async () => {
+  const page = await readFile(files.draftListPage, "utf8");
+
+  assert.match(page, /\/product-archive-drafts\/\$\{draftId\}\/rebuild/);
+  assert.match(page, /重新构建/);
+  assert.match(page, /MDM、上市计划、文案表、尺码表、平铺\/洗唛\/吊牌图/);
+  assert.match(page, /不会向深绘发布或更新已建档商品/);
+  assert.match(page, /result\.warnings/);
+  assert.match(page, /ConfirmDialog/);
+});
+
 test("product archive background jobs start after the enqueue response can flush", async () => {
   const [draftRoute, syncQueue] = await Promise.all([
     readFile(files.draftRoute, "utf8"),
@@ -202,6 +243,159 @@ test("product archive background jobs start after the enqueue response can flush
   assert.match(syncQueue, /setImmediate|setTimeout/);
   assert.doesNotMatch(draftRoute, /queueMicrotask\(\(\) => \{\s*void processLoop\(\)/);
   assert.doesNotMatch(syncQueue, /queueMicrotask\(\(\) => \{\s*void processLoop\(\)/);
+});
+
+test("batch rebuild runs drafts sequentially, persists progress, and continues after a failed draft", async () => {
+  const { createProductArchiveAiFillQueue } = await import("../../web/server/routes/product-archive-drafts.ts");
+  const persistedJobs = [];
+  const startedDraftIds = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const store = {
+    requiresLease: false,
+    save(job) {
+      persistedJobs.push(structuredClone(job));
+      return true;
+    },
+    get(jobId) {
+      return persistedJobs.findLast((job) => job.id === jobId) ?? null;
+    },
+    recover() {
+      return [];
+    },
+  };
+  const auditDb = {
+    prepare() {
+      return { run() { return { changes: 1 }; } };
+    },
+  };
+  const queue = createProductArchiveAiFillQueue({
+    store,
+    source: "rebuild",
+    getDatabase: () => auditDb,
+    runWithSlot: (run) => run(new AbortController().signal),
+    processDraftFieldsWithAi: async (_db, draftId) => {
+      startedDraftIds.push(draftId);
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      if (draftId === 202) throw new Error("rebuild test failure");
+      return {
+        saved: [{}],
+        warnings: [],
+        detail: {
+          draft: {
+            status: "ready",
+            validation_summary_json: { blocker_count: 0, warning_count: 0 },
+          },
+        },
+      };
+    },
+  });
+
+  const queued = queue.enqueue({
+    targets: [
+      { draftId: 201, spuCode: "REBUILD-201" },
+      { draftId: 202, spuCode: "REBUILD-202" },
+      { draftId: 203, spuCode: "REBUILD-203" },
+    ],
+    actor: { id: 1, username: "test-user" },
+    ipAddress: null,
+  });
+  assert.equal(queued.status, "queued");
+  assert.equal(queued.options.concurrency, 1);
+
+  let completed = queue.getJob(queued.id);
+  for (let attempt = 0; attempt < 100 && completed?.status !== "completed"; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    completed = queue.getJob(queued.id);
+  }
+
+  assert.equal(maxInFlight, 1);
+  assert.deepEqual(startedDraftIds, [201, 202, 203]);
+  assert.equal(completed?.status, "completed");
+  assert.equal(completed?.outcome, "partial_failure");
+  assert.equal(completed?.completed_count, 2);
+  assert.equal(completed?.failed_count, 1);
+  assert.equal(completed?.items?.[1]?.error, "rebuild test failure");
+  assert.equal(completed?.items?.[2]?.status, "completed");
+  assert.ok(persistedJobs.some((job) => job.items?.[0]?.status === "completed"));
+});
+
+test("batch rebuild recovery resumes interrupted drafts sequentially after a server restart", async () => {
+  const { createProductArchiveAiFillQueue } = await import("../../web/server/routes/product-archive-drafts.ts");
+  const persistedJobs = [];
+  const startedDraftIds = [];
+  const recoveredJob = {
+    id: "rebuild-recovery-test",
+    source: "rebuild",
+    status: "running",
+    outcome: null,
+    total_count: 3,
+    completed_count: 1,
+    failed_count: 0,
+    created_at: new Date(0).toISOString(),
+    started_at: new Date(0).toISOString(),
+    finished_at: null,
+    options: {
+      actor: { id: 1, username: "test-user" },
+      ipAddress: null,
+      queueKey: "user:1",
+      concurrency: 8,
+    },
+    items: [
+      { draft_id: 501, spu_code: "REBUILD-501", status: "completed", started_at: new Date(0).toISOString(), finished_at: new Date(0).toISOString(), result: {}, error: null },
+      { draft_id: 502, spu_code: "REBUILD-502", status: "running", started_at: new Date(0).toISOString(), finished_at: null, result: null, error: null },
+      { draft_id: 503, spu_code: "REBUILD-503", status: "queued", started_at: null, finished_at: null, result: null, error: null },
+    ],
+    result: null,
+  };
+  const store = {
+    requiresLease: false,
+    save(job) {
+      persistedJobs.push(structuredClone(job));
+      return true;
+    },
+    get(jobId) {
+      return persistedJobs.findLast((job) => job.id === jobId) ?? null;
+    },
+    recover() {
+      return [structuredClone(recoveredJob)];
+    },
+  };
+  const auditDb = {
+    prepare() {
+      return { run() { return { changes: 1 }; } };
+    },
+  };
+  const queue = createProductArchiveAiFillQueue({
+    store,
+    source: "rebuild",
+    getDatabase: () => auditDb,
+    runWithSlot: (run) => run(new AbortController().signal),
+    processDraftFieldsWithAi: async (_db, draftId) => {
+      startedDraftIds.push(draftId);
+      return {
+        saved: [],
+        warnings: [],
+        detail: { draft: { status: "ready", validation_summary_json: {} } },
+      };
+    },
+  });
+
+  queue.resume();
+  let completed = queue.getJob(recoveredJob.id);
+  for (let attempt = 0; attempt < 100 && completed?.status !== "completed"; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    completed = queue.getJob(recoveredJob.id);
+  }
+
+  assert.equal(completed?.options.concurrency, 1);
+  assert.deepEqual(startedDraftIds, [502, 503]);
+  assert.equal(completed?.status, "completed");
+  assert.equal(completed?.completed_count, 3);
+  assert.ok(persistedJobs.some((job) => job.items?.[1]?.status === "queued"));
 });
 
 test("product archive draft service compiles for the API server", async () => {
@@ -521,7 +715,7 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /尺码表、吊牌\/洗唛\/平铺图可以通过抓虾自动化抓取/);
   assert.match(draftListPage, /https:\/\/crawshrimp\.com\/download/);
   assert.match(draftListPage, /补充识别资料/);
-  assert.match(draftListPage, /批量发布预检和发布/);
+  assert.match(draftListPage, /批量重新构建字段 → 检查草稿 → 批量发布\/更新/);
   assert.match(draftListPage, /api\.get<.*>\(`\/product-archive-drafts\?/s);
   assert.match(draftListPage, /ServerPagination/);
   assert.match(draftListPage, /limit=/);
@@ -553,11 +747,10 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /批量 AI 填充字段/);
   assert.match(draftListPage, /batchAiFillFields/);
   assert.match(draftListPage, /refreshedAiFillJobIds/);
-  assert.match(draftListPage, /product_archive_publish_precheck/);
-  assert.match(draftListPage, /\/product-archive-drafts\/precheck-jobs/);
-  assert.match(draftListPage, /batchPublishPrecheck/);
-  assert.match(draftListPage, /refreshedPrecheckJobIds/);
-  assert.match(draftListPage, /批量发布预检/);
+  assert.match(draftListPage, /product_archive_rebuild/);
+  assert.match(draftListPage, /\/product-archive-drafts\/rebuild-jobs/);
+  assert.match(draftListPage, /batchRebuildFields/);
+  assert.match(draftListPage, /批量重新构建字段/);
   assert.match(draftListPage, /product_archive_publish/);
   assert.match(draftListPage, /\/product-archive-drafts\/publish-jobs/);
   assert.match(draftListPage, /batchPublishToDeepdraw/);
@@ -632,7 +825,7 @@ test("frontend routes and navigation expose deepdraw archive draft workbench", a
   assert.match(draftListPage, /aria-label=\{`选择草稿 \$\{item\.spu_code\}`\}/);
   assert.match(draftListPage, /进入/);
   assert.match(draftListPage, /selectedDrafts\.length/);
-  assert.match(draftListPage, /批量发布预检/);
+  assert.match(draftListPage, /批量重新构建字段/);
   assert.doesNotMatch(draftListPage, /批量校验/);
   assert.doesNotMatch(draftListPage, /批量查重/);
   assert.doesNotMatch(draftListPage, /批量提交预览/);

@@ -140,6 +140,7 @@ test("product archive draft service is PG-first and covers build validate patch 
   assert.match(service, /export function createProductArchiveDraftFromSpu/);
   assert.match(service, /export function getProductArchiveDraftDetail/);
   assert.match(service, /export function patchProductArchiveDraftFields/);
+  assert.match(service, /export async function rebuildProductArchiveDraftFromSources/);
   assert.match(service, /export function validateProductArchiveDraft/);
   assert.match(service, /export async function checkDuplicateProductArchiveDraft/);
   assert.match(service, /export async function submitProductArchiveDraft/);
@@ -2417,10 +2418,23 @@ test("mutable draft writes keep the row lock and mutation in one transaction", a
   assert.match(applyTrade, /assertProductArchiveDraftMutable\(db, draftId[\s\S]*update product_archive_draft[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId(?:, [^)]*)?\)/);
   assert.doesNotMatch(applyTrade, /db\.transaction\(\(\) => assertProductArchiveDraftMutable\(db, draftId\)\)\(\)[\s\S]*const draft/);
 
+  const fullRebuild = section(
+    "export async function rebuildProductArchiveDraftFromSources",
+    "export async function fillProductArchiveDraftFieldsWithAi",
+  );
+  assert.match(fullRebuild, /db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*delete from product_archive_draft_field where draft_id = \?[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*syncProductArchiveDownFillWeightSizeCharts\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)/);
+  assert.ok(
+    fullRebuild.indexOf("delete from product_archive_draft_field where draft_id = ?")
+      < fullRebuild.indexOf("refreshDraftTradeSelectionFromLaunchPlan(db, draftId)"),
+    "full rebuild must remove stale manual and AI results before applying current source rules",
+  );
+  assert.match(fullRebuild, /return fillProductArchiveDraftFieldsWithAi\(db, draftId, \{ \.\.\.options, rebuildFields: false \}\)/);
+
   const aiFill = section(
     "export async function fillProductArchiveDraftFieldsWithAi",
     "function sizeChartTemplateFieldsForDraft",
   );
+  assert.match(aiFill, /if \(options\.rebuildFields !== false\) \{[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*syncProductArchiveDownFillWeightSizeCharts\(db, draftId\)[\s\S]*\}/);
   const aiPreparation = aiFill.slice(0, aiFill.indexOf("let aiFills"));
   assert.match(aiPreparation, /const prepared = db\.transaction\(\(\) => \{[\s\S]*assertProductArchiveDraftMutable\(db, draftId\)[\s\S]*refreshDraftTradeSelectionFromLaunchPlan\(db, draftId\)[\s\S]*rebuildProductArchiveDraftFields\(db, draftId\)[\s\S]*syncProductArchiveDownFillWeightSizeCharts\(db, draftId\)[\s\S]*validateProductArchiveDraft\(db, draftId\)/);
   assert.ok(

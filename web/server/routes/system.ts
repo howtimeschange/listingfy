@@ -19,6 +19,7 @@ type AsyncTaskType =
   | "product_archive_mdm_draft"
   | "product_archive_hangtag_washlabel_ocr"
   | "product_archive_ai_fill"
+  | "product_archive_rebuild"
   | "product_archive_publish_precheck"
   | "product_archive_publish"
   | "listing_launch_plan_import"
@@ -75,6 +76,7 @@ function asyncTaskType(value: string): AsyncTaskType {
     case "product_archive_mdm_draft":
     case "product_archive_hangtag_washlabel_ocr":
     case "product_archive_ai_fill":
+    case "product_archive_rebuild":
     case "product_archive_publish_precheck":
     case "product_archive_publish":
     case "listing_launch_plan_import":
@@ -95,6 +97,8 @@ function productArchiveQueueName(type: AsyncTaskType) {
       return "product_archive_hangtag_washlabel_ocr"
     case "product_archive_ai_fill":
       return "product_archive_ai_fill"
+    case "product_archive_rebuild":
+      return "product_archive_rebuild"
     case "product_archive_publish_precheck":
       return "product_archive_publish_precheck"
     case "product_archive_publish":
@@ -115,7 +119,7 @@ function requireAsyncTaskActionPermission(c: Context, type: AsyncTaskType) {
     requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_SUBMIT")
     return
   }
-  if (type === "product_archive_mdm_draft" || type === "product_archive_hangtag_washlabel_ocr" || type === "product_archive_ai_fill") {
+  if (type === "product_archive_mdm_draft" || type === "product_archive_hangtag_washlabel_ocr" || type === "product_archive_ai_fill" || type === "product_archive_rebuild") {
     requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
     return
   }

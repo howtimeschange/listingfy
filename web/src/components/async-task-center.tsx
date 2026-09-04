@@ -125,6 +125,8 @@ function asyncTaskEndpoint(type: AsyncTaskRecord["type"], jobId: string) {
       return `/product-archive-drafts/hangtag-washlabel-ocr/jobs/${jobId}`
     case "product_archive_ai_fill":
       return `/product-archive-drafts/ai-fill-jobs/${jobId}`
+    case "product_archive_rebuild":
+      return `/product-archive-drafts/rebuild-jobs/${jobId}`
     case "product_archive_publish_precheck":
       return `/product-archive-drafts/precheck-jobs/${jobId}`
     case "product_archive_publish":
@@ -199,6 +201,50 @@ function aiFillTaskSummary(task: AsyncTaskRecord) {
     savedFieldCount: numberResultValue(result?.savedFieldCount) || itemSavedFieldCount,
     warningCount: numberResultValue(result?.warningCount) || itemWarningCount,
   }
+}
+
+function rebuildTaskSummary(task: AsyncTaskRecord) {
+  if (task.type !== "product_archive_rebuild") return null
+  const result = recordResultValue(task.job?.result)
+  const items = task.job?.items ?? []
+  const processedItems = items.filter((item) => item.status === "completed")
+  return {
+    processedDraftCount: numberResultValue(result?.processedDraftCount) || processedItems.length,
+    savedFieldCount: numberResultValue(result?.savedFieldCount) || processedItems.reduce((sum, item) => (
+      sum + numberResultValue(recordResultValue(item.result)?.savedCount)
+    ), 0),
+    warningCount: numberResultValue(result?.warningCount) || processedItems.reduce((sum, item) => (
+      sum + numberResultValue(recordResultValue(item.result)?.warningCount)
+    ), 0),
+  }
+}
+
+function rebuildTaskItems(task: AsyncTaskRecord) {
+  if (task.type !== "product_archive_rebuild") return []
+  return task.job?.items ?? []
+}
+
+function rebuildItemStatusLabel(item: AsyncTaskJobItem) {
+  if (item.status === "completed") return "已重建"
+  if (item.status === "failed") return "失败"
+  if (item.status === "running") return "重建中"
+  return "排队中"
+}
+
+function rebuildItemStatusClass(item: AsyncTaskJobItem) {
+  if (item.status === "completed") return "text-[#0f7f58]"
+  if (item.status === "failed") return "text-[#d45656]"
+  return "text-[#3772cf]"
+}
+
+function rebuildItemReason(item: AsyncTaskJobItem) {
+  const result = recordResultValue(item.result)
+  if (item.status === "completed") {
+    return `已按最新资料写入 ${formatNumber(numberResultValue(result?.savedCount))} 个字段`
+  }
+  if (item.status === "failed") return item.error || "重新构建失败"
+  if (item.status === "running") return "正在按最新字段规则重建，并依次处理 OCR 与 AI 补齐"
+  return "等待后台按顺序重新构建"
 }
 
 function precheckTaskSummary(task: AsyncTaskRecord) {
@@ -588,6 +634,8 @@ function AsyncTaskDrawer({
               const done = job?.status === "completed"
               const ocrSummary = hangtagWashlabelOcrTaskSummary(task)
               const aiFillSummary = aiFillTaskSummary(task)
+              const rebuildSummary = rebuildTaskSummary(task)
+              const rebuildItems = rebuildTaskItems(task)
               const precheckSummary = precheckTaskSummary(task)
               const precheckItems = precheckTaskItems(task)
               const publishSummary = publishTaskSummary(task)
@@ -713,6 +761,27 @@ function AsyncTaskDrawer({
                       AI 已补齐 {formatNumber(aiFillSummary.savedFieldCount)} 个字段，
                       处理草稿 {formatNumber(aiFillSummary.processedDraftCount)} 个，
                       提示 {formatNumber(aiFillSummary.warningCount)} 条。
+                    </div>
+                  ) : null}
+                  {rebuildSummary ? (
+                    <div className="mt-3 rounded-md border border-[#b9d7ff] bg-[#f4f8ff] px-2 py-1.5 text-xs text-[#2f66b3]">
+                      已重新构建 {formatNumber(rebuildSummary.processedDraftCount)} 个草稿，
+                      按最新规则写入 {formatNumber(rebuildSummary.savedFieldCount)} 个字段，
+                      提示 {formatNumber(rebuildSummary.warningCount)} 条。
+                    </div>
+                  ) : null}
+                  {rebuildItems.length > 0 ? (
+                    <div className="mt-3 rounded-md border border-[#d7e0ee] bg-[#fbfdff] p-2">
+                      <div className="mb-1 text-xs font-medium text-foreground">重新构建明细</div>
+                      <div className="max-h-40 overflow-auto text-xs text-muted-foreground">
+                        {rebuildItems.map((item) => (
+                          <div key={item.spu_code} className="grid grid-cols-[minmax(7rem,auto)_4rem_1fr] gap-2 border-t border-[#d7e0ee]/70 py-1 first:border-t-0">
+                            <span className="font-mono text-foreground">{item.spu_code}</span>
+                            <span className={rebuildItemStatusClass(item)}>{rebuildItemStatusLabel(item)}</span>
+                            <span className="min-w-0">{rebuildItemReason(item)}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   ) : null}
                   {precheckSummary ? (

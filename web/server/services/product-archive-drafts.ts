@@ -219,6 +219,7 @@ interface SubmitOptions {
 }
 
 interface AiFillOptions {
+  rebuildFields?: boolean
   fetchImpl?: typeof fetch
   signal?: AbortSignal
   router?: {
@@ -11516,12 +11517,32 @@ export function patchProductArchiveDraftFields(db: SyncPostgresDatabase, draftId
   })()
 }
 
-export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDatabase, draftId: number, options: AiFillOptions = {}) {
-  const prepared = db.transaction(() => {
+export async function rebuildProductArchiveDraftFromSources(
+  db: SyncPostgresDatabase,
+  draftId: number,
+  options: AiFillOptions = {},
+) {
+  db.transaction(() => {
     assertProductArchiveDraftMutable(db, draftId)
+    // A rebuild deliberately drops every prior result, including manual and AI
+    // overrides, so field rules run against today's source data and templates.
+    db.prepare("delete from product_archive_draft_field where draft_id = ?").run(draftId)
     refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
     rebuildProductArchiveDraftFields(db, draftId)
     syncProductArchiveDownFillWeightSizeCharts(db, draftId)
+    return validateProductArchiveDraft(db, draftId)
+  })()
+  return fillProductArchiveDraftFieldsWithAi(db, draftId, { ...options, rebuildFields: false })
+}
+
+export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDatabase, draftId: number, options: AiFillOptions = {}) {
+  const prepared = db.transaction(() => {
+    assertProductArchiveDraftMutable(db, draftId)
+    if (options.rebuildFields !== false) {
+      refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
+      rebuildProductArchiveDraftFields(db, draftId)
+      syncProductArchiveDownFillWeightSizeCharts(db, draftId)
+    }
     const detail = validateProductArchiveDraft(db, draftId).detail
     const draft = detail.draft as JsonRecord
     const fields = detail.fields as JsonRecord[]

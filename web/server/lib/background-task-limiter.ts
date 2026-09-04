@@ -1,6 +1,7 @@
 export type BackgroundTaskLane =
   | "product_archive_sync"
   | "product_archive_draft"
+  | "product_archive_draft_rebuild"
   | "product_archive_ocr"
   | "product_archive_ai_fill"
   | "product_archive_precheck"

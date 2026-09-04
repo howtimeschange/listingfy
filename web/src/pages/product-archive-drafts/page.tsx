@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FocusEvent, type PointerEven
 import { createPortal } from "react-dom"
 import { Link } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { AlertTriangle, ChevronDown, ChevronRight, ChevronUp, CircleHelp, Download, ExternalLink, FileSpreadsheet, FileText, ListTree, Loader2, Maximize2, PackagePlus, RefreshCw, Save, Search, Send, ShieldCheck, Sparkles, Trash2, Upload, X } from "lucide-react"
+import { AlertTriangle, ChevronDown, ChevronRight, ChevronUp, CircleHelp, Download, ExternalLink, FileSpreadsheet, FileText, ListTree, Loader2, Maximize2, PackagePlus, RefreshCw, Save, Search, Send, Sparkles, Trash2, Upload, X } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { useAuth } from "@/lib/auth-context"
@@ -190,6 +190,11 @@ interface DraftDetail {
   fields: DraftField[]
   issues: DraftIssue[]
   images?: ProductArchiveDraftImagePreview[]
+}
+
+interface DraftRebuildResult {
+  detail: DraftDetail
+  warnings: Array<{ code: string; message: string }>
 }
 
 interface DraftFieldPatchRequest {
@@ -1841,7 +1846,7 @@ function ProductArchiveDraftGuideDialog({ open, onOpenChange }: ProductArchiveDr
     },
     {
       title: "校验并发布",
-      body: "先执行批量发布预检，系统会依次校验、查重并生成提交预览。确认没有阻断问题后，选择草稿批量发布到深绘并等待回读校验。",
+      body: "版本字段逻辑发布后，可先批量重新构建字段，系统会按当前资料逐款重建。检查草稿没有阻断问题后，选择草稿批量发布或更新到深绘，并等待回读校验。",
     },
   ]
 
@@ -1856,7 +1861,7 @@ function ProductArchiveDraftGuideDialog({ open, onOpenChange }: ProductArchiveDr
         </DialogHeader>
         <div className="grid gap-3">
           <div className="rounded-md border border-[#b9f4d8] bg-[#f2fff8] px-3 py-2 text-sm text-[#08794f]">
-            推荐路径：标准文案表建草稿 → 上市计划匹配类目 → 吊牌/洗唛/平铺图补证据 → 详情页确认字段 → 批量发布预检和发布。
+            推荐路径：标准文案表建草稿 → 上市计划匹配类目 → 吊牌/洗唛/平铺图补证据 → 批量重新构建字段 → 检查草稿 → 批量发布/更新。
           </div>
           <div className="rounded-md border border-[#cfe8ff] bg-[#f6fbff] px-3 py-2 text-sm leading-6 text-[#0f5c8c]">
             尺码表、吊牌/洗唛/平铺图可以通过抓虾自动化抓取；需要采集工具时前往{" "}
@@ -2355,7 +2360,7 @@ export default function ProductArchiveDraftsPage() {
   const { tasks, addTask, getTaskByJobId, openTaskCenter } = useAsyncTasks()
   const refreshedOcrJobIds = useRef<Set<string>>(new Set())
   const refreshedAiFillJobIds = useRef<Set<string>>(new Set())
-  const refreshedPrecheckJobIds = useRef<Set<string>>(new Set())
+  const refreshedRebuildJobIds = useRef<Set<string>>(new Set())
   const refreshedPublishJobIds = useRef<Set<string>>(new Set())
   const fieldEditorDraftIdRef = useRef<number | null>(null)
   const [searchText, setSearchText] = useState("")
@@ -2567,13 +2572,13 @@ export default function ProductArchiveDraftsPage() {
   }, [queryClient, tasks])
 
   useEffect(() => {
-    const completedPrecheckTasks = tasks.filter((task) => (
-      task.type === "product_archive_publish_precheck"
+    const completedRebuildTasks = tasks.filter((task) => (
+      task.type === "product_archive_rebuild"
       && task.job?.status === "completed"
-      && !refreshedPrecheckJobIds.current.has(task.id)
+      && !refreshedRebuildJobIds.current.has(task.id)
     ))
-    if (completedPrecheckTasks.length === 0) return
-    for (const task of completedPrecheckTasks) refreshedPrecheckJobIds.current.add(task.id)
+    if (completedRebuildTasks.length === 0) return
+    for (const task of completedRebuildTasks) refreshedRebuildJobIds.current.add(task.id)
     refetchDraftQueries()
   }, [queryClient, tasks])
 
@@ -2820,23 +2825,23 @@ export default function ProductArchiveDraftsPage() {
     },
   })
 
-  const batchPublishPrecheck = useMutation({
-    mutationFn: async (draftIds: number[]) => api.post<AsyncTaskJob>("/product-archive-drafts/precheck-jobs", {
+  const batchRebuildFields = useMutation({
+    mutationFn: async (draftIds: number[]) => api.post<AsyncTaskJob>("/product-archive-drafts/rebuild-jobs", {
       draftIds,
     }),
     onSuccess: (job) => {
       addTask({
         job,
-        type: "product_archive_publish_precheck",
-        title: "批量发布预检",
-        description: `待预检 ${formatNumber(job.total_count)} 个深绘建档草稿，按校验、查重、提交预览执行`,
-        endpoint: `/product-archive-drafts/precheck-jobs/${job.id}`,
+        type: "product_archive_rebuild",
+        title: "批量重新构建字段",
+        description: `待按最新资料顺序重新构建 ${formatNumber(job.total_count)} 个深绘建档草稿`,
+        endpoint: `/product-archive-drafts/rebuild-jobs/${job.id}`,
       })
-      toast.success("已加入任务中心：批量发布预检")
+      toast.success("已加入任务中心：批量重新构建字段")
       openTaskCenter()
     },
     onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "提交批量发布预检失败")
+      toast.error(error instanceof Error ? error.message : "提交批量重新构建字段失败")
     },
   })
 
@@ -2932,6 +2937,23 @@ export default function ProductArchiveDraftsPage() {
     },
   })
 
+  const rebuildDraft = useMutation({
+    mutationFn: (draftId: number) => api.post<DraftRebuildResult>(`/product-archive-drafts/${draftId}/rebuild`),
+    onSuccess: async (result) => {
+      const { detail } = result
+      queryClient.setQueryData(["product-archive-drafts", detail.draft.id], detail)
+      await refetchDraftQueries()
+      if (result.warnings.length > 0) {
+        toast.warning(`字段已重新构建，但仍有 ${result.warnings.length} 项处理告警：${result.warnings[0].message}`)
+        return
+      }
+      toast.success("已按最新字段逻辑重新构建草稿")
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "重新构建草稿失败")
+    },
+  })
+
   useEffect(() => {
     if (trackedJob?.status !== "completed") return
     void refetchDraftQueries()
@@ -2957,12 +2979,12 @@ export default function ProductArchiveDraftsPage() {
     })
   }
 
-  function runBatchPublishPrecheck() {
+  function runBatchRebuildFields() {
     if (selectedDrafts.length === 0) {
       toast.info("请先选择草稿")
       return
     }
-    batchPublishPrecheck.mutate(selectedDrafts.map((item) => item.id))
+    batchRebuildFields.mutate(selectedDrafts.map((item) => item.id))
   }
 
   function runBatchAiFill() {
@@ -3076,16 +3098,24 @@ export default function ProductArchiveDraftsPage() {
               {batchAiFillFields.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
               批量 AI 填充字段{selectedDrafts.length ? ` ${selectedDrafts.length}` : ""}
             </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={!canSubmit || selectedDrafts.length === 0 || batchPublishPrecheck.isPending}
-              onClick={runBatchPublishPrecheck}
-            >
-              {batchPublishPrecheck.isPending ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
-              批量发布预检{selectedDrafts.length ? ` ${selectedDrafts.length}` : ""}
-            </Button>
+            <ConfirmDialog
+              title="确认批量重新构建字段？"
+              description={`将把已选择的 ${formatNumber(selectedDrafts.length)} 个草稿加入任务中心，按款号一个一个处理。重新构建会清除当前草稿中的手工和 AI 覆盖，并按当前 MDM、上市计划、文案表、尺码表、平铺图、洗唛和吊牌资料重新生成字段；单款可能需要较长时间，但不会阻塞页面。`}
+              confirmLabel="确认重新构建"
+              cancelLabel="取消"
+              onConfirm={runBatchRebuildFields}
+              trigger={(
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!canWrite || selectedDrafts.length === 0 || batchRebuildFields.isPending}
+                >
+                  {batchRebuildFields.isPending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                  批量重新构建字段{selectedDrafts.length ? ` ${selectedDrafts.length}` : ""}
+                </Button>
+              )}
+            />
             <Dialog open={publishDialogOpen} onOpenChange={setPublishDialogOpen}>
               <DialogTrigger asChild>
                 <Button
@@ -3634,6 +3664,7 @@ export default function ProductArchiveDraftsPage() {
               <TableBody>
                 {(drafts.data?.items ?? []).map((item) => {
                   const isDeletingDraft = deleteDraft.isPending && deleteDraft.variables === item.id
+                  const isRebuildingDraft = rebuildDraft.isPending && rebuildDraft.variables === item.id
                   return (
                     <TableRow key={item.id}>
                       <TableCell>
@@ -3720,6 +3751,24 @@ export default function ProductArchiveDraftsPage() {
                               进入
                             </Link>
                           </Button>
+                          <ConfirmDialog
+                            title="按最新逻辑重新构建草稿"
+                            description="将使用当前保存的 MDM、上市计划、文案表、尺码表、平铺/洗唛/吊牌图，按最新字段逻辑重算全部字段并重新校验。原有手工填写和旧 AI 结果会被覆盖；不会向深绘发布或更新已建档商品。"
+                            confirmLabel="重新构建"
+                            onConfirm={() => rebuildDraft.mutate(item.id)}
+                            trigger={(
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                disabled={!canWrite || item.status === "submitting" || rebuildDraft.isPending}
+                                aria-label={`重新构建草稿 ${item.spu_code}`}
+                              >
+                                {isRebuildingDraft ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                                重新构建
+                              </Button>
+                            )}
+                          />
                           <ConfirmDialog
                             title="删除深绘建档草稿"
                             description={`将删除款号 ${item.spu_code} 的本地建档草稿、字段、SKU、校验问题、提交日志和已导入参考图；不会删除深绘后台已经存在或已生成的商品。`}

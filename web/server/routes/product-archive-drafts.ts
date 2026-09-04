@@ -72,6 +72,7 @@ import {
   productArchiveImageHasModelShot,
   prepareProductArchiveDraftForSubmit,
   readbackProductArchiveDraft,
+  rebuildProductArchiveDraftFromSources,
   recommendProductArchiveSizeChartMappings,
   refreshDraftTradeSelectionFromLaunchPlan,
   refreshProductArchiveDraftsFromSourceBatchInChunks,
@@ -429,7 +430,7 @@ type ProductArchiveAiFillJobItem = {
 
 type ProductArchiveAiFillJob = {
   id: string
-  source: "ai_fill"
+  source: "ai_fill" | "rebuild"
   status: "queued" | "running" | "completed"
   outcome?: "succeeded" | "partial_failure" | "failed" | null
   total_count: number
@@ -713,6 +714,7 @@ export function createProductArchiveAiFillQueue({
   getDatabase = getDb,
   processDraftFieldsWithAi = (db, draftId, options) => fillProductArchiveDraftFieldsWithAi(db, draftId, options),
   runWithSlot = (run, options) => withBackgroundTaskSlot("product_archive_ai_fill", run, options),
+  source = "ai_fill" as const,
   now = () => Date.now(),
 }: {
   store: ReturnType<typeof createPostgresProductArchiveSyncJobStore>
@@ -720,6 +722,7 @@ export function createProductArchiveAiFillQueue({
   getDatabase?: () => ReturnType<typeof getDb>
   processDraftFieldsWithAi?: ProductArchiveAiFillRunner
   runWithSlot?: ProductArchiveAiFillSlotRunner
+  source?: ProductArchiveAiFillJob["source"]
   now?: () => number
 }) {
   const jobs = new Map<string, ProductArchiveAiFillJob>()
@@ -755,9 +758,11 @@ export function createProductArchiveAiFillQueue({
       actor: job.options?.actor ?? null,
       ipAddress: job.options?.ipAddress ?? null,
       queueKey: stringValue(job.options?.queueKey) || productArchiveAiFillQueueKey(job.options?.actor),
-      concurrency: requestedConcurrency > 0
-        ? Math.max(1, Math.min(userMaxConcurrency, Math.floor(requestedConcurrency)))
-        : Math.min(userMaxConcurrency, productArchiveAiFillUserConcurrency()),
+      concurrency: source === "rebuild"
+        ? 1
+        : requestedConcurrency > 0
+          ? Math.max(1, Math.min(userMaxConcurrency, Math.floor(requestedConcurrency)))
+          : Math.min(userMaxConcurrency, productArchiveAiFillUserConcurrency()),
     }
     return job.options
   }
@@ -810,7 +815,12 @@ export function createProductArchiveAiFillQueue({
     )
     const shares = dynamicConcurrencyShares()
     const dynamicShare = shares.get(queueKey) ?? configuredConcurrency
-    return Math.max(1, Math.min(openItemCount(job), dynamicShare, productArchiveAiFillItemConcurrency()))
+    return Math.max(1, Math.min(
+      openItemCount(job),
+      configuredConcurrency,
+      dynamicShare,
+      productArchiveAiFillItemConcurrency(),
+    ))
   }
 
   function persist(job: ProductArchiveAiFillJob) {
@@ -888,17 +898,20 @@ export function createProductArchiveAiFillQueue({
       }
       try {
         writeOperationLog(db, {
-          action: "draft.ai_fill.background_applied",
+        action: job.source === "rebuild" ? "draft.rebuilt_from_sources.background_completed" : "draft.ai_fill.background_applied",
           module: "PRODUCT_ARCHIVE_DRAFT",
           entityType: "product_archive_draft",
           entityId: item.draft_id,
-          summary: `后台 AI 推荐补齐深绘建档草稿字段 ${item.spu_code}`,
+        summary: job.source === "rebuild"
+          ? `后台按最新资料重新构建深绘建档草稿字段 ${item.spu_code}`
+          : `后台 AI 推荐补齐深绘建档草稿字段 ${item.spu_code}`,
           metadata: {
             jobId: job.id,
             draftId: item.draft_id,
             spuCode: item.spu_code,
-            savedCount,
-            warningCount,
+          savedCount,
+          warningCount,
+          source: job.source,
           },
         }, job.options.actor, job.options.ipAddress ?? undefined)
       } catch (error) {
@@ -933,10 +946,10 @@ export function createProductArchiveAiFillQueue({
           draftId: item.draft_id,
           spuCode: item.spu_code,
           retryable: draftChanged,
-          reasonCode: draftChanged ? "draft_changed" : "ai_fill_failed",
+          reasonCode: draftChanged ? "draft_changed" : job.source === "rebuild" ? "rebuild_failed" : "ai_fill_failed",
         }, errorMessage(error), {
           retryable: draftChanged,
-          reasonCode: draftChanged ? "draft_changed" : "ai_fill_failed",
+          reasonCode: draftChanged ? "draft_changed" : job.source === "rebuild" ? "rebuild_failed" : "ai_fill_failed",
         })
         return { leaseLost: false as const, error: null }
       } catch (finishError) {
@@ -1062,13 +1075,15 @@ export function createProductArchiveAiFillQueue({
     actor: AuditActor | null
     ipAddress: string | null
   }) {
-    if (targets.length === 0) throw new Error("请先选择需要 AI 填充的草稿")
+    if (targets.length === 0) throw new Error(source === "rebuild" ? "请先选择需要重新构建的草稿" : "请先选择需要 AI 填充的草稿")
     const nowText = new Date(now()).toISOString()
     const queueKey = productArchiveAiFillQueueKey(actor)
-    const concurrency = Math.min(productArchiveAiFillUserMaxConcurrency(), productArchiveAiFillItemConcurrency())
+    const concurrency = source === "rebuild"
+      ? 1
+      : Math.min(productArchiveAiFillUserMaxConcurrency(), productArchiveAiFillItemConcurrency())
     const job: ProductArchiveAiFillJob = {
       id: randomUUID(),
-      source: "ai_fill",
+      source,
       status: "queued",
       outcome: null,
       total_count: targets.length,
@@ -1103,7 +1118,7 @@ export function createProductArchiveAiFillQueue({
     recoveryStarted = true
     const queuedKeys = new Set<string>()
     const recovered = (store.recover() as ProductArchiveAiFillJob[])
-      .filter((job) => job?.source === "ai_fill")
+      .filter((job) => job?.source === source)
     for (const storedJob of recovered) {
       const job = storedJob
       const options = normalizeJobRuntimeOptions(job)
@@ -1134,6 +1149,28 @@ export function createProductArchiveAiFillQueue({
     getJob,
     resume,
   }
+}
+
+export function createProductArchiveRebuildQueue({
+  store,
+  onInternalError,
+  getDatabase = getDb,
+  now,
+}: {
+  store: ReturnType<typeof createPostgresProductArchiveSyncJobStore>
+  onInternalError?: (error: unknown, context?: Record<string, unknown>) => void
+  getDatabase?: () => ReturnType<typeof getDb>
+  now?: () => number
+}) {
+  return createProductArchiveAiFillQueue({
+    store,
+    onInternalError,
+    getDatabase,
+    source: "rebuild",
+    processDraftFieldsWithAi: (db, draftId, { signal }) => rebuildProductArchiveDraftFromSources(db, draftId, { signal }),
+    runWithSlot: (run, { signal } = {}) => withBackgroundTaskSlot("product_archive_draft_rebuild", (signal) => run(signal), { signal }),
+    now,
+  })
 }
 
 function cloneProductArchivePrecheckJob(job: ProductArchivePrecheckJob) {
@@ -2778,6 +2815,13 @@ const productArchiveAiFillQueue = createProductArchiveAiFillQueue({
   }),
 })
 
+const productArchiveRebuildQueue = createProductArchiveRebuildQueue({
+  store: createPostgresProductArchiveSyncJobStore({
+    getDb,
+    queueName: "product_archive_rebuild",
+  }),
+})
+
 const productArchivePrecheckQueue = createProductArchivePrecheckQueue({
   store: createPostgresProductArchiveSyncJobStore({
     getDb,
@@ -2797,6 +2841,7 @@ export function resumeProductArchiveDraftQueue() {
   draftQueue.resume()
   hangtagWashlabelOcrQueue.resume()
   productArchiveAiFillQueue.resume()
+  productArchiveRebuildQueue.resume()
   productArchivePrecheckQueue.resume()
   productArchivePublishQueue.resume()
 }
@@ -2805,6 +2850,7 @@ type RequeueProductArchiveTaskType =
   | "product_archive_mdm_draft"
   | "product_archive_hangtag_washlabel_ocr"
   | "product_archive_ai_fill"
+  | "product_archive_rebuild"
   | "product_archive_publish_precheck"
   | "product_archive_publish"
 
@@ -2890,6 +2936,21 @@ export function requeueProductArchiveDraftAsyncTask(input: {
     const targets = requeueTargets(original.items)
     assertRequeueableCount(targets.length)
     return productArchiveAiFillQueue.enqueue({
+      targets,
+      actor: input.actor,
+      ipAddress: input.ipAddress,
+    })
+  }
+
+  if (input.taskType === "product_archive_rebuild") {
+    const original = readCompletedProductArchiveTask<NonNullable<ReturnType<typeof productArchiveRebuildQueue.getJob>>>(
+      "product_archive_rebuild",
+      input.jobId,
+    )
+    if (!original) throw new HTTPException(404, { message: "批量重新构建字段任务不存在" })
+    const targets = requeueTargets(original.items)
+    assertRequeueableCount(targets.length)
+    return productArchiveRebuildQueue.enqueue({
       targets,
       actor: input.actor,
       ipAddress: input.ipAddress,
@@ -3883,6 +3944,16 @@ function productArchiveAiFillTargetsByIds(db: ReturnType<typeof getDb>, draftIds
     defaultLimit: 200,
     maxLimit: 500,
     limitMessage: (limit) => `单次最多选择 ${limit} 个草稿进行 AI 填充`,
+  })
+}
+
+function productArchiveRebuildTargetsByIds(db: ReturnType<typeof getDb>, draftIds: number[]) {
+  return productArchiveDraftTargetsByIds(db, draftIds, {
+    emptyMessage: "请先选择需要重新构建字段的草稿",
+    limitEnv: "LISTINGIFY_PRODUCT_ARCHIVE_REBUILD_BATCH_LIMIT",
+    defaultLimit: 200,
+    maxLimit: 500,
+    limitMessage: (limit) => `单次最多选择 ${limit} 个草稿重新构建字段`,
   })
 }
 
@@ -4951,6 +5022,49 @@ productArchiveDrafts.get("/ai-fill-jobs/:jobId", (c) => {
   return c.json(job)
 })
 
+productArchiveDrafts.post("/rebuild-jobs", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const db = getDb()
+  const body = await readJson(c)
+  const targets = productArchiveRebuildTargetsByIds(db, draftIdsFromBody(body))
+  const job = productArchiveRebuildQueue.enqueue({
+    targets,
+    actor: {
+      id: user.id,
+      username: user.username,
+    },
+    ipAddress: trustedClientAddress({
+      forwardedFor: c.req.header("x-forwarded-for"),
+      realIp: c.req.header("x-real-ip"),
+    }),
+  })
+  auditFromContext(c, {
+    action: "draft.rebuilt_from_sources.background_queued",
+    module: "PRODUCT_ARCHIVE_DRAFT",
+    entityType: "product_archive_draft_batch",
+    entityId: job.id,
+    summary: `提交后台按最新资料重新构建深绘建档草稿字段 ${job.total_count} 个`,
+    metadata: {
+      jobId: job.id,
+      count: job.total_count,
+      draftIds: targets.map((target) => target.draftId),
+      spuCodes: targets.map((target) => target.spuCode),
+      userId: user.id,
+      sequential: true,
+    },
+  })
+  return c.json(job, 202)
+})
+
+productArchiveDrafts.get("/rebuild-jobs/:jobId", (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
+  const job = productArchiveRebuildQueue.getJob(c.req.param("jobId"))
+  if (!job) {
+    throw new HTTPException(404, { message: "批量重新构建字段任务不存在" })
+  }
+  return c.json(job)
+})
+
 productArchiveDrafts.post("/precheck-jobs", async (c) => {
   const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_SUBMIT")
   const db = getDb()
@@ -5513,6 +5627,32 @@ productArchiveDrafts.post("/:draftId/validate", (c) => {
   } catch (error) {
     throw productArchiveDraftMutationException(error)
   }
+})
+
+productArchiveDrafts.post("/:draftId/rebuild", async (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const db = getDb()
+  const draftId = readId(c.req.param("draftId"))
+  let result
+  try {
+    result = await withBackgroundTaskSlot("product_archive_draft_rebuild", (signal) => (
+      rebuildProductArchiveDraftFromSources(db, draftId, { signal })
+    ))
+  } catch (error) {
+    throw productArchiveDraftMutationException(error)
+  }
+  auditFromContext(c, {
+    action: "draft.rebuilt_from_sources",
+    module: "PRODUCT_ARCHIVE_DRAFT",
+    entityType: "product_archive_draft",
+    entityId: draftId,
+    summary: `按最新资料重新构建深绘建档草稿 ${draftId}`,
+    metadata: {
+      updatedFieldCount: result.saved.length,
+      warningCount: result.warnings.length,
+    },
+  })
+  return c.json({ detail: result.detail, warnings: result.warnings })
 })
 
 productArchiveDrafts.post("/:draftId/check-duplicate", async (c) => {
