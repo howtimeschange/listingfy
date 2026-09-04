@@ -2823,7 +2823,7 @@ export default function ProductArchiveDraftsPage() {
         job,
         type: "product_archive_publish_precheck",
         title: "批量发布预检",
-        description: `待预检 ${formatNumber(job.total_count)} 个深绘建档草稿，按校验、查重、提交预览串行执行`,
+        description: `待预检 ${formatNumber(job.total_count)} 个深绘建档草稿，按校验、查重、提交预览执行`,
         endpoint: `/product-archive-drafts/precheck-jobs/${job.id}`,
       })
       toast.success("已加入任务中心：批量发布预检")
@@ -2845,7 +2845,7 @@ export default function ProductArchiveDraftsPage() {
         job,
         type: "product_archive_publish",
         title: draftSubmitModeTaskTitle(variables.submitMode),
-        description: `待逐条${draftSubmitModeLabel(variables.submitMode)} ${formatNumber(job.total_count)} 个深绘建档草稿，接口繁忙会自动延迟重试`,
+        description: `待${draftSubmitModeLabel(variables.submitMode)} ${formatNumber(job.total_count)} 个深绘建档草稿，提交后继续等待深绘回读校验，接口繁忙会自动延迟重试`,
         endpoint: `/product-archive-drafts/publish-jobs/${job.id}`,
       })
       setPublishDialogOpen(false)
@@ -3095,7 +3095,7 @@ export default function ProductArchiveDraftsPage() {
                 <DialogHeader>
                   <DialogTitle>{draftSubmitModeTaskTitle(batchSubmitMode)}</DialogTitle>
                   <DialogDescription>
-                    将对已选择的 {formatNumber(selectedDrafts.length)} 个草稿提交后台{draftSubmitModeLabel(batchSubmitMode)}任务。系统会逐个查重、提交并回读校验；接口繁忙会自动延迟重试，单款失败不会中断整批。
+                    将对已选择的 {formatNumber(selectedDrafts.length)} 个草稿提交后台{draftSubmitModeLabel(batchSubmitMode)}任务。系统会查重、提交并保持提交中/回读中状态直到深绘资源回读校验完成；接口繁忙会自动延迟重试，单款失败不会中断整批。
                   </DialogDescription>
                 </DialogHeader>
                 <div className="grid gap-2">

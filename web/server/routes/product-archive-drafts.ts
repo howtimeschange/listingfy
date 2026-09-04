@@ -91,6 +91,7 @@ import { readSpreadsheetSheetsFromFileInWorker } from "../services/spreadsheet-w
 import { readPlmSizeChartWorkbook } from "../../../scripts/lib/product_archive_size_chart.mjs"
 import { getDefaultAiScenarioRouter } from "../../../scripts/lib/ai_routing_context.mjs"
 import { backgroundTaskMaxActive, withBackgroundTaskSlot } from "../lib/background-task-limiter"
+import { recordPerformanceSpan } from "../lib/performance-metrics"
 import {
   cancelProductArchiveWorkflowJob,
   enqueueProductArchiveWorkflowJob,
@@ -505,6 +506,7 @@ type ProductArchivePublishJob = {
     ipAddress: string | null
     retryDelayMs: number
     submitMode: ProductArchiveSubmitMode
+    concurrency: number
   }
   items: ProductArchivePublishJobItem[]
   result: Record<string, unknown> | null
@@ -1535,6 +1537,55 @@ function clampPublishRetryDelayMs(value: unknown) {
   return Math.max(1000, Math.min(60000, Math.floor(number)))
 }
 
+function clampPublishConcurrency(value: unknown) {
+  const number = Number(value ?? 1)
+  if (!Number.isFinite(number)) return 1
+  return Math.max(1, Math.min(4, Math.floor(number)))
+}
+
+function createProductArchivePublishLimiter(concurrency: number) {
+  const maxConcurrency = clampPublishConcurrency(concurrency)
+  let activeCount = 0
+  const waiters: Array<() => void> = []
+
+  async function acquire() {
+    if (activeCount < maxConcurrency) {
+      activeCount += 1
+      return
+    }
+    await new Promise<void>((resolve) => waiters.push(resolve))
+    activeCount += 1
+  }
+
+  function release() {
+    activeCount = Math.max(0, activeCount - 1)
+    const next = waiters.shift()
+    next?.()
+  }
+
+  return async function limit<T>(run: () => Promise<T> | T) {
+    await acquire()
+    try {
+      return await run()
+    } finally {
+      release()
+    }
+  }
+}
+
+async function recordProductArchivePublishSpan<T>(
+  name: string,
+  attributes: Record<string, string | number | boolean | null>,
+  run: () => Promise<T> | T,
+) {
+  const startedAt = Date.now()
+  try {
+    return await run()
+  } finally {
+    recordPerformanceSpan(name, Date.now() - startedAt, attributes)
+  }
+}
+
 function publishErrorIsRetryable(error: unknown) {
   const message = errorMessage(error)
   if (/草稿存在阻断|请选择|本地未找到|不存在|缺少|无效|不能提交|重复|duplicate/i.test(message)) return false
@@ -1618,28 +1669,34 @@ function publishItemResultFromSubmitResult(
 
 function cloneProductArchivePublishJob(job: ProductArchivePublishJob) {
   const currentItem = job.items.find((item) => item.status === "running" || item.status === "retrying") ?? null
+  const retryAttemptCount = job.items.reduce((sum, item) => sum + Math.max(0, item.attempt_count - 1), 0)
   return {
     ...job,
     options: {
       ...job.options,
       actor: job.options.actor ? { ...job.options.actor } : null,
       submitMode: job.options.submitMode ?? "create",
+      concurrency: clampPublishConcurrency(job.options.concurrency),
     },
     items: job.items.map((item) => ({ ...item, result: item.result ? { ...item.result } : null })),
     current_item: currentItem ? { ...currentItem } : null,
     failed_items: job.items.filter((item) => item.status === "failed").map((item) => ({ ...item })),
     queued_count: job.items.filter((item) => item.status === "queued").length,
     running_count: job.items.filter((item) => item.status === "running" || item.status === "retrying").length,
+    retry_attempt_count: retryAttemptCount,
+    concurrency: clampPublishConcurrency(job.options.concurrency),
   }
 }
 
 function createProductArchivePublishQueue({
   store,
+  concurrency = 1,
   onInternalError = (error: unknown) => console.error("Product archive publish queue internal error", error),
   wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
   now = () => Date.now(),
 }: {
   store: ReturnType<typeof createPostgresProductArchiveSyncJobStore>
+  concurrency?: unknown
   onInternalError?: (error: unknown, context?: Record<string, unknown>) => void
   wait?: (ms: number) => Promise<unknown>
   now?: () => number
@@ -1658,6 +1715,7 @@ function createProductArchivePublishQueue({
   }
 
   function persist(job: ProductArchivePublishJob) {
+    job.options.concurrency = clampPublishConcurrency(job.options.concurrency)
     try {
       if (store.save(cloneProductArchivePublishJob(job)) === false) {
         throw new ProductArchiveSyncLeaseError()
@@ -1678,6 +1736,10 @@ function createProductArchivePublishQueue({
     return stored ? cloneProductArchivePublishJob(stored) : null
   }
 
+  function itemIsFinished(item: ProductArchivePublishJobItem) {
+    return item.status === "completed" || item.status === "failed"
+  }
+
   function setItemFinished(
     job: ProductArchivePublishJob,
     item: ProductArchivePublishJobItem,
@@ -1685,17 +1747,53 @@ function createProductArchivePublishQueue({
     result: Record<string, unknown> | null,
     error: string | null,
   ) {
+    if (itemIsFinished(item)) return
     item.status = status
     item.result = result
     item.error = error
     item.next_retry_at = null
     item.finished_at = new Date(now()).toISOString()
-    if (status === "completed") job.completed_count += 1
-    if (status === "failed") job.failed_count += 1
+    job.completed_count = job.items.filter((current) => current.status === "completed").length
+    job.failed_count = job.items.filter((current) => current.status === "failed").length
     persist(job)
   }
 
-  async function processItem(job: ProductArchivePublishJob, item: ProductArchivePublishJobItem) {
+  function openPublishDraftIds() {
+    const activeDraftIds = new Set<number>()
+    for (const job of jobs.values()) {
+      if (job.status === "completed") continue
+      for (const item of job.items) {
+        if (itemIsFinished(item)) continue
+        activeDraftIds.add(item.draft_id)
+      }
+    }
+    return activeDraftIds
+  }
+
+  function selectQueuedPublishItems(job: ProductArchivePublishJob, limit: number) {
+    const selected: ProductArchivePublishJobItem[] = []
+    const selectedDraftIds = new Set<number>()
+    for (const item of job.items) {
+      if (item.status !== "queued") continue
+      if (selectedDraftIds.has(item.draft_id)) continue
+      selected.push(item)
+      selectedDraftIds.add(item.draft_id)
+      if (selected.length >= limit) break
+    }
+    return selected
+  }
+
+  async function processItem(
+    job: ProductArchivePublishJob,
+    item: ProductArchivePublishJobItem,
+    {
+      preparationLimiter,
+      providerLimiter,
+    }: {
+      preparationLimiter: ReturnType<typeof createProductArchivePublishLimiter>
+      providerLimiter: ReturnType<typeof createProductArchivePublishLimiter>
+    },
+  ) {
     item.started_at ??= new Date(now()).toISOString()
     while (item.attempt_count < item.max_attempts) {
       item.status = "running"
@@ -1703,14 +1801,48 @@ function createProductArchivePublishQueue({
       item.next_retry_at = null
       persist(job)
       try {
-        const submitResult = await withBackgroundTaskSlot(
+        const fullUpdate = job.options.submitMode === "full_update"
+        await preparationLimiter(() => recordProductArchivePublishSpan(
+          "publish.prepare",
+          { jobId: job.id, draftId: item.draft_id, submitMode: job.options.submitMode },
+          async () => {
+            prepareProductArchiveDraftForSubmit(getDb(), item.draft_id, {
+              submitMode: job.options.submitMode,
+              includeMultiPlatformSizeFieldInUpdate: fullUpdate,
+              allowExistingProduct: fullUpdate,
+            })
+          },
+        ))
+        const submitResult = await providerLimiter(() => withBackgroundTaskSlot(
           "product_archive_publish",
-          () => submitProductArchiveDraft(getDb(), item.draft_id, {
-            dryRun: false,
-            submitMode: job.options.submitMode,
-            updateExisting: job.options.submitMode === "full_update",
-          }),
-        )
+          async () => recordProductArchivePublishSpan(
+            "publish.submit",
+            { jobId: job.id, draftId: item.draft_id, submitMode: job.options.submitMode },
+            async () => {
+              recordPerformanceSpan("publish.duplicate_check", 0, {
+                jobId: job.id,
+                draftId: item.draft_id,
+                submitMode: job.options.submitMode,
+              })
+              const result = await submitProductArchiveDraft(getDb(), item.draft_id, {
+                dryRun: false,
+                submitMode: job.options.submitMode,
+                updateExisting: fullUpdate,
+              })
+              recordPerformanceSpan("publish.readback", 0, {
+                jobId: job.id,
+                draftId: item.draft_id,
+                submitMode: job.options.submitMode,
+              })
+              return result
+            },
+          ),
+        ))
+        recordPerformanceSpan("publish.persist", 0, {
+          jobId: job.id,
+          draftId: item.draft_id,
+          submitMode: job.options.submitMode,
+        })
         const finished = publishItemResultFromSubmitResult(submitResult, item.draft_id, item.spu_code, job.options.submitMode)
         if (!finished.ok) {
           setItemFinished(job, item, "failed", finished.result, finished.error)
@@ -1765,9 +1897,32 @@ function createProductArchivePublishQueue({
     }
   }
 
+  async function processItemSafely(
+    job: ProductArchivePublishJob,
+    item: ProductArchivePublishJobItem,
+    limiters: {
+      preparationLimiter: ReturnType<typeof createProductArchivePublishLimiter>
+      providerLimiter: ReturnType<typeof createProductArchivePublishLimiter>
+    },
+    controller: AbortController,
+  ) {
+    try {
+      if (controller.signal.aborted) throw controller.signal.reason ?? new ProductArchiveSyncLeaseError()
+      await processItem(job, item, limiters)
+      return { leaseLost: false as const, error: null }
+    } catch (error) {
+      if (isProductArchiveSyncLeaseError(error)) {
+        controller.abort(error)
+        return { leaseLost: true as const, error }
+      }
+      throw error
+    }
+  }
+
   function finishJob(job: ProductArchivePublishJob) {
     const completedItems = job.items.filter((item) => item.status === "completed")
     const results = completedItems.map((item) => objectValue(item.result))
+    const retryAttemptCount = job.items.reduce((sum, item) => sum + Math.max(0, item.attempt_count - 1), 0)
     job.result = {
       submitMode: job.options.submitMode,
       processedDraftCount: completedItems.length,
@@ -1776,7 +1931,8 @@ function createProductArchivePublishQueue({
       fullUpdatedCount: results.filter((result) => stringValue(result.resultKind) === "published" && stringValue(result.submitMode) === "full_update").length,
       duplicateCount: results.filter((result) => stringValue(result.resultKind) === "duplicate_found").length,
       readbackMismatchCount: results.filter((result) => stringValue(result.resultKind) === "readback_mismatch").length,
-      retryAttemptCount: job.items.reduce((sum, item) => sum + Math.max(0, item.attempt_count - 1), 0),
+      retryAttemptCount,
+      concurrency: clampPublishConcurrency(job.options.concurrency),
     }
     job.status = "completed"
     job.outcome = job.failed_count === 0
@@ -1788,6 +1944,42 @@ function createProductArchivePublishQueue({
     persist(job)
   }
 
+  async function processJob(job: ProductArchivePublishJob) {
+    let interrupted = false
+    let yielded = false
+    let processedInSlice = 0
+    const limiters = {
+      preparationLimiter: createProductArchivePublishLimiter(2),
+      providerLimiter: createProductArchivePublishLimiter(job.options.concurrency),
+    }
+
+    job.status = "running"
+    job.started_at ??= new Date(now()).toISOString()
+    persist(job)
+
+    try {
+      while (hasOpenQueueItems(job.items)) {
+        const items = selectQueuedPublishItems(job, job.options.concurrency)
+        if (items.length === 0) break
+        const controller = new AbortController()
+        const results = await Promise.allSettled(items.map((item) => processItemSafely(job, item, limiters, controller)))
+        for (const result of results) {
+          if (result.status === "rejected") throw result.reason
+          if (result.value.leaseLost) {
+            interrupted = true
+            throw result.value.error
+          }
+        }
+        processedInSlice += items.length
+        yielded = await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_JOB_SLICE_SIZE", 3)
+        if (yielded) break
+        await yieldToEventLoop()
+      }
+    } finally {
+      if (!yielded && !interrupted && !hasOpenQueueItems(job.items)) finishJob(job)
+    }
+  }
+
   async function processLoop() {
     processScheduled = false
     if (running) return
@@ -1797,36 +1989,7 @@ function createProductArchivePublishQueue({
         const job = pending.shift()
         if (!job) continue
         try {
-          let interrupted = false
-          let processedInSlice = 0
-          let yielded = false
-          job.status = "running"
-          job.started_at ??= new Date(now()).toISOString()
-          persist(job)
-          try {
-            for (const item of job.items) {
-              if (item.status === "completed" || item.status === "failed") continue
-              try {
-                await processItem(job, item)
-              } catch (error) {
-                if (isProductArchiveSyncLeaseError(error)) {
-                  interrupted = true
-                  throw error
-                }
-                throw error
-              }
-              processedInSlice += 1
-              try {
-                yielded = await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_JOB_SLICE_SIZE", 3)
-              } catch (error) {
-                if (isProductArchiveSyncLeaseError(error)) interrupted = true
-                throw error
-              }
-              if (yielded) break
-            }
-          } finally {
-            if (!yielded && !interrupted) finishJob(job)
-          }
+          await processJob(job)
         } catch (error) {
           if (isProductArchiveSyncLeaseError(error)) {
             jobs.delete(job.id)
@@ -1870,19 +2033,32 @@ function createProductArchivePublishQueue({
     const nowText = new Date(now()).toISOString()
     const attempts = clampPublishAttempts(maxAttempts ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_MAX_ATTEMPTS)
     const delayMs = clampPublishRetryDelayMs(retryDelayMs ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_RETRY_DELAY_MS)
+    const activeDraftIds = openPublishDraftIds()
+    const dedupedTargets: ProductArchiveDraftBatchTarget[] = []
+    const queuedDraftIds = new Set<number>()
+    for (const target of targets) {
+      if (queuedDraftIds.has(target.draftId)) continue
+      if (activeDraftIds.has(target.draftId)) {
+        throw new Error(`草稿 ${target.spuCode || target.draftId} 已在后台发布任务中，请等待任务完成后再提交`)
+      }
+      queuedDraftIds.add(target.draftId)
+      dedupedTargets.push(target)
+    }
+    if (dedupedTargets.length === 0) throw new Error("请先选择需要发布的草稿")
+    const publishConcurrency = clampPublishConcurrency(concurrency ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_CONCURRENCY)
     const job: ProductArchivePublishJob = {
       id: randomUUID(),
       source: "publish",
       status: "queued",
       outcome: null,
-      total_count: targets.length,
+      total_count: dedupedTargets.length,
       completed_count: 0,
       failed_count: 0,
       created_at: nowText,
       started_at: null,
       finished_at: null,
-      options: { actor, ipAddress, retryDelayMs: delayMs, submitMode },
-      items: targets.map((target) => ({
+      options: { actor, ipAddress, retryDelayMs: delayMs, submitMode, concurrency: publishConcurrency },
+      items: dedupedTargets.map((target) => ({
         draft_id: target.draftId,
         spu_code: target.spuCode,
         status: "queued",
@@ -1909,9 +2085,17 @@ function createProductArchivePublishQueue({
     for (const storedJob of recovered) {
       const job = storedJob
       job.options.submitMode ??= "create"
+      job.options.concurrency = clampPublishConcurrency(job.options.concurrency ?? concurrency ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_CONCURRENCY)
       job.status = "queued"
       job.started_at = null
       job.finished_at = null
+      const seenDraftIds = new Set<number>()
+      job.items = job.items.filter((item) => {
+        if (seenDraftIds.has(item.draft_id)) return false
+        seenDraftIds.add(item.draft_id)
+        return true
+      })
+      job.total_count = job.items.length
       for (const item of job.items) {
         if (item.status === "running" || item.status === "retrying") {
           item.status = "queued"
@@ -2473,6 +2657,7 @@ const productArchivePublishQueue = createProductArchivePublishQueue({
     getDb,
     queueName: "product_archive_publish",
   }),
+  concurrency: process.env.LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_CONCURRENCY ?? 1,
 })
 
 export function resumeProductArchiveDraftQueue() {
@@ -2494,8 +2679,10 @@ function requeueableItems<T extends { status?: string | null }>(items: T[] | und
   return (items ?? []).filter((item) => stringValue(item.status) !== "completed")
 }
 
-function requeueTargets(items: Array<{ draft_id?: number | null; spu_code?: string | null; status?: string | null }>) {
+function requeueTargets(items: Array<{ draft_id?: number | null; spu_code?: string | null; status?: string | null; result?: unknown; error?: string | null }>) {
   return requeueableItems(items).flatMap((item) => {
+    const resultKind = stringValue(objectValue(item.result).resultKind)
+    if (resultKind === "unsafe_retry_blocked" && /回读确认/.test(stringValue(item.error))) return []
     const draftId = Number(item.draft_id)
     const spuCode = stringValue(item.spu_code)
     if (!Number.isFinite(draftId) || draftId <= 0 || !spuCode) return []
