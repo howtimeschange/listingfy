@@ -43,6 +43,21 @@ function createMemoryStore() {
   };
 }
 
+function createLeasedMemoryStore({ leaseRenewIntervalMs = 5, renew = () => true } = {}) {
+  const store = createMemoryStore();
+  const renewedJobIds = [];
+  return {
+    ...store,
+    requiresLease: true,
+    leaseRenewIntervalMs,
+    renewedJobIds,
+    renew(jobId) {
+      renewedJobIds.push(jobId);
+      return renew(jobId);
+    },
+  };
+}
+
 function createFakeDb({ transportUnknown = false } = {}) {
   return {
     prepare(sql) {
@@ -166,6 +181,107 @@ test("submit_transport_unknown remains unsafe_retry_blocked and is not requeued 
   assert.equal(finalJob.items[0].result.resultKind, "unsafe_retry_blocked");
   assert.match(finalJob.items[0].error, /回读确认/);
   assert.deepEqual(requeueTargets(finalJob.items), []);
+});
+
+test("publish queue renews a durable lease while provider submission is still running", async () => {
+  const store = createLeasedMemoryStore();
+  let resolveSubmission;
+  let submissionStartedResolve;
+  const submissionStarted = new Promise((resolve) => {
+    submissionStartedResolve = resolve;
+  });
+  const submission = new Promise((resolve) => {
+    resolveSubmission = resolve;
+  });
+  const queue = createProductArchivePublishQueue({
+    store,
+    getDatabase: () => createFakeDb(),
+    prepareDraftForSubmit: () => ({ payload: {}, validation: { summary: { blocker_count: 0 } } }),
+    submitDraft: async () => {
+      submissionStartedResolve();
+      await submission;
+      return { ok: true, status: "readback_verified" };
+    },
+    runWithSlot: async (run) => await run(new AbortController().signal),
+    onInternalError: () => {},
+  });
+
+  const queued = queue.enqueue({
+    targets: [{ draftId: 11, spuCode: "SPU-11" }],
+    actor: null,
+    ipAddress: null,
+    maxAttempts: 1,
+    retryDelayMs: 1,
+    submitMode: "create",
+  });
+  await submissionStarted;
+  await delay(20);
+
+  assert.ok(store.renewedJobIds.includes(queued.id));
+  resolveSubmission();
+  const finalJob = await waitForCompletedJob(queue, queued.id);
+  const renewalsAfterCompletion = store.renewedJobIds.length;
+  await delay(20);
+
+  assert.equal(finalJob.status, "completed");
+  assert.equal(store.renewedJobIds.length, renewalsAfterCompletion);
+});
+
+test("publish queue does not complete after its durable lease renewal fails", async () => {
+  const store = createLeasedMemoryStore({ renew: () => false });
+  let resolveSubmission;
+  let submissionStartedResolve;
+  const submissionStarted = new Promise((resolve) => {
+    submissionStartedResolve = resolve;
+  });
+  const submission = new Promise((resolve) => {
+    resolveSubmission = resolve;
+  });
+  const queue = createProductArchivePublishQueue({
+    store,
+    getDatabase: () => createFakeDb(),
+    prepareDraftForSubmit: () => ({ payload: {}, validation: { summary: { blocker_count: 0 } } }),
+    submitDraft: async () => {
+      submissionStartedResolve();
+      await submission;
+      return { ok: true, status: "readback_verified" };
+    },
+    runWithSlot: async (run) => await run(new AbortController().signal),
+    onInternalError: () => {},
+  });
+
+  const queued = queue.enqueue({
+    targets: [{ draftId: 12, spuCode: "SPU-12" }],
+    actor: null,
+    ipAddress: null,
+    maxAttempts: 1,
+    retryDelayMs: 1,
+    submitMode: "create",
+  });
+  await submissionStarted;
+  await delay(20);
+  resolveSubmission();
+  await delay(20);
+
+  assert.ok(store.renewedJobIds.includes(queued.id));
+  assert.equal(store.get(queued.id)?.status, "running");
+});
+
+test("every durable product archive queue starts the shared lease heartbeat", async () => {
+  const source = await readFile(ROUTE_PATH, "utf8");
+  const queueSections = [
+    ["export function createProductArchiveAiFillQueue", "function cloneProductArchivePrecheckJob"],
+    ["function createProductArchivePrecheckQueue", "function createProductArchivePublishLimiter"],
+    ["export function createProductArchivePublishQueue", "function cloneHangtagWashlabelOcrJob"],
+    ["function createHangtagWashlabelOcrQueue", "const productArchiveAiFillQueue"],
+  ];
+
+  for (const [startMarker, endMarker] of queueSections) {
+    const start = source.indexOf(startMarker);
+    const end = source.indexOf(endMarker, start + startMarker.length);
+    assert.ok(start >= 0 && end > start, `missing queue section: ${startMarker}`);
+    assert.match(source.slice(start, end), /startProductArchiveQueueLeaseHeartbeat\(/);
+  }
 });
 
 test("publish queue source keeps submitProductArchiveDraft as the single production submission boundary", async () => {

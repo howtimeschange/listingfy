@@ -529,6 +529,59 @@ function throwIfTaskAborted(signal?: AbortSignal) {
   throw error
 }
 
+function startProductArchiveQueueLeaseHeartbeat(
+  store: {
+    requiresLease?: boolean
+    leaseRenewIntervalMs?: unknown
+    renew?: (jobId: string) => boolean | Promise<boolean>
+  },
+  job: { id: string },
+  onLeaseLost: (error: ProductArchiveSyncLeaseError) => void,
+) {
+  const intervalMs = Number(store.leaseRenewIntervalMs)
+  if (
+    !store.requiresLease
+    || typeof store.renew !== "function"
+    || !Number.isFinite(intervalMs)
+    || intervalMs <= 0
+  ) {
+    return () => {}
+  }
+  let stopped = false
+  let timer: ReturnType<typeof setInterval> | null = null
+  const stop = () => {
+    if (stopped) return
+    stopped = true
+    if (timer != null) clearInterval(timer)
+  }
+  const lose = (cause: unknown = new ProductArchiveSyncLeaseError()) => {
+    if (stopped) return
+    const error = cause instanceof ProductArchiveSyncLeaseError
+      ? cause
+      : new ProductArchiveSyncLeaseError(errorMessage(cause))
+    stop()
+    onLeaseLost(error)
+  }
+  const renew = () => {
+    if (stopped) return
+    try {
+      const renewed = store.renew!(job.id)
+      if (renewed && typeof (renewed as Promise<boolean>).then === "function") {
+        void Promise.resolve(renewed).then((result) => {
+          if (!result) lose()
+        }).catch((error) => lose(error))
+      } else if (!renewed) {
+        lose()
+      }
+    } catch (error) {
+      lose(error)
+    }
+  }
+  timer = setInterval(renew, Math.max(1, Math.floor(intervalMs)))
+  timer.unref?.()
+  return stop
+}
+
 function objectValue(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
@@ -901,50 +954,60 @@ export function createProductArchiveAiFillQueue({
     const options = normalizeJobRuntimeOptions(job)
     let maxConcurrency = 1
     const maxItemConcurrency = productArchiveAiFillItemConcurrency()
+    const controller = new AbortController()
     job.status = "running"
     job.started_at ??= new Date(now()).toISOString()
     persist(job)
+    const stopLeaseHeartbeat = startProductArchiveQueueLeaseHeartbeat(store, job, (error) => {
+      controller.abort(error)
+      reportInternalError(error, { phase: "lease_renew", jobId: job.id })
+    })
 
-    while (hasOpenQueueItems(job.items)) {
-      const concurrency = dynamicConcurrencyForQueue(queueKey, job)
-      maxConcurrency = Math.max(maxConcurrency, concurrency)
-      const inFlightSpuCodes = new Set<string>()
-      const items: ProductArchiveAiFillJobItem[] = []
-      for (const item of job.items.filter((item) => item.status !== "completed" && item.status !== "failed")) {
-        const spuCode = stringValue(item.spu_code)
-        if (spuCode && inFlightSpuCodes.has(spuCode)) continue
-        if (spuCode) inFlightSpuCodes.add(spuCode)
-        items.push(item)
-        if (items.length >= concurrency) break
+    try {
+      while (hasOpenQueueItems(job.items)) {
+        throwIfTaskAborted(controller.signal)
+        const concurrency = dynamicConcurrencyForQueue(queueKey, job)
+        maxConcurrency = Math.max(maxConcurrency, concurrency)
+        const inFlightSpuCodes = new Set<string>()
+        const items: ProductArchiveAiFillJobItem[] = []
+        for (const item of job.items.filter((item) => item.status !== "completed" && item.status !== "failed")) {
+          const spuCode = stringValue(item.spu_code)
+          if (spuCode && inFlightSpuCodes.has(spuCode)) continue
+          if (spuCode) inFlightSpuCodes.add(spuCode)
+          items.push(item)
+          if (items.length >= concurrency) break
+        }
+        if (items.length === 0) break
+        const results = await Promise.allSettled(items.map((item) => processItemSafely(job, item, controller)))
+        for (const result of results) {
+          if (result.status === "rejected") throw result.reason
+          if (result.value.leaseLost) throw result.value.error
+        }
+        await yieldToEventLoop()
       }
-      if (items.length === 0) break
-      const controller = new AbortController()
-      const results = await Promise.allSettled(items.map((item) => processItemSafely(job, item, controller)))
-      for (const result of results) {
-        if (result.status === "rejected") throw result.reason
-        if (result.value.leaseLost) throw result.value.error
-      }
-      await yieldToEventLoop()
-    }
 
-    const completedItems = job.items.filter((item) => item.status === "completed")
-    job.result = {
-      processedDraftCount: completedItems.length,
-      failedDraftCount: job.items.filter((item) => item.status === "failed").length,
-      savedFieldCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.savedCount) || 0), 0),
-      warningCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.warningCount) || 0), 0),
-      concurrency: maxConcurrency,
-      itemConcurrency: maxItemConcurrency,
-      configuredConcurrency: options.concurrency,
+      throwIfTaskAborted(controller.signal)
+      const completedItems = job.items.filter((item) => item.status === "completed")
+      job.result = {
+        processedDraftCount: completedItems.length,
+        failedDraftCount: job.items.filter((item) => item.status === "failed").length,
+        savedFieldCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.savedCount) || 0), 0),
+        warningCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.warningCount) || 0), 0),
+        concurrency: maxConcurrency,
+        itemConcurrency: maxItemConcurrency,
+        configuredConcurrency: options.concurrency,
+      }
+      job.status = "completed"
+      job.outcome = job.failed_count === 0
+        ? "succeeded"
+        : job.completed_count === 0
+          ? "failed"
+          : "partial_failure"
+      job.finished_at = new Date(now()).toISOString()
+      persist(job)
+    } finally {
+      stopLeaseHeartbeat()
     }
-    job.status = "completed"
-    job.outcome = job.failed_count === 0
-      ? "succeeded"
-      : job.completed_count === 0
-        ? "failed"
-        : "partial_failure"
-    job.finished_at = new Date(now()).toISOString()
-    persist(job)
   }
 
   async function processLoop(queueKey: string) {
@@ -1383,14 +1446,22 @@ function createProductArchivePrecheckQueue({
           let interrupted = false
           let processedInSlice = 0
           let yielded = false
+          const controller = new AbortController()
           job.status = "running"
           job.started_at ??= new Date(now()).toISOString()
           persist(job)
+          const stopLeaseHeartbeat = startProductArchiveQueueLeaseHeartbeat(store, job, (error) => {
+            interrupted = true
+            controller.abort(error)
+            reportInternalError(error, { phase: "lease_renew", jobId: job.id })
+          })
           try {
             for (const item of job.items) {
               if (item.status === "completed" || item.status === "failed") continue
+              throwIfTaskAborted(controller.signal)
               try {
                 await processItem(job, item)
+                throwIfTaskAborted(controller.signal)
               } catch (error) {
                 if (isProductArchiveSyncLeaseError(error)) {
                   interrupted = true
@@ -1413,7 +1484,14 @@ function createProductArchivePrecheckQueue({
               if (yielded) break
             }
           } finally {
-            if (!yielded && !interrupted) finishJob(job)
+            try {
+              if (!yielded && !interrupted) {
+                throwIfTaskAborted(controller.signal)
+                finishJob(job)
+              }
+            } finally {
+              stopLeaseHeartbeat()
+            }
           }
         } catch (error) {
           if (isProductArchiveSyncLeaseError(error)) {
@@ -1818,9 +1896,11 @@ export function createProductArchivePublishQueue({
       preparationLimiter: ReturnType<typeof createProductArchivePublishLimiter>
       providerLimiter: ReturnType<typeof createProductArchivePublishLimiter>
     },
+    signal?: AbortSignal,
   ) {
     item.started_at ??= new Date(now()).toISOString()
     while (item.attempt_count < item.max_attempts) {
+      throwIfTaskAborted(signal)
       item.status = "running"
       item.attempt_count += 1
       item.next_retry_at = null
@@ -1838,6 +1918,7 @@ export function createProductArchivePublishQueue({
             })
           },
         ))
+        throwIfTaskAborted(signal)
         const submitResult = await providerLimiter(() => runWithSlot(
           async () => recordProductArchivePublishSpan(
             "publish.submit",
@@ -1862,6 +1943,7 @@ export function createProductArchivePublishQueue({
             },
           ),
         ))
+        throwIfTaskAborted(signal)
         recordPerformanceSpan("publish.persist", 0, {
           jobId: job.id,
           draftId: item.draft_id,
@@ -1932,7 +2014,7 @@ export function createProductArchivePublishQueue({
   ) {
     try {
       if (controller.signal.aborted) throw controller.signal.reason ?? new ProductArchiveSyncLeaseError()
-      await processItem(job, item, limiters)
+      await processItem(job, item, limiters, controller.signal)
       return { leaseLost: false as const, error: null }
     } catch (error) {
       if (isProductArchiveSyncLeaseError(error)) {
@@ -1972,6 +2054,7 @@ export function createProductArchivePublishQueue({
     let interrupted = false
     let yielded = false
     let processedInSlice = 0
+    const controller = new AbortController()
     const limiters = {
       preparationLimiter: createProductArchivePublishLimiter(2),
       providerLimiter: createProductArchivePublishLimiter(job.options.concurrency),
@@ -1980,12 +2063,17 @@ export function createProductArchivePublishQueue({
     job.status = "running"
     job.started_at ??= new Date(now()).toISOString()
     persist(job)
+    const stopLeaseHeartbeat = startProductArchiveQueueLeaseHeartbeat(store, job, (error) => {
+      interrupted = true
+      controller.abort(error)
+      reportInternalError(error, { phase: "lease_renew", jobId: job.id })
+    })
 
     try {
       while (hasOpenQueueItems(job.items)) {
+        throwIfTaskAborted(controller.signal)
         const items = selectQueuedPublishItems(job, job.options.concurrency)
         if (items.length === 0) break
-        const controller = new AbortController()
         const results = await Promise.allSettled(items.map((item) => processItemSafely(job, item, limiters, controller)))
         for (const result of results) {
           if (result.status === "rejected") throw result.reason
@@ -2000,7 +2088,14 @@ export function createProductArchivePublishQueue({
         await yieldToEventLoop()
       }
     } finally {
-      if (!yielded && !interrupted && !hasOpenQueueItems(job.items)) finishJob(job)
+      try {
+        if (!yielded && !interrupted && !hasOpenQueueItems(job.items)) {
+          throwIfTaskAborted(controller.signal)
+          finishJob(job)
+        }
+      } finally {
+        stopLeaseHeartbeat()
+      }
     }
   }
 
@@ -2479,54 +2574,68 @@ function createHangtagWashlabelOcrQueue({
         if (!job) continue
         try {
           let processedInSlice = 0
+          const controller = new AbortController()
           job.status = "running"
           job.started_at ??= new Date(now()).toISOString()
           persist(job)
-          for (let index = 0; index < job.files.length; index += 1) {
-            const item = job.items[index]
-            if (!item || item.status === "completed" || item.status === "failed") continue
-            try {
-              await withBackgroundTaskSlot("product_archive_ocr", () => processFileItem(job, job.files[index], item))
-            } catch (error) {
-              if (isProductArchiveSyncLeaseError(error)) throw error
-              setItemFinished(job, item, "failed", {
-                fileName: job.files[index].fileName,
-              }, errorMessage(error))
+          const stopLeaseHeartbeat = startProductArchiveQueueLeaseHeartbeat(store, job, (error) => {
+            controller.abort(error)
+            reportInternalError(error, { phase: "lease_renew", jobId: job.id })
+          })
+          try {
+            for (let index = 0; index < job.files.length; index += 1) {
+              const item = job.items[index]
+              if (!item || item.status === "completed" || item.status === "failed") continue
+              throwIfTaskAborted(controller.signal)
+              try {
+                await withBackgroundTaskSlot("product_archive_ocr", () => processFileItem(job, job.files[index], item))
+                throwIfTaskAborted(controller.signal)
+              } catch (error) {
+                if (isProductArchiveSyncLeaseError(error)) throw error
+                setItemFinished(job, item, "failed", {
+                  fileName: job.files[index].fileName,
+                }, errorMessage(error))
+              }
+              processedInSlice += 1
+              if (await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_OCR_JOB_SLICE_SIZE", 3)) break
             }
-            processedInSlice += 1
-            if (await maybeYieldProductArchiveJob(job, pending, persist, processedInSlice, "LISTINGIFY_PRODUCT_ARCHIVE_OCR_JOB_SLICE_SIZE", 3)) break
-          }
-          if (job.status === "queued") continue
+            if (job.status === "queued") continue
 
-          const applyItem = job.items[job.items.length - 1]
-          if (applyItem && applyItem.status !== "completed" && applyItem.status !== "failed") {
-            try {
-              await withBackgroundTaskSlot("product_archive_ocr", () => applyRecognizedDocuments(job, applyItem))
-            } catch (error) {
-              if (isProductArchiveSyncLeaseError(error)) throw error
-              setItemFinished(job, applyItem, "failed", null, errorMessage(error))
-              job.result = {
-                error: errorMessage(error),
-                previewSummary: previewProductArchiveHangtagWashlabelOcr(getDb(), {
-                  documents: documentsFromOcrJobItems(job.items),
-                  overwriteExisting: job.options.overwriteExisting,
-                }).summary,
+            throwIfTaskAborted(controller.signal)
+            const applyItem = job.items[job.items.length - 1]
+            if (applyItem && applyItem.status !== "completed" && applyItem.status !== "failed") {
+              try {
+                await withBackgroundTaskSlot("product_archive_ocr", () => applyRecognizedDocuments(job, applyItem))
+                throwIfTaskAborted(controller.signal)
+              } catch (error) {
+                if (isProductArchiveSyncLeaseError(error)) throw error
+                setItemFinished(job, applyItem, "failed", null, errorMessage(error))
+                job.result = {
+                  error: errorMessage(error),
+                  previewSummary: previewProductArchiveHangtagWashlabelOcr(getDb(), {
+                    documents: documentsFromOcrJobItems(job.items),
+                    overwriteExisting: job.options.overwriteExisting,
+                  }).summary,
+                }
               }
             }
-          }
 
-          job.status = "completed"
-          job.outcome = job.failed_count === 0
-            ? "succeeded"
-            : job.completed_count === 0
-              ? "failed"
-              : "partial_failure"
-          job.finished_at = new Date(now()).toISOString()
-          persist(job)
-          try {
-            await rm(job.options.uploadDir, { recursive: true, force: true })
-          } catch (error) {
-            reportInternalError(error, { phase: "cleanup", jobId: job.id })
+            throwIfTaskAborted(controller.signal)
+            job.status = "completed"
+            job.outcome = job.failed_count === 0
+              ? "succeeded"
+              : job.completed_count === 0
+                ? "failed"
+                : "partial_failure"
+            job.finished_at = new Date(now()).toISOString()
+            persist(job)
+            try {
+              await rm(job.options.uploadDir, { recursive: true, force: true })
+            } catch (error) {
+              reportInternalError(error, { phase: "cleanup", jobId: job.id })
+            }
+          } finally {
+            stopLeaseHeartbeat()
           }
         } catch (error) {
           if (isProductArchiveSyncLeaseError(error)) {
