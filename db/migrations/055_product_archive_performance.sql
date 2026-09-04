@@ -91,3 +91,60 @@ create table if not exists listing_launch_plan_import_sheet_stat (
   updated_at timestamptz not null default now(),
   primary key(import_id, sheet_name)
 );
+
+insert into listing_launch_plan_import_sheet_stat (
+  import_id,
+  sheet_name,
+  row_count,
+  spu_count,
+  updated_at
+)
+select
+  row.import_id,
+  row.sheet_name,
+  count(*)::integer as row_count,
+  count(distinct spu_code)::integer as spu_count,
+  now()
+from listing_launch_plan_row row
+join listing_launch_plan_import imp on imp.id = row.import_id
+group by row.import_id, row.sheet_name
+on conflict (import_id, sheet_name) do update set
+  row_count = excluded.row_count,
+  spu_count = excluded.spu_count,
+  updated_at = excluded.updated_at;
+
+insert into listing_launch_plan_spu_latest (
+  spu_code,
+  import_id,
+  row_id,
+  sheet_name,
+  row_count,
+  updated_at
+)
+select
+  spu_code,
+  import_id,
+  id as row_id,
+  sheet_name,
+  row_count,
+  now()
+from (
+  select
+    row.*,
+    count(*) over (partition by row.spu_code, row.import_id)::integer as row_count,
+    row_number() over (partition by row.spu_code order by row.import_id desc, row.id desc) as latest_rank
+  from listing_launch_plan_row row
+  join listing_launch_plan_import imp on imp.id = row.import_id
+) ranked
+where latest_rank = 1
+on conflict (spu_code) do update set
+  import_id = excluded.import_id,
+  row_id = excluded.row_id,
+  sheet_name = excluded.sheet_name,
+  row_count = excluded.row_count,
+  updated_at = excluded.updated_at
+where listing_launch_plan_spu_latest.import_id < excluded.import_id
+  or (
+    listing_launch_plan_spu_latest.import_id = excluded.import_id
+    and listing_launch_plan_spu_latest.row_id < excluded.row_id
+  );

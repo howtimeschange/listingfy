@@ -47,4 +47,7 @@ test("listing launch plan spreadsheet import dialog is split out of the route ch
   assert.match(page, /const SpreadsheetImportDialog = lazy\(\(\) =>\s*import\("@\/components\/import-dialog"\)/);
   assert.match(page, /function DeferredSpreadsheetImportDialog/);
   assert.match(page, /if \(!shouldLoad\)/);
+  assert.match(page, /openPendingRef/);
+  assert.match(page, /ref=\{\(element\) => \{/);
+  assert.doesNotMatch(page, /window\.setTimeout\(\(\) => \{[\s\S]*triggerRef\.current\?\.click\(\)/);
 });

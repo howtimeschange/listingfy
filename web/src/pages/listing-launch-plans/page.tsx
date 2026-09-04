@@ -164,21 +164,19 @@ function DeferredSpreadsheetImportDialog({
   onImport: (file: File) => void | Promise<void>
 }) {
   const [shouldLoad, setShouldLoad] = useState(false)
-  const openedAfterLoadRef = useRef(false)
-  const triggerRef = useRef<HTMLButtonElement | null>(null)
-
-  useEffect(() => {
-    if (!shouldLoad || openedAfterLoadRef.current) return
-    const timer = window.setTimeout(() => {
-      openedAfterLoadRef.current = true
-      triggerRef.current?.click()
-    }, 0)
-    return () => window.clearTimeout(timer)
-  }, [shouldLoad])
+  const openPendingRef = useRef(false)
 
   if (!shouldLoad) {
     return (
-      <Button type="button" size="sm" disabled={disabled} onClick={() => setShouldLoad(true)}>
+      <Button
+        type="button"
+        size="sm"
+        disabled={disabled}
+        onClick={() => {
+          openPendingRef.current = true
+          setShouldLoad(true)
+        }}
+      >
         <FileSpreadsheet className="size-4" />
         导入上市计划表
       </Button>
@@ -198,7 +196,16 @@ function DeferredSpreadsheetImportDialog({
         title="导入上市计划表"
         description="服务端解析大体积 .xlsx / .csv，按模板表头匹配款号、款色、官方发布类目和上市时间；重复上传会覆盖同款号的生效明细。"
         trigger={
-          <Button ref={triggerRef} type="button" size="sm" disabled={disabled}>
+          <Button
+            ref={(element) => {
+              if (!element || !openPendingRef.current) return
+              openPendingRef.current = false
+              element.click()
+            }}
+            type="button"
+            size="sm"
+            disabled={disabled}
+          >
             <FileSpreadsheet className="size-4" />
             导入上市计划表
           </Button>
