@@ -24,6 +24,7 @@ export interface ProductArchiveWorkflowFile {
   fileName: string
   filePath: string
   fileSizeBytes: number
+  fileHash?: string | null
 }
 
 export interface ProductArchiveWorkflowStage {
@@ -74,9 +75,17 @@ export type ProductArchiveWorkflowJob = ProductArchiveWorkflowJobSnapshot & {
   created_by: number | null
 }
 
+export interface ProductArchiveWorkflowProcessorContext {
+  signal: AbortSignal
+  assertActive: () => Promise<void>
+  checkpoint: (update?: (job: ProductArchiveWorkflowJob) => void | Promise<void>) => Promise<void>
+  runSideEffect: <Result>(run: () => Result | Promise<Result>) => Promise<Result>
+}
+
 export type ProductArchiveWorkflowProcessor = (
   job: ProductArchiveWorkflowJob,
   stage: ProductArchiveWorkflowStage,
+  context: ProductArchiveWorkflowProcessorContext,
 ) => unknown | Promise<unknown>
 
 type WorkflowProcessor = ProductArchiveWorkflowProcessor
@@ -168,6 +177,7 @@ function normalizedFile(file: Partial<ProductArchiveWorkflowFile> & { kind: stri
     fileName: stringValue(file.fileName) || "upload",
     filePath: stringValue(file.filePath),
     fileSizeBytes: Math.max(0, Math.floor(numberValue(file.fileSizeBytes))),
+    fileHash: stringValue(file.fileHash) || null,
   }
 }
 
@@ -189,7 +199,7 @@ function jobSnapshot(job: ProductArchiveWorkflowJob): ProductArchiveWorkflowJobS
     id: job.id,
     status: job.status,
     title: job.title,
-    files: job.files.map(({ kind, fileName, fileSizeBytes }) => ({ kind, fileName, fileSizeBytes })),
+    files: job.files.map(({ kind, fileName, fileSizeBytes, fileHash }) => ({ kind, fileName, fileSizeBytes, fileHash })),
     stages: job.stages.map((stage) => ({ ...stage })),
     result: { ...job.result },
     error_code: job.error_code,
@@ -230,6 +240,7 @@ function jobFromRow(row: JsonRecord): ProductArchiveWorkflowJob {
         fileName: stringValue(value.fileName ?? value.file_name),
         filePath: stringValue(value.filePath ?? value.file_path),
         fileSizeBytes: numberValue(value.fileSizeBytes ?? value.file_size_bytes),
+        fileHash: stringValue(value.fileHash ?? value.file_hash) || null,
       })
     }),
     options: parseJsonRecord(row.options_json),
@@ -410,6 +421,7 @@ function createWorkflowController({
   const workerToken = `workflow-worker:${idFactory()}`
   let running = false
   let scheduled = false
+  const runningControllers = new Map<string, AbortController>()
 
   function enqueueProductArchiveWorkflowJob(input: ProductArchiveWorkflowJobInput) {
     const job = store.enqueue(input)
@@ -454,10 +466,41 @@ function createWorkflowController({
   async function processClaimedJob(job: ProductArchiveWorkflowJob) {
     const startedAt = Date.now()
     let leaseLost = false
+    const controller = new AbortController()
+    runningControllers.set(job.id, controller)
+    const leaseError = () => new ProductArchiveWorkflowLeaseError("深绘建档工作流 claim 已失效")
+    const abortForLeaseLoss = () => {
+      leaseLost = true
+      if (!controller.signal.aborted) controller.abort(leaseError())
+    }
+    const context: ProductArchiveWorkflowProcessorContext = {
+      signal: controller.signal,
+      async assertActive() {
+        if (controller.signal.aborted) throw controller.signal.reason ?? leaseError()
+        if (!store.renew(job)) {
+          abortForLeaseLoss()
+          throw leaseError()
+        }
+      },
+      async checkpoint(update) {
+        await context.assertActive()
+        await update?.(job)
+        if (!store.save(job)) {
+          abortForLeaseLoss()
+          throw leaseError()
+        }
+      },
+      async runSideEffect(run) {
+        await context.assertActive()
+        const result = await run()
+        await context.assertActive()
+        return result
+      },
+    }
     const heartbeat = heartbeatIntervalMs > 0
       ? setInterval(() => {
           if (leaseLost) return
-          if (!store.renew(job)) leaseLost = true
+          if (!store.renew(job)) abortForLeaseLoss()
         }, Math.max(1000, Math.floor(heartbeatIntervalMs)))
       : null
     heartbeat?.unref?.()
@@ -475,20 +518,20 @@ function createWorkflowController({
       }
       for (const stage of job.stages) {
         if (stage.status === "completed") continue
-        if (leaseLost) throw new ProductArchiveWorkflowLeaseError()
+        await context.assertActive()
         stage.status = "running"
         stage.started_at = stage.started_at ?? nowIso(now)
         stage.error_code = null
         stage.error_message = null
-        if (!store.save(job)) throw new ProductArchiveWorkflowLeaseError()
+        if (!store.save(job)) throw leaseError()
         const stageStartedAt = Date.now()
         try {
-          const result = await processor(job, stage)
-          if (leaseLost) throw new ProductArchiveWorkflowLeaseError()
+          const result = await processor(job, stage, context)
+          await context.assertActive()
           stage.status = "completed"
           stage.result = result ?? stage.result ?? null
           stage.finished_at = nowIso(now)
-          if (!store.save(job)) throw new ProductArchiveWorkflowLeaseError()
+          if (!store.save(job)) throw leaseError()
           recordPerformanceSpan("workflow.stage", Date.now() - stageStartedAt, {
             jobId: job.id,
             stage: stage.key,
@@ -509,6 +552,7 @@ function createWorkflowController({
       await terminalize(job, "failed", "workflow_failed", safeErrorMessage(error))
     } finally {
       if (heartbeat) clearInterval(heartbeat)
+      runningControllers.delete(job.id)
       recordPerformanceSpan("workflow.job", Date.now() - startedAt, {
         jobId: job.id,
         status: job.status,
@@ -554,6 +598,12 @@ function createWorkflowController({
 
   function cancelProductArchiveWorkflowJob(id: string, actor: unknown) {
     const job = store.cancel(id, actor)
+    const controller = runningControllers.get(id)
+    if (controller && !controller.signal.aborted) {
+      const error = new Error("深绘建档工作流已取消")
+      error.name = "AbortError"
+      controller.abort(error)
+    }
     return job ? jobSnapshot(job) : null
   }
 

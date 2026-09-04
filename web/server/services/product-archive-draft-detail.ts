@@ -593,9 +593,10 @@ export function getProductArchiveDraftIssues(
 export function getProductArchiveDraftAssets(
   db: SyncPostgresDatabase,
   draftId: number,
+  input: PageInput = {},
 ): ProductArchiveDraftAssetResponse | null {
   if (!draftExists(db, draftId)) return null
-  const page = pageInput({ limit: DEFAULT_PAGE_LIMIT })
+  const page = pageInput(input)
   const rows = db.prepare(`
     select id, draft_id, spu_code, source_type, source_ref, file_name, original_file_name,
       mime_type, file_size, width, height, sort_no,

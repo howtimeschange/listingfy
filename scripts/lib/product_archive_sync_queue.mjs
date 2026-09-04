@@ -83,10 +83,10 @@ export function classifyProductArchiveSyncError(error, context = {}) {
   const source = normalizeSyncContextValue(context.source ?? error?.productArchiveSyncSource);
   const stage = normalizeSyncContextValue(context.stage ?? error?.productArchiveSyncStage);
   const provider = normalizeSyncContextValue(context.provider ?? error?.productArchiveSyncProvider);
+  const hasExplicitStageOrProvider = Boolean(stage || provider);
   const mdmNotFoundContext = provider === "mdm"
     || stage === "mdm"
-    || source === "mdm"
-    || source === "mdm_draft";
+    || (!hasExplicitStageOrProvider && (source === "mdm" || source === "mdm_draft"));
   if (mdmNotFoundContext && isExplicitMdmSpuNotFoundMessage(message)) {
     return { retryable: false, reasonCode: "mdm_spu_not_found" };
   }

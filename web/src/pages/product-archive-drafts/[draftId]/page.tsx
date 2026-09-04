@@ -363,12 +363,26 @@ function useDraftPagedResource<T>(input: {
 }
 
 function useDraftAssets(draftId: string | undefined) {
-  return useQuery<DraftAssetsResponse>({
+  const query = useInfiniteQuery<DraftAssetsResponse>({
     queryKey: ["product-archive-draft-assets", draftId],
     enabled: Boolean(draftId),
     staleTime: 15000,
-    queryFn: () => api.get<DraftAssetsResponse>(`/product-archive-drafts/${draftId}/assets`),
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) => api.get<DraftAssetsResponse>(
+      `/product-archive-drafts/${draftId}/assets?limit=${DRAFT_RESOURCE_PAGE_SIZE}&offset=${pageParam}`,
+    ),
+    getNextPageParam: (lastPage) => {
+      const nextOffset = lastPage.pagination.offset + lastPage.items.length
+      return nextOffset < lastPage.pagination.total ? nextOffset : undefined
+    },
   })
+  const items = useMemo(() => query.data?.pages.flatMap((page) => page.items) ?? [], [query.data])
+  return {
+    ...query,
+    items,
+    total: query.data?.pages[0]?.pagination.total ?? 0,
+    counts: query.data?.pages[0]?.counts ?? { reference: 0, hangtag: 0, washlabel: 0 },
+  }
 }
 
 function useDraftSourceSnapshot(draftId: string | undefined, enabled: boolean) {
@@ -1540,11 +1554,11 @@ export default function ProductArchiveDraftDetailPage() {
       fields: pageItems(fieldsQuery.data),
       skus: pageItems(skusQuery.data),
       issues: pageItems(issuesQuery.data),
-      images: assetsQuery.data?.items ?? fallbackImages,
+      images: assetsQuery.items.length > 0 ? assetsQuery.items : fallbackImages,
       logs: pageItems(activityQuery.data),
       sizeChartSourceRows: pageItems(sizeChartSourceQuery.data),
     }
-  }, [activityQuery.data, assetsQuery.data, fieldsQuery.data, issuesQuery.data, sizeChartSourceQuery.data, skusQuery.data, summaryQuery.data])
+  }, [activityQuery.data, assetsQuery.items, fieldsQuery.data, issuesQuery.data, sizeChartSourceQuery.data, skusQuery.data, summaryQuery.data])
   const detail = { ...summaryQuery, data: detailData }
   const draft = detail.data?.draft
   const summary = draft?.validation_summary_json ?? {}
@@ -1768,6 +1782,7 @@ export default function ProductArchiveDraftDetailPage() {
       queryClient.setQueryData(["product-archive-drafts", draftId], result)
       invalidateDraftSummary()
       invalidateDraftFields()
+      invalidateDraftIssues()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "保存尺码表数值失败")
@@ -1912,6 +1927,7 @@ export default function ProductArchiveDraftDetailPage() {
     onSuccess: () => {
       toast.success("尺码表映射审核已保存")
       invalidateDraftSummary()
+      invalidateDraftIssues()
       invalidateDraftSizeChartSource()
     },
     onError: (error) => {
@@ -2241,6 +2257,20 @@ export default function ProductArchiveDraftDetailPage() {
           onPreview={setPreviewTarget}
         />
       </div>
+      {assetsQuery.hasNextPage ? (
+        <div className="flex justify-center">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={assetsQuery.isFetchingNextPage}
+            onClick={() => assetsQuery.fetchNextPage()}
+          >
+            {assetsQuery.isFetchingNextPage ? <Loader2 className="size-4 animate-spin" /> : null}
+            加载更多附件（{formatNumber(assetsQuery.items.length)} / {formatNumber(assetsQuery.total)}）
+          </Button>
+        </div>
+      ) : null}
 
       <DraftAssetPreviewDialog target={previewTarget} onClose={() => setPreviewTarget(null)} />
 

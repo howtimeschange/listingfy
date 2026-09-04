@@ -393,6 +393,36 @@ test("mdm_deepdraw deepdraw-stage 404 does not write MDM negative cache", async 
   assert.equal(cached.length, 0);
 });
 
+test("mdm_draft source does not override explicit deepdraw not-found context", async () => {
+  const cached = [];
+  const queue = createProductArchiveSyncQueue({
+    allowedSources: ["draft", "mdm_draft"],
+    maxAttempts: 1,
+    wait: async () => {},
+    cacheNegativeResult: async (entry) => {
+      cached.push(entry);
+    },
+    syncOne: async () => {
+      const error = new Error("请求的资源未在服务器上发现");
+      error.productArchiveSyncStage = "deepdraw";
+      error.productArchiveSyncProvider = "deepdraw";
+      throw error;
+    },
+  });
+
+  const job = queue.enqueue({
+    source: "mdm_draft",
+    rawCodes: ["A001"],
+    intervalMs: 0,
+  });
+  await queue.waitForIdle();
+
+  const finished = queue.getJob(job.id);
+  assert.equal(finished.items[0].reasonCode, "sync_failed");
+  assert.equal(finished.items[0].retryable, false);
+  assert.equal(cached.length, 0);
+});
+
 test("queue continues when one persistence write fails", async () => {
   let saveCount = 0;
   const seen = [];

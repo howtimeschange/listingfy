@@ -50,6 +50,18 @@ function parseJsonRecord(value: unknown): JsonRecord {
   }
 }
 
+function parseJsonArray(value: unknown): unknown[] {
+  if (!value) return []
+  if (Array.isArray(value)) return value
+  if (typeof value !== "string") return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize)
   if (!value || typeof value !== "object") return value
@@ -152,6 +164,200 @@ function sizeChartMappingSnapshot(mapping: JsonRecord) {
   }
 }
 
+function sourceBatchIdsFromSnapshot(value: unknown, legacyValue: unknown = null) {
+  const ids = new Set<number>()
+  const push = (item: unknown) => {
+    const id = Number(item)
+    if (Number.isInteger(id) && id > 0) ids.add(id)
+  }
+  push(legacyValue)
+  if (Array.isArray(value)) {
+    for (const item of value) push(item)
+    return Array.from(ids)
+  }
+  const record = jsonRecord(value)
+  for (const item of Object.values(record)) {
+    if (Array.isArray(item)) {
+      for (const id of item) push(id)
+    } else {
+      push(item)
+    }
+  }
+  return Array.from(ids)
+}
+
+function sourceRowSnapshot(row: JsonRecord) {
+  return {
+    id: row.id ?? null,
+    sourceBatchId: row.source_batch_id ?? null,
+    sourceType: stringValue(row.source_type),
+    spuCode: stringValue(row.spu_code),
+    skcCode: stringValue(row.skc_code),
+    rowJson: parseJsonRecord(row.row_json),
+    createdAt: isoString(row.created_at),
+  }
+}
+
+function sourceRowsForDraftInputs(db: SyncPostgresDatabase, draft: JsonRecord, sourceBatchIds: unknown) {
+  const spuCode = stringValue(draft.spu_code)
+  if (!spuCode) return []
+  const batchIds = sourceBatchIdsFromSnapshot(sourceBatchIds, parseJsonRecord(draft.source_snapshot_json).sourceBatchId)
+  const batchClause = batchIds.length > 0
+    ? `and source.source_batch_id in (${batchIds.map(() => "?").join(", ")})`
+    : ""
+  const params = batchIds.length > 0 ? [spuCode, ...batchIds] : [spuCode]
+  return db.prepare(`
+    select source.id,
+      source.source_batch_id,
+      source.source_type,
+      source.spu_code,
+      source.skc_code,
+      source.row_json,
+      source.created_at
+    from product_archive_source_row source
+    join product_archive_source_batch batch
+      on batch.id = source.source_batch_id
+     and batch.import_status = 'committed'
+    where source.spu_code = ?
+      ${batchClause}
+    order by source.source_type, source.source_batch_id desc, source.skc_code nulls first, source.id desc
+    limit 5000
+  `).all(...params) as JsonRecord[]
+}
+
+function productSpuSnapshot(db: SyncPostgresDatabase, draft: JsonRecord) {
+  const spuCode = stringValue(draft.spu_code)
+  if (!spuCode) return null
+  const row = db.prepare(`
+    select id,
+      spu_code,
+      spu_name,
+      spu_name_en,
+      brand_code,
+      brand_name,
+      year,
+      season_code,
+      season_name,
+      product_chain_code,
+      product_chain_name,
+      product_line_code,
+      product_line_name,
+      product_type_code,
+      product_type_name,
+      middle_class_code,
+      middle_class_name,
+      subclass_code,
+      subclass_name,
+      gender_code,
+      gender_name,
+      age_group_code,
+      age_group_name,
+      main_size_group_code,
+      main_size_group_name,
+      order_size_group_code,
+      order_size_group_name,
+      spec_range,
+      price_tag,
+      fabric_type_code,
+      fabric_type_name,
+      fabric,
+      composition,
+      lining_material,
+      wash_label_ingr,
+      creation_date,
+      last_update_date,
+      multi_lang_json,
+      source_hash,
+      synced_at,
+      updated_at
+    from product_spu
+    where spu_code = ?
+  `).get(spuCode) as JsonRecord | undefined
+  if (!row) return null
+  return {
+    ...row,
+    multi_lang_json: parseJsonArray(row.multi_lang_json),
+    updated_at: isoString(row.updated_at),
+    synced_at: isoString(row.synced_at),
+  }
+}
+
+function templateRawRevision(raw: JsonRecord) {
+  const attributes = parseJsonRecord(raw.attributes)
+  return stringValue(raw.revision)
+    || stringValue(raw.rawRevision)
+    || stringValue(raw.version)
+    || stringValue(raw.updatedAt)
+    || stringValue(attributes.revision)
+    || stringValue(attributes.rawRevision)
+    || stringValue(attributes.version)
+}
+
+function templateFieldSnapshot(row: JsonRecord) {
+  const raw = parseJsonRecord(row.raw_payload_json)
+  const attributes = parseJsonRecord(raw.attributes)
+  return {
+    id: row.id ?? null,
+    fieldName: stringValue(row.field_name),
+    fieldId: stringValue(row.field_id),
+    fieldType: stringValue(row.field_type),
+    optionsJson: parseJsonArray(row.options_json),
+    required: Boolean(row.required),
+    saleProp: Boolean(row.sale_prop),
+    thirdPlatform: stringValue(row.third_platform ?? attributes.thirdPlatform),
+    rawRevision: templateRawRevision(raw),
+    updatedAt: isoString(row.updated_at),
+  }
+}
+
+function templateFieldsForDraftInputs(db: SyncPostgresDatabase, draft: JsonRecord) {
+  const tenantName = stringValue(draft.tenant_name)
+  const merchantId = stringValue(draft.merchant_id)
+  const tradeId = stringValue(draft.trade_id)
+  if (!tenantName || !merchantId || !tradeId) return []
+  return db.prepare(`
+    select id,
+      field_name,
+      field_id,
+      field_type,
+      options_json,
+      required,
+      sale_prop,
+      raw_payload_json #>> '{attributes,thirdPlatform}' as third_platform,
+      raw_payload_json,
+      updated_at
+    from deepdraw_trade_field_cache
+    where tenant_name = ?
+      and merchant_id = ?
+      and trade_id = ?
+    order by required desc, sale_prop desc, field_name, field_id
+  `).all(tenantName, merchantId, tradeId) as JsonRecord[]
+}
+
+function shoeSizeChartInputSnapshot(db: SyncPostgresDatabase) {
+  return db.prepare(`
+    select chart.chart_code,
+      chart.chart_name,
+      chart.applicable_categories,
+      chart.version_label,
+      chart.enabled as chart_enabled,
+      chart.updated_at as chart_updated_at,
+      row.size_value,
+      row.foot_length_mm,
+      row.foot_length_tolerance_mm,
+      row.inner_length_mm,
+      row.age_segment,
+      row.reference_age,
+      row.reference_stage,
+      row.enabled as row_enabled,
+      row.updated_at as row_updated_at
+    from product_archive_shoe_size_chart chart
+    left join product_archive_shoe_size_chart_row row on row.chart_id = chart.id
+    where chart.enabled = true
+    order by chart.chart_code, row.size_value
+  `).all() as JsonRecord[]
+}
+
 function approvedSizeChartMappingsForDraft(db: SyncPostgresDatabase, draft: JsonRecord) {
   const tenantName = stringValue(draft.tenant_name)
   const merchantId = stringValue(draft.merchant_id)
@@ -205,7 +411,7 @@ function draftPreparationInputs(
   const images = db.prepare("select * from product_archive_draft_image where draft_id = ?").all(draftId) as JsonRecord[]
   const sourceSnapshot = parseJsonRecord(draft.source_snapshot_json)
   const sourceBatchIds = draft.source_batch_ids_json == null
-    ? parseJsonRecord(sourceSnapshot.sourceBatchIds)
+    ? sourceSnapshot.sourceBatchIds ?? {}
     : parseJsonRecord(draft.source_batch_ids_json)
   return {
     draft: {
@@ -227,6 +433,10 @@ function draftPreparationInputs(
     skus: sortedRows(skus.map(skuSnapshot)),
     images: sortedRows(images.map(imageSnapshot)),
     sizeChartMappings: sortedRows(approvedSizeChartMappingsForDraft(db, draft).map(sizeChartMappingSnapshot)),
+    templateFields: sortedRows(templateFieldsForDraftInputs(db, draft).map(templateFieldSnapshot)),
+    productSpu: productSpuSnapshot(db, draft),
+    sourceRows: sortedRows(sourceRowsForDraftInputs(db, draft, sourceBatchIds).map(sourceRowSnapshot)),
+    shoeSizeCharts: sortedRows(shoeSizeChartInputSnapshot(db)),
   }
 }
 

@@ -9,6 +9,7 @@ const files = {
   migration: path.join(PROJECT_ROOT, "db/migrations/028_listing_launch_plan.sql"),
   importJobMigration: path.join(PROJECT_ROOT, "db/migrations/033_listing_launch_plan_import_jobs.sql"),
   performanceMigration: path.join(PROJECT_ROOT, "db/migrations/055_product_archive_performance.sql"),
+  performanceFollowupMigration: path.join(PROJECT_ROOT, "db/migrations/056_product_archive_performance_followups.sql"),
   server: path.join(PROJECT_ROOT, "web/server/index.ts"),
   route: path.join(PROJECT_ROOT, "web/server/routes/listing-launch-plans.ts"),
   service: path.join(PROJECT_ROOT, "web/server/services/listing-launch-plans.ts"),
@@ -88,8 +89,9 @@ class ListingLaunchPlanMemoryDb {
             normalized_row_count: params[5],
             source_batch_ids_json: params[6],
             raw_manifest_json: params[7],
-            created_by: params[8],
-            created_at: params[9],
+            import_fingerprint: params[8],
+            created_by: params[9],
+            created_at: params[10],
           });
           return { lastInsertRowid: id };
         },
@@ -226,16 +228,14 @@ class ListingLaunchPlanMemoryDb {
   }
 
   listRows(sql, params) {
-    const hasCursor = sql.includes("(row.spu_code, row.id) > (?, ?)");
+    const hasCursor = sql.includes("row.spu_code > ?");
     const hasOffset = sql.includes("offset ?");
     const limit = Number(params.at(hasOffset ? -2 : -1));
     const offset = hasOffset ? Number(params.at(-1)) : 0;
-    const afterSpuCode = hasCursor ? String(params.at(-3)) : "";
-    const afterRowId = hasCursor ? Number(params.at(-2)) : 0;
+    const afterSpuCode = hasCursor ? String(params.at(-2)) : "";
     let rows = this.latestRows();
     if (hasCursor) {
-      rows = rows.filter(({ row }) => row.spu_code.localeCompare(afterSpuCode) > 0
-        || (row.spu_code === afterSpuCode && row.id > afterRowId));
+      rows = rows.filter(({ row }) => row.spu_code.localeCompare(afterSpuCode) > 0);
     }
     return rows.slice(offset, offset + limit).map(({ row, imp, summary }) => ({
       id: row.id,
@@ -302,6 +302,31 @@ test("cursor pagination does not repeat or skip rows after a newer import is add
   assert.deepEqual([...first.items, ...second.items].map((item) => item.spu_code), ["A", "B", "C", "D"]);
 });
 
+test("cursor pagination does not repeat the previous boundary SPU after that SPU is updated", async () => {
+  const { importListingLaunchPlanSheets, listListingLaunchPlanRows } = await listingLaunchPlanService();
+  const db = new ListingLaunchPlanMemoryDb();
+
+  importListingLaunchPlanSheets(db, {
+    fileName: "base.xlsx",
+    sheets: [{ name: "Base", rows: ["A", "B", "C", "D"].map((spu) => launchPlanRow(spu, `${spu}-base`, "Base")) }],
+  });
+  const first = listListingLaunchPlanRows(db, { limit: 2, includeTotal: false });
+
+  importListingLaunchPlanSheets(db, {
+    fileName: "boundary-update.xlsx",
+    sheets: [{ name: "New", rows: [launchPlanRow("B", "B-new", "New")] }],
+  });
+  const second = listListingLaunchPlanRows(db, {
+    limit: 2,
+    afterSpuCode: first.nextCursor.afterSpuCode,
+    afterRowId: first.nextCursor.afterRowId,
+    includeTotal: false,
+  });
+
+  assert.deepEqual(second.items.map((item) => item.spu_code), ["C", "D"]);
+  assert.equal(second.items.some((item) => item.spu_code === "B"), false);
+});
+
 test("offset compatibility does not expose a next cursor for an exactly full final page", async () => {
   const { importListingLaunchPlanSheets, listListingLaunchPlanRows } = await listingLaunchPlanService();
   const db = new ListingLaunchPlanMemoryDb();
@@ -361,9 +386,17 @@ test("listing launch plan schema stores imports and normalized rows separately f
   assert.doesNotMatch(importJobMigration, /sqlite|autoincrement|strftime/i);
 });
 
-test("listing launch plan performance migration adds latest SPU and sheet stat summaries additively", async () => {
-  const migration = await readFile(files.performanceMigration, "utf8");
+test("listing launch plan performance follow-up migration adds latest SPU and sheet stat summaries additively", async () => {
+  const earlyMigration = await readFile(files.performanceMigration, "utf8");
+  const migration = await readFile(files.performanceFollowupMigration, "utf8");
 
+  assert.match(earlyMigration, /create table if not exists product_archive_workflow_job/);
+  assert.doesNotMatch(earlyMigration, /product_archive_draft_preparation/);
+  assert.doesNotMatch(earlyMigration, /listing_launch_plan_spu_latest/);
+  assert.match(migration, /alter table product_archive_source_batch[\s\S]*add column if not exists import_fingerprint text/);
+  assert.match(migration, /ux_product_archive_source_batch_import_fingerprint/);
+  assert.match(migration, /alter table listing_launch_plan_import[\s\S]*add column if not exists import_fingerprint text/);
+  assert.match(migration, /ux_listing_launch_plan_import_fingerprint/);
   assert.match(migration, /create table if not exists listing_launch_plan_spu_latest/);
   assert.match(migration, /spu_code text primary key/);
   assert.match(migration, /import_id bigint not null references listing_launch_plan_import\(id\) on delete cascade/);
@@ -391,7 +424,7 @@ test("listing launch plan service maintains summaries transactionally and lists 
   const listRows = service.slice(service.indexOf("export function listListingLaunchPlanRows"));
 
   assert.match(service, /function refreshListingLaunchPlanSummaries\(db: SyncPostgresDatabase, importId: number\)/);
-  assert.match(importTransaction, /insertRowsInBatches[\s\S]*refreshListingLaunchPlanSummaries\(db, id\)/);
+  assert.match(importTransaction, /insertRowsInBatches[\s\S]*refreshListingLaunchPlanSummaries\(db, imported\.id\)/);
   assert.match(service, /on conflict \(spu_code\) do update[\s\S]*where listing_launch_plan_spu_latest\.import_id < excluded\.import_id/);
   assert.match(service, /insert into listing_launch_plan_import_sheet_stat/);
   assert.match(listRows, /listing_launch_plan_spu_latest latest/);
@@ -399,7 +432,7 @@ test("listing launch plan service maintains summaries transactionally and lists 
   assert.match(service, /afterSpuCode\?: string \| null/);
   assert.match(service, /afterRowId\?: unknown/);
   assert.match(listRows, /nextCursor/);
-  assert.match(listRows, /\(row\.spu_code, row\.id\) > \(\?, \?\)/);
+  assert.match(listRows, /row\.spu_code > \?/);
   assert.match(service, /LISTING_LAUNCH_PLAN_COUNT_CACHE_MS = 15_000/);
 });
 

@@ -108,7 +108,7 @@ test("P1 status parser rejects empty, malformed, and unknown SHEIN states", () =
 test("S6 listing-plan import stale reclaim fences old worker saves", async () => {
   const service = await readFile(path.resolve(import.meta.dirname, "../../web/server/services/listing-launch-plan-import-jobs.ts"), "utf8")
   assert.match(service, /where id = \?\s+and started_at is not distinct from \?/)
-  assert.match(service, /started_at = \?,\s*updated_at = \?/)
+  assert.match(service, /started_at = coalesce\(job\.started_at, \?\),\s*updated_at = \?/)
   assert.match(service, /拒绝旧 worker 写入/)
 })
 

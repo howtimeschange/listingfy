@@ -1,5 +1,5 @@
 import fs from "node:fs"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import {
   loadCurrentReusablePreparedProductArchiveDraft,
@@ -265,11 +265,13 @@ interface SourceImportInput {
   fileName?: string | null
   sheetName?: string | null
   rows?: JsonRecord[]
+  idempotencyKey?: string | null
 }
 
 interface SourceImportChunkOptions {
   chunkSize?: number
   signal?: AbortSignal
+  beforeCommit?: () => void | Promise<void>
   onProgress?: (progress: {
     sourceBatchId: number
     insertedRowCount: number
@@ -466,6 +468,60 @@ function arrayValue(value: unknown): unknown[] {
 
 function jsonText(value: unknown) {
   return JSON.stringify(value ?? {})
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`
+  if (!value || typeof value !== "object") return JSON.stringify(value)
+  const record = value as JsonRecord
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+    .join(",")}}`
+}
+
+function importFingerprint(scope: string, value: unknown) {
+  return createHash("sha256").update(`${scope}:${stableJson(value)}`).digest("hex")
+}
+
+function sourceImportFingerprint(input: SourceImportInput, sourceType: string) {
+  const idempotencyKey = stringValue(input.idempotencyKey)
+  if (!idempotencyKey) return null
+  return importFingerprint("product_archive_source_import", {
+    idempotencyKey,
+    sourceType,
+    fileName: stringValue(input.fileName),
+    sheetName: stringValue(input.sheetName),
+  })
+}
+
+function committedSourceBatchByFingerprint(db: SyncPostgresDatabase, fingerprint: string | null) {
+  if (!fingerprint) return null
+  const batch = (db.prepare(`
+    select *
+    from product_archive_source_batch
+    where import_fingerprint = ?
+      and import_status = 'committed'
+    order by id desc
+    limit 1
+  `).get(fingerprint) as JsonRecord | undefined) ?? null
+  return batch ?? null
+}
+
+async function committedSourceBatchByFingerprintAsync(
+  client: { query: (sql: string, params?: readonly unknown[]) => Promise<{ rows?: Array<Record<string, unknown>> }> | { rows?: Array<Record<string, unknown>> } },
+  fingerprint: string | null,
+) {
+  if (!fingerprint) return null
+  const result = await client.query(`
+    select *
+    from product_archive_source_batch
+    where import_fingerprint = $1
+      and import_status = 'committed'
+    order by id desc
+    limit 1
+  `, [fingerprint])
+  return result.rows?.[0] ?? null
 }
 
 function likeQuery(value: string) {
@@ -10097,6 +10153,17 @@ export function importProductArchiveSourceRows(db: SyncPostgresDatabase, input: 
       ? normalizePlmSizeChartRows(rows, { sheetName: input.sheetName ?? undefined })
       : normalizeProductArchiveSourceRows(sourceType, rows)
   const now = nowIso()
+  const fingerprint = sourceImportFingerprint(input, sourceType)
+  const existingBatch = committedSourceBatchByFingerprint(db, fingerprint)
+  if (existingBatch) {
+    return {
+      batch: existingBatch,
+      sourceType,
+      inputRowCount: rows.length,
+      insertedRowCount: Number(existingBatch.row_count ?? 0),
+      reused: true,
+    }
+  }
 
   const batchId = db.transaction(() => {
     const batch = db.prepare(`
@@ -10107,11 +10174,13 @@ export function importProductArchiveSourceRows(db: SyncPostgresDatabase, input: 
         sheet_name,
         row_count,
         raw_manifest_json,
+        import_fingerprint,
         import_status,
         committed_at,
         created_at
       )
-      values (?, ?, ?, ?, ?, ?::jsonb, 'committed', ?::timestamptz, ?::timestamptz)
+      values (?, ?, ?, ?, ?, ?::jsonb, ?, 'committed', ?::timestamptz, ?::timestamptz)
+      on conflict (import_fingerprint) where import_fingerprint is not null do nothing
     `).run(
       sourceBatchNo(sourceType),
       sourceType,
@@ -10122,11 +10191,21 @@ export function importProductArchiveSourceRows(db: SyncPostgresDatabase, input: 
         input_row_count: rows.length,
         inserted_row_count: normalizedRows.length,
         source_type: sourceType,
+        idempotency_key: stringValue(input.idempotencyKey) || null,
       }),
+      fingerprint,
       now,
       now,
     )
-    const sourceBatchId = Number(batch.lastInsertRowid)
+    let sourceBatchId = Number(batch.lastInsertRowid)
+    let reusedCommittedBatch = false
+    if (!Number.isInteger(sourceBatchId) || sourceBatchId <= 0) {
+      const committedBatch = committedSourceBatchByFingerprint(db, fingerprint)
+      if (!committedBatch) throw new Error("同一来源导入已存在但尚未提交，未完成数据不会对草稿可见")
+      sourceBatchId = Number(committedBatch.id)
+      reusedCommittedBatch = true
+    }
+    if (reusedCommittedBatch) return sourceBatchId
 
     if (sourceType === "field_mapping") {
       insertRowsInBatches(db, fieldRuleSpec, normalizedRows.map((row) => ({
@@ -10154,11 +10233,25 @@ export function importProductArchiveSourceRows(db: SyncPostgresDatabase, input: 
     return sourceBatchId
   })()
 
+  const batch = db.prepare("select * from product_archive_source_batch where id = ?").get(batchId)
   return {
-    batch: db.prepare("select * from product_archive_source_batch where id = ?").get(batchId),
+    batch,
     sourceType,
     inputRowCount: rows.length,
     insertedRowCount: normalizedRows.length,
+  }
+}
+
+function* sourceRowsForCopy(sourceBatchId: number, rows: JsonRecord[], now: string) {
+  for (const row of rows) {
+    yield {
+      sourceBatchId,
+      sourceType: row.sourceType,
+      spuCode: row.spuCode,
+      skcCode: row.skcCode,
+      rowJson: row.rowJson,
+      createdAt: now,
+    }
   }
 }
 
@@ -10187,6 +10280,22 @@ export async function importProductArchiveSourceRowsInChunks(
       })
   throwIfAborted(options.signal)
   const now = nowIso()
+  const fingerprint = sourceImportFingerprint(input, sourceType)
+  const existingBatch = committedSourceBatchByFingerprint(db, fingerprint)
+  if (existingBatch) {
+    await options.onProgress?.({
+      sourceBatchId: Number(existingBatch.id),
+      insertedRowCount: Number(existingBatch.row_count ?? 0),
+      totalRowCount: Number(existingBatch.row_count ?? 0),
+    })
+    return {
+      batch: existingBatch,
+      sourceType,
+      inputRowCount: rows.length,
+      insertedRowCount: Number(existingBatch.row_count ?? 0),
+      reused: true,
+    }
+  }
 
   const committedBatch = await withAsyncTransaction(async (client) => {
     const batch = await client.query(`
@@ -10197,10 +10306,12 @@ export async function importProductArchiveSourceRowsInChunks(
         sheet_name,
         row_count,
         raw_manifest_json,
+        import_fingerprint,
         import_status,
         created_at
       )
-      values ($1, $2, $3, $4, $5, $6::jsonb, 'importing', $7::timestamptz)
+      values ($1, $2, $3, $4, $5, $6::jsonb, $7, 'importing', $8::timestamptz)
+      on conflict (import_fingerprint) where import_fingerprint is not null do nothing
       returning id
     `, [
       sourceBatchNo(sourceType),
@@ -10214,21 +10325,20 @@ export async function importProductArchiveSourceRowsInChunks(
         source_type: sourceType,
         chunk_size: chunkSize,
         writer: "copy",
+        idempotency_key: stringValue(input.idempotencyKey) || null,
       }),
+      fingerprint,
       now,
     ])
     const batchId = Number(batch.rows?.[0]?.id)
-    if (!Number.isInteger(batchId) || batchId <= 0) throw new Error("来源表批次创建失败")
+    if (!Number.isInteger(batchId) || batchId <= 0) {
+      const committedBatch = await committedSourceBatchByFingerprintAsync(client, fingerprint)
+      if (committedBatch) return committedBatch
+      throw new Error("同一来源导入已存在但尚未提交，未完成数据不会对草稿可见")
+    }
 
     throwIfAborted(options.signal)
-    await copyRowsToStaging(client, sourceRowSpec, normalizedRows.map((row) => ({
-      sourceBatchId: batchId,
-      sourceType: row.sourceType,
-      spuCode: row.spuCode,
-      skcCode: row.skcCode,
-      rowJson: row.rowJson,
-      createdAt: now,
-    })))
+    await copyRowsToStaging(client, sourceRowSpec, sourceRowsForCopy(batchId, normalizedRows as JsonRecord[], now))
 
     const committed = await client.query(`
       update product_archive_source_batch
@@ -10241,7 +10351,7 @@ export async function importProductArchiveSourceRowsInChunks(
     const committedBatch = committed.rows?.[0]
     if (!committedBatch) throw new Error("来源表批次提交失败，未完成数据不会对草稿可见")
     return committedBatch
-  })
+  }, { beforeCommit: options.beforeCommit })
 
   await options.onProgress?.({
     sourceBatchId: Number(committedBatch.id),

@@ -66,7 +66,7 @@ DONE_WITH_CONCERNS - local development/readiness only
 
 - `npm run web:lint` exits successfully but reports 6 pre-existing React hook dependency warnings in `web/src/pages/product-archive-drafts/page.tsx`.
 - `npm run web:build` exits successfully but reports existing Vite chunk-size warnings.
-- Production rollout still requires controller-owned deployed SHA readback, migration `055_product_archive_performance.sql` readback, startup log inspection, and the full benchmark matrix.
+- Production rollout still requires controller-owned deployed SHA readback, migrations `055_product_archive_performance.sql` and `056_product_archive_performance_followups.sql` readback, startup log inspection, and the full benchmark matrix.
 
 ## Review Fix - Needs Fixes Follow-up
 
@@ -83,3 +83,24 @@ DONE_WITH_CONCERNS - local development/readiness only
 ### Remaining Operational Boundary
 
 - No push, deployment, production write, live provider call, live DeepDraw submit/readback, gray rollout, or bastion readback was performed in this follow-up.
+
+## Whole-Branch Review Repair Follow-up - 2026-09-04
+
+- Split the structures appended after the early `055_product_archive_performance.sql` into `056_product_archive_performance_followups.sql` so old environments that registered the early `055` can still receive prepared snapshots, negative cache, idempotency fingerprints, listing-plan summaries, and backfill.
+- Hardened workflow and listing-plan import job recovery with idempotent fingerprints, per-stage checkpoints, abort/fence checks, lease-aware reclaim, and fenced file cleanup.
+- Tightened publish success semantics so readback mismatch is non-success, expanded prepared snapshot hashes to live template/product/source/size inputs, prioritized stage/provider in sync negative-cache classification, made async COPY chunked, and closed the five UI/service minor findings.
+- Fixed final local validation issues: the `mdm_draft` negative-cache regression now uses the actual draft queue source allowlist, the stale-reclaim source-shape red test now expects preserved `started_at`, the common async task status type includes failed/cancelled terminal states, and lint-only cleanup removed an unused variable and `let`.
+
+### Latest Verification
+
+- Focused review command over the 10 requested test files: passed, 291/291.
+- `npm test`: passed, 928/929 with 1 skipped.
+- `npm run web:lint`: passed with 6 existing React hook dependency warnings in `web/src/pages/product-archive-drafts/page.tsx`.
+- `npm run web:build`: passed with existing Vite chunk-size warnings.
+- `git diff --check`: passed.
+- `git diff --check 9827e6e75bb74bf3b0edb5f5d5bf7b7cea57e225...HEAD`: passed.
+- `git status --short --branch`: still on `codex/product-archive-performance`; latest review repairs are uncommitted local changes.
+
+### Remaining Verification Gap
+
+- Real PostgreSQL migration/COPY execution and RSS/heap high-water measurement were not run: local `DATABASE_URL`/`POSTGRES_URL` were unset and `pg_isready` was unavailable. No production write, provider write, DeepDraw submit/readback, push, deployment, gray rollout, or live production readback was performed.

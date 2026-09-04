@@ -273,7 +273,7 @@ export default function ListingLaunchPlansPage() {
     enabled: Boolean(importJobId),
     refetchInterval: (query) => {
       const job = query.state.data
-      return job && job.status !== "completed" ? 1500 : false
+      return job && !["completed", "failed", "cancelled"].includes(job.status) ? 1500 : false
     },
     refetchOnWindowFocus: false,
   })
@@ -281,14 +281,20 @@ export default function ListingLaunchPlansPage() {
   const trackedImportJob = (getTaskByJobId(importJobId)?.job ?? importJob.data) as LaunchPlanImportJob | null | undefined
 
   useEffect(() => {
-    if (!trackedImportJob || trackedImportJob.status !== "completed") return
+    if (!trackedImportJob || !["completed", "failed", "cancelled"].includes(trackedImportJob.status)) return
     if (handledImportJobIdRef.current === trackedImportJob.id) return
     handledImportJobIdRef.current = trackedImportJob.id
-    if (trackedImportJob.failed_count > 0) {
+    if (trackedImportJob.status === "cancelled") {
+      toast.warning("上市计划表导入任务已取消")
+      queryClient.invalidateQueries({ queryKey: ["listing-launch-plan-rows"] })
+      return
+    }
+    if (trackedImportJob.status === "failed" || trackedImportJob.failed_count > 0) {
       const message = trackedImportJob.error
         || trackedImportJob.items?.find((item) => item.status === "failed")?.error
         || "导入上市计划表失败"
       toast.error(message)
+      queryClient.invalidateQueries({ queryKey: ["listing-launch-plan-rows"] })
       return
     }
     const result = trackedImportJob.result

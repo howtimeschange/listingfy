@@ -247,6 +247,53 @@ test("PostgreSQL migrations reject a new duplicate numeric prefix", async () => 
   }
 });
 
+test("PostgreSQL migrations apply 056 follow-up when early 055 is already registered", async () => {
+  const migrationsDir = fs.mkdtempSync(path.join(os.tmpdir(), "listingify-migrations-"));
+  const followup = fs.readFileSync(path.resolve("db/migrations/056_product_archive_performance_followups.sql"), "utf8");
+  fs.writeFileSync(path.join(migrationsDir, "055_product_archive_performance.sql"), "select 55;\n");
+  fs.writeFileSync(path.join(migrationsDir, "056_product_archive_performance_followups.sql"), followup);
+
+  const calls = [];
+  const client = {
+    async query(sql, params) {
+      calls.push({ sql, params });
+      if (/select version from schema_migration/i.test(sql)) {
+        return { rows: [{ version: "055_product_archive_performance.sql" }] };
+      }
+      if (/information_schema\.columns/i.test(sql)) return { rows: [] };
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const pool = {
+    async connect() {
+      return client;
+    },
+  };
+
+  try {
+    const applied = await applyPostgresMigrations(pool, migrationsDir);
+    const appliedVersions = calls
+      .filter((call) => /insert into schema_migration\(version\)/i.test(call.sql))
+      .map((call) => call.params?.[0]);
+    const appliedSql = calls.map((call) => call.sql).join("\n");
+
+    assert.deepEqual(applied, ["056_product_archive_performance_followups.sql"]);
+    assert.deepEqual(appliedVersions, ["056_product_archive_performance_followups.sql"]);
+    assert.match(appliedSql, /add column if not exists import_fingerprint text/);
+    assert.match(appliedSql, /ux_product_archive_source_batch_import_fingerprint/);
+    assert.match(appliedSql, /create table if not exists product_archive_draft_preparation/);
+    assert.match(appliedSql, /create table if not exists product_archive_sync_negative_cache/);
+    assert.match(appliedSql, /create table if not exists listing_launch_plan_spu_latest/);
+    assert.match(appliedSql, /create table if not exists listing_launch_plan_import_sheet_stat/);
+    assert.match(appliedSql, /on conflict \(import_id, sheet_name\) do update/);
+    assert.match(appliedSql, /where listing_launch_plan_spu_latest\.import_id < excluded\.import_id/);
+    assert.doesNotMatch(appliedSql, /select 55/);
+  } finally {
+    fs.rmSync(migrationsDir, { recursive: true, force: true });
+  }
+});
+
 test("synchronous PostgreSQL worker discards a timed-out query before the next request", () => {
   const previousTimeout = process.env.DATABASE_SYNC_TIMEOUT_MS;
   const databaseUrl = process.env.DATABASE_URL

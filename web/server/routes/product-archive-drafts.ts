@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import os from "node:os"
@@ -103,6 +103,7 @@ import {
   registerProductArchiveWorkflowProcessor,
   resumeProductArchiveWorkflowJobs,
   type ProductArchiveWorkflowJob,
+  type ProductArchiveWorkflowProcessorContext,
   type ProductArchiveWorkflowStage,
 } from "../services/product-archive-workflow-jobs"
 import type { ProductArchiveSubmitMode } from "../services/product-archive-drafts"
@@ -1651,8 +1652,10 @@ function publishItemResultFromSubmitResult(
     : resultKind === "readback_mismatch"
       ? fullUpdate ? "已全量更新，但深绘回读不一致，请进详情复核" : "已创建，但深绘回读不一致，请进详情复核"
       : fullUpdate ? `已提交全量更新到深绘，状态：${status}` : `已提交到深绘，状态：${status}`
+  const ok = resultKind === "published" && record.ok !== false
   return {
-    ok: true,
+    ok,
+    error: ok ? null : message,
     result: {
       draftId,
       spuCode,
@@ -1660,7 +1663,7 @@ function publishItemResultFromSubmitResult(
       status,
       message,
       submitMode,
-      ok: record.ok === false ? false : true,
+      ok,
     },
   }
 }
@@ -1941,12 +1944,12 @@ export function createProductArchivePublishQueue({
   }
 
   function finishJob(job: ProductArchivePublishJob) {
-    const completedItems = job.items.filter((item) => item.status === "completed")
-    const results = completedItems.map((item) => objectValue(item.result))
+    const terminalItems = job.items.filter((item) => item.status === "completed" || item.status === "failed")
+    const results = terminalItems.map((item) => objectValue(item.result))
     const retryAttemptCount = job.items.reduce((sum, item) => sum + Math.max(0, item.attempt_count - 1), 0)
     job.result = {
       submitMode: job.options.submitMode,
-      processedDraftCount: completedItems.length,
+      processedDraftCount: terminalItems.length,
       failedDraftCount: job.items.filter((item) => item.status === "failed").length,
       publishedCount: results.filter((result) => stringValue(result.resultKind) === "published" && stringValue(result.submitMode) !== "full_update").length,
       fullUpdatedCount: results.filter((result) => stringValue(result.resultKind) === "published" && stringValue(result.submitMode) === "full_update").length,
@@ -3458,6 +3461,7 @@ async function saveProductArchiveWorkflowFiles(
     fileName: string
     filePath: string
     fileSizeBytes: number
+    fileHash: string
   }> = []
   try {
     for (const [index, entry] of entries.entries()) {
@@ -3466,11 +3470,13 @@ async function saveProductArchiveWorkflowFiles(
         `${index}-${randomUUID()}-${safeUploadName(entry.file.name)}`,
       )
       await writeValidatedUploadFile(entry.file, "spreadsheet", filePath)
+      const fileHash = createHash("sha256").update(await readFile(filePath)).digest("hex")
       files.push({
         kind: entry.kind,
         fileName: entry.file.name,
         filePath,
         fileSizeBytes: entry.file.size,
+        fileHash,
       })
     }
     return files
@@ -3781,18 +3787,27 @@ function productArchivePrecheckTargetsByIds(db: ReturnType<typeof getDb>, draftI
   })
 }
 
-async function readProductArchiveSourceSheets(filePath: string, fileName: string, sourceType: string) {
+function throwIfSignalAborted(signal?: AbortSignal) {
+  if (!signal?.aborted) return
+  if (signal.reason instanceof Error) throw signal.reason
+  const error = new Error("深绘建档工作流已取消")
+  error.name = "AbortError"
+  throw error
+}
+
+async function readProductArchiveSourceSheets(filePath: string, fileName: string, sourceType: string, signal?: AbortSignal) {
   return withBackgroundTaskSlot("product_archive_source_import", async (signal) => {
+    throwIfSignalAborted(signal)
     if (sourceType === "size_chart") {
       const rows = await readPlmSizeChartWorkbook(filePath, { fileName })
-      if (signal.aborted) throw signal.reason
+      throwIfSignalAborted(signal)
       return [{
         name: "PLM尺码表",
         rows: rows.map((row) => row.rowJson ?? row),
       }]
     }
     return readSpreadsheetSheetsFromFileInWorker(filePath, { fileName, signal })
-  })
+  }, { signal })
 }
 
 type ProductArchiveWorkflowSourceType = "copywriting" | "launch_plan" | "size_chart"
@@ -3813,12 +3828,95 @@ function workflowSourceBatchMap(job: ProductArchiveWorkflowJob) {
       .map(Number)
       .filter((id) => Number.isInteger(id) && id > 0)
   }
+  for (const checkpoint of Object.values(workflowSourceBatchCheckpoints(job))) {
+    const record = objectValue(checkpoint)
+    const sourceType = workflowSourceType(record.sourceType)
+    const sourceBatchId = Number(record.sourceBatchId)
+    if (!sourceType || !Number.isInteger(sourceBatchId) || sourceBatchId <= 0) continue
+    sourceBatchIdsByType[sourceType] = uniqueStrings([
+      ...(sourceBatchIdsByType[sourceType] ?? []),
+      sourceBatchId,
+    ]).map(Number)
+  }
   return sourceBatchIdsByType
+}
+
+function workflowSourceFileHash(file: ProductArchiveWorkflowJob["files"][number]) {
+  return stringValue(file.fileHash)
+    || createHash("sha256").update(JSON.stringify({
+      kind: file.kind,
+      fileName: file.fileName,
+      fileSizeBytes: file.fileSizeBytes,
+    })).digest("hex")
+}
+
+function workflowIdempotencyKey(
+  scope: string,
+  job: ProductArchiveWorkflowJob,
+  file: ProductArchiveWorkflowJob["files"][number],
+  sheetName = "",
+) {
+  return [
+    scope,
+    job.id,
+    workflowSourceType(file.kind) ?? stringValue(file.kind),
+    workflowSourceFileHash(file),
+    stringValue(sheetName),
+  ].join(":")
+}
+
+function workflowSourceBatchCheckpoints(job: ProductArchiveWorkflowJob) {
+  const raw = objectValue(job.result.sourceImportCheckpoints)
+  const checkpoints: Record<string, JsonRecord> = {}
+  for (const [key, value] of Object.entries(raw)) {
+    checkpoints[key] = objectValue(value)
+  }
+  return checkpoints
+}
+
+function appendWorkflowSourceBatchResult(
+  job: ProductArchiveWorkflowJob,
+  key: string,
+  sourceType: ProductArchiveWorkflowSourceType,
+  result: { batch?: JsonRecord | null; inputRowCount?: unknown; insertedRowCount?: unknown },
+) {
+  const sourceBatchId = Number(result.batch?.id)
+  if (!Number.isInteger(sourceBatchId) || sourceBatchId <= 0) return
+  const checkpoints = workflowSourceBatchCheckpoints(job)
+  checkpoints[key] = {
+    sourceType,
+    sourceBatchId,
+    inputRowCount: Number(result.inputRowCount ?? 0),
+    insertedRowCount: Number(result.insertedRowCount ?? 0),
+  }
+  const sourceBatchIdsByType: Record<string, number[]> = {}
+  let inputRowCount = 0
+  let insertedRowCount = 0
+  for (const checkpoint of Object.values(checkpoints)) {
+    const checkpointSourceType = workflowSourceType(checkpoint.sourceType)
+    const checkpointSourceBatchId = Number(checkpoint.sourceBatchId)
+    if (!checkpointSourceType || !Number.isInteger(checkpointSourceBatchId) || checkpointSourceBatchId <= 0) continue
+    sourceBatchIdsByType[checkpointSourceType] = uniqueStrings([
+      ...(sourceBatchIdsByType[checkpointSourceType] ?? []),
+      checkpointSourceBatchId,
+    ]).map(Number)
+    inputRowCount += Number(checkpoint.inputRowCount ?? 0)
+    insertedRowCount += Number(checkpoint.insertedRowCount ?? 0)
+  }
+  job.result = {
+    ...job.result,
+    sourceImportCheckpoints: checkpoints,
+    sourceBatchIdsByType,
+    sourceBatchIds: Object.values(sourceBatchIdsByType).flat(),
+    inputRowCount,
+    insertedRowCount,
+  }
 }
 
 async function processProductArchiveWorkflowStage(
   job: ProductArchiveWorkflowJob,
   stage: ProductArchiveWorkflowStage,
+  context: ProductArchiveWorkflowProcessorContext,
 ) {
   const db = getDb()
   const sourceFiles = job.files
@@ -3828,10 +3926,13 @@ async function processProductArchiveWorkflowStage(
   if (stage.key === "parse") {
     const files = []
     for (const file of sourceFiles) {
-      const sheets = await readProductArchiveSourceSheets(file.filePath, file.fileName, file.sourceType)
+      await context.assertActive()
+      const sheets = await readProductArchiveSourceSheets(file.filePath, file.fileName, file.sourceType, context.signal)
+      await context.assertActive()
       files.push({
         kind: file.sourceType,
         fileName: file.fileName,
+        fileHash: workflowSourceFileHash(file),
         sheetCount: sheets.length,
         inputRowCount: sheets.reduce((sum, sheet) => sum + sheet.rows.length, 0),
       })
@@ -3840,49 +3941,62 @@ async function processProductArchiveWorkflowStage(
   }
 
   if (stage.key === "source_import") {
-    const sourceBatchIdsByType: Record<string, number[]> = {}
-    let inputRowCount = 0
-    let insertedRowCount = 0
     for (const file of sourceFiles) {
-      const sheets = await readProductArchiveSourceSheets(file.filePath, file.fileName, file.sourceType)
-      const batchIds = sourceBatchIdsByType[file.sourceType] ?? []
+      await context.assertActive()
+      const sheets = await readProductArchiveSourceSheets(file.filePath, file.fileName, file.sourceType, context.signal)
       for (const sheet of sheets) {
+        const checkpointKey = workflowIdempotencyKey("source_import", job, file, sheet.name)
+        const checkpoint = workflowSourceBatchCheckpoints(job)[checkpointKey]
+        const checkpointBatchId = Number(checkpoint?.sourceBatchId)
+        if (Number.isInteger(checkpointBatchId) && checkpointBatchId > 0) {
+          appendWorkflowSourceBatchResult(job, checkpointKey, file.sourceType, {
+            batch: { id: checkpointBatchId },
+            inputRowCount: checkpoint.inputRowCount,
+            insertedRowCount: checkpoint.insertedRowCount,
+          })
+          continue
+        }
+        await context.assertActive()
         const result = await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
           importProductArchiveSourceRowsInChunks(db, {
             sourceType: file.sourceType,
             fileName: file.fileName,
             sheetName: sheet.name,
             rows: sheet.rows,
+            idempotencyKey: checkpointKey,
           }, {
             chunkSize: 1000,
             signal,
+            beforeCommit: context.assertActive,
           })
-        ))
-        batchIds.push(Number(result.batch.id))
-        inputRowCount += Number(result.inputRowCount ?? 0)
-        insertedRowCount += Number(result.insertedRowCount ?? 0)
+        ), { signal: context.signal })
+        await context.checkpoint(() => {
+          appendWorkflowSourceBatchResult(job, checkpointKey, file.sourceType, result)
+        })
       }
-      sourceBatchIdsByType[file.sourceType] = batchIds
     }
-    job.result = {
-      ...job.result,
-      sourceBatchIdsByType,
-      sourceBatchIds: Object.values(sourceBatchIdsByType).flat(),
-      inputRowCount,
-      insertedRowCount,
+    return {
+      sourceBatchIdsByType: workflowSourceBatchMap(job),
+      inputRowCount: Number(job.result.inputRowCount ?? 0),
+      insertedRowCount: Number(job.result.insertedRowCount ?? 0),
     }
-    return { sourceBatchIdsByType, inputRowCount, insertedRowCount }
   }
 
   if (stage.key === "launch_plan_import") {
     const launchPlanFile = sourceFiles.find((file) => file.sourceType === "launch_plan")
     if (!launchPlanFile) return { skipped: true, reason: "launch_plan_not_uploaded" }
+    const existingResult = objectValue(job.result.listingPlanImport)
+    if (Number(existingResult.importId) > 0) return existingResult
     const sourceBatchIdsByType = workflowSourceBatchMap(job)
+    await context.assertActive()
     const sheets = await readProductArchiveSourceSheets(
       launchPlanFile.filePath,
       launchPlanFile.fileName,
       "launch_plan",
+      context.signal,
     )
+    const idempotencyKey = workflowIdempotencyKey("launch_plan_import", job, launchPlanFile, "workbook")
+    await context.assertActive()
     const listingPlanImport = await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
       importListingLaunchPlanSheetsInChunks(db, {
         fileName: launchPlanFile.fileName,
@@ -3890,28 +4004,34 @@ async function processProductArchiveWorkflowStage(
         sheets,
         sourceBatchIds: sourceBatchIdsByType.launch_plan ?? [],
         createdBy: Number(job.options.createdBy) || null,
+        idempotencyKey,
       }, {
         chunkSize: 1000,
         signal,
+        beforeCommit: context.assertActive,
       })
-    ))
+    ), { signal: context.signal })
     const result = {
       importId: listingPlanImport.import?.id ?? null,
       insertedRowCount: listingPlanImport.insertedRowCount,
       inputRowCount: listingPlanImport.inputRowCount,
     }
-    job.result = { ...job.result, listingPlanImport: result }
+    await context.checkpoint(() => {
+      job.result = { ...job.result, listingPlanImport: result }
+    })
     return result
   }
 
   if (stage.key === "draft_refresh") {
+    await context.assertActive()
     const sourceBatchIdsByType = workflowSourceBatchMap(job)
     const sourceBatchIds = uniqueStrings(Object.values(sourceBatchIdsByType).flat())
       .map(Number)
       .filter((id) => Number.isInteger(id) && id > 0)
     const refreshSummaries = []
     for (const sourceBatchId of sourceBatchIds) {
-      refreshSummaries.push(await withBackgroundTaskSlot(
+      await context.assertActive()
+      refreshSummaries.push(await context.runSideEffect(() => withBackgroundTaskSlot(
         "product_archive_source_import",
         (signal) => refreshProductArchiveDraftsFromSourceBatchInChunks(db, {
           sourceBatchId,
@@ -3920,7 +4040,8 @@ async function processProductArchiveWorkflowStage(
           chunkSize: 5,
           signal,
         }),
-      ))
+        { signal: context.signal },
+      )))
     }
 
     const candidateCodes = uniqueStrings([
@@ -3941,7 +4062,9 @@ async function processProductArchiveWorkflowStage(
           missingLaunchPlanSpuCodes,
           refreshSummaries,
         }
-        job.result = { ...job.result, ...result }
+        await context.checkpoint(() => {
+          job.result = { ...job.result, ...result }
+        })
         return result
       }
     }
@@ -3960,21 +4083,22 @@ async function processProductArchiveWorkflowStage(
       merchantId: deepdrawConfig.merchantId == null ? null : String(deepdrawConfig.merchantId),
     })
     const filteredDraftCodes = filterKnownProductArchiveSyncCandidates(db, "mdm_draft", draftCodes)
+    await context.assertActive()
     const syncJob = draftCodes.length > 0
-      ? draftQueue.enqueue({
-          source: "mdm_draft",
-          rawCodes: filteredDraftCodes.acceptedCodes,
-          skippedItems: filteredDraftCodes.skippedItems,
-          intervalMs: options.intervalMs,
-          options: {
-            deepdrawTenantName: deepdrawConfig.tenantName,
-            tradeId: options.tradeId ?? null,
-            tradePath: options.tradePath ?? null,
-            sourceBatchId: sourceBatchIdsByType.launch_plan?.[0] ?? null,
-            sourceBatchIds: sourceBatchIdsByType,
-            createdBy: Number(options.createdBy) || null,
-          },
-        })
+      ? await context.runSideEffect(() => draftQueue.enqueue({
+        source: "mdm_draft",
+        rawCodes: filteredDraftCodes.acceptedCodes,
+        skippedItems: filteredDraftCodes.skippedItems,
+        intervalMs: options.intervalMs,
+        options: {
+          deepdrawTenantName: deepdrawConfig.tenantName,
+          tradeId: options.tradeId ?? null,
+          tradePath: options.tradePath ?? null,
+          sourceBatchId: sourceBatchIdsByType.launch_plan?.[0] ?? null,
+          sourceBatchIds: sourceBatchIdsByType,
+          createdBy: Number(options.createdBy) || null,
+        },
+      }))
       : null
     const result = {
       outcome: "queued",
@@ -3987,7 +4111,9 @@ async function processProductArchiveWorkflowStage(
       refreshSummaries,
       syncJob,
     }
-    job.result = { ...job.result, ...result }
+    await context.checkpoint(() => {
+      job.result = { ...job.result, ...result }
+    })
     return result
   }
 
@@ -5139,7 +5265,11 @@ productArchiveDrafts.get("/:draftId/skus", (c) => {
 
 productArchiveDrafts.get("/:draftId/assets", (c) => {
   requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
-  const resource = getProductArchiveDraftAssets(getDb(), readId(c.req.param("draftId")))
+  const resource = getProductArchiveDraftAssets(
+    getDb(),
+    readId(c.req.param("draftId")),
+    readPageInput(c),
+  )
   return c.json(requireProductArchiveDraftResource(resource))
 })
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import {
   normalizeListingLaunchPlanRows,
@@ -22,6 +23,7 @@ interface ImportListingLaunchPlanInput {
   sheets: SpreadsheetSheetInput[]
   sourceBatchIds?: number[]
   createdBy?: number | null
+  idempotencyKey?: string | null
 }
 
 interface ListRowsInput {
@@ -37,6 +39,7 @@ interface ListRowsInput {
 interface ImportListingLaunchPlanChunkOptions {
   chunkSize?: number
   signal?: AbortSignal
+  beforeCommit?: () => void | Promise<void>
   onProgress?: (progress: {
     importId: number
     insertedRowCount: number
@@ -76,6 +79,20 @@ function jsonText(value: unknown) {
   return JSON.stringify(value ?? {})
 }
 
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`
+  if (!value || typeof value !== "object") return JSON.stringify(value)
+  const record = value as JsonRecord
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+    .join(",")}}`
+}
+
+function importFingerprint(scope: string, value: unknown) {
+  return createHash("sha256").update(`${scope}:${stableJson(value)}`).digest("hex")
+}
+
 function importNo() {
   return `LLP-${Date.now()}`
 }
@@ -90,13 +107,6 @@ function readOffset(value: unknown) {
   const number = Number(value ?? 0)
   if (!Number.isFinite(number)) return 0
   return Math.max(0, Math.floor(number))
-}
-
-function readPositiveInteger(value: unknown) {
-  const number = Number(value)
-  if (!Number.isFinite(number)) return null
-  const integer = Math.floor(number)
-  return integer > 0 ? integer : null
 }
 
 function readBoolean(value: unknown, fallback = true) {
@@ -155,6 +165,47 @@ function prepareListingLaunchPlanImport(input: ImportListingLaunchPlanInput) {
   }
 }
 
+function listingLaunchPlanImportFingerprint(
+  input: ImportListingLaunchPlanInput,
+  prepared: Pick<ReturnType<typeof prepareListingLaunchPlanImport>, "sheets" | "sourceBatchIds">,
+) {
+  const idempotencyKey = stringValue(input.idempotencyKey)
+  if (!idempotencyKey) return null
+  return importFingerprint("listing_launch_plan_import", {
+    idempotencyKey,
+    fileName: stringValue(input.fileName),
+    sheetNames: prepared.sheets.map((sheet) => stringValue(sheet.name)),
+    sourceBatchIds: prepared.sourceBatchIds,
+  })
+}
+
+function committedListingLaunchPlanImportByFingerprint(db: SyncPostgresDatabase, fingerprint: string | null) {
+  if (!fingerprint) return null
+  const row = (db.prepare(`
+    select *
+    from listing_launch_plan_import
+    where import_fingerprint = ?
+    order by id desc
+    limit 1
+  `).get(fingerprint) as JsonRecord | undefined) ?? null
+  return row
+}
+
+async function committedListingLaunchPlanImportByFingerprintAsync(
+  client: { query: (sql: string, params?: readonly unknown[]) => Promise<{ rows?: Array<Record<string, unknown>> }> | { rows?: Array<Record<string, unknown>> } },
+  fingerprint: string | null,
+) {
+  if (!fingerprint) return null
+  const result = await client.query(`
+    select *
+    from listing_launch_plan_import
+    where import_fingerprint = $1
+    order by id desc
+    limit 1
+  `, [fingerprint])
+  return result.rows?.[0] ?? null
+}
+
 async function prepareListingLaunchPlanImportInChunks(
   input: ImportListingLaunchPlanInput,
   options: Pick<ImportListingLaunchPlanChunkOptions, "chunkSize" | "signal"> = {},
@@ -190,6 +241,9 @@ function insertListingLaunchPlanImportRecord(
   input: ImportListingLaunchPlanInput,
   prepared: ReturnType<typeof prepareListingLaunchPlanImport>,
 ) {
+  const fingerprint = listingLaunchPlanImportFingerprint(input, prepared)
+  const existing = committedListingLaunchPlanImportByFingerprint(db, fingerprint)
+  if (existing) return { id: Number(existing.id), reused: true }
   const inserted = db.prepare(`
     insert into listing_launch_plan_import (
       import_no,
@@ -200,10 +254,12 @@ function insertListingLaunchPlanImportRecord(
       normalized_row_count,
       source_batch_ids_json,
       raw_manifest_json,
+      import_fingerprint,
       created_by,
       created_at
     )
-    values (?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?::timestamptz)
+    values (?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?::timestamptz)
+    on conflict (import_fingerprint) where import_fingerprint is not null do nothing
   `).run(
     importNo(),
     stringValue(input.fileName) || null,
@@ -215,11 +271,17 @@ function insertListingLaunchPlanImportRecord(
     jsonText({
       sheet_names: prepared.sheets.map((sheet) => sheet.name),
       source_batch_ids: prepared.sourceBatchIds,
+      idempotency_key: stringValue(input.idempotencyKey) || null,
     }),
+    fingerprint,
     input.createdBy ?? null,
     prepared.now,
   )
-  return Number(inserted.lastInsertRowid)
+  const id = Number(inserted.lastInsertRowid)
+  if (Number.isInteger(id) && id > 0) return { id, reused: false }
+  const committed = committedListingLaunchPlanImportByFingerprint(db, fingerprint)
+  if (committed) return { id: Number(committed.id), reused: true }
+  throw new Error("同一上市计划导入已存在但尚未提交，未完成数据不会对草稿可见")
 }
 
 function listingLaunchPlanDbRow(importId: number, row: JsonRecord, now: string) {
@@ -262,16 +324,21 @@ function listingLaunchPlanDbRow(importId: number, row: JsonRecord, now: string) 
 }
 
 function importResult(db: SyncPostgresDatabase, importId: number, prepared: ReturnType<typeof prepareListingLaunchPlanImport>) {
+  const importRow = db.prepare("select * from listing_launch_plan_import where id = ?").get(importId) as JsonRecord | undefined
   return {
-    import: db.prepare("select * from listing_launch_plan_import where id = ?").get(importId),
-    inputRowCount: prepared.inputRowCount,
-    insertedRowCount: prepared.normalizedRows.length,
-    sheetCount: prepared.sheets.length,
+    import: importRow,
+    inputRowCount: Number(importRow?.input_row_count ?? prepared.inputRowCount),
+    insertedRowCount: Number(importRow?.normalized_row_count ?? prepared.normalizedRows.length),
+    sheetCount: Number(importRow?.sheet_count ?? prepared.sheets.length),
   }
 }
 
-function refreshListingLaunchPlanSummaries(db: SyncPostgresDatabase, importId: number) {
+function invalidateListingLaunchPlanCountCache() {
   listingLaunchPlanCountCache.clear()
+}
+
+function refreshListingLaunchPlanSummaries(db: SyncPostgresDatabase, importId: number) {
+  invalidateListingLaunchPlanCountCache()
 
   db.prepare(`
     insert into listing_launch_plan_import_sheet_stat (
@@ -336,6 +403,9 @@ async function insertListingLaunchPlanImportRecordAsync(
   input: ImportListingLaunchPlanInput,
   prepared: ReturnType<typeof prepareListingLaunchPlanImport>,
 ) {
+  const fingerprint = listingLaunchPlanImportFingerprint(input, prepared)
+  const existing = await committedListingLaunchPlanImportByFingerprintAsync(client, fingerprint)
+  if (existing) return { id: Number(existing.id), reused: true }
   const inserted = await client.query(`
     insert into listing_launch_plan_import (
       import_no,
@@ -346,10 +416,12 @@ async function insertListingLaunchPlanImportRecordAsync(
       normalized_row_count,
       source_batch_ids_json,
       raw_manifest_json,
+      import_fingerprint,
       created_by,
       created_at
     )
-    values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10::timestamptz)
+    values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11::timestamptz)
+    on conflict (import_fingerprint) where import_fingerprint is not null do nothing
     returning id
   `, [
     importNo(),
@@ -363,20 +435,24 @@ async function insertListingLaunchPlanImportRecordAsync(
       sheet_names: prepared.sheets.map((sheet) => sheet.name),
       source_batch_ids: prepared.sourceBatchIds,
       writer: "copy",
+      idempotency_key: stringValue(input.idempotencyKey) || null,
     }),
+    fingerprint,
     input.createdBy ?? null,
     prepared.now,
   ])
   const id = Number(inserted.rows?.[0]?.id)
-  if (!Number.isInteger(id) || id <= 0) throw new Error("上市计划导入记录创建失败")
-  return id
+  if (Number.isInteger(id) && id > 0) return { id, reused: false }
+  const committed = await committedListingLaunchPlanImportByFingerprintAsync(client, fingerprint)
+  if (committed) return { id: Number(committed.id), reused: true }
+  throw new Error("同一上市计划导入已存在但尚未提交，未完成数据不会对草稿可见")
 }
 
 async function refreshListingLaunchPlanSummariesAsync(
   client: { query: (sql: string, params?: readonly unknown[]) => Promise<unknown> | unknown },
   importId: number,
 ) {
-  listingLaunchPlanCountCache.clear()
+  invalidateListingLaunchPlanCountCache()
 
   await client.query(`
     insert into listing_launch_plan_import_sheet_stat (
@@ -438,18 +514,34 @@ async function refreshListingLaunchPlanSummariesAsync(
 
 export function importListingLaunchPlanSheets(db: SyncPostgresDatabase, input: ImportListingLaunchPlanInput) {
   const prepared = prepareListingLaunchPlanImport(input)
+  const existing = committedListingLaunchPlanImportByFingerprint(
+    db,
+    listingLaunchPlanImportFingerprint(input, prepared),
+  )
+  if (existing) return importResult(db, Number(existing.id), prepared)
   const importId = db.transaction(() => {
-    const id = insertListingLaunchPlanImportRecord(db, input, prepared)
+    const imported = insertListingLaunchPlanImportRecord(db, input, prepared)
+    if (imported.reused) return imported.id
     insertRowsInBatches(
       db,
       listingLaunchPlanRowSpec,
-      prepared.normalizedRows.map((row) => listingLaunchPlanDbRow(id, row, prepared.now)),
+      prepared.normalizedRows.map((row) => listingLaunchPlanDbRow(imported.id, row, prepared.now)),
       { batchSize: 250 },
     )
-    refreshListingLaunchPlanSummaries(db, id)
-    return id
+    refreshListingLaunchPlanSummaries(db, imported.id)
+    return imported.id
   })()
+  invalidateListingLaunchPlanCountCache()
   return importResult(db, importId, prepared)
+}
+
+function* listingLaunchPlanRowsForCopy(importId: number, rows: JsonRecord[], now: string) {
+  for (const row of rows) {
+    yield {
+      ...listingLaunchPlanDbRow(importId, row, now),
+      rawRowJson: row.rawRowJson ?? {},
+    }
+  }
 }
 
 export async function importListingLaunchPlanSheetsInChunks(
@@ -460,20 +552,32 @@ export async function importListingLaunchPlanSheetsInChunks(
   const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 100)))
   const prepared = await prepareListingLaunchPlanImportInChunks(input, { chunkSize, signal: options.signal })
   throwIfAborted(options.signal)
+  const existing = committedListingLaunchPlanImportByFingerprint(
+    db,
+    listingLaunchPlanImportFingerprint(input, prepared),
+  )
+  if (existing) {
+    const importId = Number(existing.id)
+    await options.onProgress?.({
+      importId,
+      insertedRowCount: Number(existing.normalized_row_count ?? 0),
+      totalRowCount: Number(existing.normalized_row_count ?? 0),
+    })
+    return importResult(db, importId, prepared)
+  }
   const importId = await withAsyncTransaction(async (client) => {
-    const id = await insertListingLaunchPlanImportRecordAsync(client, input, prepared)
+    const imported = await insertListingLaunchPlanImportRecordAsync(client, input, prepared)
+    if (imported.reused) return imported.id
     throwIfAborted(options.signal)
     await copyRowsToStaging(
       client,
       listingLaunchPlanRowSpec,
-      prepared.normalizedRows.map((row) => ({
-        ...listingLaunchPlanDbRow(id, row, prepared.now),
-        rawRowJson: row.rawRowJson ?? {},
-      })),
+      listingLaunchPlanRowsForCopy(imported.id, prepared.normalizedRows as JsonRecord[], prepared.now),
     )
-    await refreshListingLaunchPlanSummariesAsync(client, id)
-    return id
-  })
+    await refreshListingLaunchPlanSummariesAsync(client, imported.id)
+    return imported.id
+  }, { beforeCommit: options.beforeCommit })
+  invalidateListingLaunchPlanCountCache()
 
   for (let start = 0; start < prepared.normalizedRows.length; start += chunkSize) {
     const end = Math.min(start + chunkSize, prepared.normalizedRows.length)
@@ -512,8 +616,7 @@ export function listListingLaunchPlanRows(db: SyncPostgresDatabase, input: ListR
   const limit = readLimit(input.limit)
   const offset = readOffset(input.offset)
   const afterSpuCode = stringValue(input.afterSpuCode)
-  const afterRowId = readPositiveInteger(input.afterRowId)
-  const useCursor = Boolean(afterSpuCode && afterRowId)
+  const useCursor = Boolean(afterSpuCode)
   const includeTotal = readBoolean(input.includeTotal, true)
   const q = stringValue(input.q)
   const sheetName = stringValue(input.sheetName)
@@ -539,8 +642,8 @@ export function listListingLaunchPlanRows(db: SyncPostgresDatabase, input: ListR
   const filterClause = where.length ? `where ${where.join(" and ")}` : ""
   const filterParams = [...params]
   if (useCursor) {
-    where.push("(row.spu_code, row.id) > (?, ?)")
-    params.push(afterSpuCode, afterRowId)
+    where.push("row.spu_code > ?")
+    params.push(afterSpuCode)
   }
   const clause = where.length ? `where ${where.join(" and ")}` : ""
   const activeRowsFrom = `

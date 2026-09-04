@@ -9,11 +9,12 @@ import {
   validateBulkInsertSpec,
   type BulkInsertSpec,
 } from "./services/product-archive-bulk-write"
+import { readProductArchiveBulkInsertBatchSize } from "../../scripts/lib/product_archive_performance_config.mjs"
 
 const requireFromWeb = createRequire(import.meta.url)
 const { from: copyFrom } = requireFromWeb("pg-copy-streams")
 
-type AsyncClient = {
+export type AsyncClient = {
   query: (sql: string, params?: readonly unknown[]) => Promise<{ rows?: Array<Record<string, unknown>>, rowCount?: number }> | { rows?: Array<Record<string, unknown>>, rowCount?: number }
   release?: () => void
   queryCopyStream?: (sql: string) => NodeJS.WritableStream
@@ -25,6 +26,11 @@ type AsyncPool = {
 
 type CopyRowsOptions = {
   stagingTable?: string
+  chunkSize?: unknown
+}
+
+export type AsyncTransactionOptions = {
+  beforeCommit?: () => void | Promise<void>
 }
 
 const REQUIRED_COLUMNS_BY_TABLE: Record<string, readonly string[]> = {
@@ -63,14 +69,37 @@ function copyValue(value: unknown) {
     .replace(/\r/g, "\\r")
 }
 
-function copyTextForRows<Row>(spec: BulkInsertSpec<Row>, rows: readonly Row[]) {
-  return rows.map((row) => {
+function asyncRows<Row>(rows: Iterable<Row> | AsyncIterable<Row>): AsyncIterable<Row> {
+  if (Symbol.asyncIterator in Object(rows)) return rows as AsyncIterable<Row>
+  const iterable = rows as Iterable<Row>
+  return (async function* iterateRows() {
+    for (const row of iterable) yield row
+  })()
+}
+
+async function* copyTextForRows<Row>(
+  spec: BulkInsertSpec<Row>,
+  rows: Iterable<Row> | AsyncIterable<Row>,
+  chunkSize: number,
+  stats: { rowCount: number },
+) {
+  let chunk = ""
+  let rowsInChunk = 0
+  for await (const row of asyncRows(rows)) {
     const values = spec.values(row)
     if (values.length !== spec.columns.length) {
       throw new Error(`bulk value count ${values.length} does not match column count ${spec.columns.length}`)
     }
-    return values.map(copyValue).join("\t")
-  }).join("\n") + (rows.length ? "\n" : "")
+    chunk += `${values.map(copyValue).join("\t")}\n`
+    stats.rowCount += 1
+    rowsInChunk += 1
+    if (rowsInChunk >= chunkSize) {
+      yield chunk
+      chunk = ""
+      rowsInChunk = 0
+    }
+  }
+  if (chunk) yield chunk
 }
 
 function mergeSql<Row>(spec: BulkInsertSpec<Row>, stagingTable: string) {
@@ -101,16 +130,21 @@ async function queryCount(client: AsyncClient, sql: string) {
 
 export async function withAsyncTransaction<Result>(
   poolOrRun: AsyncPool | ((client: AsyncClient) => Promise<Result>),
-  maybeRun?: (client: AsyncClient) => Promise<Result>,
+  maybeRun?: ((client: AsyncClient) => Promise<Result>) | AsyncTransactionOptions,
+  maybeOptions?: AsyncTransactionOptions,
 ): Promise<Result> {
   const pool = typeof poolOrRun === "function" ? getAsyncPool() : poolOrRun
   const run = typeof poolOrRun === "function" ? poolOrRun : maybeRun
+  const options = typeof poolOrRun === "function"
+    ? (typeof maybeRun === "function" ? undefined : maybeRun)
+    : maybeOptions
   if (typeof run !== "function") throw new Error("async transaction callback is required")
 
   const client = await pool.connect()
   try {
     await client.query("begin")
     const result = await run(client)
+    await options?.beforeCommit?.()
     await client.query("commit")
     return result
   } catch (error) {
@@ -130,7 +164,7 @@ export async function withAsyncTransaction<Result>(
 export async function copyRowsToStaging<Row>(
   client: AsyncClient,
   spec: BulkInsertSpec<Row>,
-  rows: readonly Row[] = [],
+  rows: Iterable<Row> | AsyncIterable<Row> = [],
   options: CopyRowsOptions = {},
 ): Promise<{ rowCount: number }> {
   validateBulkInsertSpec(spec)
@@ -138,20 +172,20 @@ export async function copyRowsToStaging<Row>(
   const stagingTableSql = quoteQualifiedIdentifier(stagingTable)
   const targetTableSql = quoteIdentifier(spec.table)
   const columnSql = spec.columns.map(quoteIdentifier).join(", ")
+  const chunkSize = readProductArchiveBulkInsertBatchSize(options.chunkSize)
+  const stats = { rowCount: 0 }
 
   await client.query(`create temporary table ${stagingTableSql} (like ${targetTableSql} including defaults) on commit drop`)
 
-  if (rows.length > 0) {
-    const copySql = `copy ${stagingTableSql} (${columnSql}) from stdin with (format text, null '\\N')`
-    const stream = client.queryCopyStream
-      ? client.queryCopyStream(copySql)
-      : client.query(copyFrom(copySql)) as unknown as NodeJS.WritableStream
-    await pipeline(Readable.from([copyTextForRows(spec, rows)]), stream)
-  }
+  const copySql = `copy ${stagingTableSql} (${columnSql}) from stdin with (format text, null '\\N')`
+  const stream = client.queryCopyStream
+    ? client.queryCopyStream(copySql)
+    : client.query(copyFrom(copySql)) as unknown as NodeJS.WritableStream
+  await pipeline(Readable.from(copyTextForRows(spec, rows, chunkSize, stats)), stream)
 
   const stagingCount = await queryCount(client, `select count(*)::integer as count from ${stagingTableSql}`)
-  if (stagingCount !== rows.length) {
-    throw new Error(`staging row count mismatch for ${spec.table}: expected ${rows.length}, got ${stagingCount}`)
+  if (stagingCount !== stats.rowCount) {
+    throw new Error(`staging row count mismatch for ${spec.table}: expected ${stats.rowCount}, got ${stagingCount}`)
   }
 
   const requiredColumns = REQUIRED_COLUMNS_BY_TABLE[spec.table] ?? []
@@ -167,11 +201,11 @@ export async function copyRowsToStaging<Row>(
   }
 
   const mergeResult = await client.query(mergeSql(spec, stagingTable))
-  if (Number(mergeResult.rowCount ?? 0) !== rows.length) {
-    throw new Error(`target row count mismatch for ${spec.table}: expected ${rows.length}, got ${Number(mergeResult.rowCount ?? 0)}`)
+  if (Number(mergeResult.rowCount ?? 0) !== stats.rowCount) {
+    throw new Error(`target row count mismatch for ${spec.table}: expected ${stats.rowCount}, got ${Number(mergeResult.rowCount ?? 0)}`)
   }
 
-  return { rowCount: rows.length }
+  return { rowCount: stats.rowCount }
 }
 
 export {
