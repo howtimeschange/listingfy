@@ -7,6 +7,7 @@ import {
   insertRowsInBatches,
   listingLaunchPlanRowSpec,
 } from "./product-archive-bulk-write"
+import { copyRowsToStaging, withAsyncTransaction } from "../async-db"
 
 type JsonRecord = Record<string, unknown>
 
@@ -330,6 +331,111 @@ function refreshListingLaunchPlanSummaries(db: SyncPostgresDatabase, importId: n
   `).run(importId)
 }
 
+async function insertListingLaunchPlanImportRecordAsync(
+  client: { query: (sql: string, params?: readonly unknown[]) => Promise<{ rows?: Array<Record<string, unknown>> }> | { rows?: Array<Record<string, unknown>> } },
+  input: ImportListingLaunchPlanInput,
+  prepared: ReturnType<typeof prepareListingLaunchPlanImport>,
+) {
+  const inserted = await client.query(`
+    insert into listing_launch_plan_import (
+      import_no,
+      file_name,
+      file_size_bytes,
+      sheet_count,
+      input_row_count,
+      normalized_row_count,
+      source_batch_ids_json,
+      raw_manifest_json,
+      created_by,
+      created_at
+    )
+    values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10::timestamptz)
+    returning id
+  `, [
+    importNo(),
+    stringValue(input.fileName) || null,
+    numberValue(input.fileSizeBytes) ?? 0,
+    prepared.sheets.length,
+    prepared.inputRowCount,
+    prepared.normalizedRows.length,
+    jsonText(prepared.sourceBatchIds),
+    jsonText({
+      sheet_names: prepared.sheets.map((sheet) => sheet.name),
+      source_batch_ids: prepared.sourceBatchIds,
+      writer: "copy",
+    }),
+    input.createdBy ?? null,
+    prepared.now,
+  ])
+  const id = Number(inserted.rows?.[0]?.id)
+  if (!Number.isInteger(id) || id <= 0) throw new Error("上市计划导入记录创建失败")
+  return id
+}
+
+async function refreshListingLaunchPlanSummariesAsync(
+  client: { query: (sql: string, params?: readonly unknown[]) => Promise<unknown> | unknown },
+  importId: number,
+) {
+  listingLaunchPlanCountCache.clear()
+
+  await client.query(`
+    insert into listing_launch_plan_import_sheet_stat (
+      import_id,
+      sheet_name,
+      row_count,
+      spu_count,
+      updated_at
+    )
+    select
+      import_id,
+      sheet_name,
+      count(*)::integer as row_count,
+      count(distinct spu_code)::integer as spu_count,
+      now()
+    from listing_launch_plan_row
+    where import_id = $1
+    group by import_id, sheet_name
+    on conflict (import_id, sheet_name) do update set
+      row_count = excluded.row_count,
+      spu_count = excluded.spu_count,
+      updated_at = excluded.updated_at
+  `, [importId])
+
+  await client.query(`
+    insert into listing_launch_plan_spu_latest (
+      spu_code,
+      import_id,
+      row_id,
+      sheet_name,
+      row_count,
+      updated_at
+    )
+    select
+      spu_code,
+      import_id,
+      id as row_id,
+      sheet_name,
+      row_count,
+      now()
+    from (
+      select
+        row.*,
+        count(*) over (partition by row.spu_code)::integer as row_count,
+        row_number() over (partition by row.spu_code order by row.id desc) as latest_rank
+      from listing_launch_plan_row row
+      where row.import_id = $1
+    ) ranked
+    where latest_rank = 1
+    on conflict (spu_code) do update set
+      import_id = excluded.import_id,
+      row_id = excluded.row_id,
+      sheet_name = excluded.sheet_name,
+      row_count = excluded.row_count,
+      updated_at = excluded.updated_at
+    where listing_launch_plan_spu_latest.import_id < excluded.import_id
+  `, [importId])
+}
+
 export function importListingLaunchPlanSheets(db: SyncPostgresDatabase, input: ImportListingLaunchPlanInput) {
   const prepared = prepareListingLaunchPlanImport(input)
   const importId = db.transaction(() => {
@@ -354,38 +460,32 @@ export async function importListingLaunchPlanSheetsInChunks(
   const chunkSize = Math.max(1, Math.floor(Number(options.chunkSize ?? 100)))
   const prepared = await prepareListingLaunchPlanImportInChunks(input, { chunkSize, signal: options.signal })
   throwIfAborted(options.signal)
-  let importId: number | null = null
-  try {
-    importId = db.transaction(() => {
-      const id = insertListingLaunchPlanImportRecord(db, input, prepared)
-      for (let start = 0; start < prepared.normalizedRows.length; start += chunkSize) {
-        throwIfAborted(options.signal)
-        const end = Math.min(start + chunkSize, prepared.normalizedRows.length)
-        const batchRows = prepared.normalizedRows
-          .slice(start, end)
-          .map((row) => listingLaunchPlanDbRow(id, row, prepared.now))
-        insertRowsInBatches(db, listingLaunchPlanRowSpec, batchRows, { batchSize: 250 })
-      }
-      refreshListingLaunchPlanSummaries(db, id)
-      return id
-    })()
-    for (let start = 0; start < prepared.normalizedRows.length; start += chunkSize) {
-      const end = Math.min(start + chunkSize, prepared.normalizedRows.length)
-      await options.onProgress?.({
-        importId,
-        insertedRowCount: end,
-        totalRowCount: prepared.normalizedRows.length,
-      })
-      throwIfAborted(options.signal)
-      await wait()
-    }
-    return importResult(db, importId, prepared)
-  } catch (error) {
-    if (importId != null) {
-      db.prepare("delete from listing_launch_plan_import where id = ?").run(importId)
-    }
-    throw error
+  const importId = await withAsyncTransaction(async (client) => {
+    const id = await insertListingLaunchPlanImportRecordAsync(client, input, prepared)
+    throwIfAborted(options.signal)
+    await copyRowsToStaging(
+      client,
+      listingLaunchPlanRowSpec,
+      prepared.normalizedRows.map((row) => ({
+        ...listingLaunchPlanDbRow(id, row, prepared.now),
+        rawRowJson: row.rawRowJson ?? {},
+      })),
+    )
+    await refreshListingLaunchPlanSummariesAsync(client, id)
+    return id
+  })
+
+  for (let start = 0; start < prepared.normalizedRows.length; start += chunkSize) {
+    const end = Math.min(start + chunkSize, prepared.normalizedRows.length)
+    await options.onProgress?.({
+      importId,
+      insertedRowCount: end,
+      totalRowCount: prepared.normalizedRows.length,
+    })
+    throwIfAborted(options.signal)
+    await wait()
   }
+  return importResult(db, importId, prepared)
 }
 
 const LISTING_LAUNCH_PLAN_COUNT_CACHE_MS = 15_000

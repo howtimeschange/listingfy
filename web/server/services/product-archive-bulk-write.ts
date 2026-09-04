@@ -223,7 +223,7 @@ export const listingLaunchPlanRowSpec: BulkInsertSpec<ListingLaunchPlanBulkRow> 
   ],
 }
 
-function validateSpec<Row>(spec: BulkInsertSpec<Row>) {
+export function validateBulkInsertSpec<Row>(spec: BulkInsertSpec<Row>) {
   const allowedColumns = spec && Object.prototype.hasOwnProperty.call(ALLOWED_COLUMNS_BY_TABLE, spec.table)
     ? ALLOWED_COLUMNS_BY_TABLE[spec.table]
     : null
@@ -274,7 +274,7 @@ export function insertRowsInBatches<Row>(
     onProgress?: (progress: BulkWriteProgress) => void
   } = {},
 ): BulkWriteResult {
-  validateSpec(spec)
+  validateBulkInsertSpec(spec)
   const batchSize = normalizeBatchSize(options.batchSize)
   const startedAt = performance.now()
   let batchCount = 0

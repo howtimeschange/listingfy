@@ -57,6 +57,7 @@ import {
   insertRowsInBatches,
   sourceRowSpec,
 } from "./product-archive-bulk-write"
+import { copyRowsToStaging, withAsyncTransaction } from "../async-db"
 
 type JsonRecord = Record<string, unknown>
 
@@ -10188,75 +10189,74 @@ export async function importProductArchiveSourceRowsInChunks(
   throwIfAborted(options.signal)
   const now = nowIso()
 
-  const batchId = Number(db.prepare(`
-    insert into product_archive_source_batch (
-      batch_no,
-      source_type,
-      file_name,
-      sheet_name,
-      row_count,
-      raw_manifest_json,
-      import_status,
-      created_at
-    )
-    values (?, ?, ?, ?, ?, ?::jsonb, 'importing', ?::timestamptz)
-  `).run(
-    sourceBatchNo(sourceType),
-    sourceType,
-    stringValue(input.fileName) || null,
-    stringValue(input.sheetName) || null,
-    normalizedRows.length,
-    jsonText({
-      input_row_count: rows.length,
-      inserted_row_count: normalizedRows.length,
-      source_type: sourceType,
-      chunk_size: chunkSize,
-    }),
-    now,
-  ).lastInsertRowid)
+  const committedBatch = await withAsyncTransaction(async (client) => {
+    const batch = await client.query(`
+      insert into product_archive_source_batch (
+        batch_no,
+        source_type,
+        file_name,
+        sheet_name,
+        row_count,
+        raw_manifest_json,
+        import_status,
+        created_at
+      )
+      values ($1, $2, $3, $4, $5, $6::jsonb, 'importing', $7::timestamptz)
+      returning id
+    `, [
+      sourceBatchNo(sourceType),
+      sourceType,
+      stringValue(input.fileName) || null,
+      stringValue(input.sheetName) || null,
+      normalizedRows.length,
+      jsonText({
+        input_row_count: rows.length,
+        inserted_row_count: normalizedRows.length,
+        source_type: sourceType,
+        chunk_size: chunkSize,
+        writer: "copy",
+      }),
+      now,
+    ])
+    const batchId = Number(batch.rows?.[0]?.id)
+    if (!Number.isInteger(batchId) || batchId <= 0) throw new Error("来源表批次创建失败")
 
-  try {
-    for (let start = 0; start < normalizedRows.length; start += chunkSize) {
-      throwIfAborted(options.signal)
-      const end = Math.min(start + chunkSize, normalizedRows.length)
-      const batchRows = normalizedRows.slice(start, end).map((row) => ({
-        sourceBatchId: batchId,
-        sourceType: row.sourceType,
-        spuCode: row.spuCode,
-        skcCode: row.skcCode,
-        rowJson: row.rowJson,
-        createdAt: now,
-      }))
-      db.transaction(() => {
-        insertRowsInBatches(db, sourceRowSpec, batchRows, { batchSize: 500 })
-      })()
-      await options.onProgress?.({
-        sourceBatchId: batchId,
-        insertedRowCount: end,
-        totalRowCount: normalizedRows.length,
-      })
-      throwIfAborted(options.signal)
-      await wait()
-    }
     throwIfAborted(options.signal)
-    const committedBatch = db.prepare(`
+    await copyRowsToStaging(client, sourceRowSpec, normalizedRows.map((row) => ({
+      sourceBatchId: batchId,
+      sourceType: row.sourceType,
+      spuCode: row.spuCode,
+      skcCode: row.skcCode,
+      rowJson: row.rowJson,
+      createdAt: now,
+    })))
+
+    const committed = await client.query(`
       update product_archive_source_batch
       set import_status = 'committed',
         committed_at = clock_timestamp()
-      where id = ?
+      where id = $1
         and import_status = 'importing'
       returning *
-    `).get(batchId)
+    `, [batchId])
+    const committedBatch = committed.rows?.[0]
     if (!committedBatch) throw new Error("来源表批次提交失败，未完成数据不会对草稿可见")
-    return {
-      batch: committedBatch,
-      sourceType,
-      inputRowCount: rows.length,
-      insertedRowCount: normalizedRows.length,
-    }
-  } catch (error) {
-    db.prepare("delete from product_archive_source_batch where id = ?").run(batchId)
-    throw error
+    return committedBatch
+  })
+
+  await options.onProgress?.({
+    sourceBatchId: Number(committedBatch.id),
+    insertedRowCount: normalizedRows.length,
+    totalRowCount: normalizedRows.length,
+  })
+  throwIfAborted(options.signal)
+  await wait()
+
+  return {
+    batch: committedBatch,
+    sourceType,
+    inputRowCount: rows.length,
+    insertedRowCount: normalizedRows.length,
   }
 }
 

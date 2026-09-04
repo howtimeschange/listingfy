@@ -27,7 +27,7 @@ import auth from "./routes/auth"
 import users from "./routes/users"
 import platformIntegrations from "./routes/platform-integrations"
 import system from "./routes/system"
-import { applyPendingMigrations, DB_DSN_SAFE, DB_PROVIDER, getDb } from "./db"
+import { applyPendingMigrations, closeAsyncPool, closeDb, DB_DSN_SAFE, DB_PROVIDER, getDb } from "./db"
 import { ensureAdminUser, requireAuth } from "./lib/auth"
 import { withRequestPerformanceContext } from "./lib/performance-metrics"
 import {
@@ -130,4 +130,24 @@ if (sheinConfigSeeded) console.log("Migrated SHEIN env credentials into platform
 if (encryptedPlatformCredentials) console.log(`Encrypted platform credentials: ${encryptedPlatformCredentials}`)
 
 startPlatformProductNightlyFullSyncScheduler()
-serve({ fetch: app.fetch, port })
+const server = serve({ fetch: app.fetch, port })
+
+let shuttingDown = false
+async function shutdown(signal: string) {
+  if (shuttingDown) return
+  shuttingDown = true
+  console.log(`Received ${signal}; closing database pools`)
+  server.close(() => {
+    closeAsyncPool()
+      .catch((error) => {
+        console.error("Failed to close async database pool", error)
+      })
+      .finally(() => {
+        closeDb()
+        process.exit(0)
+      })
+  })
+}
+
+process.once("SIGINT", () => void shutdown("SIGINT"))
+process.once("SIGTERM", () => void shutdown("SIGTERM"))
