@@ -289,6 +289,23 @@ interface RefreshSourceBatchChunkOptions {
   }) => void | Promise<void>
 }
 
+export interface ProductArchiveDraftRefreshSummary {
+  scannedDraftCount: number
+  processedDraftCount: number
+  refreshedDraftCount: number
+  validatedDraftCount: number
+  autoAppliedTradeCount: number
+  skippedNoTradeMatchCount: number
+  failedDrafts: Array<{ draftId: number; spuCode: string; message: string }>
+}
+
+interface RefreshProductArchiveDraftsBatchOptions {
+  sourceType: string
+  sourceBatchId: number
+  signal?: AbortSignal
+  drafts?: JsonRecord[]
+}
+
 function nowIso() {
   return new Date().toISOString()
 }
@@ -741,7 +758,7 @@ function productArchiveSourceReference(value: unknown) {
   return null
 }
 
-function productArchiveListPriceText(spu: JsonRecord, _sourceRows: JsonRecord[] = []) {
+function productArchiveListPriceText(spu: JsonRecord) {
   return moneyText(spu.price_tag)
 }
 
@@ -3125,20 +3142,20 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if ((shoeProduct || apparelProduct) && key === "销售渠道类型") return productArchiveSalesChannelTypeValue(sourceRows)
   if ((shoeProduct || apparelProduct) && key === "是否商场同款") return shoeSameMallStyleValue(sourceRows)
   if ((shoeProduct || apparelProduct) && /单买价/.test(fieldName)) {
-    return productArchiveOffsetPriceText(productArchiveListPriceText(input.spu, sourceRows), -1)
+    return productArchiveOffsetPriceText(productArchiveListPriceText(input.spu), -1)
   }
   if ((shoeProduct || apparelProduct) && /(?:拼团价|团购价)/.test(fieldName)) {
-    return productArchiveOffsetPriceText(productArchiveListPriceText(input.spu, sourceRows), -2)
+    return productArchiveOffsetPriceText(productArchiveListPriceText(input.spu), -2)
   }
   if ((shoeProduct || apparelProduct) && PRODUCT_ARCHIVE_PLATFORM_LIST_PRICE_KEYS.has(key)) {
-    return productArchiveListPriceText(input.spu, sourceRows)
+    return productArchiveListPriceText(input.spu)
   }
   if (key === "库存计数") return "买家拍下减库存"
   if (key === "会员打折") return "不参与会员打折"
   if (shoeProduct && (key.includes("专柜价") || key === "天猫特卖专柜价")) return "10000"
   if (shoeProduct && key === "抖音参考价格类型") return "吊牌价"
   if (shoeProduct && (key.includes("产品单价") || key.includes("奥莱店折扣价") || key.includes("抖音参考价"))) {
-    return productArchiveListPriceText(input.spu, sourceRows)
+    return productArchiveListPriceText(input.spu)
   }
   if (shoeProduct && ["是否新品", "是否库存", "是否外贸"].includes(key)) {
     return key === "是否新品" ? "是" : "否"
@@ -3258,7 +3275,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (key === "导购短标题" || key === "抖音导购短标题") return shortGuideTitleValue(sourceRows, 12)
   const sourceReference = productArchiveSourceReference(sourceField)
   if (isProductArchiveListPriceReference(sourceField) || isProductArchiveListPriceReference(fieldName)) {
-    return productArchiveListPriceText(input.spu, sourceRows)
+    return productArchiveListPriceText(input.spu)
   }
   if (sourceReference) {
     const referenceField = sourceReference.sourceField
@@ -3412,7 +3429,7 @@ export function buildProductArchiveMdmDerivedFieldValue(fieldName: string, input
     return { valueText: moneyText(input.spu.price_tag), valueJson: {} }
   }
   if ((shoeProduct || apparelProduct) && key === "价格区间") {
-    const price = productArchiveListPriceText(input.spu, input.sourceRows ?? [])
+    const price = productArchiveListPriceText(input.spu)
     return price
       ? { valueText: "", valueJson: { title: "购买数量,产品单价（元）", 1: `1,${price}` } }
       : { valueText: "", valueJson: {} }
@@ -10321,14 +10338,135 @@ export function refreshDraftTradeSelectionFromLaunchPlan(
   })()
 }
 
+export function refreshProductArchiveDraftsBatch(
+  db: SyncPostgresDatabase,
+  draftIds: readonly number[],
+  options: RefreshProductArchiveDraftsBatchOptions,
+): ProductArchiveDraftRefreshSummary {
+  const sourceType = sourceImportType(options.sourceType)
+  const sourceBatchId = numberValue(options.sourceBatchId)
+  const ids = productArchiveValidationIds(draftIds)
+  const empty: ProductArchiveDraftRefreshSummary = {
+    scannedDraftCount: 0,
+    processedDraftCount: 0,
+    refreshedDraftCount: 0,
+    validatedDraftCount: 0,
+    autoAppliedTradeCount: 0,
+    skippedNoTradeMatchCount: 0,
+    failedDrafts: [],
+  }
+  if (!['launch_plan', 'copywriting', 'size_chart'].includes(sourceType)) return empty
+  if (sourceBatchId === null || sourceBatchId <= 0 || ids.length === 0) return empty
+
+  const drafts = options.drafts ?? db.prepare(`
+      select *
+      from product_archive_draft
+      where id in (${productArchiveValidationPlaceholders(ids.length)})
+        and status in ${PRODUCT_ARCHIVE_SOURCE_REFRESH_STATUS_SQL}
+      order by updated_at desc, id desc
+    `).all(...ids) as JsonRecord[]
+  const failedDrafts: ProductArchiveDraftRefreshSummary["failedDrafts"] = []
+  const validationIds: number[] = []
+  const refreshedValidationIds = new Set<number>()
+  let autoAppliedTradeCount = 0
+  let skippedNoTradeMatchCount = 0
+  let refreshedDraftCount = 0
+  let validatedDraftCount = 0
+
+  const addFailure = (draft: JsonRecord, error: unknown) => {
+    const draftId = numberValue(draft.id)
+    if (draftId === null) return
+    failedDrafts.push({
+      draftId,
+      spuCode: stringValue(draft.spu_code),
+      message: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  db.transaction(() => {
+    for (const draft of drafts) {
+      throwIfAborted(options.signal)
+      const draftId = numberValue(draft.id)
+      if (draftId === null) continue
+      try {
+        db.transaction(() => {
+          assertProductArchiveDraftMutable(db, draftId)
+          appendSourceBatchIdToDraft(db, draftId, sourceType, sourceBatchId)
+          const currentDraft = draftById(db, draftId)
+
+          if (sourceType === "launch_plan") {
+            const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
+            if (tradeRefresh.autoApplied) autoAppliedTradeCount += 1
+            if (tradeRefresh.noMatch) skippedNoTradeMatchCount += 1
+            if (tradeRefresh.refreshed) refreshedDraftCount += 1
+            return
+          }
+
+          if (stringValue(currentDraft.trade_id)) {
+            rebuildProductArchiveDraftFields(db, draftId)
+            validationIds.push(draftId)
+            refreshedValidationIds.add(draftId)
+          } else {
+            validationIds.push(draftId)
+          }
+        })()
+      } catch (error) {
+        addFailure(draft, error)
+      }
+    }
+
+    throwIfAborted(options.signal)
+    if (validationIds.length > 0) {
+      const validation = validateProductArchiveDraftsBatchChunk(
+        db,
+        productArchiveValidationIds(validationIds),
+      )
+      for (const item of validation.items) {
+        if (refreshedValidationIds.has(item.draftId)) refreshedDraftCount += 1
+      }
+      for (const failure of validation.failedDrafts) {
+        const draft = drafts.find((item) => Number(item.id) === failure.draftId) ?? { id: failure.draftId }
+        addFailure(draft, failure.message)
+      }
+      validatedDraftCount = validation.validatedDraftCount
+    }
+  })()
+
+  return {
+    scannedDraftCount: drafts.length,
+    processedDraftCount: drafts.length,
+    refreshedDraftCount,
+    validatedDraftCount,
+    autoAppliedTradeCount,
+    skippedNoTradeMatchCount,
+    failedDrafts,
+  }
+}
+
 export function refreshProductArchiveDraftsFromSourceBatch(db: SyncPostgresDatabase, input: RefreshSourceBatchInput) {
   const sourceType = sourceImportType(input.sourceType)
   if (!["launch_plan", "copywriting", "size_chart"].includes(sourceType)) {
-    return { scannedDraftCount: 0, refreshedDraftCount: 0, autoAppliedTradeCount: 0, skippedNoTradeMatchCount: 0, failedDrafts: [] }
+    return {
+      scannedDraftCount: 0,
+      processedDraftCount: 0,
+      refreshedDraftCount: 0,
+      validatedDraftCount: 0,
+      autoAppliedTradeCount: 0,
+      skippedNoTradeMatchCount: 0,
+      failedDrafts: [],
+    }
   }
   const sourceBatchId = numberValue(input.sourceBatchId)
   if (sourceBatchId === null || sourceBatchId <= 0) {
-    return { scannedDraftCount: 0, refreshedDraftCount: 0, autoAppliedTradeCount: 0, skippedNoTradeMatchCount: 0, failedDrafts: [] }
+    return {
+      scannedDraftCount: 0,
+      processedDraftCount: 0,
+      refreshedDraftCount: 0,
+      validatedDraftCount: 0,
+      autoAppliedTradeCount: 0,
+      skippedNoTradeMatchCount: 0,
+      failedDrafts: [],
+    }
   }
 
   const drafts = db.prepare(`
@@ -10339,7 +10477,7 @@ export function refreshProductArchiveDraftsFromSourceBatch(db: SyncPostgresDatab
       and source.source_type = ?
       and draft.status in ${PRODUCT_ARCHIVE_SOURCE_REFRESH_STATUS_SQL}
     order by draft.updated_at desc, draft.id desc
-  `).all(sourceBatchId, sourceType) as JsonRecord[]
+    `).all(sourceBatchId, sourceType) as JsonRecord[]
   let refreshedDraftCount = 0
   let autoAppliedTradeCount = 0
   let skippedNoTradeMatchCount = 0
@@ -10378,7 +10516,9 @@ export function refreshProductArchiveDraftsFromSourceBatch(db: SyncPostgresDatab
 
   return {
     scannedDraftCount: drafts.length,
+    processedDraftCount: drafts.length,
     refreshedDraftCount,
+    validatedDraftCount: 0,
     autoAppliedTradeCount,
     skippedNoTradeMatchCount,
     failedDrafts,
@@ -10392,11 +10532,27 @@ export async function refreshProductArchiveDraftsFromSourceBatchInChunks(
 ) {
   const sourceType = sourceImportType(input.sourceType)
   if (!["launch_plan", "copywriting", "size_chart"].includes(sourceType)) {
-    return { scannedDraftCount: 0, refreshedDraftCount: 0, autoAppliedTradeCount: 0, skippedNoTradeMatchCount: 0, failedDrafts: [] }
+    return {
+      scannedDraftCount: 0,
+      processedDraftCount: 0,
+      refreshedDraftCount: 0,
+      validatedDraftCount: 0,
+      autoAppliedTradeCount: 0,
+      skippedNoTradeMatchCount: 0,
+      failedDrafts: [],
+    }
   }
   const sourceBatchId = numberValue(input.sourceBatchId)
   if (sourceBatchId === null || sourceBatchId <= 0) {
-    return { scannedDraftCount: 0, refreshedDraftCount: 0, autoAppliedTradeCount: 0, skippedNoTradeMatchCount: 0, failedDrafts: [] }
+    return {
+      scannedDraftCount: 0,
+      processedDraftCount: 0,
+      refreshedDraftCount: 0,
+      validatedDraftCount: 0,
+      autoAppliedTradeCount: 0,
+      skippedNoTradeMatchCount: 0,
+      failedDrafts: [],
+    }
   }
 
   const drafts = db.prepare(`
@@ -10409,6 +10565,7 @@ export async function refreshProductArchiveDraftsFromSourceBatchInChunks(
     order by draft.updated_at desc, draft.id desc
   `).all(sourceBatchId, sourceType) as JsonRecord[]
   let refreshedDraftCount = 0
+  let validatedDraftCount = 0
   let autoAppliedTradeCount = 0
   let skippedNoTradeMatchCount = 0
   const failedDrafts: Array<{ draftId: number; spuCode: string; message: string }> = []
@@ -10417,38 +10574,16 @@ export async function refreshProductArchiveDraftsFromSourceBatchInChunks(
   for (let start = 0; start < drafts.length; start += chunkSize) {
     throwIfAborted(options.signal)
     const end = Math.min(start + chunkSize, drafts.length)
-    for (let index = start; index < end; index += 1) {
-      throwIfAborted(options.signal)
-      const draft = drafts[index]
-      const draftId = numberValue(draft.id)
-      if (draftId === null) continue
-      try {
-        db.transaction(() => {
-          assertProductArchiveDraftMutable(db, draftId)
-          appendSourceBatchIdToDraft(db, draftId, sourceType, sourceBatchId)
-          const currentDraft = draftById(db, draftId)
-
-          if (sourceType === "launch_plan") {
-            const tradeRefresh = refreshDraftTradeSelectionFromLaunchPlan(db, draftId)
-            if (tradeRefresh.autoApplied) autoAppliedTradeCount += 1
-            if (tradeRefresh.noMatch) skippedNoTradeMatchCount += 1
-            if (tradeRefresh.refreshed) refreshedDraftCount += 1
-          } else if (stringValue(currentDraft.trade_id)) {
-            rebuildProductArchiveDraftFields(db, draftId)
-            validateProductArchiveDraft(db, draftId)
-            refreshedDraftCount += 1
-          } else {
-            validateProductArchiveDraft(db, draftId)
-          }
-        })()
-      } catch (error) {
-        failedDrafts.push({
-          draftId,
-          spuCode: stringValue(draft.spu_code),
-          message: error instanceof Error ? error.message : String(error),
-        })
-      }
-    }
+    const chunkResult = refreshProductArchiveDraftsBatch(
+      db,
+      drafts.slice(start, end).map((draft) => Number(draft.id)),
+      { sourceType, sourceBatchId, signal: options.signal, drafts: drafts.slice(start, end) },
+    )
+    refreshedDraftCount += chunkResult.refreshedDraftCount
+    validatedDraftCount += chunkResult.validatedDraftCount
+    autoAppliedTradeCount += chunkResult.autoAppliedTradeCount
+    skippedNoTradeMatchCount += chunkResult.skippedNoTradeMatchCount
+    failedDrafts.push(...chunkResult.failedDrafts)
     await options.onProgress?.({
       sourceBatchId,
       scannedDraftCount: drafts.length,
@@ -10464,7 +10599,9 @@ export async function refreshProductArchiveDraftsFromSourceBatchInChunks(
 
   return {
     scannedDraftCount: drafts.length,
+    processedDraftCount: drafts.length,
     refreshedDraftCount,
+    validatedDraftCount,
     autoAppliedTradeCount,
     skippedNoTradeMatchCount,
     failedDrafts,
@@ -11646,52 +11783,71 @@ function sizeChartAllowedSizes(_fields: JsonRecord[], skus: JsonRecord[]) {
   return draftSkuSizeValues(skus)
 }
 
-export function validateProductArchiveDraft(
-  db: SyncPostgresDatabase,
-  draftId: number,
-  options: { claimToken?: string | null; updatedAt?: string | null; allowExistingProduct?: boolean } = {},
-) {
-  return db.transaction(() => {
-    assertProductArchiveDraftMutable(db, draftId, { claimToken: options.claimToken })
-    const draft = draftById(db, draftId)
-    const draftSnapshot = recordValue(draft.source_snapshot_json)
-    const snapshotSourceRows = arrayValue(draftSnapshot.sourceRows).map((row) => recordValue(row))
-    const snapshotSpu = recordValue(draftSnapshot.spu)
-    const validationShoeProduct = isShoeDraftContext({
-      draft,
-      spu: snapshotSpu,
-      sourceRows: snapshotSourceRows,
-    })
-    const validationApparelProduct = !validationShoeProduct && isApparelProduct(snapshotSpu, snapshotSourceRows)
-  const fields = db.prepare("select * from product_archive_draft_field where draft_id = ?").all(draftId) as JsonRecord[]
-  const skus = db.prepare("select * from product_archive_draft_sku where draft_id = ?").all(draftId) as JsonRecord[]
-  const templateLookup = fieldOptionsLookup(db, draft)
-  const issues: Array<{ severity: string; issueType: string; fieldName?: string | null; skuCode?: string | null; message: string }> = []
-  const now = timestampIsoValue(options.updatedAt) || nowIso()
+type ProductArchiveFieldTemplate = {
+  options: unknown[]
+  required: boolean
+  rawPayload: JsonRecord
+  fieldType: string
+}
 
-  if (!stringValue(draft.spu_code)) issues.push({ severity: "blocker", issueType: "missing_spu_code", message: "缺少款号" })
-  if (!stringValue(draft.title)) issues.push({ severity: "blocker", issueType: "missing_title", message: "缺少商品标题" })
-  if (!stringValue(draft.trade_id)) issues.push({ severity: "blocker", issueType: "missing_trade_id", message: "缺少深绘类目" })
-  if (stringValue(draft.trade_id) && templateLookup.size === 0) {
+type ProductArchiveFieldTemplateLookup = Map<string, ProductArchiveFieldTemplate>
+
+type ProductArchiveValidationIssue = {
+  severity: string
+  issueType: string
+  fieldName?: string | null
+  skuCode?: string | null
+  message: string
+}
+
+type ProductArchiveValidationEvaluation = {
+  fieldUpdates: Array<{ id: unknown; status: string; message: string | null }>
+  issues: ProductArchiveValidationIssue[]
+  summary: {
+    blocker_count: number
+    warning_count: number
+    info_count: number
+    validated_at: string
+  }
+  status: string
+}
+
+export function evaluateProductArchiveDraftValidation(input: {
+  draft: JsonRecord
+  fields: JsonRecord[]
+  skus: JsonRecord[]
+  templateLookup: ProductArchiveFieldTemplateLookup
+  now: string
+  allowExistingProduct?: boolean
+}): ProductArchiveValidationEvaluation {
+  const draftSnapshot = recordValue(input.draft.source_snapshot_json)
+  const snapshotSourceRows = arrayValue(draftSnapshot.sourceRows).map((row) => recordValue(row))
+  const snapshotSpu = recordValue(draftSnapshot.spu)
+  const validationShoeProduct = isShoeDraftContext({
+    draft: input.draft,
+    spu: snapshotSpu,
+    sourceRows: snapshotSourceRows,
+  })
+  const validationApparelProduct = !validationShoeProduct && isApparelProduct(snapshotSpu, snapshotSourceRows)
+  const issues: ProductArchiveValidationIssue[] = []
+  const fieldUpdates: ProductArchiveValidationEvaluation["fieldUpdates"] = []
+
+  if (!stringValue(input.draft.spu_code)) issues.push({ severity: "blocker", issueType: "missing_spu_code", message: "缺少款号" })
+  if (!stringValue(input.draft.title)) issues.push({ severity: "blocker", issueType: "missing_title", message: "缺少商品标题" })
+  if (!stringValue(input.draft.trade_id)) issues.push({ severity: "blocker", issueType: "missing_trade_id", message: "缺少深绘类目" })
+  if (stringValue(input.draft.trade_id) && input.templateLookup.size === 0) {
     issues.push({ severity: "blocker", issueType: "deepdraw_template_missing", message: "缺少深绘类目字段模板，请先同步字段" })
   }
-  if (recordValue(draft.duplicate_result_json).duplicateFound === true && !options.allowExistingProduct) {
+  if (recordValue(input.draft.duplicate_result_json).duplicateFound === true && !input.allowExistingProduct) {
     issues.push({ severity: "blocker", issueType: "duplicate_product_found", message: "深绘已存在同货号商品，请使用更新已有商品" })
   }
 
-  const updateField = db.prepare(`
-    update product_archive_draft_field
-    set validation_status = ?,
-      validation_message = ?,
-      updated_at = ?::timestamptz
-    where id = ?
-  `)
-  for (const field of fields) {
+  for (const field of input.fields) {
     const fieldName = stringValue(field.field_name)
     const value = stringValue(field.value_text) || recordValue(field.value_json)
-    const template = templateLookup.get(fieldName)
+    const template = input.templateLookup.get(fieldName)
     const childRequirementActive = template
-      ? templateChildRequirementActive({ rawPayload: template.rawPayload }, fields)
+      ? templateChildRequirementActive({ rawPayload: template.rawPayload }, input.fields)
       : true
     const required = childRequirementActive && isProductArchiveFieldLocallyRequired(fieldName, {
       templateRequired: template?.required,
@@ -11700,8 +11856,8 @@ export function validateProductArchiveDraft(
       sourceType: field.source_type,
       shoeProduct: validationShoeProduct,
       apparelProduct: validationApparelProduct,
-      tradeId: draft.trade_id,
-      tradePath: draft.trade_path,
+      tradeId: input.draft.trade_id,
+      tradePath: input.draft.trade_path,
     })
     const blocking = required
     const options = template?.options ?? []
@@ -11724,40 +11880,40 @@ export function validateProductArchiveDraft(
     } else {
       status = "valid"
     }
-    updateField.run(status, message || null, now, field.id)
+    fieldUpdates.push({ id: field.id, status, message: message || null })
   }
 
-  const colorOptions = Array.from(templateLookup.entries())
+  const colorOptions = Array.from(input.templateLookup.entries())
     .filter(([name]) => /颜色|色$|color/i.test(name))
     .flatMap(([, template]) => template.options.map(optionText).filter(Boolean))
-  const sizeOptions = Array.from(templateLookup.entries())
+  const sizeOptions = Array.from(input.templateLookup.entries())
     .filter(([name]) => isProductArchiveSkuSizeTemplateFieldName(name))
     .flatMap(([, template]) => productArchiveSkuSizeTemplateOptionTexts(template.options))
   const allowedColors = new Set(colorOptions)
   const allowedSizeKeys = sizeValueKeySet(sizeOptions)
-  const allowedSizeChartSizes = sizeChartAllowedSizes(fields, skus)
+  const allowedSizeChartSizes = sizeChartAllowedSizes(input.fields, input.skus)
 
-  for (const field of fields) {
+  for (const field of input.fields) {
     const fieldName = stringValue(field.field_name)
     if (!isProductArchiveSkuSizeFieldName(fieldName)) continue
     if (!hasValue(field.value_text)) continue
     issues.push(...validateProductArchiveSkuSizeFieldValue({
       fieldName,
       valueText: field.value_text,
-      skus,
+      skus: input.skus,
     }))
   }
 
-  for (const field of fields) {
+  for (const field of input.fields) {
     const fieldName = stringValue(field.field_name)
     if (!compactFieldKey(fieldName).includes("尺码表")) continue
-    const template = templateLookup.get(fieldName)
+    const template = input.templateLookup.get(fieldName)
     if (!isStructuredProductPayloadField({
       ...field,
       field_type: template?.fieldType,
     })) continue
     const childRequirementActive = template
-      ? templateChildRequirementActive({ rawPayload: template.rawPayload }, fields)
+      ? templateChildRequirementActive({ rawPayload: template.rawPayload }, input.fields)
       : true
     const blocking = childRequirementActive && isProductArchiveFieldLocallyRequired(fieldName, {
       templateRequired: template?.required,
@@ -11766,8 +11922,8 @@ export function validateProductArchiveDraft(
       sourceType: field.source_type,
       shoeProduct: validationShoeProduct,
       apparelProduct: validationApparelProduct,
-      tradeId: draft.trade_id,
-      tradePath: draft.trade_path,
+      tradeId: input.draft.trade_id,
+      tradePath: input.draft.trade_path,
     })
     issues.push(...validateProductArchiveSizeChartValue({
       fieldName,
@@ -11777,13 +11933,11 @@ export function validateProductArchiveDraft(
     }))
   }
 
-  for (const sku of skus) {
+  for (const sku of input.skus) {
     if (!stringValue(sku.color_name)) {
       issues.push({ severity: "blocker", issueType: "sku_color_missing", skuCode: stringValue(sku.sku_code), message: "SKU 缺少颜色" })
-    } else if (allowedColors.size) {
-      if (!productArchiveSkuColorMatchesOptions(sku, allowedColors, fields)) {
-        issues.push({ severity: "blocker", issueType: "sku_color_not_in_template", skuCode: stringValue(sku.sku_code), message: "SKU 颜色不在深绘字段模板选项中" })
-      }
+    } else if (allowedColors.size && !productArchiveSkuColorMatchesOptions(sku, allowedColors, input.fields)) {
+      issues.push({ severity: "blocker", issueType: "sku_color_not_in_template", skuCode: stringValue(sku.sku_code), message: "SKU 颜色不在深绘字段模板选项中" })
     }
     if (!stringValue(sku.size_name)) {
       issues.push({ severity: "blocker", issueType: "sku_size_missing", skuCode: stringValue(sku.sku_code), message: "SKU 缺少尺码" })
@@ -11798,7 +11952,7 @@ export function validateProductArchiveDraft(
         issues.push({ severity: "blocker", issueType: "sku_size_not_in_template", skuCode: stringValue(sku.sku_code), message: "SKU 尺码不在深绘字段模板选项中" })
       }
     }
-    const draftPrice = numberValue(draft.retail_price)
+    const draftPrice = numberValue(input.draft.retail_price)
     const skuPrice = numberValue(sku.price)
     if (draftPrice !== null && skuPrice !== null && draftPrice !== skuPrice) {
       issues.push({ severity: "warning", issueType: "sku_price_mismatch", skuCode: stringValue(sku.sku_code), message: "SKU 价格与 SPU 吊牌价不一致" })
@@ -11809,18 +11963,451 @@ export function validateProductArchiveDraft(
     blocker_count: issues.filter((issue) => issue.severity === "blocker").length,
     warning_count: issues.filter((issue) => issue.severity === "warning").length,
     info_count: issues.filter((issue) => issue.severity === "info").length,
-    validated_at: now,
+    validated_at: input.now,
   }
-  const status = productArchiveDraftStatusFromValidationIssues(issues, fields)
+  return {
+    fieldUpdates,
+    issues,
+    summary,
+    status: productArchiveDraftStatusFromValidationIssues(issues, input.fields),
+  }
+}
+
+type ProductArchiveValidationBatchOptions = {
+  allowExistingProduct?: boolean
+  updatedAt?: string | null
+  chunkSize?: number
+  signal?: AbortSignal
+  onProgress?: (progress: {
+    requestedDraftCount: number
+    scannedDraftCount: number
+    processedDraftCount: number
+    validatedDraftCount: number
+    failedDraftCount: number
+  }) => void | Promise<void>
+}
+
+export type ProductArchiveValidationBatchSummary = {
+  requestedDraftCount: number
+  scannedDraftCount: number
+  processedDraftCount: number
+  validatedDraftCount: number
+  failedDrafts: Array<{ draftId: number; message: string }>
+  items: Array<{
+    draftId: number
+    status: string
+    summary: ProductArchiveValidationEvaluation["summary"]
+    issues: ProductArchiveValidationIssue[]
+  }>
+}
+
+type ProductArchiveValidationBatchPreload = {
+  drafts: JsonRecord[]
+  fieldsByDraftId: Map<number, JsonRecord[]>
+  skusByDraftId: Map<number, JsonRecord[]>
+  templateLookupByDraftKey: Map<string, ProductArchiveFieldTemplateLookup>
+  sourceRowsBySpuCode: Map<string, JsonRecord[]>
+}
+
+function productArchiveValidationIds(values: readonly unknown[]) {
+  return Array.from(new Set(values
+    .map((value) => numberValue(value))
+    .filter((value): value is number => value !== null && Number.isInteger(value) && value > 0)))
+}
+
+function productArchiveValidationPlaceholders(count: number) {
+  return Array.from({ length: count }, () => "?").join(", ")
+}
+
+function productArchiveValidationDraftKey(draft: JsonRecord) {
+  return [
+    stringValue(draft.tenant_name),
+    stringValue(draft.merchant_id),
+    stringValue(draft.trade_id),
+  ].join("\u0000")
+}
+
+function preloadProductArchiveValidationBatch(
+  db: SyncPostgresDatabase,
+  draftIds: number[],
+): ProductArchiveValidationBatchPreload {
+  if (draftIds.length === 0) {
+    return {
+      drafts: [],
+      fieldsByDraftId: new Map(),
+      skusByDraftId: new Map(),
+      templateLookupByDraftKey: new Map(),
+      sourceRowsBySpuCode: new Map(),
+    }
+  }
+
+  const drafts = db.prepare(`
+    select *
+    from product_archive_draft
+    where id in (${productArchiveValidationPlaceholders(draftIds.length)})
+    order by updated_at desc, id desc
+    for update
+  `).all(...draftIds) as JsonRecord[]
+  const fields = db.prepare(`
+    select *
+    from product_archive_draft_field
+    where draft_id in (${productArchiveValidationPlaceholders(draftIds.length)})
+    order by draft_id, required desc, blocking desc, field_name, id
+  `).all(...draftIds) as JsonRecord[]
+  const skus = db.prepare(`
+    select *
+    from product_archive_draft_sku
+    where draft_id in (${productArchiveValidationPlaceholders(draftIds.length)})
+    order by draft_id, skc_code, size_code, sku_code, id
+  `).all(...draftIds) as JsonRecord[]
+
+  const fieldsByDraftId = new Map<number, JsonRecord[]>()
+  for (const field of fields) {
+    const draftId = numberValue(field.draft_id)
+    if (draftId === null) continue
+    const list = fieldsByDraftId.get(draftId) ?? []
+    list.push(field)
+    fieldsByDraftId.set(draftId, list)
+  }
+  const skusByDraftId = new Map<number, JsonRecord[]>()
+  for (const sku of skus) {
+    const draftId = numberValue(sku.draft_id)
+    if (draftId === null) continue
+    const list = skusByDraftId.get(draftId) ?? []
+    list.push(sku)
+    skusByDraftId.set(draftId, list)
+  }
+
+  const templateKeys = Array.from(new Set(drafts
+    .filter((draft) => stringValue(draft.trade_id))
+    .map(productArchiveValidationDraftKey)))
+  const templateLookupByDraftKey = new Map<string, ProductArchiveFieldTemplateLookup>()
+  if (templateKeys.length > 0) {
+    const clauses: string[] = []
+    const params: unknown[] = []
+    for (const key of templateKeys) {
+      const [tenantName, merchantId, tradeId] = key.split("\u0000")
+      clauses.push("(tenant_name = ? and merchant_id = ? and trade_id = ?)")
+      params.push(tenantName, merchantId, tradeId)
+      templateLookupByDraftKey.set(key, new Map())
+    }
+    const templates = db.prepare(`
+      select field_name, field_id, field_type, options_json, required, raw_payload_json,
+        tenant_name, merchant_id, trade_id
+      from deepdraw_trade_field_cache
+      where ${clauses.join(" or ")}
+      order by tenant_name, merchant_id, trade_id, required desc, sale_prop desc, field_id
+    `).all(...params) as JsonRecord[]
+    for (const row of templates) {
+      const lookup = templateLookupByDraftKey.get(productArchiveValidationDraftKey(row))
+      const fieldName = stringValue(row.field_name)
+      if (!lookup || !fieldName || lookup.has(fieldName)) continue
+      lookup.set(fieldName, {
+        options: arrayValue(row.options_json),
+        required: Boolean(row.required),
+        rawPayload: recordValue(row.raw_payload_json),
+        fieldType: stringValue(row.field_type),
+      })
+    }
+  }
+
+  const spuCodes = Array.from(new Set(drafts.map((draft) => stringValue(draft.spu_code)).filter(Boolean)))
+  const sourceRowsBySpuCode = new Map<string, JsonRecord[]>()
+  if (spuCodes.length > 0) {
+    const sourceRows = db.prepare(`
+      select source.*
+      from product_archive_source_row source
+      join product_archive_source_batch batch
+        on batch.id = source.source_batch_id
+       and batch.import_status = 'committed'
+      where source.spu_code in (${productArchiveValidationPlaceholders(spuCodes.length)})
+      order by source.spu_code, source.source_type, source.skc_code nulls first, source.id desc
+    `).all(...spuCodes) as JsonRecord[]
+    for (const row of sourceRows) {
+      const spuCode = stringValue(row.spu_code)
+      if (!spuCode) continue
+      const list = sourceRowsBySpuCode.get(spuCode) ?? []
+      list.push(row)
+      sourceRowsBySpuCode.set(spuCode, list)
+    }
+  }
+
+  return { drafts, fieldsByDraftId, skusByDraftId, templateLookupByDraftKey, sourceRowsBySpuCode }
+}
+
+function persistProductArchiveValidationEntries(
+  db: SyncPostgresDatabase,
+  entries: Array<{ draftId: number; evaluation: ProductArchiveValidationEvaluation }>,
+  options: { claimToken?: string | null } = {},
+) {
+  if (entries.length === 0) return
+  if (entries.length === 1) {
+    persistSingleProductArchiveValidationEntry(db, entries[0], options)
+    return
+  }
+  const draftIds = entries.map((entry) => entry.draftId)
+  const now = entries[0].evaluation.summary.validated_at
+  const fieldRows = entries.flatMap((entry) => entry.evaluation.fieldUpdates.map((field) => [
+    field.id,
+    entry.draftId,
+    field.status,
+    field.message,
+  ]))
+  if (fieldRows.length > 0) {
+    const groups = fieldRows.map(() => "(?, ?, ?, ?)").join(",\n")
+    const fieldParams = fieldRows.flat()
+    db.prepare(`
+      update product_archive_draft_field as field
+      set validation_status = changes.validation_status,
+        validation_message = changes.validation_message,
+        updated_at = ?::timestamptz
+      from (values
+        ${groups}
+      ) as changes(field_id, draft_id, validation_status, validation_message)
+      where field.id = changes.field_id
+        and field.draft_id = changes.draft_id
+    `).run(now, ...fieldParams)
+  }
+
+  db.prepare(`
+    delete from product_archive_validation_issue
+    where draft_id in (${productArchiveValidationPlaceholders(draftIds.length)})
+  `).run(...draftIds)
+
+  const issueRows = entries.flatMap((entry) => entry.evaluation.issues.map((issue) => [
+    entry.draftId,
+    issue.severity,
+    issue.issueType,
+    issue.fieldName ?? null,
+    issue.skuCode ?? null,
+    issue.message,
+  ]))
+  if (issueRows.length > 0) {
+    db.prepare(`
+      insert into product_archive_validation_issue(
+        draft_id, severity, issue_type, field_name, sku_code, message
+      ) values
+      ${issueRows.map(() => "(?, ?, ?, ?, ?, ?)").join(",\n")}
+    `).run(...issueRows.flat())
+  }
+
+  if (options.claimToken != null) {
+    if (entries.length !== 1) throw new Error("批量校验不支持共享提交权")
+    const entry = entries[0]
+    const update = db.prepare(`
+      update product_archive_draft
+      set status = case when submit_claim_token is null then ? else status end,
+        validation_summary_json = ?::jsonb,
+        updated_at = ?::timestamptz
+      where id = ?
+        and submit_claim_token = ?
+    `).run(
+      entry.evaluation.status,
+      jsonText(entry.evaluation.summary),
+      now,
+      entry.draftId,
+      options.claimToken,
+    )
+    if (Number(update?.changes ?? 0) === 0) throw new Error("草稿提交权已失效，请刷新后重试")
+    return
+  }
+
+  if (entries.length === 1) {
+    const entry = entries[0]
+    const update = db.prepare(`
+      update product_archive_draft
+      set status = case when submit_claim_token is null then ? else status end,
+        validation_summary_json = ?::jsonb,
+        updated_at = ?::timestamptz
+      where id = ?
+        and submit_claim_token is null
+    `).run(
+      entry.evaluation.status,
+      jsonText(entry.evaluation.summary),
+      now,
+      entry.draftId,
+    )
+    if (Number(update?.changes ?? 0) === 0) throw new Error("草稿提交权已失效，请刷新后重试")
+    return
+  }
+
+  db.prepare(`
+    update product_archive_draft as draft
+    set status = changes.status,
+      validation_summary_json = changes.validation_summary_json,
+      updated_at = ?::timestamptz
+    from (values
+      ${entries.map(() => "(?, ?, ?::jsonb)").join(",\n")}
+    ) as changes(draft_id, status, validation_summary_json)
+    where draft.id = changes.draft_id
+      and draft.submit_claim_token is null
+  `).run(
+    now,
+    ...entries.flatMap((entry) => [
+      entry.draftId,
+      entry.evaluation.status,
+      jsonText(entry.evaluation.summary),
+    ]),
+  )
+}
+
+function validateProductArchiveDraftsBatchChunk(
+  db: SyncPostgresDatabase,
+  draftIds: number[],
+  options: Pick<ProductArchiveValidationBatchOptions, "allowExistingProduct" | "updatedAt"> = {},
+) {
+  const preload = preloadProductArchiveValidationBatch(db, draftIds)
+  const draftByIdMap = new Map(preload.drafts.map((draft) => [Number(draft.id), draft]))
+  const now = timestampIsoValue(options.updatedAt) || nowIso()
+  const entries: Array<{ draftId: number; evaluation: ProductArchiveValidationEvaluation }> = []
+  const failedDrafts: Array<{ draftId: number; message: string }> = []
+
+  for (const draftId of draftIds) {
+    const draft = draftByIdMap.get(draftId)
+    if (!draft) {
+      failedDrafts.push({ draftId, message: `建档草稿不存在：${draftId}` })
+      continue
+    }
+    if (stringValue(draft.submit_claim_token)) {
+      failedDrafts.push({ draftId, message: "PRODUCT_ARCHIVE_SUBMIT_IN_PROGRESS: 草稿正在提交，不能继续校验" })
+      continue
+    }
+    try {
+      const evaluation = evaluateProductArchiveDraftValidation({
+        draft,
+        fields: preload.fieldsByDraftId.get(draftId) ?? [],
+        skus: preload.skusByDraftId.get(draftId) ?? [],
+        templateLookup: preload.templateLookupByDraftKey.get(productArchiveValidationDraftKey(draft)) ?? new Map(),
+        now,
+        allowExistingProduct: options.allowExistingProduct,
+      })
+      entries.push({ draftId, evaluation })
+    } catch (error) {
+      failedDrafts.push({
+        draftId,
+        message: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  persistProductArchiveValidationEntries(db, entries)
+  return {
+    scannedDraftCount: preload.drafts.length,
+    processedDraftCount: draftIds.length,
+    validatedDraftCount: entries.length,
+    failedDrafts,
+    items: entries.map((entry) => ({ draftId: entry.draftId, ...entry.evaluation })),
+  }
+}
+
+export async function validateProductArchiveDraftsBatch(
+  db: SyncPostgresDatabase,
+  draftIds: readonly number[],
+  options: ProductArchiveValidationBatchOptions = {},
+): Promise<ProductArchiveValidationBatchSummary> {
+  const ids = productArchiveValidationIds(draftIds)
+  const chunkSize = Math.max(1, Math.min(25, Math.floor(Number(options.chunkSize ?? 25) || 25)))
+  const result: ProductArchiveValidationBatchSummary = {
+    requestedDraftCount: ids.length,
+    scannedDraftCount: 0,
+    processedDraftCount: 0,
+    validatedDraftCount: 0,
+    failedDrafts: [],
+    items: [],
+  }
+  for (let start = 0; start < ids.length; start += chunkSize) {
+    throwIfAborted(options.signal)
+    const chunk = ids.slice(start, start + chunkSize)
+    let chunkResult: ReturnType<typeof validateProductArchiveDraftsBatchChunk>
+    try {
+      chunkResult = db.transaction(() => validateProductArchiveDraftsBatchChunk(db, chunk, options))()
+    } catch (error) {
+      if (options.signal?.aborted) throw error
+      chunkResult = {
+        scannedDraftCount: 0,
+        processedDraftCount: chunk.length,
+        validatedDraftCount: 0,
+        failedDrafts: chunk.map((draftId) => ({
+          draftId,
+          message: error instanceof Error ? error.message : String(error),
+        })),
+        items: [],
+      }
+    }
+    result.scannedDraftCount += chunkResult.scannedDraftCount
+    result.processedDraftCount += chunkResult.processedDraftCount
+    result.validatedDraftCount += chunkResult.validatedDraftCount
+    result.failedDrafts.push(...chunkResult.failedDrafts)
+    result.items.push(...chunkResult.items)
+    await options.onProgress?.({
+      requestedDraftCount: result.requestedDraftCount,
+      scannedDraftCount: result.scannedDraftCount,
+      processedDraftCount: result.processedDraftCount,
+      validatedDraftCount: result.validatedDraftCount,
+      failedDraftCount: result.failedDrafts.length,
+    })
+    throwIfAborted(options.signal)
+    if (start + chunk.length < ids.length) await wait()
+  }
+  return result
+}
+
+export function validateProductArchiveDraft(
+  db: SyncPostgresDatabase,
+  draftId: number,
+  options: { claimToken?: string | null; updatedAt?: string | null; allowExistingProduct?: boolean } = {},
+) {
+  return db.transaction(() => {
+    assertProductArchiveDraftMutable(db, draftId, { claimToken: options.claimToken })
+    const draft = draftById(db, draftId)
+    const fields = db.prepare("select * from product_archive_draft_field where draft_id = ?").all(draftId) as JsonRecord[]
+    const skus = db.prepare("select * from product_archive_draft_sku where draft_id = ?").all(draftId) as JsonRecord[]
+    const templateLookup = fieldOptionsLookup(db, draft)
+    const evaluation = evaluateProductArchiveDraftValidation({
+      draft,
+      fields,
+      skus,
+      templateLookup,
+      now: timestampIsoValue(options.updatedAt) || nowIso(),
+      allowExistingProduct: options.allowExistingProduct,
+    })
+    persistProductArchiveValidationEntries(db, [{ draftId, evaluation }], { claimToken: options.claimToken })
+    return {
+      status: evaluation.status,
+      summary: evaluation.summary,
+      issues: evaluation.issues,
+      detail: serializeDraftDetail(db, draftId),
+    }
+  })()
+}
+
+function persistSingleProductArchiveValidationEntry(
+  db: SyncPostgresDatabase,
+  entry: { draftId: number; evaluation: ProductArchiveValidationEvaluation },
+  options: { claimToken?: string | null } = {},
+) {
+  const { draftId, evaluation } = entry
+  const now = evaluation.summary.validated_at
+  const updateField = db.prepare(`
+    update product_archive_draft_field
+    set validation_status = ?,
+      validation_message = ?,
+      updated_at = ?::timestamptz
+    where id = ?
+  `)
+  for (const field of evaluation.fieldUpdates) {
+    updateField.run(field.status, field.message, now, field.id)
+  }
 
   db.prepare("delete from product_archive_validation_issue where draft_id = ?").run(draftId)
   const insertIssue = db.prepare(`
     insert into product_archive_validation_issue(draft_id, severity, issue_type, field_name, sku_code, message)
     values (?, ?, ?, ?, ?, ?)
   `)
-  for (const issue of issues) {
+  for (const issue of evaluation.issues) {
     insertIssue.run(draftId, issue.severity, issue.issueType, issue.fieldName ?? null, issue.skuCode ?? null, issue.message)
   }
+
   const draftUpdate = options.claimToken != null
     ? db.prepare(`
         update product_archive_draft
@@ -11829,7 +12416,7 @@ export function validateProductArchiveDraft(
           updated_at = ?::timestamptz
         where id = ?
           and submit_claim_token = ?
-      `).run(status, jsonText(summary), now, draftId, options.claimToken)
+      `).run(evaluation.status, jsonText(evaluation.summary), now, draftId, options.claimToken)
     : db.prepare(`
         update product_archive_draft
         set status = case when submit_claim_token is null then ? else status end,
@@ -11837,13 +12424,10 @@ export function validateProductArchiveDraft(
           updated_at = ?::timestamptz
         where id = ?
           and submit_claim_token is null
-      `).run(status, jsonText(summary), now, draftId)
+      `).run(evaluation.status, jsonText(evaluation.summary), now, draftId)
   if (Number(draftUpdate?.changes ?? 0) === 0) {
     throw new Error("草稿提交权已失效，请刷新后重试")
   }
-
-  return { status, summary, issues, detail: serializeDraftDetail(db, draftId) }
-  })()
 }
 
 export function isStructuredProductPayloadField(field: JsonRecord) {
