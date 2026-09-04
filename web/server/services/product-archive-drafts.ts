@@ -1281,6 +1281,7 @@ const PRODUCT_ARCHIVE_AI_FIELD_STRATEGIES: ProductArchiveAiFieldStrategyDefiniti
       "款式(多选)",
       "款式(单选)",
       "类型",
+      "类型(多选)",
       "分类",
       "产品类别",
       "商品类别",
@@ -1308,6 +1309,7 @@ const PRODUCT_ARCHIVE_AI_FIELD_STRATEGIES: ProductArchiveAiFieldStrategyDefiniti
       "穿着方式",
       "件数(单选)",
       "内胆类型",
+      "闭合方式",
       "22Q4-童鞋尺码表",
       "25鞋子尺码表",
       "25鞋子模板类型",
@@ -1322,8 +1324,10 @@ const PRODUCT_ARCHIVE_AI_FIELD_STRATEGIES: ProductArchiveAiFieldStrategyDefiniti
       /^图案(?:多选)?$/,
       /^袖长(?:多选)?$/,
       /^款式(?:多选|单选)?$/,
+      /^类型(?:多选)?$/,
       /^(?:产品|商品)类别$/,
       /^内胆类型$/,
+      /^闭合方式$/,
       /^22q4童鞋尺码表$/,
       /^25鞋子尺码表$/,
       /^25鞋子模板类型$/,
@@ -1399,6 +1403,7 @@ const PRODUCT_ARCHIVE_AI_FIELD_STRATEGIES: ProductArchiveAiFieldStrategyDefiniti
       "里料材质",
       "里料材质(多选)",
       "里料材质成分含量(多选)",
+      "里绒情况",
       "填充物",
       "填充物(多选)",
       "填充物含量",
@@ -1429,6 +1434,7 @@ const PRODUCT_ARCHIVE_AI_FIELD_STRATEGIES: ProductArchiveAiFieldStrategyDefiniti
       /^里料$/,
       /^里料(?:材质)?成分(?:含量)?(?:多选)?$/,
       /^里料材质(?:成分含量)?(?:多选)?$/,
+      /^里绒情况$/,
       /^填充物(?:含量|多选)?$/,
       /^充绒量(?:多选)?$/,
       /^含绒量(?:多选)?$/,
@@ -1502,6 +1508,10 @@ export function shouldProductArchiveAiFill25ShoeSizeTable(input: {
 
 export function isProductArchiveShoeAiEnumField(fieldName: unknown) {
   return PRODUCT_ARCHIVE_SHOE_AI_ENUM_FIELDS.has(compactFieldKey(fieldName))
+}
+
+export function isProductArchiveShoeVisualEnumField(fieldName: unknown) {
+  return PRODUCT_ARCHIVE_SHOE_VISUAL_ENUM_FIELDS.has(businessRuleFieldKey(fieldName))
 }
 
 function isShoeDraftContext(input: {
@@ -1621,6 +1631,21 @@ const PRODUCT_ARCHIVE_SHOE_AI_ENUM_FIELDS = new Set([
   "25鞋子尺码表",
   "25鞋子模板类型",
 ])
+
+const PRODUCT_ARCHIVE_SHOE_VISUAL_ENUM_FIELDS = new Set([
+  "材质(1688)",
+  "靴筒高度",
+  "鞋筒高度",
+  "鞋垫材质",
+  "厚薄",
+  "里绒情况",
+  "闭合方式",
+  "款式(单选)",
+  "类型",
+  "类型(多选)",
+  "适用人群(多选)",
+  "风格",
+].map(businessRuleFieldKey))
 
 const PRODUCT_ARCHIVE_BRA_CONTEXT_FIELDS = new Set([
   "文胸图标",
@@ -8444,7 +8469,10 @@ export function buildProductArchiveAiFillCandidateFields(
 ): ProductArchiveAiFillCandidate[] {
   const colorIssueValues = skuColorIssueValues(issues, skus)
   return fields
-    .filter((field) => !isUnsupportedAiFillField(field.field_name))
+    .filter((field) => (
+      !isUnsupportedAiFillField(field.field_name)
+      && !isProductArchiveAiFallbackFactBoundField(field.field_name)
+    ))
     .map((field) => {
       const valueText = stringValue(field.value_text)
       const valueJson = recordValue(field.value_json)
@@ -8460,6 +8488,9 @@ export function buildProductArchiveAiFillCandidateFields(
       const required = Boolean(field.required)
         || Boolean(field.blocking)
         || /必填字段缺失/.test(stringValue(field.validation_message))
+      const skippedFieldNeedsAiFallback = sourceType === "skip"
+        && (required || invalidValue)
+        && shouldProductArchiveAiFallbackSkippedField(field.field_name)
       const currentValue = colorNeedsAiFill
         ? colorIssueValues.join(";")
         : aiRuleFallback
@@ -8474,6 +8505,7 @@ export function buildProductArchiveAiFillCandidateFields(
         required,
         sourceType,
         strategy,
+        skippedFieldNeedsAiFallback,
         needsAiFill: emptyValue || invalidValue || colorNeedsAiFill || shoeEnumNeedsAiReview,
         options: fieldOptionsFromTemplate(field.options_json),
       }
@@ -8483,7 +8515,7 @@ export function buildProductArchiveAiFillCandidateFields(
       && field.fieldName
       && field.options.length > 0
       && field.needsAiFill
-      && (field.sourceType !== "skip" || Boolean(field.strategy?.includeWhenSourceSkipped))
+      && (field.sourceType !== "skip" || Boolean(field.strategy?.includeWhenSourceSkipped) || field.skippedFieldNeedsAiFallback)
     ))
     .sort((left, right) => {
       const priorityRank: Record<ProductArchiveAiFieldPriority, number> = { P0: 0, P1: 1, P2: 2 }
@@ -8954,6 +8986,16 @@ export function buildProductArchiveEvidenceRuleFills(input: {
   return fills
 }
 
+function shoeVisualEnumClassificationPrompt() {
+  return [
+    "鞋类阻断枚举补齐规则：当字段为材质(1688)、靴筒高度、鞋垫材质、厚薄、里绒情况、闭合方式、款式(单选)、类型/类型(多选)、适用人群(多选)或风格时，必须结合商品主图、平铺图、标题、类目和已填字段，在该字段给定的枚举中选择最贴切的值。",
+    "1. 闭合方式、靴筒高度、款式和类型优先看鞋面结构：鞋带、魔术贴、搭扣、套脚、拉链、靴筒高低等可见特征；不能把服装结构套用到鞋类。",
+    "2. 材质(1688)、鞋垫材质、厚薄和里绒情况优先采用吊牌、洗唛、文案和已填帮面/里料；图片只可用于明显的绒里、厚薄或通用材质观感，不能编造具体成分。",
+    "3. 适用人群和风格结合鞋类目、标题、SKU 尺码段及图片选择；类型(多选)只返回实际同时成立的枚举，多个值用分号分隔，每个值都必须与 options[].value 完全一致。",
+    "4. 图片或上下文已足以映射到一个现有枚举时，即使没有逐字的文本证据也应返回，不要因字段来源是 manual 或 skip 而省略；确实无法区分时才留空。",
+  ].join("\n")
+}
+
 function buildDeepdrawAiFillPrompt(input: {
   draft: JsonRecord
   fields: ProductArchiveAiFillCandidate[]
@@ -8988,12 +9030,18 @@ function buildDeepdrawAiFillPrompt(input: {
       "required 为 true 的字段是当前阻断项。若 P0 必填字段有清晰参考图和上下文证据，优先返回；证据不清时仍然省略，不能为了补必填而猜测。",
       "field_strategy.priority 为 P0 的字段优先处理；P1 字段必须优先使用主数据、尺码段、成分或文案证据；P2 字段只在图片/上下文足够明确时补充。",
       "每个字段的 field_strategy.guardrail 是硬约束；违反该边界时省略字段。",
+      "field_strategy 为 null 的单选/多选字段是通用 AI 兜底：结合商品主图、平铺图、吊牌、洗唛、商品档案、标题和已填字段合理推断；单选只返回一个现有枚举，多选只返回确有依据的现有枚举，多个值用分号分隔。",
+      "执行标准、安全等级、生产/溯源、日期、编码、价格、规格尺寸等事实字段不会进入通用 AI 兜底；不能用视觉猜测这类事实。",
       `confidence 低于 ${AI_FILL_MIN_CONFIDENCE} 的字段不要返回。`,
       "颜色字段如果 current_value 有多个用分号分隔的原颜色名，field_value 返回同数量标准色，按顺序用分号分隔；每个标准色都必须来自 options[].value，系统会自动保留原颜色别名。",
       ...(input.fields.some((field) => compactFieldKey(field.fieldName) === compactFieldKey("图案"))
         ? [isShoeDraftContext({ draft: input.draft, spu: input.mdmSpu, sourceRows: input.sourceRows })
           ? "鞋品图案字段在参考图清晰时必须选择最接近的现有枚举：有明显条带结构选条纹，没有印花或图形且整体无图案选纯色；只有图片确实无法辨认时才省略。"
           : "服饰图案字段必须依据参考图：主体与袖片、帽片、口袋等存在清晰不同材质或色块拼接时，优先匹配拼色或色块，不能因为主色占比高就选纯色；只有图片确实无法辨认时才省略。"]
+        : []),
+      ...(isShoeDraftContext({ draft: input.draft, spu: input.mdmSpu, sourceRows: input.sourceRows })
+        && input.fields.some((field) => isProductArchiveShoeVisualEnumField(field.fieldName))
+        ? [shoeVisualEnumClassificationPrompt()]
         : []),
       ...(input.fields.some((field) => isProductArchiveShoeAiEnumField(field.fieldName))
         ? [shoeEnumClassificationPrompt()]
@@ -12555,6 +12603,27 @@ export function isStructuredProductPayloadField(field: JsonRecord) {
   const fieldType = stringValue(field.field_type).toUpperCase()
   if (key === "多平台尺码") return !fieldType || fieldType === "MULTI_TEXT"
   return fieldType === "MULTI_TEXT" && key.includes("尺码表")
+}
+
+const PRODUCT_ARCHIVE_AI_FALLBACK_FACT_FIELD_PATTERNS = [
+  /执行(?:标准|规范)/,
+  /安全(?:等级|类别|技术|技术要求)/,
+  /(?:产品|质量)等级/,
+  /^(?:产品|商品)?(?:名称|品名|货号|款号|型号|编码|条码)$/,
+  /(?:生产|制造)(?:企业|厂家|厂商|地址|日期)/,
+  /产地|原产地|原产国|上市日期|生产日期|保质期|有效期/,
+  /价(?:格|钱|位|区间)/,
+  /(?:包装|包裹).*(?:重量|容量|长度|宽度|高度|尺寸|规格)/,
+  /^(?:净)?(?:重量|容量|长度|宽度|高度|尺寸|规格)$/,
+]
+
+function isProductArchiveAiFallbackFactBoundField(fieldName: unknown) {
+  const key = businessRuleFieldKey(fieldName)
+  return PRODUCT_ARCHIVE_AI_FALLBACK_FACT_FIELD_PATTERNS.some((pattern) => pattern.test(key))
+}
+
+export function shouldProductArchiveAiFallbackSkippedField(fieldName: unknown) {
+  return !isUnsupportedAiFillField(fieldName) && !isProductArchiveAiFallbackFactBoundField(fieldName)
 }
 
 function isUnsupportedAiFillField(fieldName: unknown) {

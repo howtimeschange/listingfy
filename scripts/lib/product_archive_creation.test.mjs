@@ -8706,6 +8706,108 @@ test("product archive AI fill admits shoe enum fields without admitting structur
   ]);
 });
 
+test("product archive AI fill prioritizes shoe visual enum blockers, including skipped template fields", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const shoeVisualFields = [
+    "材质(1688)",
+    "靴筒高度",
+    "鞋垫材质",
+    "厚薄",
+    "里绒情况",
+    "闭合方式",
+    "款式(单选)",
+    "类型",
+    "类型(多选)",
+    "适用人群(多选)",
+    "风格",
+  ];
+
+  for (const fieldName of shoeVisualFields) {
+    assert.equal(service.isProductArchiveShoeVisualEnumField(fieldName), true, fieldName);
+  }
+  assert.equal(service.isProductArchiveShoeVisualEnumField("服装版型"), false);
+
+  const candidates = service.buildProductArchiveAiFillCandidateFields(
+    shoeVisualFields.map((field_name, index) => ({
+      id: 900 + index,
+      field_name,
+      source_type: "skip",
+      value_text: "",
+      value_json: {},
+      required: true,
+      validation_status: "missing",
+      validation_message: "必填字段缺失",
+      options_json: [{ value: "枚举值一" }, { value: "枚举值二" }],
+    })),
+    [],
+    [],
+  );
+
+  assert.deepEqual(new Set(candidates.map((field) => field.fieldName)), new Set(shoeVisualFields));
+  const candidatePriorityByName = new Map(candidates.map((field) => [field.fieldName, field.strategy?.priority]));
+  assert.deepEqual(shoeVisualFields.map((fieldName) => [fieldName, candidatePriorityByName.get(fieldName)]), [
+    ["材质(1688)", "P1"],
+    ["靴筒高度", "P0"],
+    ["鞋垫材质", "P1"],
+    ["厚薄", "P1"],
+    ["里绒情况", "P1"],
+    ["闭合方式", "P0"],
+    ["款式(单选)", "P0"],
+    ["类型", "P0"],
+    ["类型(多选)", "P0"],
+    ["适用人群(多选)", "P1"],
+    ["风格", "P1"],
+  ]);
+
+  const source = await readText(files.draftService);
+  assert.match(source, /isProductArchiveShoeVisualEnumField\(field\.fieldName\)/);
+  assert.match(source, /shoeVisualEnumClassificationPrompt\(\)/);
+});
+
+test("product archive AI fallback admits unmapped skipped enums but excludes fact-bound fields", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.equal(service.shouldProductArchiveAiFallbackSkippedField("适用场景"), true);
+  assert.equal(service.shouldProductArchiveAiFallbackSkippedField("鞋跟形状"), true);
+  assert.equal(service.shouldProductArchiveAiFallbackSkippedField("执行标准"), false);
+  assert.equal(service.shouldProductArchiveAiFallbackSkippedField("生产企业名称"), false);
+  assert.equal(service.shouldProductArchiveAiFallbackSkippedField("原产国"), false);
+  assert.equal(service.shouldProductArchiveAiFallbackSkippedField("价格区间"), false);
+  assert.equal(service.shouldProductArchiveAiFallbackSkippedField("商品包装重量"), false);
+  assert.equal(service.shouldProductArchiveAiFallbackSkippedField("尺码表"), false);
+
+  const candidates = service.buildProductArchiveAiFillCandidateFields([
+    "适用场景",
+    "鞋跟形状",
+    "执行标准",
+    "生产企业名称",
+    "原产国",
+    "尺码表",
+  ].map((field_name, index) => ({
+    id: 950 + index,
+    field_name,
+    source_type: ["执行标准", "生产企业名称", "原产国", "价格区间", "商品包装重量"].includes(field_name)
+      ? "manual"
+      : "skip",
+    value_text: "",
+    value_json: {},
+    required: true,
+    validation_status: "missing",
+    validation_message: "必填字段缺失",
+    options_json: [{ value: "选项一" }, { value: "选项二" }],
+  })), [], []);
+
+  assert.deepEqual(new Set(candidates.map((field) => field.fieldName)), new Set([
+    "适用场景",
+    "鞋跟形状",
+  ]));
+  assert.ok(candidates.every((field) => field.strategy === null));
+
+  const source = await readText(files.draftService);
+  assert.match(source, /field_strategy 为 null 的单选\/多选字段是通用 AI 兜底/);
+  assert.match(source, /商品主图、平铺图、吊牌、洗唛、商品档案、标题和已填字段/);
+});
+
 test("product archive AI fill normalizes color choices back to DeepDraw alias values", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
