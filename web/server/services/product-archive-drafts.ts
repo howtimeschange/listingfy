@@ -609,7 +609,7 @@ const PRODUCT_ARCHIVE_FIELD_LEVEL_BLANK_LIST_PRICE_KEYS = new Set([
 
 const PRODUCT_ARCHIVE_WASH_INSTRUCTION_TEXT = "请根据产品面料特性进行清洗养护，具体方法可参考产品水洗唛/标签"
 const PRODUCT_ARCHIVE_DOWN_WASH_INSTRUCTION_OPTION = "羽绒服洗涤说明"
-const PRODUCT_ARCHIVE_VIP_SIZE_TIP_TEXT = "数据仅供参考手工测量难免1-2cm误差；插肩袖(肩膀无明确肩点)款袖长从后领中量至袖口"
+const PRODUCT_ARCHIVE_VIP_APPAREL_WARM_TIP_TEXT = "手工测量难免存在误差，常规款袖长肩点到袖口，插肩袖(无明确肩点)款后领中量至袖口"
 
 const LAUNCH_PLAN_REFERENCE_FIELDS = new Set([
   "款号",
@@ -1664,6 +1664,32 @@ function isProductArchiveVipUsageSceneField(fieldName: unknown, templatePlatform
     || /^唯品(?:会)?适用场景(?:多选)?$/.test(key)
 }
 
+function isProductArchiveVipApparelWarmTipField(
+  fieldName: unknown,
+  templatePlatform: unknown,
+  spu: JsonRecord = {},
+  sourceRows: JsonRecord[] = [],
+) {
+  const fieldKey = compactFieldKey(fieldName)
+  const vipFieldWithoutPlatform = !stringValue(templatePlatform) && fieldKey === "唯品会温馨提示"
+  return (isProductArchiveVipPlatform(templatePlatform) || vipFieldWithoutPlatform)
+    && isApparelProduct(spu, sourceRows)
+    && fieldKey === "唯品会温馨提示"
+}
+
+function isProductArchiveVipShoeWarmTipField(
+  fieldName: unknown,
+  templatePlatform: unknown,
+  spu: JsonRecord = {},
+  sourceRows: JsonRecord[] = [],
+) {
+  const fieldKey = compactFieldKey(fieldName)
+  const vipFieldWithoutPlatform = !stringValue(templatePlatform) && fieldKey === "唯品会温馨提示"
+  return (isProductArchiveVipPlatform(templatePlatform) || vipFieldWithoutPlatform)
+    && isShoeProduct(spu, sourceRows)
+    && fieldKey === "唯品会温馨提示"
+}
+
 function isProductArchiveWashInstructionFieldKey(key: string) {
   return key.includes("洗涤说明")
     || key.includes("洗护说明")
@@ -1680,6 +1706,7 @@ export function isProductArchiveBusinessBlankField(
   const key = businessRuleFieldKey(fieldName)
   const shoeProduct = isShoeProduct(spu, sourceRows)
   const apparelProduct = isApparelProduct(spu, sourceRows)
+  if (isProductArchiveVipShoeWarmTipField(fieldName, templatePlatform, spu, sourceRows)) return true
   if (key === "羽绒服洗涤说明") {
     return !hasProductArchiveDownEvidence({ spu, sourceRows })
   }
@@ -1697,7 +1724,12 @@ export function isProductArchiveBusinessBlankField(
   return false
 }
 
-function isProductArchiveForcedFixedDerivedField(fieldName: string, spu: JsonRecord = {}, sourceRows: JsonRecord[] = []) {
+function isProductArchiveForcedFixedDerivedField(
+  fieldName: string,
+  spu: JsonRecord = {},
+  sourceRows: JsonRecord[] = [],
+  templatePlatform: unknown = "",
+) {
   const key = compactFieldKey(fieldName)
   return (isShoeProduct(spu, sourceRows) || isApparelProduct(spu, sourceRows))
     && (
@@ -1706,7 +1738,7 @@ function isProductArchiveForcedFixedDerivedField(fieldName: string, spu: JsonRec
       || key === "导购短标题"
       || key === "抖音导购短标题"
       || isProductArchiveWashInstructionFieldKey(key)
-      || key === "唯品会温馨提示"
+      || isProductArchiveVipApparelWarmTipField(fieldName, templatePlatform, spu, sourceRows)
       || key === "销售渠道类型"
       || key === "是否商场同款"
       || (isApparelProduct(spu, sourceRows) && isProductArchiveMainlandOriginField(fieldName))
@@ -3082,7 +3114,9 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if ((shoeProduct || apparelProduct) && isProductArchiveWashInstructionFieldKey(key)) {
     return PRODUCT_ARCHIVE_WASH_INSTRUCTION_TEXT
   }
-  if ((shoeProduct || apparelProduct) && key === "唯品会温馨提示") return PRODUCT_ARCHIVE_VIP_SIZE_TIP_TEXT
+  if (isProductArchiveVipApparelWarmTipField(fieldName, input.templatePlatform, input.spu, sourceRows)) {
+    return PRODUCT_ARCHIVE_VIP_APPAREL_WARM_TIP_TEXT
+  }
   if ((shoeProduct || apparelProduct) && key === "销售渠道类型") return productArchiveSalesChannelTypeValue(sourceRows)
   if ((shoeProduct || apparelProduct) && key === "是否商场同款") return shoeSameMallStyleValue(sourceRows)
   if ((shoeProduct || apparelProduct) && /单买价/.test(fieldName)) {
@@ -6623,7 +6657,7 @@ function readSourceValue(spu: JsonRecord, rule: JsonRecord, sourceRows: JsonReco
   const sourceType = stringValue(rule.source_type)
   const defaultValue = stringValue(rule.default_value)
   const sourceField = stringValue(rule.source_field)
-  if (isProductArchiveBusinessBlankField(fieldName, spu, sourceRows)) return ""
+  if (isProductArchiveBusinessBlankField(fieldName, spu, sourceRows, input.templatePlatform)) return ""
   const derived = buildProductArchiveSourceDerivedFieldValue(fieldName, {
     spu,
     sourceRows,
@@ -6631,7 +6665,7 @@ function readSourceValue(spu: JsonRecord, rule: JsonRecord, sourceRows: JsonReco
     templatePlatform: input.templatePlatform,
     templateOptions: input.templateOptions,
   })
-  if (derived && isProductArchiveForcedFixedDerivedField(fieldName, spu, sourceRows)) return derived
+  if (derived && isProductArchiveForcedFixedDerivedField(fieldName, spu, sourceRows, input.templatePlatform)) return derived
   const shoeKey = compactFieldKey(fieldName)
   if (
     (isApparelProduct(spu, sourceRows) || isShoeProduct(spu, sourceRows))
@@ -9334,7 +9368,7 @@ function fieldInsertData(db: SyncPostgresDatabase, draft: JsonRecord, tradeField
       && PRODUCT_ARCHIVE_PLATFORM_LIST_PRICE_KEYS.has(compactFieldKey(fieldName))
     const categoryPriceRangeField = (shoeProduct || apparelProduct)
       && compactFieldKey(fieldName) === "价格区间"
-    const forcedFixedDerivedField = isProductArchiveForcedFixedDerivedField(fieldName, spu, sourceRows)
+    const forcedFixedDerivedField = isProductArchiveForcedFixedDerivedField(fieldName, spu, sourceRows, templatePlatform)
     const ruleSourceType = categoryPlatformListPriceField || forcedFixedDerivedField
       ? "fixed"
       : stringValue(rule.source_type) || (originCountryField || shoe1688OriginField || apparelOriginAreaField ? "fixed" : "manual")

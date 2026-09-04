@@ -5702,9 +5702,10 @@ test("product archive service derives down and platform text fields before AI fi
       },
     },
   ];
-  const derive = (fieldName) => service.buildProductArchiveSourceDerivedFieldValue(fieldName, {
+  const derive = (fieldName, templatePlatform = "") => service.buildProductArchiveSourceDerivedFieldValue(fieldName, {
     spu,
     sourceRows,
+    templatePlatform,
   });
 
   assert.equal(derive("品牌"), "巴拉巴拉");
@@ -5737,7 +5738,64 @@ test("product archive service derives down and platform text fields before AI fi
     }),
     "",
   );
-  assert.equal(derive("唯品会温馨提示"), "数据仅供参考手工测量难免1-2cm误差；插肩袖(肩膀无明确肩点)款袖长从后领中量至袖口");
+  const vipWarmTip = "手工测量难免存在误差，常规款袖长肩点到袖口，插肩袖(无明确肩点)款后领中量至袖口";
+  assert.equal(derive("唯品会温馨提示", "VIP"), vipWarmTip);
+  assert.equal(derive("唯品会温馨提示", "TMALL"), "");
+  assert.equal(
+    service.resolveProductArchiveSourceRuleValue("唯品会温馨提示", {
+      spu,
+      sourceRows,
+      templatePlatform: "VIP",
+      rule: { source_type: "manual", default_value: "旧的温馨提示" },
+    }),
+    vipWarmTip,
+  );
+  assert.equal(
+    service.resolveProductArchiveSourceRuleValue("唯品会温馨提示", {
+      spu,
+      sourceRows,
+      rule: { source_type: "fixed", default_value: "旧的温馨提示" },
+    }),
+    vipWarmTip,
+  );
+  assert.equal(
+    service.buildProductArchiveSourceDerivedFieldValue("唯品会温馨提示", {
+      spu: { spu_name: "儿童运动鞋", product_line_name: "鞋品" },
+      sourceRows: [],
+      templatePlatform: "VIP",
+    }),
+    "",
+  );
+  const shoeSpu = { spu_name: "儿童运动鞋", product_line_name: "鞋品" };
+  const shoeSourceRows = [{
+    source_type: "copywriting",
+    row_json: { "唯品会温馨提示": "旧的温馨提示" },
+  }];
+  assert.equal(
+    service.isProductArchiveBusinessBlankField("唯品会温馨提示", shoeSpu, shoeSourceRows, "VIP"),
+    true,
+  );
+  assert.equal(
+    service.resolveProductArchiveSourceRuleValue("唯品会温馨提示", {
+      spu: shoeSpu,
+      sourceRows: shoeSourceRows,
+      templatePlatform: "VIP",
+      rule: {
+        source_type: "copywriting",
+        source_field: "唯品会温馨提示",
+        default_value: "另一个旧提示",
+      },
+    }),
+    "",
+  );
+  assert.equal(
+    service.resolveProductArchiveSourceRuleValue("唯品会温馨提示", {
+      spu: shoeSpu,
+      sourceRows: shoeSourceRows,
+      rule: { source_type: "fixed", default_value: "另一个旧提示" },
+    }),
+    "",
+  );
   assert.equal(derive("快手标题"), "巴拉巴拉婴儿连体衣羽绒服宝宝衣服哈衣爬服2026新款儿童冬装保暖");
   assert.equal(derive("拼多多标题"), "");
 });
