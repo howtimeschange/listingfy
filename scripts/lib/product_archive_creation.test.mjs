@@ -1330,6 +1330,36 @@ test("trade selection expands launch-plan category aliases used by production ba
   }
 });
 
+test("trade selection keeps official snow boot leaf above leisure-shoe aliases", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const platforms = `${BALA_TRADE_TEST_PLATFORMS},VIP,DOUYINXSG`;
+  const decision = service.evaluateDeepdrawTradeSelectionFromLaunchPlanRows([
+    {
+      source_batch_id: 18,
+      source_type: "launch_plan",
+      row_json: {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>雪地靴",
+        "发布类目 (唯品)": "儿童板鞋/休闲鞋",
+        "主款式 （唯品四级品类）": "棉鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋",
+      },
+    },
+  ], [
+    deepdrawRoot("531", "童鞋/亲子鞋"),
+    deepdrawChild("10381", "531", "板鞋", "童鞋/亲子鞋 / 板鞋"),
+    deepdrawChild("534", "531", "雪地靴", "童鞋/亲子鞋 / 雪地靴"),
+  ].map((trade) => ({ ...trade, third_platforms: platforms })), {
+    tenantName: "电商巴拉巴拉",
+    evaluatedAt: "2026-09-04T00:00:00.000Z",
+  });
+
+  assert.equal(decision.recommendedTrade?.tradeId, "534");
+  assert.equal(decision.matchedField, "官方发布类目");
+  assert.equal(decision.confidence, "high");
+});
+
 test("trade selection breaks generic launch-plan ties with child-apparel context", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const platforms = BALA_TRADE_TEST_PLATFORMS;

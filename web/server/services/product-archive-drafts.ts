@@ -5782,7 +5782,6 @@ function isGenericOfficialCategoryLeaf(category: { field: string; value: string 
     "羽绒马甲",
     "运动裤卫裤",
     "学步鞋",
-    "雪地靴",
     "靴子",
     "鞋",
   ].includes(leafText)
