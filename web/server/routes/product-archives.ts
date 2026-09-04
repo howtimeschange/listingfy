@@ -22,6 +22,7 @@ import {
   createProductArchiveSyncQueue,
   filterKnownProductArchiveSyncCandidates,
 } from "../../../scripts/lib/product_archive_sync_queue.mjs"
+import { readProductArchiveSyncConcurrency } from "../../../scripts/lib/product_archive_performance_config.mjs"
 import {
   assertAllowedProductArchiveQuery,
   assertSafeProductArchiveCode,
@@ -180,7 +181,7 @@ async function syncDeepdrawProduct(
 const syncQueue = createProductArchiveSyncQueue({
   autoRecover: false,
   jobSliceSize: process.env.LISTINGIFY_PRODUCT_ARCHIVE_SYNC_JOB_SLICE_SIZE ?? 5,
-  concurrency: process.env.LISTINGIFY_PRODUCT_ARCHIVE_SYNC_CONCURRENCY ?? 1,
+  concurrency: readProductArchiveSyncConcurrency(process.env.LISTINGIFY_PRODUCT_ARCHIVE_SYNC_CONCURRENCY),
   runWithSlot: (_context: unknown, run: () => Promise<unknown>) => withBackgroundTaskSlot("product_archive_sync", run),
   filterCandidates: (source, codes) => filterKnownProductArchiveSyncCandidates(getDb(), source, codes),
   maxAttempts: 3,

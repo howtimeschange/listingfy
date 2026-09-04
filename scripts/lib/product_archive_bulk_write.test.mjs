@@ -93,3 +93,28 @@ test("bulk writer rejects tables and columns outside the fixed allowlist", () =>
     /unsupported bulk cast/i,
   );
 });
+
+test("bulk writer uses the safe default when batch size env is invalid", () => {
+  const previousBatchSize = process.env.LISTINGIFY_PRODUCT_ARCHIVE_BULK_INSERT_BATCH_SIZE;
+  process.env.LISTINGIFY_PRODUCT_ARCHIVE_BULK_INSERT_BATCH_SIZE = "5001";
+  const calls = [];
+  const rows = Array.from({ length: 501 }, (_, index) => ({
+    sourceBatchId: 7,
+    sourceType: "launch_plan",
+    spuCode: "SPU-" + index,
+    skcCode: null,
+    rowJson: {},
+    createdAt: "2026-09-04T00:00:00.000Z",
+  }));
+
+  try {
+    const result = insertRowsInBatches(fakeDatabase(calls), sourceRowSpec, rows);
+
+    assert.equal(result.batchCount, 2);
+    assert.equal(calls[0].params.length, 500 * sourceRowSpec.columns.length);
+    assert.equal(calls[1].params.length, sourceRowSpec.columns.length);
+  } finally {
+    if (previousBatchSize == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_BULK_INSERT_BATCH_SIZE;
+    else process.env.LISTINGIFY_PRODUCT_ARCHIVE_BULK_INSERT_BATCH_SIZE = previousBatchSize;
+  }
+});

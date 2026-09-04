@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
+import {
+  readProductArchiveJobLeaseMs,
+  readProductArchiveSyncConcurrency,
+} from "./product_archive_performance_config.mjs";
 
 const DEFAULT_INTERVAL_MS = 1500;
 const DEFAULT_MAX_ATTEMPTS = 1;
 const DEFAULT_RETRY_DELAY_MS = 3000;
-const DEFAULT_JOB_LEASE_MS = 30 * 60 * 1000;
+const DEFAULT_JOB_LEASE_MS = 60 * 1000;
 const MAX_RECOVERY_BATCH = 200;
 const MAX_CODES_PER_JOB = 2000;
 const DEFAULT_JOB_SLICE_SIZE = 0;
@@ -29,9 +33,7 @@ function clampJobSliceSize(value) {
 }
 
 function clampSyncConcurrency(value) {
-  const number = Number(value ?? DEFAULT_SYNC_CONCURRENCY);
-  if (!Number.isFinite(number)) return DEFAULT_SYNC_CONCURRENCY;
-  return Math.max(1, Math.min(4, Math.floor(number)));
+  return readProductArchiveSyncConcurrency(value ?? DEFAULT_SYNC_CONCURRENCY);
 }
 
 function errorMessage(error) {
@@ -648,7 +650,7 @@ export function createPostgresProductArchiveSyncJobStore({
   if (typeof getDb !== "function") throw new Error("getDb is required");
   const normalizedQueueName = String(queueName ?? "").trim();
   if (!normalizedQueueName) throw new Error("queueName is required");
-  const normalizedLeaseMs = Math.max(60000, Math.min(60 * 60 * 1000, Number(leaseMs) || DEFAULT_JOB_LEASE_MS));
+  const normalizedLeaseMs = readProductArchiveJobLeaseMs(leaseMs ?? DEFAULT_JOB_LEASE_MS);
   const normalizedRecoveryBatchSize = Math.max(1, Math.min(MAX_RECOVERY_BATCH, Number(recoveryBatchSize) || MAX_RECOVERY_BATCH));
   const leaseRenewIntervalMs = Math.max(1000, Math.floor(normalizedLeaseMs / 3));
   const workerToken = randomUUID();

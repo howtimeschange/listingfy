@@ -3132,8 +3132,10 @@ test("batch AI fill queue isolates user queues and runs style items concurrently
   const { createProductArchiveAiFillQueue } = await import("../../web/server/routes/product-archive-drafts.ts");
   const previousConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY;
   const previousMaxConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
+  const previousItemConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY;
   const previousBackgroundMax = process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
   process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY = "2";
+  process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY = "2";
   delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
   process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = "4";
   const savedJobs = new Map();
@@ -3230,6 +3232,8 @@ test("batch AI fill queue isolates user queues and runs style items concurrently
     else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY = previousConcurrency;
     if (previousMaxConcurrency == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
     else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY = previousMaxConcurrency;
+    if (previousItemConcurrency == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY;
+    else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY = previousItemConcurrency;
     if (previousBackgroundMax == null) delete process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
     else process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = previousBackgroundMax;
   }
@@ -3239,8 +3243,10 @@ test("batch AI fill queue lets a single busy user borrow idle global slots", asy
   const { createProductArchiveAiFillQueue } = await import("../../web/server/routes/product-archive-drafts.ts");
   const previousConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY;
   const previousMaxConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
+  const previousItemConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY;
   const previousBackgroundMax = process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
   process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY = "2";
+  process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY = "2";
   process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY = "10";
   process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = "16";
   const savedJobs = new Map();
@@ -3308,14 +3314,16 @@ test("batch AI fill queue lets a single busy user borrow idle global slots", asy
 
     assert.equal(finalJob?.status, "completed");
     assert.equal(finalJob?.completed_count, 12);
-    assert.equal(finalJob?.result.concurrency, 10);
-    assert.ok(maxActive >= 10, `expected single user to borrow idle slots up to the cap; maxActive=${maxActive}`);
-    assert.ok(maxActive <= 10, `expected single user cap to hold at 10; maxActive=${maxActive}`);
+    assert.equal(finalJob?.result.concurrency, 2);
+    assert.ok(maxActive >= 2, `expected single user to use the configured item slots; maxActive=${maxActive}`);
+    assert.ok(maxActive <= 2, `expected item concurrency cap to hold at 2; maxActive=${maxActive}`);
   } finally {
     if (previousConcurrency == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY;
     else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY = previousConcurrency;
     if (previousMaxConcurrency == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
     else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY = previousMaxConcurrency;
+    if (previousItemConcurrency == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY;
+    else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY = previousItemConcurrency;
     if (previousBackgroundMax == null) delete process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
     else process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = previousBackgroundMax;
   }
@@ -5106,7 +5114,7 @@ test("product archive routes fence prechecks, owned image files, and mutation co
   );
   assert.match(mdmBatchRoute, /const rawCodes = parseSpuCodes\(body\.codes \?\? body\.rawCodes\)/);
   assert.match(mdmBatchRoute, /const queueCodes = queueableDraftRefreshCodesForCodes/);
-  assert.match(mdmBatchRoute, /rawCodes: queueCodes/);
+  assert.match(mdmBatchRoute, /rawCodes: filtered\.acceptedCodes/);
 
   const validateRoute = section(
     'productArchiveDrafts.post("/:draftId/validate"',

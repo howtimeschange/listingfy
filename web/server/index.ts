@@ -2,6 +2,7 @@ import { Hono } from "hono"
 import { serve } from "@hono/node-server"
 import { cors } from "hono/cors"
 import { loadLocalEnv } from "../../scripts/lib/local_env.mjs"
+import { validateProductArchivePerformanceEnv } from "../../scripts/lib/product_archive_performance_config.mjs"
 import { errorHandler, logger } from "./middleware/error-handler"
 import metadata from "./routes/metadata"
 import categoryMapping from "./routes/category-mapping"
@@ -38,6 +39,7 @@ import {
 import { randomUUID } from "node:crypto"
 
 loadLocalEnv()
+validateProductArchivePerformanceEnv()
 assertCredentialEncryptionConfigured()
 
 const db = getDb()

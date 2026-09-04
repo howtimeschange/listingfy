@@ -35,6 +35,10 @@ import {
   parseSpuCodes,
   ProductArchiveSyncLeaseError,
 } from "../../../scripts/lib/product_archive_sync_queue.mjs"
+import {
+  readProductArchiveAiFillItemConcurrency,
+  readProductArchivePublishConcurrency,
+} from "../../../scripts/lib/product_archive_performance_config.mjs"
 import { resolveDeepdrawConfig } from "../../../scripts/lib/deepdraw_client.mjs"
 import { syncMdmProduct } from "../services/product-archive-sync"
 import { syncMdmMainImageToProductArchiveDraft } from "../services/product-archive-draft-mdm-images"
@@ -569,8 +573,6 @@ function productArchiveJobSliceSize(envName: string, fallback = 5) {
 }
 
 const PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY_CAP = 10
-const PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY_CAP = 2
-
 function productArchiveAiFillUserConcurrency() {
   const number = Number(process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY ?? 2)
   if (!Number.isFinite(number)) return 2
@@ -585,9 +587,7 @@ function productArchiveAiFillUserMaxConcurrency() {
 }
 
 function productArchiveAiFillItemConcurrency() {
-  const number = Number(process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY ?? 1)
-  if (!Number.isFinite(number)) return 1
-  return Math.max(1, Math.min(PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY_CAP, Math.floor(number)))
+  return readProductArchiveAiFillItemConcurrency(process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY)
 }
 
 function productArchiveAiFillQueueKey(actor: AuditActor | null | undefined) {
@@ -1538,9 +1538,7 @@ function clampPublishRetryDelayMs(value: unknown) {
 }
 
 function clampPublishConcurrency(value: unknown) {
-  const number = Number(value ?? 1)
-  if (!Number.isFinite(number)) return 1
-  return Math.max(1, Math.min(4, Math.floor(number)))
+  return readProductArchivePublishConcurrency(value ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_PUBLISH_CONCURRENCY)
 }
 
 function createProductArchivePublishLimiter(concurrency: number) {

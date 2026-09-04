@@ -1,4 +1,5 @@
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
+import { readProductArchiveBulkInsertBatchSize } from "../../../scripts/lib/product_archive_performance_config.mjs"
 
 type BulkDatabase = Pick<SyncPostgresDatabase, "prepare">
 
@@ -249,9 +250,7 @@ export function validateBulkInsertSpec<Row>(spec: BulkInsertSpec<Row>) {
 }
 
 function normalizeBatchSize(value: unknown) {
-  const batchSize = Number(value ?? 500)
-  if (!Number.isFinite(batchSize) || batchSize < 1) throw new Error("bulk batch size must be a positive integer")
-  return Math.floor(batchSize)
+  return readProductArchiveBulkInsertBatchSize(value ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_BULK_INSERT_BATCH_SIZE)
 }
 
 function buildValueExpression(cast: "jsonb" | "timestamptz" | "date" | null | undefined) {

@@ -313,7 +313,7 @@ test("draft detail distinguishes backend load failures from missing drafts", asy
   assert.match(draftDetailPage, /function draftDetailFallbackDescription/);
   assert.match(draftDetailPage, /detail\.error instanceof ApiError && detail\.error\.status === 404/);
   assert.match(draftDetailPage, /草稿详情加载失败/);
-  assert.match(draftDetailPage, /description=\{draftDetailFallbackDescription\(detail\)\}/);
+  assert.match(draftDetailPage, /description=\{draftDetailFallbackDescription\(summaryQuery\)\}/);
   assert.doesNotMatch(
     draftDetailPage,
     /description=\{detail\.isLoading \? "正在加载草稿详情" : "草稿不存在"\}/,

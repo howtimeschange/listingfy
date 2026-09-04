@@ -3,6 +3,7 @@ import { access, rm } from "node:fs/promises"
 import path from "node:path"
 import { DATA_DIR, getDb } from "../db"
 import { recordPerformanceSpan } from "../lib/performance-metrics"
+import { readProductArchiveJobLeaseMs } from "../../../scripts/lib/product_archive_performance_config.mjs"
 
 type JsonRecord = Record<string, unknown>
 
@@ -137,9 +138,7 @@ function jsonText(value: unknown) {
 }
 
 function normalizedLeaseMs(value: unknown) {
-  const number = Number(value ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_JOB_LEASE_MS ?? DEFAULT_JOB_LEASE_MS)
-  if (!Number.isFinite(number)) return DEFAULT_JOB_LEASE_MS
-  return Math.max(60_000, Math.min(3_600_000, Math.floor(number)))
+  return readProductArchiveJobLeaseMs(value ?? process.env.LISTINGIFY_PRODUCT_ARCHIVE_JOB_LEASE_MS ?? DEFAULT_JOB_LEASE_MS)
 }
 
 function normalizedStage(stage: Partial<ProductArchiveWorkflowStage> & { key: string; label: string }): ProductArchiveWorkflowStage {

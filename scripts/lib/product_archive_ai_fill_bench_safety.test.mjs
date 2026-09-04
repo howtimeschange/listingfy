@@ -85,7 +85,7 @@ test("AI fill concurrency benchmark fails before database access without explici
   assert.match(withoutRealAiConfirmation.stderr, /AI_FILL_BENCH_CONFIRM_REAL_AI=I_UNDERSTAND/);
 });
 
-test("batch AI fill item concurrency is fail-closed and capped at two per user job", async () => {
+test("batch AI fill item concurrency fails closed to the default when configured out of range", async () => {
   const { createProductArchiveAiFillQueue } = await import("../../web/server/routes/product-archive-drafts.ts");
   const previousItemConcurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY;
   const previousUserMax = process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY;
@@ -157,9 +157,9 @@ test("batch AI fill item concurrency is fail-closed and capped at two per user j
 
     assert.equal(finalJob?.status, "completed");
     assert.equal(finalJob?.completed_count, 5);
-    assert.equal(finalJob?.result.concurrency, 2);
-    assert.equal(finalJob?.result.itemConcurrency, 2);
-    assert.ok(maxActive <= 2, `expected item concurrency cap of 2; maxActive=${maxActive}`);
+    assert.equal(finalJob?.result.concurrency, 1);
+    assert.equal(finalJob?.result.itemConcurrency, 1);
+    assert.ok(maxActive <= 1, `expected item concurrency default of 1; maxActive=${maxActive}`);
   } finally {
     if (previousItemConcurrency == null) delete process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY;
     else process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY = previousItemConcurrency;
