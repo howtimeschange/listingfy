@@ -2453,6 +2453,19 @@ export default function ProductArchiveDraftsPage() {
   const trackedTask = getTaskByJobId(batchJobId)
   const trackedJob = (trackedTask?.job ?? batchJob) as DraftBatchJob | null | undefined
   const trackedWorkflowJob = workflowJob
+  const trackedWorkflowResult = useMemo<ProductArchiveWorkflowResponse | null>(() => {
+    if (!trackedWorkflowJob) return null
+    const result = recordResultValue(trackedWorkflowJob.result)
+    if (result?.needsLaunchPlan !== true) return null
+    return {
+      status: "needs_launch_plan",
+      needsLaunchPlan: true,
+      message: "标准文案表中有款号还没有匹配到上市计划，请上传上市计划表后继续建档。",
+      missingLaunchPlanSpuCodes: Array.isArray(result.missingLaunchPlanSpuCodes)
+        ? result.missingLaunchPlanSpuCodes.map(String)
+        : [],
+    }
+  }, [trackedWorkflowJob])
   const trackedOcrJob = (getTaskByJobId(ocrJobId)?.job ?? null) as AsyncTaskJob | null
   const trackedJobProgress = trackedJob?.total_count
     ? Math.round(((trackedJob.completed_count + trackedJob.failed_count) / trackedJob.total_count) * 100)
@@ -2482,14 +2495,6 @@ export default function ProductArchiveDraftsPage() {
     handledWorkflowJobIdRef.current = trackedWorkflowJob.id
     const result = recordResultValue(trackedWorkflowJob.result)
     if (result?.needsLaunchPlan === true) {
-      setWorkflowResult({
-        status: "needs_launch_plan",
-        needsLaunchPlan: true,
-        message: "标准文案表中有款号还没有匹配到上市计划，请上传上市计划表后继续建档。",
-        missingLaunchPlanSpuCodes: Array.isArray(result.missingLaunchPlanSpuCodes)
-          ? result.missingLaunchPlanSpuCodes.map(String)
-          : [],
-      })
       toast.warning("工作流已完成，请补充上市计划表后继续")
     } else if (trackedWorkflowJob.status === "failed") {
       toast.error(trackedWorkflowJob.error_message || "深绘建档工作流失败")
@@ -3583,7 +3588,7 @@ export default function ProductArchiveDraftsPage() {
                 onSizeChartFileChange={setSizeChartFile}
                 skipLaunchPlan={skipLaunchPlan}
                 onSkipLaunchPlanChange={setSkipLaunchPlan}
-                workflowResult={workflowResult}
+                workflowResult={trackedWorkflowResult ?? workflowResult}
                 isPending={startProductArchiveWorkflow.isPending}
                 canWrite={canWrite}
                 onSubmit={() => startProductArchiveWorkflow.mutate()}

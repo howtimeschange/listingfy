@@ -190,7 +190,7 @@ function jobSnapshot(job: ProductArchiveWorkflowJob): ProductArchiveWorkflowJobS
     id: job.id,
     status: job.status,
     title: job.title,
-    files: job.files.map(({ filePath: _filePath, ...file }) => file),
+    files: job.files.map(({ kind, fileName, fileSizeBytes }) => ({ kind, fileName, fileSizeBytes })),
     stages: job.stages.map((stage) => ({ ...stage })),
     result: { ...job.result },
     error_code: job.error_code,
@@ -379,7 +379,6 @@ function createWorkflowController({
   store,
   processor,
   now = () => Date.now(),
-  leaseMs = DEFAULT_JOB_LEASE_MS,
   heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS,
   idFactory = () => randomUUID(),
   fileExists = async (filePath: string) => {
@@ -404,7 +403,6 @@ function createWorkflowController({
   store: WorkflowStore
   processor?: WorkflowProcessor
   now?: () => number
-  leaseMs?: number
   heartbeatIntervalMs?: number
   idFactory?: () => string
   fileExists?: (filePath: string) => boolean | Promise<boolean>
@@ -736,7 +734,6 @@ export function createProductArchiveWorkflowRuntime(options: {
     store,
     processor: options.processor ?? (async () => null),
     now,
-    leaseMs,
     heartbeatIntervalMs: 0,
     idFactory,
     fileExists: options.fileExists,
@@ -784,7 +781,6 @@ function getPostgresController() {
   postgresController ??= createWorkflowController({
     store: createPostgresWorkflowStore(),
     processor: workflowProcessor ?? undefined,
-    leaseMs: normalizedLeaseMs(undefined),
     heartbeatIntervalMs: Math.max(1000, Math.floor(normalizedLeaseMs(undefined) / 3)),
   })
   return postgresController

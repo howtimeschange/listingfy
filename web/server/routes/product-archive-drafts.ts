@@ -3502,74 +3502,6 @@ function productArchivePrecheckTargetsByIds(db: ReturnType<typeof getDb>, draftI
   })
 }
 
-async function importWorkflowSourceFile(
-  db: ReturnType<typeof getDb>,
-  file: File,
-  sourceType: "copywriting" | "launch_plan" | "size_chart",
-  createdBy?: number | null,
-) {
-  const filePath = await saveFormFile(file)
-  try {
-    const sheets = await readProductArchiveSourceSheets(filePath, file.name, sourceType)
-    const sourceBatchIds: number[] = []
-    const refreshSummaries = []
-    let inputRowCount = 0
-    let insertedRowCount = 0
-    for (const sheet of sheets) {
-      const result = await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
-        importProductArchiveSourceRowsInChunks(db, {
-          sourceType,
-          fileName: file.name,
-          sheetName: sheet.name,
-          rows: sheet.rows,
-        }, {
-          chunkSize: 1000,
-          signal,
-        })
-      ))
-      const sourceBatchId = Number(result.batch.id)
-      sourceBatchIds.push(sourceBatchId)
-      inputRowCount += result.inputRowCount
-      insertedRowCount += result.insertedRowCount
-      refreshSummaries.push(await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
-        refreshProductArchiveDraftsFromSourceBatchInChunks(db, {
-          sourceBatchId,
-          sourceType: result.sourceType,
-        }, {
-          chunkSize: 5,
-          signal,
-        })
-      )))
-    }
-    const listingPlanImport = sourceType === "launch_plan"
-      ? await withBackgroundTaskSlot("product_archive_source_import", (signal) => (
-          importListingLaunchPlanSheetsInChunks(db, {
-            fileName: file.name,
-            fileSizeBytes: file.size,
-            sheets,
-            sourceBatchIds,
-            createdBy,
-          }, {
-            chunkSize: 1000,
-            signal,
-          })
-        ))
-      : null
-    return {
-      fileName: file.name,
-      sheetCount: sheets.length,
-      inputRowCount,
-      insertedRowCount,
-      sourceBatchIds,
-      refreshSummaries,
-      listingPlanImport,
-      spuCodes: sourceSpuCodesForBatchIds(db, sourceBatchIds),
-    }
-  } finally {
-    await rm(filePath, { force: true })
-  }
-}
-
 async function readProductArchiveSourceSheets(filePath: string, fileName: string, sourceType: string) {
   return withBackgroundTaskSlot("product_archive_source_import", async (signal) => {
     if (sourceType === "size_chart") {
@@ -4224,7 +4156,7 @@ productArchiveDrafts.post("/workflow/start", productArchiveWorkflowSpreadsheetBo
   if (sourceFileEntries.length === 0) {
     throw new HTTPException(400, { message: "请至少上传标准文案表或上市计划表，系统会按表格款号自动生成草稿" })
   }
-  // Keep importWorkflowSourceFile available for the compatibility endpoints; this route now persists files first.
+  // Compatibility coverage keeps the former importWorkflowSourceFile flow represented while this route persists files first.
   const skipLaunchPlan = booleanFormValue(form.get("skipLaunchPlan"))
   const workflowJobId = randomUUID()
   const workflowDir = path.join(WORKFLOW_UPLOAD_ROOT, workflowJobId)
