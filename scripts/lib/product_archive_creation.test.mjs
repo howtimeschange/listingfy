@@ -2441,7 +2441,8 @@ test("mutable draft writes keep the row lock and mutation in one transaction", a
   );
   assert.match(submit, /prepareProductArchiveDraftForSubmit\(db, draftId, \{[\s\S]*claimToken,[\s\S]*submitMode,[\s\S]*allowExistingProduct:[\s\S]*\}\)/);
   assert.match(submit, /const reusablePreparedBeforeClaim = updateExisting[\s\S]*loadCurrentReusablePreparedProductArchiveDraft\(db, draftId, \{ submitMode \}\)[\s\S]*const claimedDraft = claimProductArchiveDraftForSubmit/);
-  assert.match(submit, /const prepared = reusablePreparedBeforeClaim \?\? prepareProductArchiveDraftForSubmit\(db, draftId, \{[\s\S]*claimToken,/);
+  assert.match(submit, /const revalidatedPrepared = revalidatePreparedProductArchiveDraftForClaim\([\s\S]*reusablePreparedBeforeClaim,[\s\S]*claimedDraftUpdatedAt: stringValue\(claimedDraft\.submit_claim_previous_updated_at\)/);
+  assert.match(submit, /const prepared = revalidatedPrepared \?\? prepareProductArchiveDraftForSubmit\(db, draftId, \{[\s\S]*claimToken,/);
 });
 
 test("claimed drafts reject image mutation before any image insert", async () => {

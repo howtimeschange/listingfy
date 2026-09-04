@@ -17,6 +17,8 @@ function createFakeDb() {
       id: 1,
       updated_at: "2026-09-04T09:00:00.000Z",
       spu_code: "SPU-1",
+      tenant_name: "tenant",
+      merchant_id: "merchant",
       trade_id: "trade-1",
       trade_path: "童装/上衣",
       source_batch_ids_json: { launch_plan: [2], copywriting: [1] },
@@ -42,6 +44,22 @@ function createFakeDb() {
         size_name: "120",
         barcode: "690000000001",
         price: 99,
+        updated_at: "2026-09-04T09:00:00.000Z",
+      },
+    ],
+    mappings: [
+      {
+        id: 31,
+        tenant_name: "tenant",
+        merchant_id: "merchant",
+        trade_id: "trade-1",
+        field_name: "尺码表",
+        target_field: "衣长",
+        source_point: "后中长",
+        confidence: 0.9,
+        source: "manual",
+        review_status: "approved",
+        evidence_json: { by: "tester" },
         updated_at: "2026-09-04T09:00:00.000Z",
       },
     ],
@@ -72,6 +90,8 @@ function createFakeDb() {
         all(...params) {
           if (/from product_archive_draft_field/i.test(normalized)) return clone(state.fields);
           if (/from product_archive_draft_sku/i.test(normalized)) return clone(state.skus);
+          if (/from product_archive_draft_image/i.test(normalized)) return [];
+          if (/from product_archive_size_chart_mapping/i.test(normalized)) return clone(state.mappings);
           return [];
         },
         run(...params) {
@@ -132,6 +152,68 @@ test("unchanged draft reuses one preparation", () => {
   assert.equal(second.preparedAt, first.preparedAt);
   assert.equal(second.inputHash, first.inputHash);
   assert.deepEqual(second.payload, first.payload);
+});
+
+test("size-chart mapping mutation invalidates the preparation hash", () => {
+  const db = createFakeDb();
+  const first = prepared.prepareProductArchiveDraft(db, 1, {
+    submitMode: "create",
+    templateVersion: "deepdraw-v1",
+    now: stableNow(),
+    prepare: makePrepare(db),
+  });
+
+  db.state.mappings[0].source_point = "身长";
+  db.state.mappings[0].updated_at = "2026-09-04T09:06:00.000Z";
+
+  assert.equal(prepared.loadReusablePreparedProductArchiveDraft(db, 1, first.inputHash, {
+    submitMode: "create",
+    templateVersion: "deepdraw-v1",
+    now: stableNow(),
+  }), null);
+});
+
+test("claim revalidation rejects a snapshot when a draft mutation wins the pre-claim race", () => {
+  const db = createFakeDb();
+  const first = prepared.prepareProductArchiveDraft(db, 1, {
+    submitMode: "create",
+    templateVersion: "deepdraw-v1",
+    now: stableNow(),
+    prepare: makePrepare(db),
+  });
+
+  db.state.fields[0].value_text = "棉";
+  db.state.fields[0].updated_at = "2026-09-04T09:07:00.000Z";
+  db.state.draft.updated_at = "2026-09-04T09:07:00.000Z";
+
+  assert.equal(prepared.revalidatePreparedProductArchiveDraftForClaim(db, 1, first, {
+    submitMode: "create",
+    templateVersion: "deepdraw-v1",
+    claimedDraftUpdatedAt: "2026-09-04T09:07:00.000Z",
+    now: stableNow(),
+  }), null);
+});
+
+test("claim revalidation accepts a precheck snapshot when only submit claim changes the draft timestamp", () => {
+  const db = createFakeDb();
+  const first = prepared.prepareProductArchiveDraft(db, 1, {
+    submitMode: "create",
+    templateVersion: "deepdraw-v1",
+    now: stableNow(),
+    prepare: makePrepare(db),
+  });
+
+  db.state.draft.updated_at = "2026-09-04T09:08:00.000Z";
+
+  const reused = prepared.revalidatePreparedProductArchiveDraftForClaim(db, 1, first, {
+    submitMode: "create",
+    templateVersion: "deepdraw-v1",
+    claimedDraftUpdatedAt: "2026-09-04T09:00:00.000Z",
+    now: stableNow(),
+  });
+
+  assert.equal(reused?.inputHash, first.inputHash);
+  assert.equal(reused?.preparedAt, first.preparedAt);
 });
 
 test("field mutation invalidates the preparation hash", () => {

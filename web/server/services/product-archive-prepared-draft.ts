@@ -135,11 +135,61 @@ function imageSnapshot(image: JsonRecord) {
   }
 }
 
+function sizeChartMappingSnapshot(mapping: JsonRecord) {
+  return {
+    id: mapping.id ?? null,
+    tenantName: stringValue(mapping.tenant_name),
+    merchantId: stringValue(mapping.merchant_id),
+    tradeId: stringValue(mapping.trade_id),
+    fieldName: stringValue(mapping.field_name),
+    targetField: stringValue(mapping.target_field),
+    sourcePoint: stringValue(mapping.source_point),
+    confidence: stringValue(mapping.confidence),
+    source: stringValue(mapping.source),
+    reviewStatus: stringValue(mapping.review_status),
+    evidenceJson: parseJsonRecord(mapping.evidence_json),
+    updatedAt: isoString(mapping.updated_at),
+  }
+}
+
+function approvedSizeChartMappingsForDraft(db: SyncPostgresDatabase, draft: JsonRecord) {
+  const tenantName = stringValue(draft.tenant_name)
+  const merchantId = stringValue(draft.merchant_id)
+  const tradeId = stringValue(draft.trade_id)
+  if (!tenantName || !merchantId || !tradeId) return []
+  try {
+    return db.prepare(`
+      select id,
+        tenant_name,
+        merchant_id,
+        trade_id,
+        field_name,
+        target_field,
+        source_point,
+        confidence,
+        source,
+        review_status,
+        evidence_json,
+        updated_at
+      from product_archive_size_chart_mapping
+      where tenant_name = ?
+        and merchant_id = ?
+        and trade_id = ?
+        and review_status = 'approved'
+      order by field_name, target_field, id
+    `).all(tenantName, merchantId, tradeId) as JsonRecord[]
+  } catch (error) {
+    if (/product_archive_size_chart_mapping/i.test(error instanceof Error ? error.message : String(error))) return []
+    throw error
+  }
+}
+
 function draftPreparationInputs(
   db: SyncPostgresDatabase,
   draftId: number,
   submitMode: ProductArchivePreparationSubmitMode,
   templateVersion: string,
+  options: { draftUpdatedAtOverride?: string | null } = {},
 ) {
   const draft = db.prepare("select * from product_archive_draft where id = ?").get(draftId) as JsonRecord | undefined
   if (!draft) throw new Error("商品建档草稿不存在")
@@ -153,7 +203,7 @@ function draftPreparationInputs(
   return {
     draft: {
       id: draft.id ?? draftId,
-      updatedAt: isoString(draft.updated_at),
+      updatedAt: stringValue(options.draftUpdatedAtOverride) || isoString(draft.updated_at),
       spuCode: stringValue(draft.spu_code),
       title: stringValue(draft.title),
       tenantName: stringValue(draft.tenant_name),
@@ -169,6 +219,7 @@ function draftPreparationInputs(
     fields: sortedRows(fields.map(publicFieldSnapshot)),
     skus: sortedRows(skus.map(skuSnapshot)),
     images: sortedRows(images.map(imageSnapshot)),
+    sizeChartMappings: sortedRows(approvedSizeChartMappingsForDraft(db, draft).map(sizeChartMappingSnapshot)),
   }
 }
 
@@ -194,12 +245,34 @@ function currentInputHash(
   draftId: number,
   submitMode: ProductArchivePreparationSubmitMode,
   templateVersion: string,
+  options: { draftUpdatedAtOverride?: string | null } = {},
 ) {
-  const inputs = draftPreparationInputs(db, draftId, submitMode, templateVersion)
+  const inputs = draftPreparationInputs(db, draftId, submitMode, templateVersion, options)
   return {
     inputHash: productArchiveDraftInputHash(inputs, {}, templateVersion),
     draftVersion: inputs.draft.updatedAt,
   }
+}
+
+export function revalidatePreparedProductArchiveDraftForClaim(
+  db: SyncPostgresDatabase,
+  draftId: number,
+  prepared: PreparedProductArchiveDraft | null,
+  options: Omit<PreparationOptions, "prepare" | "ttlMs"> & { claimedDraftUpdatedAt?: string | null } = {},
+): PreparedProductArchiveDraft | null {
+  if (!prepared) return null
+  const submitMode = options.submitMode ?? prepared.submitMode
+  const templateVersion = options.templateVersion ?? prepared.templateVersion
+  if (prepared.submitMode !== submitMode || prepared.templateVersion !== templateVersion) return null
+  const now = options.now?.() ?? new Date().toISOString()
+  if (Date.parse(prepared.expiresAt) <= Date.parse(now)) return null
+  const claimedDraftUpdatedAt = isoString(options.claimedDraftUpdatedAt)
+  if (!claimedDraftUpdatedAt || prepared.draftVersion !== claimedDraftUpdatedAt) return null
+  const current = currentInputHash(db, draftId, submitMode, templateVersion, {
+    draftUpdatedAtOverride: claimedDraftUpdatedAt,
+  })
+  if (current.inputHash !== prepared.inputHash) return null
+  return prepared
 }
 
 function rowToPrepared(row: JsonRecord): PreparedProductArchiveDraft {

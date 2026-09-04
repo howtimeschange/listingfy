@@ -4,6 +4,7 @@ import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import {
   loadCurrentReusablePreparedProductArchiveDraft,
   prepareProductArchiveDraft as prepareReusableProductArchiveDraft,
+  revalidatePreparedProductArchiveDraftForClaim,
   type PreparedProductArchiveDraft,
 } from "./product-archive-prepared-draft"
 import {
@@ -13942,7 +13943,9 @@ export function claimProductArchiveDraftForSubmit(
     : "('draft', 'missing_fields', 'manual_review', 'ready', 'update_pending')"
   return db.prepare(`
     with previous as (
-      select id, status as submit_claim_previous_status
+      select id,
+        status as submit_claim_previous_status,
+        updated_at as submit_claim_previous_updated_at
       from product_archive_draft
       where id = $3
         and submit_claim_token is null
@@ -13957,7 +13960,9 @@ export function claimProductArchiveDraftForSubmit(
     where product_archive_draft.id = previous.id
       and product_archive_draft.submit_claim_token is null
       and product_archive_draft.status in ${claimableStatuses}
-    returning product_archive_draft.*, previous.submit_claim_previous_status
+    returning product_archive_draft.*,
+      previous.submit_claim_previous_status,
+      previous.submit_claim_previous_updated_at
   `).get(claimToken, now, draftId) as JsonRecord | undefined
 }
 
@@ -14106,7 +14111,16 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
         syncProductArchiveDownFillWeightSizeCharts(db, draftId)
       })()
     } else {
-      const prepared = reusablePreparedBeforeClaim ?? prepareProductArchiveDraftForSubmit(db, draftId, {
+      const revalidatedPrepared = revalidatePreparedProductArchiveDraftForClaim(
+        db,
+        draftId,
+        reusablePreparedBeforeClaim,
+        {
+          submitMode,
+          claimedDraftUpdatedAt: stringValue(claimedDraft.submit_claim_previous_updated_at),
+        },
+      )
+      const prepared = revalidatedPrepared ?? prepareProductArchiveDraftForSubmit(db, draftId, {
           claimToken,
           submitMode,
           includeMultiPlatformSizeFieldInUpdate: updateExisting,
