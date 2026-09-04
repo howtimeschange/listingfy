@@ -179,9 +179,16 @@ function approvedSizeChartMappingsForDraft(db: SyncPostgresDatabase, draft: Json
       order by field_name, target_field, id
     `).all(tenantName, merchantId, tradeId) as JsonRecord[]
   } catch (error) {
-    if (/product_archive_size_chart_mapping/i.test(error instanceof Error ? error.message : String(error))) return []
+    if (isMissingSizeChartMappingTableError(error)) return []
     throw error
   }
+}
+
+function isMissingSizeChartMappingTableError(error: unknown) {
+  const record = error && typeof error === "object" ? error as JsonRecord : {}
+  if (stringValue(record.code) === "42P01") return true
+  const message = error instanceof Error ? error.message : String(error)
+  return /(?:^|: )no such table: product_archive_size_chart_mapping$/i.test(message.trim())
 }
 
 function draftPreparationInputs(

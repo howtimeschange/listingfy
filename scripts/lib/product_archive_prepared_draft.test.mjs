@@ -11,7 +11,7 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function createFakeDb() {
+function createFakeDb(options = {}) {
   const state = {
     draft: {
       id: 1,
@@ -91,7 +91,10 @@ function createFakeDb() {
           if (/from product_archive_draft_field/i.test(normalized)) return clone(state.fields);
           if (/from product_archive_draft_sku/i.test(normalized)) return clone(state.skus);
           if (/from product_archive_draft_image/i.test(normalized)) return [];
-          if (/from product_archive_size_chart_mapping/i.test(normalized)) return clone(state.mappings);
+          if (/from product_archive_size_chart_mapping/i.test(normalized)) {
+            if (options.mappingError) throw options.mappingError;
+            return clone(state.mappings);
+          }
           return [];
         },
         run(...params) {
@@ -152,6 +155,41 @@ test("unchanged draft reuses one preparation", () => {
   assert.equal(second.preparedAt, first.preparedAt);
   assert.equal(second.inputHash, first.inputHash);
   assert.deepEqual(second.payload, first.payload);
+});
+
+test("missing size-chart mapping table remains compatible with preparation snapshots", () => {
+  const db = createFakeDb({
+    mappingError: Object.assign(new Error('SQLITE_ERROR: no such table: product_archive_size_chart_mapping'), { code: "SQLITE_ERROR" }),
+  });
+
+  const result = prepared.prepareProductArchiveDraft(db, 1, {
+    submitMode: "create",
+    templateVersion: "deepdraw-v1",
+    now: stableNow(),
+    prepare: makePrepare(db),
+  });
+
+  assert.equal(result.draftId, 1);
+  assert.equal(db.calls.prepare, 1);
+});
+
+test("non-missing size-chart mapping errors are not swallowed when they mention the table", () => {
+  const db = createFakeDb({
+    mappingError: Object.assign(
+      new Error('permission denied for table product_archive_size_chart_mapping'),
+      { code: "42501" },
+    ),
+  });
+
+  assert.throws(
+    () => prepared.prepareProductArchiveDraft(db, 1, {
+      submitMode: "create",
+      templateVersion: "deepdraw-v1",
+      now: stableNow(),
+      prepare: makePrepare(db),
+    }),
+    /permission denied for table product_archive_size_chart_mapping/,
+  );
 });
 
 test("size-chart mapping mutation invalidates the preparation hash", () => {
