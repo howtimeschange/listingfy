@@ -7,6 +7,7 @@ const DEFAULT_JOB_LEASE_MS = 30 * 60 * 1000;
 const MAX_RECOVERY_BATCH = 200;
 const MAX_CODES_PER_JOB = 2000;
 const DEFAULT_JOB_SLICE_SIZE = 0;
+const DEFAULT_SYNC_CONCURRENCY = 1;
 const PRODUCT_ARCHIVE_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 function clampInterval(value) {
@@ -25,6 +26,12 @@ function clampJobSliceSize(value) {
   const number = Number(value ?? DEFAULT_JOB_SLICE_SIZE);
   if (!Number.isFinite(number)) return DEFAULT_JOB_SLICE_SIZE;
   return Math.max(0, Math.min(1000, Math.floor(number)));
+}
+
+function clampSyncConcurrency(value) {
+  const number = Number(value ?? DEFAULT_SYNC_CONCURRENCY);
+  if (!Number.isFinite(number)) return DEFAULT_SYNC_CONCURRENCY;
+  return Math.max(1, Math.min(4, Math.floor(number)));
 }
 
 function errorMessage(error) {
@@ -60,6 +67,47 @@ export function isRetryableProductArchiveSyncError(error) {
   return /访问频率过高|稍后重试|too many requests|rate.?limit|HTTP (408|425|429|500|502|503|504)\b|fetch failed|network|socket|timeout|timed out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|AbortError/i.test(message);
 }
 
+export function classifyProductArchiveSyncError(error) {
+  const message = errorMessage(error);
+  if (/请求的资源未在服务器上发现|资源未在服务器上发现|not.?found|HTTP 404\b/i.test(message)) {
+    return { retryable: false, reasonCode: "mdm_spu_not_found" };
+  }
+  if (isRetryableProductArchiveSyncError(error)) {
+    return { retryable: true, reasonCode: "transient" };
+  }
+  return { retryable: false, reasonCode: "sync_failed" };
+}
+
+export function filterKnownProductArchiveSyncCandidates(db, source, codes, { now = new Date().toISOString() } = {}) {
+  const acceptedInputCodes = parseSpuCodes(codes);
+  if (acceptedInputCodes.length === 0) return { acceptedCodes: [], skippedItems: [] };
+  const normalizedSource = String(source ?? "").toLowerCase();
+  if (!normalizedSource.includes("mdm")) {
+    return { acceptedCodes: acceptedInputCodes, skippedItems: [] };
+  }
+  const rows = db.prepare(`
+    select spu_code, reason_code
+    from product_archive_sync_negative_cache
+    where source = ?
+      and spu_code = any(?::text[])
+      and reason_code = 'mdm_spu_not_found'
+      and expires_at > ?::timestamptz
+  `).all(normalizedSource, acceptedInputCodes, now);
+  const cached = new Set((rows ?? []).map((row) => String(row.spu_code)));
+  return {
+    acceptedCodes: acceptedInputCodes.filter((code) => !cached.has(code)),
+    skippedItems: acceptedInputCodes
+      .filter((code) => cached.has(code))
+      .map((code) => ({
+        spu_code: code,
+        status: "failed",
+        reasonCode: "mdm_spu_not_found_cached",
+        retryable: false,
+        attempt_count: 0,
+      })),
+  };
+}
+
 export function parseSpuCodes(input, options = {}) {
   const maxCodes = Number.isFinite(Number(options.maxCodes))
     ? Math.max(1, Math.floor(Number(options.maxCodes)))
@@ -90,7 +138,10 @@ export function createProductArchiveSyncQueue({
   now = () => Date.now(),
   leaseHeartbeatIntervalMs = null,
   jobSliceSize = process.env.LISTINGIFY_PRODUCT_ARCHIVE_JOB_SLICE_SIZE ?? DEFAULT_JOB_SLICE_SIZE,
+  concurrency = process.env.LISTINGIFY_PRODUCT_ARCHIVE_SYNC_CONCURRENCY ?? DEFAULT_SYNC_CONCURRENCY,
   runWithSlot = async (_context, run) => run(),
+  cacheNegativeResult = async () => {},
+  invalidateNegativeResult = async () => {},
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
 } = {}) {
@@ -103,6 +154,7 @@ export function createProductArchiveSyncQueue({
   const normalizedMaxAttempts = clampMaxAttempts(maxAttempts);
   const normalizedRetryDelayMs = clampInterval(retryDelayMs);
   const normalizedJobSliceSize = clampJobSliceSize(jobSliceSize);
+  const normalizedConcurrency = clampSyncConcurrency(concurrency);
   let running = false;
   let processScheduled = false;
   let idleResolvers = [];
@@ -150,6 +202,109 @@ export function createProductArchiveSyncQueue({
       evictLeaseJob(job);
       return !store?.requiresLease;
     }
+  }
+
+  async function persistNegativeResult(job, item, reasonCode) {
+    if (reasonCode !== "mdm_spu_not_found" || !String(job.source).includes("mdm")) return;
+    try {
+      await cacheNegativeResult({
+        source: job.source,
+        spuCode: item.spu_code,
+        reasonCode,
+        checkedAt: new Date(now()).toISOString(),
+        expiresAt: new Date(now() + 24 * 60 * 60 * 1000).toISOString(),
+      });
+    } catch (error) {
+      reportInternalError(error, { phase: "negative_cache_save", jobId: job.id, spuCode: item.spu_code });
+    }
+  }
+
+  async function clearNegativeResult(job, item) {
+    if (!String(job.source).includes("mdm")) return;
+    try {
+      await invalidateNegativeResult({
+        source: job.source,
+        spuCode: item.spu_code,
+      });
+    } catch (error) {
+      reportInternalError(error, { phase: "negative_cache_invalidate", jobId: job.id, spuCode: item.spu_code });
+    }
+  }
+
+  async function processItem(job, item, leaseIsLost) {
+    item.max_attempts = clampMaxAttempts(item.max_attempts ?? job.max_attempts);
+    item.attempt_count = Math.max(0, Number(item.attempt_count) || 0);
+    item.started_at ??= new Date(now()).toISOString();
+
+    while (item.attempt_count < item.max_attempts) {
+      if (leaseIsLost()) break;
+      item.status = "running";
+      item.attempt_count += 1;
+      item.next_retry_at = null;
+      if (!persist(job)) return false;
+      try {
+        const result = await runWithSlot({
+          queue: "product_archive_sync",
+          source: job.source,
+          jobId: job.id,
+          spuCode: item.spu_code,
+          attempt: item.attempt_count,
+          maxAttempts: item.max_attempts,
+        }, () => syncOne({
+          source: job.source,
+          spuCode: item.spu_code,
+          jobId: job.id,
+          options: job.options,
+          attempt: item.attempt_count,
+          maxAttempts: item.max_attempts,
+        }));
+        if (leaseIsLost()) break;
+        item.status = "completed";
+        item.result = result ?? null;
+        item.error = null;
+        item.retryable = false;
+        item.reasonCode = null;
+        item.finished_at = new Date(now()).toISOString();
+        job.completed_count += 1;
+        await clearNegativeResult(job, item);
+        return true;
+      } catch (error) {
+        if (leaseIsLost()) break;
+        const classification = classifyProductArchiveSyncError(error);
+        const retryable = classification.reasonCode === "mdm_spu_not_found"
+          ? false
+          : Boolean(isRetryableError?.(error));
+        const reasonCode = classification.reasonCode;
+        const retryDelay = normalizedRetryDelayMs * item.attempt_count;
+        item.error = errorMessage(error);
+        item.retryable = retryable;
+        item.reasonCode = reasonCode;
+
+        if (retryable && item.attempt_count < item.max_attempts) {
+          item.status = "retrying";
+          item.next_retry_at = new Date(now() + retryDelay).toISOString();
+          if (!persist(job)) return false;
+          if (retryDelay > 0) {
+            try {
+              await wait(retryDelay);
+            } catch (waitError) {
+              reportInternalError(waitError, { phase: "retry_delay", jobId: job.id });
+            }
+          }
+          if (leaseIsLost()) break;
+          continue;
+        }
+
+        if (leaseIsLost()) break;
+        item.status = "failed";
+        item.finished_at = new Date(now()).toISOString();
+        item.next_retry_at = null;
+        job.failed_count += 1;
+        await persistNegativeResult(job, item, reasonCode);
+        return true;
+      }
+    }
+    return true;
   }
 
   function startLeaseHeartbeat(job, onLost) {
@@ -227,100 +382,52 @@ export function createProductArchiveSyncQueue({
         try {
           stopLeaseHeartbeat = startLeaseHeartbeat(job, markLeaseLost);
           let sliceExhausted = false;
-          for (let index = 0; index < job.items.length; index += 1) {
-            const item = job.items[index];
-            if (leaseLost) break;
-            if (["completed", "failed"].includes(item.status)) continue;
-            if (normalizedJobSliceSize > 0 && processedCount >= normalizedJobSliceSize) {
-              sliceExhausted = true;
-              break;
+          const openItems = job.items.filter((item) => !["completed", "failed"].includes(item.status));
+          const sliceItems = normalizedJobSliceSize > 0 ? openItems.slice(0, normalizedJobSliceSize) : openItems;
+          sliceExhausted = normalizedJobSliceSize > 0 && openItems.length > sliceItems.length;
+          let nextIndex = 0;
+          const inFlightCodes = new Set();
+          const takeItem = () => {
+            if (leaseLost) return null;
+            for (let index = nextIndex; index < sliceItems.length; index += 1) {
+              const item = sliceItems[index];
+              if (inFlightCodes.has(item.spu_code)) continue;
+              nextIndex = index + 1;
+              inFlightCodes.add(item.spu_code);
+              return item;
             }
-            if (processedCount > 0 && job.interval_ms > 0) {
+            return null;
+          };
+          const worker = async () => {
+            while (!leaseLost) {
+              const item = takeItem();
+              if (!item) return;
               try {
-                await wait(job.interval_ms);
-              } catch (error) {
-                reportInternalError(error, { phase: "item_interval", jobId: job.id });
-              }
-            }
-            if (leaseLost) break;
-            processedCount += 1;
-
-            item.max_attempts = clampMaxAttempts(item.max_attempts ?? job.max_attempts);
-            item.attempt_count = Math.max(0, Number(item.attempt_count) || 0);
-            item.started_at ??= new Date(now()).toISOString();
-
-            while (item.attempt_count < item.max_attempts) {
-              if (leaseLost) break;
-              item.status = "running";
-              item.attempt_count += 1;
-              item.next_retry_at = null;
-              if (!persist(job)) {
-                leaseLost = true;
-                break;
-              }
-              try {
-                const result = await runWithSlot({
-                  queue: "product_archive_sync",
-                  source: job.source,
-                  jobId: job.id,
-                  spuCode: item.spu_code,
-                  attempt: item.attempt_count,
-                  maxAttempts: item.max_attempts,
-                }, () => syncOne({
-                  source: job.source,
-                  spuCode: item.spu_code,
-                  jobId: job.id,
-                  options: job.options,
-                  attempt: item.attempt_count,
-                  maxAttempts: item.max_attempts,
-                }));
-                if (leaseLost) break;
-                item.status = "completed";
-                item.result = result ?? null;
-                item.error = null;
-                item.retryable = false;
-                item.finished_at = new Date(now()).toISOString();
-                job.completed_count += 1;
-                break;
-              } catch (error) {
-                if (leaseLost) break;
-                const retryable = Boolean(isRetryableError?.(error));
-                const retryDelay = normalizedRetryDelayMs * item.attempt_count;
-                item.error = errorMessage(error);
-                item.retryable = retryable;
-
-                if (retryable && item.attempt_count < item.max_attempts) {
-                  item.status = "retrying";
-                  item.next_retry_at = new Date(now() + retryDelay).toISOString();
-                  if (!persist(job)) {
-                    leaseLost = true;
-                    break;
+                if (processedCount > 0 && job.interval_ms > 0) {
+                  try {
+                    await wait(job.interval_ms);
+                  } catch (error) {
+                    reportInternalError(error, { phase: "item_interval", jobId: job.id });
                   }
-                  if (retryDelay > 0) {
-                    try {
-                      await wait(retryDelay);
-                    } catch (waitError) {
-                      reportInternalError(waitError, { phase: "retry_delay", jobId: job.id });
-                    }
-                  }
-                  if (leaseLost) break;
-                  continue;
                 }
-
-                if (leaseLost) break;
-                item.status = "failed";
-                item.finished_at = new Date(now()).toISOString();
-                item.next_retry_at = null;
-                job.failed_count += 1;
-                break;
+                if (leaseLost) return;
+                processedCount += 1;
+                const processed = await processItem(job, item, () => leaseLost);
+                if (!processed) {
+                  leaseLost = true;
+                  return;
+                }
+                if (!leaseLost && !persist(job)) {
+                  leaseLost = true;
+                  return;
+                }
+              } finally {
+                inFlightCodes.delete(item.spu_code);
               }
             }
-            if (leaseLost) break;
-            if (!persist(job)) {
-              leaseLost = true;
-              break;
-            }
-          }
+          };
+          const workerCount = Math.min(normalizedConcurrency, sliceItems.length);
+          await Promise.all(Array.from({ length: workerCount }, () => worker()));
           if (!leaseLost && sliceExhausted && job.items.some((item) => !["completed", "failed"].includes(item.status))) {
             job.status = "queued";
             if (!persist(job)) {
@@ -352,7 +459,7 @@ export function createProductArchiveSyncQueue({
     }
   }
 
-  function enqueue({ source, rawCodes, intervalMs, options = {} } = {}) {
+  function enqueue({ source, rawCodes, intervalMs, options = {}, skippedItems = [] } = {}) {
     const normalizedSource = String(source ?? "").toLowerCase();
     const normalizedAllowedSources = allowedSources.map((item) => String(item).toLowerCase());
     if (!normalizedAllowedSources.includes(normalizedSource)) {
@@ -360,7 +467,22 @@ export function createProductArchiveSyncQueue({
     }
 
     const codes = parseSpuCodes(rawCodes);
-    if (codes.length === 0) {
+    const normalizedSkippedItems = Array.isArray(skippedItems)
+      ? skippedItems.map((item) => ({
+          spu_code: String(item?.spu_code ?? "").trim(),
+          status: "failed",
+          started_at: null,
+          finished_at: new Date(now()).toISOString(),
+          result: null,
+          error: null,
+          retryable: false,
+          attempt_count: 0,
+          max_attempts: normalizedMaxAttempts,
+          next_retry_at: null,
+          reasonCode: String(item?.reasonCode ?? "skipped"),
+        })).filter((item) => item.spu_code)
+      : [];
+    if (codes.length === 0 && normalizedSkippedItems.length === 0) {
       throw new Error("At least one product code is required");
     }
 
@@ -374,25 +496,29 @@ export function createProductArchiveSyncQueue({
         deepdrawTenantName: options.deepdrawTenantName ?? null,
       },
       codes,
-      total_count: codes.length,
+      total_count: codes.length + normalizedSkippedItems.length,
       completed_count: 0,
-      failed_count: 0,
+      failed_count: normalizedSkippedItems.length,
       max_attempts: normalizedMaxAttempts,
       created_at: new Date(now()).toISOString(),
       started_at: null,
       finished_at: null,
-      items: codes.map((code) => ({
-        spu_code: code,
-        status: "queued",
-        started_at: null,
-        finished_at: null,
-        result: null,
-        error: null,
-        retryable: null,
-        attempt_count: 0,
-        max_attempts: normalizedMaxAttempts,
-        next_retry_at: null,
-      })),
+      items: [
+        ...normalizedSkippedItems,
+        ...codes.map((code) => ({
+          spu_code: code,
+          status: "queued",
+          started_at: null,
+          finished_at: null,
+          result: null,
+          error: null,
+          retryable: null,
+          attempt_count: 0,
+          max_attempts: normalizedMaxAttempts,
+          next_retry_at: null,
+          reasonCode: null,
+        })),
+      ],
     };
 
     jobs.set(job.id, job);

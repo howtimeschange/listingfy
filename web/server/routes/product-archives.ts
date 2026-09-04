@@ -20,6 +20,7 @@ import {
 import {
   createPostgresProductArchiveSyncJobStore,
   createProductArchiveSyncQueue,
+  filterKnownProductArchiveSyncCandidates,
 } from "../../../scripts/lib/product_archive_sync_queue.mjs"
 import {
   assertAllowedProductArchiveQuery,
@@ -170,9 +171,32 @@ async function syncDeepdrawProduct(
 const syncQueue = createProductArchiveSyncQueue({
   autoRecover: false,
   jobSliceSize: process.env.LISTINGIFY_PRODUCT_ARCHIVE_SYNC_JOB_SLICE_SIZE ?? 5,
+  concurrency: process.env.LISTINGIFY_PRODUCT_ARCHIVE_SYNC_CONCURRENCY ?? 1,
   runWithSlot: (_context: unknown, run: () => Promise<unknown>) => withBackgroundTaskSlot("product_archive_sync", run),
   maxAttempts: 3,
   retryDelayMs: 3000,
+  cacheNegativeResult: async ({ source, spuCode, reasonCode, checkedAt, expiresAt }: {
+    source: string
+    spuCode: string
+    reasonCode: string
+    checkedAt: string
+    expiresAt: string
+  }) => {
+    getDb().prepare(`
+      insert into product_archive_sync_negative_cache(source, spu_code, reason_code, checked_at, expires_at)
+      values (?, ?, ?, ?::timestamptz, ?::timestamptz)
+      on conflict (source, spu_code) do update set
+        reason_code = excluded.reason_code,
+        checked_at = excluded.checked_at,
+        expires_at = excluded.expires_at
+    `).run(source, spuCode, reasonCode, checkedAt, expiresAt)
+  },
+  invalidateNegativeResult: async ({ source, spuCode }: { source: string; spuCode: string }) => {
+    getDb().prepare(`
+      delete from product_archive_sync_negative_cache
+      where source = ? and spu_code = ?
+    `).run(source, spuCode)
+  },
   store: createPostgresProductArchiveSyncJobStore({
     getDb,
     queueName: "product_archives",
@@ -403,9 +427,12 @@ productArchives.post("/sync-jobs", async (c) => {
   }
 
   try {
+    const db = getDb()
+    const filtered = filterKnownProductArchiveSyncCandidates(db, body.source, body.codes ?? body.rawCodes)
     const job = syncQueue.enqueue({
       source: body.source,
-      rawCodes: body.codes ?? body.rawCodes,
+      rawCodes: filtered.acceptedCodes,
+      skippedItems: filtered.skippedItems,
       intervalMs: readIntervalMs(body.intervalMs),
       options: {
         deepdrawTenantName: body.deepdrawTenantName,

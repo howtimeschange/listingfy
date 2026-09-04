@@ -29,6 +29,7 @@ import {
 import {
   createPostgresProductArchiveSyncJobStore,
   createProductArchiveSyncQueue,
+  filterKnownProductArchiveSyncCandidates,
   isProductArchiveSyncLeaseError,
   isRetryableProductArchiveSyncError,
   parseSpuCodes,
@@ -245,7 +246,30 @@ async function syncDraftMdmMainImageSafely(db: ReturnType<typeof getDb>, draftId
 const draftQueue = createProductArchiveSyncQueue({
   autoRecover: false,
   jobSliceSize: process.env.LISTINGIFY_PRODUCT_ARCHIVE_DRAFT_JOB_SLICE_SIZE ?? 5,
+  concurrency: process.env.LISTINGIFY_PRODUCT_ARCHIVE_SYNC_CONCURRENCY ?? 1,
   runWithSlot: (_context: unknown, run: () => Promise<unknown>) => withBackgroundTaskSlot("product_archive_draft", run),
+  cacheNegativeResult: async ({ source, spuCode, reasonCode, checkedAt, expiresAt }: {
+    source: string
+    spuCode: string
+    reasonCode: string
+    checkedAt: string
+    expiresAt: string
+  }) => {
+    getDb().prepare(`
+      insert into product_archive_sync_negative_cache(source, spu_code, reason_code, checked_at, expires_at)
+      values (?, ?, ?, ?::timestamptz, ?::timestamptz)
+      on conflict (source, spu_code) do update set
+        reason_code = excluded.reason_code,
+        checked_at = excluded.checked_at,
+        expires_at = excluded.expires_at
+    `).run(source, spuCode, reasonCode, checkedAt, expiresAt)
+  },
+  invalidateNegativeResult: async ({ source, spuCode }: { source: string; spuCode: string }) => {
+    getDb().prepare(`
+      delete from product_archive_sync_negative_cache
+      where source = ? and spu_code = ?
+    `).run(source, spuCode)
+  },
   store: createPostgresProductArchiveSyncJobStore({
     getDb,
     queueName: "product_archive_drafts",
@@ -392,6 +416,8 @@ type ProductArchiveAiFillJobItem = {
   finished_at: string | null
   result: Record<string, unknown> | null
   error: string | null
+  retryable?: boolean | null
+  reasonCode?: string | null
 }
 
 type ProductArchiveAiFillJob = {
@@ -540,6 +566,7 @@ function productArchiveJobSliceSize(envName: string, fallback = 5) {
 }
 
 const PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY_CAP = 10
+const PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY_CAP = 2
 
 function productArchiveAiFillUserConcurrency() {
   const number = Number(process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_USER_CONCURRENCY ?? 2)
@@ -552,6 +579,12 @@ function productArchiveAiFillUserMaxConcurrency() {
   const fallback = Math.min(backgroundTaskMaxActive(), PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY_CAP)
   if (!Number.isFinite(number)) return fallback
   return Math.max(1, Math.min(backgroundTaskMaxActive(), PRODUCT_ARCHIVE_AI_FILL_USER_MAX_CONCURRENCY_CAP, Math.floor(number)))
+}
+
+function productArchiveAiFillItemConcurrency() {
+  const number = Number(process.env.LISTINGIFY_PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY ?? 1)
+  if (!Number.isFinite(number)) return 1
+  return Math.max(1, Math.min(PRODUCT_ARCHIVE_AI_FILL_ITEM_CONCURRENCY_CAP, Math.floor(number)))
 }
 
 function productArchiveAiFillQueueKey(actor: AuditActor | null | undefined) {
@@ -720,7 +753,7 @@ export function createProductArchiveAiFillQueue({
     )
     const shares = dynamicConcurrencyShares()
     const dynamicShare = shares.get(queueKey) ?? configuredConcurrency
-    return Math.max(1, Math.min(openItemCount(job), dynamicShare))
+    return Math.max(1, Math.min(openItemCount(job), dynamicShare, productArchiveAiFillItemConcurrency()))
   }
 
   function persist(job: ProductArchiveAiFillJob) {
@@ -755,11 +788,14 @@ export function createProductArchiveAiFillQueue({
     status: "completed" | "failed",
     result: Record<string, unknown> | null,
     error: string | null,
+    options: { retryable?: boolean | null; reasonCode?: string | null } = {},
   ) {
     if (itemIsFinished(item)) return false
     item.status = status
     item.result = result
     item.error = error
+    item.retryable = options.retryable ?? (status === "failed" ? false : null)
+    item.reasonCode = options.reasonCode ?? null
     item.finished_at = new Date(now()).toISOString()
     job.completed_count = job.items.filter((current) => current.status === "completed").length
     job.failed_count = job.items.filter((current) => current.status === "failed").length
@@ -834,10 +870,17 @@ export function createProductArchiveAiFillQueue({
         return { leaseLost: true as const, error: leaseError }
       }
       try {
+        const draftChanged = error instanceof Error
+          && (error.message.includes("草稿数据已更新") || error.message.includes("草稿内容已变化") || (error as { code?: unknown }).code === "PRODUCT_ARCHIVE_DRAFT_CHANGED")
         setItemFinished(job, item, "failed", {
           draftId: item.draft_id,
           spuCode: item.spu_code,
-        }, errorMessage(error))
+          retryable: draftChanged,
+          reasonCode: draftChanged ? "draft_changed" : "ai_fill_failed",
+        }, errorMessage(error), {
+          retryable: draftChanged,
+          reasonCode: draftChanged ? "draft_changed" : "ai_fill_failed",
+        })
         return { leaseLost: false as const, error: null }
       } catch (finishError) {
         const finishLeaseError = isProductArchiveSyncLeaseError(finishError) ? finishError : null
@@ -853,6 +896,7 @@ export function createProductArchiveAiFillQueue({
   async function processJob(queueKey: string, job: ProductArchiveAiFillJob) {
     const options = normalizeJobRuntimeOptions(job)
     let maxConcurrency = 1
+    const maxItemConcurrency = productArchiveAiFillItemConcurrency()
     job.status = "running"
     job.started_at ??= new Date(now()).toISOString()
     persist(job)
@@ -860,9 +904,15 @@ export function createProductArchiveAiFillQueue({
     while (hasOpenQueueItems(job.items)) {
       const concurrency = dynamicConcurrencyForQueue(queueKey, job)
       maxConcurrency = Math.max(maxConcurrency, concurrency)
-      const items = job.items
-        .filter((item) => item.status !== "completed" && item.status !== "failed")
-        .slice(0, concurrency)
+      const inFlightSpuCodes = new Set<string>()
+      const items: ProductArchiveAiFillJobItem[] = []
+      for (const item of job.items.filter((item) => item.status !== "completed" && item.status !== "failed")) {
+        const spuCode = stringValue(item.spu_code)
+        if (spuCode && inFlightSpuCodes.has(spuCode)) continue
+        if (spuCode) inFlightSpuCodes.add(spuCode)
+        items.push(item)
+        if (items.length >= concurrency) break
+      }
       if (items.length === 0) break
       const controller = new AbortController()
       const results = await Promise.allSettled(items.map((item) => processItemSafely(job, item, controller)))
@@ -880,6 +930,7 @@ export function createProductArchiveAiFillQueue({
       savedFieldCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.savedCount) || 0), 0),
       warningCount: completedItems.reduce((sum, item) => sum + (Number(item.result?.warningCount) || 0), 0),
       concurrency: maxConcurrency,
+      itemConcurrency: maxItemConcurrency,
       configuredConcurrency: options.concurrency,
     }
     job.status = "completed"
@@ -947,7 +998,7 @@ export function createProductArchiveAiFillQueue({
     if (targets.length === 0) throw new Error("请先选择需要 AI 填充的草稿")
     const nowText = new Date(now()).toISOString()
     const queueKey = productArchiveAiFillQueueKey(actor)
-    const concurrency = productArchiveAiFillUserMaxConcurrency()
+    const concurrency = Math.min(productArchiveAiFillUserMaxConcurrency(), productArchiveAiFillItemConcurrency())
     const job: ProductArchiveAiFillJob = {
       id: randomUUID(),
       source: "ai_fill",
@@ -968,6 +1019,8 @@ export function createProductArchiveAiFillQueue({
         finished_at: null,
         result: null,
         error: null,
+        retryable: null,
+        reasonCode: null,
       })),
       result: null,
     }
@@ -3697,10 +3750,12 @@ async function processProductArchiveWorkflowStage(
       tenantName: deepdrawConfig.tenantName,
       merchantId: deepdrawConfig.merchantId == null ? null : String(deepdrawConfig.merchantId),
     })
+    const filteredDraftCodes = filterKnownProductArchiveSyncCandidates(db, "mdm_draft", draftCodes)
     const syncJob = draftCodes.length > 0
       ? draftQueue.enqueue({
           source: "mdm_draft",
-          rawCodes: draftCodes,
+          rawCodes: filteredDraftCodes.acceptedCodes,
+          skippedItems: filteredDraftCodes.skippedItems,
           intervalMs: options.intervalMs,
           options: {
             deepdrawTenantName: deepdrawConfig.tenantName,
@@ -3717,6 +3772,7 @@ async function processProductArchiveWorkflowStage(
       needsLaunchPlan: false,
       candidateCodes,
       draftQueuedCount: draftCodes.length,
+      skippedCachedNotFoundCount: filteredDraftCodes.skippedItems.length,
       skippedExistingDraftCount: candidateCodes.length - draftCodes.length,
       sourceBatchIdsByType,
       refreshSummaries,
@@ -3863,6 +3919,7 @@ productArchiveDrafts.post("/mdm-batch", async (c) => {
       tenantName: deepdrawConfig.tenantName,
       merchantId: deepdrawConfig.merchantId == null ? null : String(deepdrawConfig.merchantId),
     })
+    const filtered = filterKnownProductArchiveSyncCandidates(db, "mdm_draft", queueCodes)
     if (queueCodes.length === 0) {
       return c.json({
         status: "skipped",
@@ -3873,7 +3930,8 @@ productArchiveDrafts.post("/mdm-batch", async (c) => {
     }
     const job = draftQueue.enqueue({
       source: "mdm_draft",
-      rawCodes: queueCodes,
+      rawCodes: filtered.acceptedCodes,
+      skippedItems: filtered.skippedItems,
       intervalMs: body.intervalMs,
       options: {
         deepdrawTenantName: deepdrawConfig.tenantName,
@@ -3890,7 +3948,7 @@ productArchiveDrafts.post("/mdm-batch", async (c) => {
       entityType: "product_archive_draft_batch",
       entityId: job.id,
       summary: `批量同步 MDM 并生成深绘建档草稿 ${job.total_count} 个款号`,
-      metadata: { jobId: job.id, count: job.total_count, source: "mdm_draft", skippedNonReusableDraftCount: rawCodes.length - queueCodes.length },
+      metadata: { jobId: job.id, count: job.total_count, source: "mdm_draft", skippedNonReusableDraftCount: rawCodes.length - queueCodes.length, skippedCachedNotFoundCount: filtered.skippedItems.length },
     })
     return c.json(job, 202)
   } catch (error) {
@@ -3932,10 +3990,12 @@ productArchiveDrafts.post("/source-imports", async (c) => {
         merchantId: deepdrawConfig?.merchantId == null ? null : String(deepdrawConfig.merchantId),
       })
     : []
+  const filteredMissingCodes = filterKnownProductArchiveSyncCandidates(db, "mdm_draft", missingCodes)
   const syncJob = missingCodes.length > 0
     ? draftQueue.enqueue({
         source: "mdm_draft",
-        rawCodes: missingCodes,
+        rawCodes: filteredMissingCodes.acceptedCodes,
+        skippedItems: filteredMissingCodes.skippedItems,
         intervalMs: body.intervalMs,
         options: {
           deepdrawTenantName: deepdrawConfig?.tenantName ?? body.deepdrawTenantName ?? body.tenantName,
@@ -3965,7 +4025,7 @@ productArchiveDrafts.post("/source-imports", async (c) => {
       userId: user.id,
     },
   })
-  return c.json({ ...result, missingMdmSpuCodes: missingCodes, syncJob, refreshSummary })
+  return c.json({ ...result, missingMdmSpuCodes: missingCodes, skippedCachedNotFoundCount: filteredMissingCodes.skippedItems.length, syncJob, refreshSummary })
 })
 
 productArchiveDrafts.post("/source-imports/upload", productArchiveSpreadsheetBodyLimit, async (c) => {
@@ -4030,9 +4090,11 @@ productArchiveDrafts.post("/source-imports/upload", productArchiveSpreadsheetBod
       missingMdmSpuCodes.push(...missingCodes)
       skippedExistingDraftCount += shouldAutoCreateDrafts ? result.insertedRowCount - missingCodes.length : 0
       if (missingCodes.length > 0) {
+        const filteredMissingCodes = filterKnownProductArchiveSyncCandidates(db, "mdm_draft", missingCodes)
         syncJobs.push(draftQueue.enqueue({
           source: "mdm_draft",
-          rawCodes: missingCodes,
+          rawCodes: filteredMissingCodes.acceptedCodes,
+          skippedItems: filteredMissingCodes.skippedItems,
           intervalMs: stringValue(form.get("intervalMs")),
           options: {
             deepdrawTenantName: deepdrawConfig?.tenantName ?? stringValue(form.get("deepdrawTenantName") ?? form.get("tenantName")),

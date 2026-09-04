@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   createPostgresProductArchiveSyncJobStore,
   createProductArchiveSyncQueue,
+  filterKnownProductArchiveSyncCandidates,
   parseSpuCodes,
 } from "./product_archive_sync_queue.mjs";
 
@@ -205,6 +206,95 @@ test("queue does not retry terminal not-found failures", async () => {
   assert.equal(finished.failed_count, 1);
   assert.equal(finished.items[0].attempt_count, 1);
   assert.equal(finished.items[0].retryable, false);
+});
+
+test("terminal MDM not-found is persisted once and is not retried", async () => {
+  const cached = [];
+  const queue = createProductArchiveSyncQueue({
+    concurrency: 2,
+    maxAttempts: 3,
+    retryDelayMs: 0,
+    wait: async () => {},
+    cacheNegativeResult: async (entry) => {
+      cached.push(entry);
+    },
+    syncOne: async () => {
+      throw new Error("请求的资源未在服务器上发现");
+    },
+  });
+
+  const job = queue.enqueue({ source: "mdm", rawCodes: ["A001"], intervalMs: 0 });
+  await queue.waitForIdle();
+
+  const finished = queue.getJob(job.id);
+  assert.equal(finished.items[0].attempt_count, 1);
+  assert.equal(finished.items[0].retryable, false);
+  assert.equal(finished.items[0].reasonCode, "mdm_spu_not_found");
+  assert.equal(cached.length, 1);
+  assert.equal(cached[0].source, "mdm");
+  assert.equal(cached[0].spuCode, "A001");
+  assert.equal(cached[0].reasonCode, "mdm_spu_not_found");
+});
+
+test("different valid codes can overlap but one code cannot overlap itself", async () => {
+  let active = 0;
+  let maxActive = 0;
+  const activeCodes = new Set();
+  let sameCodeOverlap = false;
+  const starts = [];
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const queue = createProductArchiveSyncQueue({
+    concurrency: 2,
+    wait: async () => {},
+    syncOne: async ({ spuCode }) => {
+      starts.push(spuCode);
+      if (activeCodes.has(spuCode)) sameCodeOverlap = true;
+      activeCodes.add(spuCode);
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await wait(25);
+      active -= 1;
+      activeCodes.delete(spuCode);
+      return { ok: true };
+    },
+  });
+
+  const job = queue.enqueue({ source: "mdm", rawCodes: ["A001", "B001", "A001"], intervalMs: 0 });
+  await queue.waitForIdle();
+
+  assert.deepEqual(job.codes, ["A001", "B001"]);
+  assert.ok(maxActive >= 2, `expected two distinct codes to overlap; maxActive=${maxActive}`);
+  assert.equal(sameCodeOverlap, false);
+  assert.deepEqual(starts.sort(), ["A001", "B001"]);
+});
+
+test("negative MDM cache skips candidates before external sync", () => {
+  const calls = [];
+  const now = "2026-09-04T00:00:00.000Z";
+  const db = {
+    prepare(sql) {
+      return {
+        all(...args) {
+          calls.push({ sql, args });
+          return [{ spu_code: "A001", reason_code: "mdm_spu_not_found" }];
+        },
+      };
+    },
+  };
+
+  const filtered = filterKnownProductArchiveSyncCandidates(db, "mdm", ["A001", "B001", "A001"], { now });
+
+  assert.deepEqual(filtered.acceptedCodes, ["B001"]);
+  assert.deepEqual(filtered.skippedItems, [{
+    spu_code: "A001",
+    status: "failed",
+    reasonCode: "mdm_spu_not_found_cached",
+    retryable: false,
+    attempt_count: 0,
+  }]);
+  assert.match(calls[0].sql, /product_archive_sync_negative_cache/i);
+  assert.match(calls[0].sql, /expires_at > \?::timestamptz/i);
+  assert.deepEqual(calls[0].args, ["mdm", ["A001", "B001"], now]);
 });
 
 test("queue continues when one persistence write fails", async () => {

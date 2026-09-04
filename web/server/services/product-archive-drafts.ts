@@ -11519,6 +11519,11 @@ export async function fillProductArchiveDraftFieldsWithAi(db: SyncPostgresDataba
         confidence,
       })
     }
+    if (warnings.some((warning) => warning.code === "draft_changed")) {
+      const error = new Error("草稿数据已更新，请刷新后重试")
+      ;(error as Error & { code?: string }).code = "PRODUCT_ARCHIVE_DRAFT_CHANGED"
+      throw error
+    }
     db.prepare("update product_archive_draft set updated_at = ?::timestamptz where id = ?").run(now, draftId)
     rebuildProductArchiveDraftFields(db, draftId)
     syncProductArchiveDownFillWeightSizeCharts(db, draftId)

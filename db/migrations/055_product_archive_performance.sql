@@ -58,3 +58,15 @@ create table if not exists product_archive_draft_preparation (
 
 create index if not exists idx_product_archive_draft_preparation_expiry
   on product_archive_draft_preparation(expires_at);
+
+create table if not exists product_archive_sync_negative_cache (
+  source text not null,
+  spu_code text not null,
+  reason_code text not null,
+  checked_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  primary key(source, spu_code)
+);
+
+create index if not exists idx_product_archive_sync_negative_cache_expiry
+  on product_archive_sync_negative_cache(expires_at);
