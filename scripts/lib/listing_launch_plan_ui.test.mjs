@@ -7,6 +7,7 @@ const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const files = {
   migration: path.join(PROJECT_ROOT, "db/migrations/028_listing_launch_plan.sql"),
   importJobMigration: path.join(PROJECT_ROOT, "db/migrations/033_listing_launch_plan_import_jobs.sql"),
+  performanceMigration: path.join(PROJECT_ROOT, "db/migrations/055_product_archive_performance.sql"),
   server: path.join(PROJECT_ROOT, "web/server/index.ts"),
   route: path.join(PROJECT_ROOT, "web/server/routes/listing-launch-plans.ts"),
   service: path.join(PROJECT_ROOT, "web/server/services/listing-launch-plans.ts"),
@@ -45,6 +46,44 @@ test("listing launch plan schema stores imports and normalized rows separately f
   assert.doesNotMatch(importJobMigration, /sqlite|autoincrement|strftime/i);
 });
 
+test("listing launch plan performance migration adds latest SPU and sheet stat summaries additively", async () => {
+  const migration = await readFile(files.performanceMigration, "utf8");
+
+  assert.match(migration, /create table if not exists listing_launch_plan_spu_latest/);
+  assert.match(migration, /spu_code text primary key/);
+  assert.match(migration, /import_id bigint not null references listing_launch_plan_import\(id\) on delete cascade/);
+  assert.match(migration, /row_id bigint not null references listing_launch_plan_row\(id\) on delete cascade/);
+  assert.match(migration, /sheet_name text not null/);
+  assert.match(migration, /row_count integer not null default 1/);
+  assert.match(migration, /idx_listing_launch_plan_spu_latest_import/);
+  assert.match(migration, /on listing_launch_plan_spu_latest\(import_id desc, spu_code\)/);
+  assert.match(migration, /create table if not exists listing_launch_plan_import_sheet_stat/);
+  assert.match(migration, /primary key\(import_id, sheet_name\)/);
+  assert.match(migration, /spu_count integer not null default 0/);
+  assert.doesNotMatch(migration, /drop table|alter table listing_launch_plan_row/i);
+});
+
+test("listing launch plan service maintains summaries transactionally and lists from cached latest SPUs", async () => {
+  const service = await readFile(files.service, "utf8");
+  const importTransaction = service.slice(
+    service.indexOf("export function importListingLaunchPlanSheets"),
+    service.indexOf("export async function importListingLaunchPlanSheetsInChunks"),
+  );
+  const listRows = service.slice(service.indexOf("export function listListingLaunchPlanRows"));
+
+  assert.match(service, /function refreshListingLaunchPlanSummaries\(db: SyncPostgresDatabase, importId: number\)/);
+  assert.match(importTransaction, /insertRowsInBatches[\s\S]*refreshListingLaunchPlanSummaries\(db, id\)/);
+  assert.match(service, /on conflict \(spu_code\) do update[\s\S]*where listing_launch_plan_spu_latest\.import_id < excluded\.import_id/);
+  assert.match(service, /insert into listing_launch_plan_import_sheet_stat/);
+  assert.match(listRows, /listing_launch_plan_spu_latest latest/);
+  assert.doesNotMatch(listRows, /select spu_code, max\(import_id\) as import_id/);
+  assert.match(service, /afterSpuCode\?: string \| null/);
+  assert.match(service, /afterRowId\?: unknown/);
+  assert.match(listRows, /nextCursor/);
+  assert.match(listRows, /\(row\.spu_code, row\.id\) > \(\?, \?\)/);
+  assert.match(service, /LISTING_LAUNCH_PLAN_COUNT_CACHE_MS = 15_000/);
+});
+
 test("listing launch plan API and page expose server-side upload and parsed row browsing", async () => {
   const [server, route, service, bulkWriter, importJobService, router, sidebar, page, draftRoute, draftService, draftListPage] = await Promise.all([
     readFile(files.server, "utf8"),
@@ -78,9 +117,9 @@ test("listing launch plan API and page expose server-side upload and parsed row 
   assert.match(bulkWriter, /insert into \$\{spec\.table\}/);
   assert.match(bulkWriter, /listing_launch_plan_row/);
   assert.match(service, /export function listListingLaunchPlanRows/);
-  assert.match(service, /max\(import_id\) as import_id/);
-  assert.match(service, /latest\.spu_code = row\.spu_code/);
-  assert.match(service, /latest\.import_id = row\.import_id/);
+  assert.match(service, /listing_launch_plan_spu_latest latest/);
+  assert.match(service, /latest\.row_id = row\.id/);
+  assert.match(service, /export function listListingLaunchPlanImports/);
   assert.match(service, /export function listListingLaunchPlanImports/);
   assert.match(importJobService, /readSpreadsheetSheetsFromFile/);
   assert.match(importJobService, /importProductArchiveSourceRows/);
@@ -108,7 +147,11 @@ test("listing launch plan API and page expose server-side upload and parsed row 
   assert.match(page, /openTaskCenter/);
   assert.match(page, /listing_launch_plan_import/);
   assert.match(page, /\/listing-launch-plans\/rows/);
-  assert.match(page, /ServerPagination/);
+  assert.match(page, /afterSpuCode/);
+  assert.match(page, /afterRowId/);
+  assert.match(page, /nextCursor/);
+  assert.match(page, /CursorPagination/);
+  assert.doesNotMatch(page, /ServerPagination/);
   assert.match(page, /官方发布类目/);
   assert.match(page, /款号、款色、类目/);
 
@@ -117,6 +160,24 @@ test("listing launch plan API and page expose server-side upload and parsed row 
   assert.match(draftRoute, /refreshProductArchiveDraftsFromSourceBatch/);
   assert.match(draftListPage, /FormData/);
   assert.doesNotMatch(draftListPage, /readSpreadsheetWorkbook/);
+});
+
+test("listing launch plan route accepts cursor params and frontend avoids broad draft invalidation", async () => {
+  const [route, page, draftListPage] = await Promise.all([
+    readFile(files.route, "utf8"),
+    readFile(files.page, "utf8"),
+    readFile(files.draftListPage, "utf8"),
+  ]);
+
+  assert.match(route, /afterSpuCode: c\.req\.query\("afterSpuCode"\)/);
+  assert.match(route, /afterRowId: c\.req\.query\("afterRowId"\)/);
+  assert.match(page, /setCursorStack/);
+  assert.match(page, /encodeURIComponent\(pagination\.afterSpuCode/);
+  assert.match(page, /queryClient\.invalidateQueries\(\{ queryKey: \["listing-launch-plan-rows"\] \}\)/);
+  assert.doesNotMatch(page, /queryClient\.invalidateQueries\(\{ queryKey: \["product-archive-drafts"\] \}\)/);
+  assert.match(draftListPage, /refetchDraftQueries/);
+  assert.match(draftListPage, /predicate: \(query\) => query\.queryKey\[0\] === "product-archive-drafts"/);
+  assert.match(draftListPage, /query\.queryKey\.length !== 2/);
 });
 
 test("draft source import refreshes existing drafts after launch plan or copywriting uploads", async () => {

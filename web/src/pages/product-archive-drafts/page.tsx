@@ -2434,6 +2434,12 @@ export default function ProductArchiveDraftsPage() {
     return (trades.data?.items ?? []).find((trade) => trade.trade_id === selectedTradeId) ?? null
   }, [selectedTradeId, trades.data?.items])
 
+  function refetchDraftQueries() {
+    return queryClient.invalidateQueries({
+      predicate: (query) => query.queryKey[0] === "product-archive-drafts" && query.queryKey.length !== 2,
+    })
+  }
+
   const summary = useMemo(() => {
     const items = drafts.data?.items ?? []
     return {
@@ -2503,7 +2509,7 @@ export default function ProductArchiveDraftsPage() {
     } else {
       toast.success("深绘建档工作流已完成")
     }
-    queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    refetchDraftQueries()
     queryClient.invalidateQueries({ queryKey: ["listing-launch-plan-rows"] })
     queryClient.invalidateQueries({ queryKey: ["product-archive-draft-batch-job"] })
   }, [queryClient, trackedWorkflowJob])
@@ -2546,7 +2552,7 @@ export default function ProductArchiveDraftsPage() {
     ))
     if (completedOcrTasks.length === 0) return
     for (const task of completedOcrTasks) refreshedOcrJobIds.current.add(task.id)
-    queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    refetchDraftQueries()
   }, [queryClient, tasks])
 
   useEffect(() => {
@@ -2557,7 +2563,7 @@ export default function ProductArchiveDraftsPage() {
     ))
     if (completedAiFillTasks.length === 0) return
     for (const task of completedAiFillTasks) refreshedAiFillJobIds.current.add(task.id)
-    queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    refetchDraftQueries()
   }, [queryClient, tasks])
 
   useEffect(() => {
@@ -2568,7 +2574,7 @@ export default function ProductArchiveDraftsPage() {
     ))
     if (completedPrecheckTasks.length === 0) return
     for (const task of completedPrecheckTasks) refreshedPrecheckJobIds.current.add(task.id)
-    queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    refetchDraftQueries()
   }, [queryClient, tasks])
 
   useEffect(() => {
@@ -2579,7 +2585,7 @@ export default function ProductArchiveDraftsPage() {
     ))
     if (completedPublishTasks.length === 0) return
     for (const task of completedPublishTasks) refreshedPublishJobIds.current.add(task.id)
-    queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    refetchDraftQueries()
   }, [queryClient, tasks])
 
   const syncMdmAndCreateBatch = useMutation({
@@ -2630,7 +2636,7 @@ export default function ProductArchiveDraftsPage() {
       toast.success(
         `导入标准文案表完成：${formatNumber(result.insertedRowCount)} / ${formatNumber(result.inputRowCount)} 行${latestJob ? "，缺失草稿已自动同步" : ""}`,
       )
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+      refetchDraftQueries()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "导入标准文案表失败")
@@ -2646,7 +2652,7 @@ export default function ProductArchiveDraftsPage() {
     },
     onSuccess: (result) => {
       toast.success(`导入尺码表完成：${formatNumber(result.insertedRowCount)} / ${formatNumber(result.inputRowCount)} 行，已刷新对应草稿`)
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+      refetchDraftQueries()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "导入尺码表失败")
@@ -2738,7 +2744,7 @@ export default function ProductArchiveDraftsPage() {
       setOcrScmSupplementFile(null)
       setOcrPreview(null)
       setOcrOverwriteExisting(false)
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+      refetchDraftQueries()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "写入吊牌/洗唛/平铺图字段失败")
@@ -2790,7 +2796,7 @@ export default function ProductArchiveDraftsPage() {
       setLaunchPlanFile(null)
       setSizeChartFile(null)
       setSkipLaunchPlan(false)
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+      refetchDraftQueries()
     },
   })
 
@@ -2873,7 +2879,7 @@ export default function ProductArchiveDraftsPage() {
       setSelectedTradeId(null)
       setTradeSearch("")
       setQuickFieldValues({})
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+      refetchDraftQueries()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "应用类目失败")
@@ -2900,7 +2906,7 @@ export default function ProductArchiveDraftsPage() {
           return next
         })
       }
-      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+      refetchDraftQueries()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "保存字段失败")
@@ -2919,7 +2925,7 @@ export default function ProductArchiveDraftsPage() {
       if ((drafts.data?.items.length ?? 0) <= 1 && pagination.offset > 0) {
         setPagination((current) => ({ ...current, offset: Math.max(0, current.offset - current.limit) }))
       }
-      await queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+      await refetchDraftQueries()
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "删除建档草稿失败")
@@ -2928,7 +2934,7 @@ export default function ProductArchiveDraftsPage() {
 
   useEffect(() => {
     if (trackedJob?.status !== "completed") return
-    void queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    void refetchDraftQueries()
   }, [trackedJob?.status, queryClient])
 
   function toggleDraft(draftId: number, checked: boolean | "indeterminate") {

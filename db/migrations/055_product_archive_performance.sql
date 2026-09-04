@@ -70,3 +70,24 @@ create table if not exists product_archive_sync_negative_cache (
 
 create index if not exists idx_product_archive_sync_negative_cache_expiry
   on product_archive_sync_negative_cache(expires_at);
+
+create table if not exists listing_launch_plan_spu_latest (
+  spu_code text primary key,
+  import_id bigint not null references listing_launch_plan_import(id) on delete cascade,
+  row_id bigint not null references listing_launch_plan_row(id) on delete cascade,
+  sheet_name text not null,
+  row_count integer not null default 1,
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_listing_launch_plan_spu_latest_import
+  on listing_launch_plan_spu_latest(import_id desc, spu_code);
+
+create table if not exists listing_launch_plan_import_sheet_stat (
+  import_id bigint not null references listing_launch_plan_import(id) on delete cascade,
+  sheet_name text not null,
+  row_count integer not null default 0,
+  spu_count integer not null default 0,
+  updated_at timestamptz not null default now(),
+  primary key(import_id, sheet_name)
+);
