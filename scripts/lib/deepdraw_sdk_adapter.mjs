@@ -308,6 +308,24 @@ function normalizeMerchantSkuField(value, sizeValues = []) {
   return output;
 }
 
+function normalizeDouyinMaterialFieldValue(value) {
+  const text = stringValue(value);
+  if (!text) return value;
+
+  // This field is exposed as TEXT by the resource API, but the DeepDraw
+  // editor decodes its content as a JSON array of material-percentage rows.
+  // A bare "聚酯纤维,100" is retained by the API yet renders as empty in the UI.
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
+      return JSON.stringify(parsed.map((item) => item.trim()).filter(Boolean));
+    }
+  } catch {
+    // Local construction uses semicolon-delimited rows; encode them below.
+  }
+  return JSON.stringify(semicolonValues(text));
+}
+
 const DEEPDRAW_MULTI_PLATFORM_SIZE_NAMES = new Map([
   ["京东", "京东"],
   ["jd", "京东"],
@@ -670,7 +688,23 @@ function semicolonValues(value) {
 }
 
 function colorAliases(value) {
-  return semicolonValues(value).flatMap((item) => item.split(/[,，]/).map((part) => part.trim()).filter(Boolean));
+  return semicolonValues(value).flatMap((item) => item
+    .split(/[,，]/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .flatMap((part) => colorAliasVariants(part)));
+}
+
+function colorAliasVariants(value) {
+  const alias = stringValue(value);
+  if (!alias) return [];
+
+  // Down garments deliberately add the filling to a color display value (for
+  // example, "浅灰20047-白鸭绒").  SKU source colors retain the original
+  // color code, so use the undecorated code only for duplicate detection.
+  // Keep the decorated value itself in the request sent to DeepDraw.
+  const undecorated = alias.replace(/[\-－—]\s*(?:白|灰)?(?:鸭|鹅)绒\s*$/u, "").trim();
+  return uniqueValues([alias, undecorated]);
 }
 
 function hostValue(baseUrl) {
@@ -1260,6 +1294,8 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
             preserveStructuredSizeRowKeysForProbe: payload.preserveStructuredSizeRowKeysForProbe,
             sizeRemarks,
           })
+        : key === compactKey("抖音面料材质")
+          ? normalizeDouyinMaterialFieldValue(value)
         : key === compactKey("所在地")
           ? normalizeDeepdrawLocation(value)
         : key === compactKey("售后服务承诺")

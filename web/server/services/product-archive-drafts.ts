@@ -1113,6 +1113,13 @@ export function alignProductArchivePayloadSizeFieldValue(fieldName: unknown, val
 function baseColorName(value: unknown) {
   const text = stringValue(value)
   if (/卡其|贝壳卡|沙卡|卡色/.test(text)) return "卡其"
+  // Keep the shade when the SKU color already names one of DeepDraw's
+  // standard gray options.  The generic gray fallback below only checks the
+  // first character of its option ("灰"), which previously changed
+  // "浅灰20047" to "灰色,浅灰20047" in free-text color fields.
+  if (text.includes("浅灰")) return "浅灰"
+  if (text.includes("中灰")) return "中灰"
+  if (text.includes("深灰")) return "深灰"
   if (text.includes("粉")) return "粉红"
   const colors = ["黑色", "白色", "红色", "蓝色", "绿色", "黄色", "紫色", "灰色", "棕色", "橙色"]
   for (const color of colors) {
@@ -1793,12 +1800,23 @@ function isProductArchiveTemplateMetadataBlankField(
     || (key === "划线价" && platforms.size === 1 && platforms.has("YOUZAN"))
 }
 
-function isProductArchiveVipUsageSceneField(fieldName: unknown, templatePlatform: unknown) {
-  if (!isProductArchiveVipPlatform(templatePlatform)) return false
+function isProductArchiveVipUsageSceneField(
+  fieldName: unknown,
+  templatePlatform: unknown,
+  templateOptions: unknown[] = [],
+) {
   const key = businessRuleFieldKey(fieldName)
-  return key === "适用场景"
+  const usageSceneField = key === "适用场景"
     || key === "适用场景多选"
     || /^唯品(?:会)?适用场景(?:多选)?$/.test(key)
+  if (!usageSceneField) return false
+  if (isProductArchiveVipPlatform(templatePlatform)) return true
+  // Some DeepDraw templates expose the feedback-tracked field simply as
+  // “适用场景” and currently label it TAOBAO/TMALL even though its enum is the
+  // shared VIP scene set. Require its exact "日常" option before applying the
+  // default, so unrelated usage-scene fields remain untouched.
+  return (key === "适用场景" || key === "适用场景多选")
+    && arrayValue(templateOptions).some((option) => stringValue(recordValue(option).value ?? option) === "日常")
 }
 
 function isProductArchiveVipApparelWarmTipField(
@@ -3071,6 +3089,26 @@ function washlabelOcrFillerEvidence(fields: JsonRecord[]) {
     .filter((evidence): evidence is { names: string[]; metadata: string } => Boolean(evidence))
 }
 
+function copywritingWashlabelFillerEvidence(sourceRows: JsonRecord[]) {
+  return sourceRowJsonByType(sourceRows, "copywriting")
+    .map((row) => {
+      // Standard copywriting sheets carry the wash-label composition in the
+      // same field as the local OCR result. It is a fallback only: live OCR
+      // evidence remains the primary source whenever it recognizes a filler.
+      const composition = stringValue(row.面料成分 ?? row.材质成分)
+      const names = exactDownColorFillerNamesFromText(composition)
+      if (!names.length) return null
+      const metadata = [
+        row.颜色名称,
+        row.款色,
+        row.颜色,
+        composition,
+      ].map(stringValue).filter(Boolean).join("\n")
+      return { names, metadata }
+    })
+    .filter((evidence): evidence is { names: string[]; metadata: string } => Boolean(evidence))
+}
+
 function productArchiveColorEvidenceTokens(value: unknown) {
   const text = stringValue(value)
   const parts = text.split(/[,，]/).map((part) => part.trim()).filter(Boolean)
@@ -3081,8 +3119,10 @@ function productArchiveColorEvidenceTokens(value: unknown) {
   return uniqueTextValues([text, ...parts, aliasWithoutFiller, code, name].filter((token) => token.length >= 2))
 }
 
-function washlabelDownColorFiller(color: unknown, fields: JsonRecord[]) {
-  const evidence = washlabelOcrFillerEvidence(fields)
+function downColorFillerFromEvidence(
+  color: unknown,
+  evidence: Array<{ names: string[]; metadata: string }>,
+) {
   if (!evidence.length) return ""
   const tokens = productArchiveColorEvidenceTokens(color)
   const colorMatched = evidence.filter((item) => tokens.some((token) => item.metadata.includes(token)))
@@ -3090,6 +3130,16 @@ function washlabelDownColorFiller(color: unknown, fields: JsonRecord[]) {
   if (colorMatched.length > 0 && colorNames.length === 1) return colorNames[0]
   const allNames = uniqueTextValues(evidence.flatMap((item) => item.names))
   return allNames.length === 1 ? allNames[0] : ""
+}
+
+function washlabelDownColorFiller(color: unknown, fields: JsonRecord[], sourceRows: JsonRecord[] = []) {
+  const ocrEvidence = washlabelOcrFillerEvidence(fields)
+  // OCR is authoritative when it has a usable filler. Only fall back to the
+  // standard copywriting wash-label when OCR did not recognize one.
+  return downColorFillerFromEvidence(color, ocrEvidence)
+    || (!ocrEvidence.length
+      ? downColorFillerFromEvidence(color, copywritingWashlabelFillerEvidence(sourceRows))
+      : "")
 }
 
 function appendDownFillerToColorValue(value: unknown, filler: string) {
@@ -3242,7 +3292,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   const sourceRows = activeProductArchiveSourceRows(input.sourceRows ?? [])
   const shoeProduct = isShoeProduct(input.spu, sourceRows)
   const apparelProduct = isApparelProduct(input.spu, sourceRows)
-  if (isProductArchiveVipUsageSceneField(fieldName, input.templatePlatform)) {
+  if (!shoeProduct && isProductArchiveVipUsageSceneField(fieldName, input.templatePlatform, input.templateOptions ?? [])) {
     return vipUsageSceneValue(input.templateOptions ?? [])
   }
   if (isProductArchiveBusinessBlankField(fieldName, input.spu, sourceRows, input.templatePlatform, input.templateField)) return ""
@@ -3384,7 +3434,8 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (apparelProduct && ["里料", "里料成分", "里料材质", "内里材质"].includes(key)) {
     return liningCompositionText(sourceRows)
   }
-  if (key === "面料" || key === "材质" || key === "面料俗称" || key === "抖音面料材质") {
+  if (key === "抖音面料材质") return materialCompositionValue(sourceRows)
+  if (key === "面料" || key === "材质" || key === "面料俗称") {
     return materialSummaryValue(sourceRows, fieldName)
   }
   if (key === "上市时间" || key === "上市时间文本") return shoeSeasonValue(input.spu, sourceRows)
@@ -3549,7 +3600,10 @@ export function buildProductArchiveMdmDerivedFieldValue(fieldName: string, input
   if ((shoeProduct || apparelProduct) && key === "价格区间") {
     const price = productArchiveListPriceText(input.spu)
     return price
-      ? { valueText: "", valueJson: { title: "购买数量,产品单价（元）", 1: `1,${price}` } }
+      // DeepDraw's 1688 price-range editor expects one colon-delimited row,
+      // not a JSON map. Maps are persisted as Java's "{1=...}" text and
+      // therefore fail the positive-integer validation for purchase quantity.
+      ? { valueText: `1:${price}`, valueJson: {} }
       : { valueText: "", valueJson: {} }
   }
   if (key === "上市时间") {
@@ -3558,7 +3612,12 @@ export function buildProductArchiveMdmDerivedFieldValue(fieldName: string, input
   if (key === "颜色" || key === "颜色文本" || key === "颜色名称文本") {
     const values = input.skus.map((sku) => {
       const color = deepdrawColorValue(sku.color_name)
-      const filler = downJacketProduct ? washlabelDownColorFiller(sku.color_name, input.existingFields ?? []) : ""
+      // The down-filler suffix is a display convention for the structured
+      // color field only. Text color fields remain ordinary SKU colors unless
+      // a template explicitly defines another rule.
+      const filler = key === "颜色" && downJacketProduct
+        ? washlabelDownColorFiller(sku.color_name, input.existingFields ?? [], input.sourceRows ?? [])
+        : ""
       return filler ? appendDownFillerToColorValue(color, filler) : color
     })
     return { valueText: uniqueTextValues(values).join(";"), valueJson: {} }
@@ -6812,7 +6871,10 @@ function readSourceValue(spu: JsonRecord, rule: JsonRecord, sourceRows: JsonReco
     (isApparelProduct(spu, sourceRows) || isShoeProduct(spu, sourceRows))
     && PRODUCT_ARCHIVE_PLATFORM_LIST_PRICE_KEYS.has(shoeKey)
   ) return derived
-  if (isProductArchiveVipUsageSceneField(fieldName, input.templatePlatform)) return derived
+  if (
+    isApparelProduct(spu, sourceRows)
+    && isProductArchiveVipUsageSceneField(fieldName, input.templatePlatform, input.templateOptions ?? [])
+  ) return derived
   if (
     isApparelProduct(spu, sourceRows)
     && derived
@@ -7470,10 +7532,29 @@ function copywritingPopularElementValue(sourceRows: JsonRecord[]) {
 }
 
 export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, value: unknown, options: unknown[]) {
-  const text = stringValue(value)
+  const sourceText = stringValue(value)
   const key = compactFieldKey(fieldName)
+  const liningField = [
+    "里料",
+    "里料成分",
+    "里料材质",
+    "内里材质",
+    "里料材质多选",
+    "内里材质多选",
+    "里料成分含量",
+    "里料成分含量多选",
+    "里料材质成分含量",
+    "里料材质成分含量多选",
+  ].includes(key)
+  // OCR composition normally contains the main fabric, lining, and filler in
+  // one block. Lining fields must use only their labelled section: otherwise
+  // a down filler such as “白鸭绒” can be mistaken for a fleece lining.
+  const text = liningField
+    ? sectionTextFromMaterialText(sourceText, ["帽里料", "帽里", "里料", "衬里"]) || sourceText
+    : sourceText
   if (key === "天猫导购标题") return normalizeTmallGuideTitleJsonValue(text)
   if (key === "材质成分文本" || key === "面料成分文本" || key === "成分含量文本") return text
+  if (key === "抖音面料材质") return normalizeMaterialCompositionValue(text, options)
   if (!text || !options.length) return text
   if (key === "主图4样式") {
     return pickOption(options, [(option) => /225/.test(option)]) || text
@@ -12720,6 +12801,9 @@ export function shouldPreserveProductArchiveDeepdrawResourceFieldValue(fieldName
   templateOptions?: unknown[]
 } = {}) {
   if (options.businessBlank) return false
+  // These optional choices require current MDM/compliance evidence or a
+  // manual override. Do not resurrect a stale value from a DeepDraw readback.
+  if (["是否婴童", "25服装母婴标准"].includes(businessRuleFieldKey(fieldName))) return false
   if (stringValue(field.source_type) !== "deepdraw_resource") return false
   if (!isProductArchiveDeepdrawResourcePreservableScalarFieldName(fieldName)) return false
   const valueText = stringValue(field.value_text)

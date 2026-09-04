@@ -3802,7 +3802,7 @@ test("product archive service derives core sales fields from MDM master data", a
 
 test("product archive appends the full washlabel down filler to down-jacket color aliases", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
-  const result = service.buildProductArchiveMdmDerivedFieldValue("颜色", {
+  const input = {
     spu: {
       spu_code: "202426107128",
       product_line_name: "中童服装",
@@ -3824,9 +3824,14 @@ test("product archive appends the full washlabel down filler to down-jacket colo
       source_type: "washlabel_ocr",
       value_json: {},
     }],
-  });
+  };
+  const result = service.buildProductArchiveMdmDerivedFieldValue("颜色", input);
 
-  assert.equal(result.valueText, "灰色,浅灰20047-白鸭绒;黑色,黑色90001-白鸭绒");
+  assert.equal(result.valueText, "浅灰,浅灰20047-白鸭绒;黑色,黑色90001-白鸭绒");
+  assert.equal(
+    service.buildProductArchiveMdmDerivedFieldValue("颜色(文本)", input).valueText,
+    "浅灰,浅灰20047;黑色,黑色90001",
+  );
 });
 
 test("product archive preserves the exact duck and goose filler name recognized from the washlabel", async () => {
@@ -3849,11 +3854,11 @@ test("product archive preserves the exact duck and goose filler name recognized 
       }],
     });
 
-    assert.equal(result.valueText, `灰色,浅灰20047-${filler}`);
+    assert.equal(result.valueText, `浅灰,浅灰20047-${filler}`);
   }
 });
 
-test("product archive does not append a filler without washlabel OCR evidence", async () => {
+test("product archive falls back to the standard copywriting washlabel when OCR cannot recognize a filler", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const result = service.buildProductArchiveMdmDerivedFieldValue("颜色", {
     spu: {
@@ -3869,7 +3874,31 @@ test("product archive does not append a filler without washlabel OCR evidence", 
     skus: [{ color_name: "浅灰20047" }],
   });
 
-  assert.equal(result.valueText, "灰色,浅灰20047");
+  assert.equal(result.valueText, "浅灰,浅灰20047-白鸭绒");
+});
+
+test("product archive keeps recognized washlabel OCR filler above the standard copywriting fallback", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const result = service.buildProductArchiveMdmDerivedFieldValue("颜色", {
+    spu: {
+      spu_code: "202426107128",
+      product_line_name: "中童服装",
+      subclass_name: "羽绒服",
+    },
+    sourceRows: [{
+      source_type: "copywriting",
+      row_json: { "面料成分": "填充物:白鸭绒" },
+    }],
+    existingFields: [{
+      field_name: "成分含量(文本)",
+      value_text: "填充物:灰鸭绒",
+      source_type: "washlabel_ocr",
+      value_json: {},
+    }],
+    skus: [{ color_name: "浅灰20047" }],
+  });
+
+  assert.equal(result.valueText, "浅灰,浅灰20047-灰鸭绒");
 });
 
 test("product archive does not append a washlabel filler to non-down apparel colors", async () => {
@@ -3890,7 +3919,7 @@ test("product archive does not append a washlabel filler to non-down apparel col
     }],
   });
 
-  assert.equal(result.valueText, "灰色,浅灰20047");
+  assert.equal(result.valueText, "浅灰,浅灰20047");
 });
 
 test("product archive service derives DeepDraw size-chart fields from PLM source rows", async () => {
@@ -4217,6 +4246,16 @@ test("field rebuild keeps trusted DeepDraw resource scalar values when rules can
   assert.equal(service.shouldPreserveProductArchiveDeepdrawResourceFieldValue("尺码表", {
     source_type: "deepdraw_resource",
     value_text: "140cm32g",
+    value_json: {},
+  }), false);
+  assert.equal(service.shouldPreserveProductArchiveDeepdrawResourceFieldValue("是否婴童", {
+    source_type: "deepdraw_resource",
+    value_text: "否",
+    value_json: {},
+  }), false);
+  assert.equal(service.shouldPreserveProductArchiveDeepdrawResourceFieldValue("25服装母婴标准", {
+    source_type: "deepdraw_resource",
+    value_text: "25母婴标准",
     value_json: {},
   }), false);
   assert.equal(service.shouldPreserveProductArchiveDeepdrawResourceFieldValue("小红书商家编码", {
@@ -5582,8 +5621,8 @@ test("product archive service derives remaining field values from launch plan an
     sourceRows,
     skus: [],
   }), {
-    valueText: "",
-    valueJson: { title: "购买数量,产品单价（元）", 1: "1,359" },
+    valueText: "1:359",
+    valueJson: {},
   });
   assert.equal(derive("微信视频小店标题", "内容平台标题"), "【balaOne】巴拉巴拉儿童外套男女2026新秋卡通萌趣满印防护上衣");
   assert.equal(derive("商品详情"), "潮流满印外套，防风防泼水透湿");
@@ -5801,6 +5840,10 @@ test("product archive derives VIP usage scenes from the current VIP template opt
   );
   assert.equal(
     derive("TAOBAO,TMALL", [{ value: "日常" }, { value: "休闲" }]),
+    "日常",
+  );
+  assert.equal(
+    derive("TAOBAO,TMALL", [{ value: "运动" }, { value: "户外" }]),
     "",
   );
   assert.equal(
@@ -7447,6 +7490,11 @@ test("product archive service maps every main-fabric component for 208326105206-
   assert.equal(derive("面料"), "棉混纺");
   assert.equal(derive("材质"), "棉混纺");
   assert.equal(derive("面料俗称", "根据面料成分填主材质"), "棉混纺");
+  assert.equal(derive("抖音面料材质"), "棉,68.4;聚酯纤维,31.6");
+  assert.equal(
+    service.normalizeProductArchiveDeepdrawFieldValue("抖音面料材质", "面料：80%聚酯纤维 20%棉", []),
+    "聚酯纤维,80;棉,20",
+  );
   assert.equal(derive("京东材质成分", "吊牌成分"), "棉,68.4;涤纶(聚酯纤维),31.6");
   assert.equal(derive("材质成分(文本)"), "68.4%棉；31.6%聚酯纤维");
   assert.equal(derive("袖长", ""), "长袖");
@@ -7659,8 +7707,8 @@ test("product archive shoe required fields derive from trusted launch and brand 
     sourceRows,
     skus: [],
   }), {
-    valueText: "",
-    valueJson: { title: "购买数量,产品单价（元）", 1: "1,359" },
+    valueText: "1:359",
+    valueJson: {},
   });
   assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("价格区间", {
     spu: { ...spu, price_tag: 359.9 },
@@ -7675,8 +7723,8 @@ test("product archive shoe required fields derive from trusted launch and brand 
     ],
     skus: [],
   }), {
-    valueText: "",
-    valueJson: { title: "购买数量,产品单价（元）", 1: "1,359.9" },
+    valueText: "1:359.9",
+    valueJson: {},
   });
   assert.equal(derive("专柜价"), "10000");
   assert.equal(derive("是否商场同款"), "否");
@@ -8972,6 +9020,21 @@ test("product archive color field rebuild prefers concrete MDM SKU colors over s
   ]), "黑色,黑色调00399;军绿,军绿40601;粉红,粉红60001");
 });
 
+test("product archive text color preserves the shallow-gray SKU shade", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+
+  assert.deepEqual(service.buildProductArchiveMdmDerivedFieldValue("颜色(文本)", {
+    spu: {},
+    skus: [
+      { color_name: "浅灰20047" },
+      { color_name: "黑色90001" },
+    ],
+  }), {
+    valueText: "浅灰,浅灰20047;黑色,黑色90001",
+    valueJson: {},
+  });
+});
+
 test("product archive draft reference image upload extracts style codes from folder paths", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
@@ -9106,6 +9169,22 @@ test("product archive service normalizes source values into DeepDraw enum option
     { value: "锦纶/尼龙" },
     { value: "聚酯纤维（涤纶）" },
   ]), "锦纶/尼龙");
+  const washlabelComposition = [
+    "面料/挂面:100%聚酯纤维",
+    "里料:100%锦纶",
+    "(配料除外)",
+    "填充物",
+    "大身/袖子:白鸭绒",
+    "绒子含量:90%",
+  ].join("\n");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("里料材质(多选)", washlabelComposition, [
+    { value: "锦纶" },
+    { value: "羊剪绒毛皮革" },
+  ]), "锦纶");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("里料材质成分含量(多选)", washlabelComposition, [
+    { value: "95%及以上" },
+    { value: "81%(含)-90%(含)" },
+  ]), "95%及以上");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("衣门襟", "系扣", [
     { value: "魔术贴" },
     { value: "肩开扣" },
