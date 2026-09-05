@@ -2487,6 +2487,7 @@ test("mutable draft writes keep the row lock and mutation in one transaction", a
   assert.match(submit, /const reusablePreparedBeforeClaim = updateExisting[\s\S]*loadCurrentReusablePreparedProductArchiveDraft\(db, draftId, \{ submitMode \}\)[\s\S]*const claimedDraft = claimProductArchiveDraftForSubmit/);
   assert.match(submit, /const revalidatedPrepared = revalidatePreparedProductArchiveDraftForClaim\([\s\S]*reusablePreparedBeforeClaim,[\s\S]*claimedDraftUpdatedAt: stringValue\(claimedDraft\.submit_claim_previous_updated_at\)/);
   assert.match(submit, /const prepared = revalidatedPrepared \?\? prepareProductArchiveDraftForSubmit\(db, draftId, \{[\s\S]*claimToken,/);
+  assert.match(submit, /payload = prepared\.payload[\s\S]*attachProductArchiveSubmitDiagnostics\([\s\S]*normalizeProductArchiveSubmitDiagnostics\(recordValue\(prepared\.validation\)\.submitDiagnostics\)/);
 });
 
 test("claimed drafts reject image mutation before any image insert", async () => {
@@ -5165,6 +5166,12 @@ test("product archive create payload keeps only current DeepDraw template fields
   });
   assert.match(fallbackReason, /深绘返回失败/);
   assert.match(fallbackReason, /不属于当前深绘类目的字段：裤长/);
+
+  assert.equal(
+    service.productArchiveFailureReasonWithDiagnostics("504", {}),
+    "504",
+    "a JSON-rehydrated prepared payload can omit non-enumerable diagnostics without hiding the DeepDraw failure",
+  );
 });
 
 test("product archive routes fence prechecks, owned image files, and mutation conflicts", async () => {

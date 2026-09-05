@@ -183,6 +183,38 @@ test("submit_transport_unknown remains unsafe_retry_blocked and is not requeued 
   assert.deepEqual(requeueTargets(finalJob.items), []);
 });
 
+test("publish queue retries a DeepDraw 504 search response before any create request", async () => {
+  const store = createMemoryStore();
+  let submitAttempts = 0;
+  const queue = createProductArchivePublishQueue({
+    store,
+    wait: async () => undefined,
+    getDatabase: () => createFakeDb(),
+    prepareDraftForSubmit: () => ({ payload: {}, validation: { summary: { blocker_count: 0 } } }),
+    submitDraft: async () => {
+      submitAttempts += 1;
+      if (submitAttempts === 1) throw new Error("DeepDraw search failed: 504");
+      return { ok: true, status: "readback_verified" };
+    },
+    runWithSlot: async (run) => await run(new AbortController().signal),
+  });
+
+  const queued = queue.enqueue({
+    targets: [{ draftId: 13, spuCode: "SPU-13" }],
+    actor: null,
+    ipAddress: null,
+    maxAttempts: 2,
+    retryDelayMs: 1,
+    submitMode: "create",
+  });
+  const finalJob = await waitForCompletedJob(queue, queued.id);
+
+  assert.equal(submitAttempts, 2);
+  assert.equal(finalJob.failed_count, 0);
+  assert.equal(finalJob.items[0].attempt_count, 2);
+  assert.equal(finalJob.result.retryAttemptCount, 1);
+});
+
 test("publish queue renews a durable lease while provider submission is still running", async () => {
   const store = createLeasedMemoryStore();
   let resolveSubmission;

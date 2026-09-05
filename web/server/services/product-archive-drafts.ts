@@ -13129,14 +13129,18 @@ function productArchiveSubmitDiagnostics(payload: unknown): ProductArchiveSubmit
   return recordValue(record[PRODUCT_ARCHIVE_SUBMIT_DIAGNOSTICS_KEY]) as ProductArchiveSubmitDiagnostics
 }
 
-function normalizedProductArchiveSubmitDiagnostics(payload: unknown): ProductArchiveSubmitDiagnostics {
-  const current = productArchiveSubmitDiagnostics(payload)
+function normalizeProductArchiveSubmitDiagnostics(value: unknown): ProductArchiveSubmitDiagnostics {
+  const current = recordValue(value)
   return {
     omittedTemplateFieldCount: numberValue(current.omittedTemplateFieldCount) ?? 0,
     omittedTemplateFieldNames: arrayValue(current.omittedTemplateFieldNames).map(stringValue).filter(Boolean),
     issues: arrayValue(current.issues).map(stringValue).filter(Boolean),
-    ...(current.fullUpdateBoundary ? { fullUpdateBoundary: current.fullUpdateBoundary } : {}),
+    ...(current.fullUpdateBoundary ? { fullUpdateBoundary: current.fullUpdateBoundary as ProductArchiveFullUpdateBoundarySummary } : {}),
   }
+}
+
+function normalizedProductArchiveSubmitDiagnostics(payload: unknown): ProductArchiveSubmitDiagnostics {
+  return normalizeProductArchiveSubmitDiagnostics(productArchiveSubmitDiagnostics(payload))
 }
 
 function dateLooksLikeDeepdrawPayloadDate(value: unknown) {
@@ -13174,13 +13178,15 @@ export function productArchivePayloadValidationIssues(payload: JsonRecord) {
   return issues
 }
 
-export function productArchiveFailureReasonWithDiagnostics(reason: string, diagnostics: ProductArchiveSubmitDiagnostics) {
-  const omittedNames = diagnostics.omittedTemplateFieldNames.join("、")
-  const omittedSuffix = diagnostics.omittedTemplateFieldCount > diagnostics.omittedTemplateFieldNames.length ? " 等" : ""
+export function productArchiveFailureReasonWithDiagnostics(reason: string, diagnostics: unknown) {
+  const normalizedDiagnostics = normalizeProductArchiveSubmitDiagnostics(diagnostics)
+  const { omittedTemplateFieldCount, omittedTemplateFieldNames, issues } = normalizedDiagnostics
+  const omittedNames = omittedTemplateFieldNames.join("、")
+  const omittedSuffix = omittedTemplateFieldCount > omittedTemplateFieldNames.length ? " 等" : ""
   const details = [
-    ...diagnostics.issues,
-    diagnostics.omittedTemplateFieldCount > 0
-      ? `已在提交前忽略 ${diagnostics.omittedTemplateFieldCount} 个不属于当前深绘类目的字段：${omittedNames}${omittedSuffix}`
+    ...issues,
+    omittedTemplateFieldCount > 0
+      ? `已在提交前忽略 ${omittedTemplateFieldCount} 个不属于当前深绘类目的字段：${omittedNames}${omittedSuffix}`
       : "",
   ].filter(Boolean)
   if (details.length === 0) return reason
@@ -14488,6 +14494,14 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
         })
       validation = prepared.validation as unknown as ReturnType<typeof validateProductArchiveDraft>
       payload = prepared.payload as ReturnType<typeof productPayload>
+      // Prepared payloads are persisted as JSON, which strips the non-enumerable
+      // diagnostics attached to newly-built payloads. Restore them from the
+      // persisted validation snapshot before formatting or recording provider
+      // failures, so the original DeepDraw reason remains visible.
+      attachProductArchiveSubmitDiagnostics(
+        payload as unknown as JsonRecord,
+        normalizeProductArchiveSubmitDiagnostics(recordValue(prepared.validation).submitDiagnostics),
+      )
     }
   } catch (error) {
     restoreProductArchiveDraftAfterSubmitPreparationFailure(

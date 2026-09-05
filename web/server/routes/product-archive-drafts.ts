@@ -1703,6 +1703,11 @@ async function recordProductArchivePublishSpan<T>(
 function publishErrorIsRetryable(error: unknown) {
   const message = errorMessage(error)
   if (/草稿存在阻断|请选择|本地未找到|不存在|缺少|无效|不能提交|重复|duplicate/i.test(message)) return false
+  // Duplicate lookup happens before any create/update request and restores the
+  // submit claim when it fails, so an upstream 5xx at this stage is safe to
+  // retry even though the provider result currently formats its status as
+  // "DeepDraw search failed: 504" instead of "HTTP 504".
+  if (/^DeepDraw search failed:\s*(?:HTTP\s*)?(408|425|429|500|502|503|504)\b/i.test(message)) return true
   return isRetryableProductArchiveSyncError(error)
 }
 
