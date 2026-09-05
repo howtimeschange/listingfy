@@ -411,7 +411,7 @@ test("buildDeepdrawSdkProductInput keeps template color aliases instead of appen
   assert.equal(input.product.fields["颜色"], "扩展选项,浅驼50002;扩展选项,胡桃棕51006");
 });
 
-test("buildDeepdrawSdkProductInput treats down-decorated color aliases as their SKU source colors", () => {
+test("buildDeepdrawSdkProductInput aligns merchant SKU color keys with down-decorated sales colors", () => {
   const input = buildDeepdrawSdkProductInput({
     config: {
       baseUrl: "http://open.deepdraw.cn",
@@ -434,6 +434,45 @@ test("buildDeepdrawSdkProductInput treats down-decorated color aliases as their 
   });
 
   assert.equal(input.product.fields["颜色"], "浅灰,浅灰20047-白鸭绒;黑色,黑色90001-白鸭绒");
+  assert.deepEqual(Object.keys(input.product.fields["商家SKU"]).sort(), [
+    "title",
+    "浅灰20047-白鸭绒",
+    "黑色90001-白鸭绒",
+  ]);
+});
+
+test("buildDeepdrawSdkProductInput aligns existing merchant SKU color keys with sales colors", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {
+      baseUrl: "http://open.deepdraw.cn",
+      appKey: "app-key",
+      appSecret: "app-secret",
+      dopKey: "dop-key",
+    },
+    payload: {
+      code: "202426107009-test",
+      title: "儿童羽绒服",
+      tradeId: "9652",
+      fields: [
+        { name: "颜色", value: "黄色,黄色调00433-白鸭绒" },
+        { name: "尺码", value: "110cm" },
+        {
+          name: "商家SKU",
+          fieldType: "MULTI_TEXT",
+          value: {
+            title: "价格,货号",
+            黄色调00433: { "110cm": "299,202426107009-test00433110" },
+          },
+        },
+      ],
+      skus: [],
+    },
+  });
+
+  assert.deepEqual(input.product.fields["商家SKU"], {
+    title: "价格,货号",
+    "黄色调00433-白鸭绒": { "110cm": "299,202426107009-test00433110" },
+  });
 });
 
 test("buildDeepdrawSdkProductInput encodes Douyin material rows as the UI-required JSON array text", () => {

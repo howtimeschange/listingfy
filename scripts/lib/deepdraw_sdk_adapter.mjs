@@ -287,7 +287,7 @@ function normalizeMerchantSkuRowValue(value, title) {
   return parts.join(",");
 }
 
-function normalizeMerchantSkuField(value, sizeValues = []) {
+function normalizeMerchantSkuField(value, sizeValues = [], saleColorValue = "") {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const output = {};
   const title = stringValue(value.title);
@@ -300,9 +300,10 @@ function normalizeMerchantSkuField(value, sizeValues = []) {
       output[color] = sizeRows;
       continue;
     }
-    output[color] = {};
+    const merchantSkuColor = deepdrawMerchantSkuColorKey(color, saleColorValue);
+    output[merchantSkuColor] ??= {};
     for (const [size, rowValue] of Object.entries(sizeRows)) {
-      output[color][sdkPayloadSizeValue(size, sizeValues)] = normalizeMerchantSkuRowValue(rowValue, title);
+      output[merchantSkuColor][sdkPayloadSizeValue(size, sizeValues)] = normalizeMerchantSkuRowValue(rowValue, title);
     }
   }
   return output;
@@ -653,13 +654,16 @@ function fieldKey(fields, names) {
   return Object.keys(fields).find((key) => wanted.has(compactKey(key)));
 }
 
-function buildMerchantSkuField(payload, skus, dateText, sizeValues = []) {
+function buildMerchantSkuField(payload, skus, dateText, sizeValues = [], saleColorValue = "") {
   const productCode = stringValue(payload.code);
   const retailPrice = asMoneyText(payload.retailPrice);
   const skuDateText = skuLaunchMonthText(dateText);
   const output = { title: SKU_TITLE };
   for (const sku of skus) {
-    const color = stringValue(sku.color ?? sku.colorName ?? sku.color_name);
+    const color = deepdrawMerchantSkuColorKey(
+      sku.color ?? sku.colorName ?? sku.color_name,
+      saleColorValue,
+    );
     const size = sdkPayloadSizeValue(sku.size ?? sku.sizeName ?? sku.size_name, sizeValues);
     if (!color || !size) continue;
     const price = asMoneyText(sku.price, retailPrice);
@@ -705,6 +709,20 @@ function colorAliasVariants(value) {
   // Keep the decorated value itself in the request sent to DeepDraw.
   const undecorated = alias.replace(/[\-－—]\s*(?:白|灰)?(?:鸭|鹅)绒\s*$/u, "").trim();
   return uniqueValues([alias, undecorated]);
+}
+
+function deepdrawMerchantSkuColorKey(value, saleColorValue) {
+  const sourceColor = stringValue(value);
+  if (!sourceColor || !saleColorValue) return sourceColor;
+  const sourceAliases = new Set(colorAliasVariants(sourceColor));
+  for (const choice of semicolonValues(saleColorValue)) {
+    const values = choice.split(/[,，]/).map((part) => part.trim()).filter(Boolean);
+    const merchantSkuColor = values.at(-1) ?? "";
+    if (merchantSkuColor && values.some((part) => colorAliasVariants(part).some((alias) => sourceAliases.has(alias)))) {
+      return merchantSkuColor;
+    }
+  }
+  return sourceColor;
 }
 
 function hostValue(baseUrl) {
@@ -1303,6 +1321,16 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
           : value;
   }
 
+  const merchantSkuFieldKey = fieldKey(fields, ["商家 SKU", "商家SKU"]);
+  const saleColorFieldKey = fieldKey(fields, ["颜色"]);
+  if (merchantSkuFieldKey && saleColorFieldKey) {
+    fields[merchantSkuFieldKey] = normalizeMerchantSkuField(
+      fields[merchantSkuFieldKey],
+      selectedSizeValues,
+      fields[saleColorFieldKey],
+    );
+  }
+
   const dateText = normalizeSdkDateText(
     stringValue(payload.date)
       || stringValue(findPayloadFieldValue(payloadFields, ["内容上市时间", "搜索上市时间", "上市时间"])),
@@ -1323,7 +1351,13 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
       fields["尺码"] = publishedSizeValue;
     }
     if (!fieldKey(fields, ["商家 SKU", "商家SKU"])) {
-      fields["商家SKU"] = buildMerchantSkuField(payload, skus, dateText, selectedSizeValues);
+      fields["商家SKU"] = buildMerchantSkuField(
+        payload,
+        skus,
+        dateText,
+        selectedSizeValues,
+        colorFieldKey ? fields[colorFieldKey] : "",
+      );
     }
   }
 
