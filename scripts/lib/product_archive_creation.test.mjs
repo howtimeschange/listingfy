@@ -13,6 +13,7 @@ const files = {
   sqliteDb: path.join(PROJECT_ROOT, "scripts/lib/sqlite_db.mjs"),
   metadataService: path.join(PROJECT_ROOT, "web/server/services/deepdraw-metadata.ts"),
   draftService: path.join(PROJECT_ROOT, "web/server/services/product-archive-drafts.ts"),
+  preparedDraftService: path.join(PROJECT_ROOT, "web/server/services/product-archive-prepared-draft.ts"),
   draftRoute: path.join(PROJECT_ROOT, "web/server/routes/product-archive-drafts.ts"),
   draftDetailPage: path.join(PROJECT_ROOT, "web/src/pages/product-archive-drafts/[draftId]/page.tsx"),
   metadataRoute: path.join(PROJECT_ROOT, "web/server/routes/deepdraw-metadata.ts"),
@@ -3954,7 +3955,7 @@ test("product archive service derives DeepDraw size-chart fields from PLM source
 
   assert.deepEqual(value.valueJson, {
     title: "尺码,肩宽,袖长,胸围,衣长",
-    "80cm": "80cm,26.5,24.5,66,38",
+    "80cm": "80,26.5,24.5,66,38",
   });
   assert.equal(value.sourceType, "size_chart");
   assert.equal(value.mappings.find((item) => item.targetField === "袖长")?.confidence, "medium");
@@ -3973,7 +3974,7 @@ test("product archive service derives DeepDraw size-chart fields from PLM source
 
   assert.deepEqual(genericValue.valueJson, {
     title: "尺码,身高,衣长,胸围,袖长",
-    "80cm": "80cm,80,33,64,26",
+    "80cm": "80,80,33,64,26",
   });
   assert.equal(genericValue.sourceType, "size_chart");
 
@@ -3987,9 +3988,9 @@ test("product archive service derives DeepDraw size-chart fields from PLM source
     garmentType: "长裤",
   });
   assert.deepEqual(bottomValue.valueJson, {
-    title: "尺码,尺码,身高,体重",
-    "110cm": "110cm,110,110,17",
-    "120cm": "120cm,120,120,20.5",
+    title: "尺码,身高,体重",
+    "110cm": "110,110,17",
+    "120cm": "120,120,20.5",
   });
 
   const multiPlatform = service.buildProductArchiveSizeChartFieldValue({
@@ -4030,8 +4031,8 @@ test("product archive service lets newer size-chart source rows override older d
   });
 
   assert.deepEqual(value.valueJson, {
-    title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
-    "140cm": "140cm,140,51.5,34,88,48.5,140,31",
+    title: "尺码,衣长,肩宽,胸围,袖长,身高,体重",
+    "140cm": "140,51.5,34,88,48.5,140,31",
   });
 });
 
@@ -4048,8 +4049,23 @@ test("product archive payload preserves forced main size-chart columns with blan
     },
   });
   assert.deepEqual(fixedTop, {
-    title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
-    "130cm": "130cm,130,43,,85,61,130,25",
+    title: "尺码,衣长,肩宽,胸围,袖长,身高,体重",
+    "130cm": "130,43,,85,61,130,25",
+  });
+
+  const legacyDuplicateApparelTable = service.productArchivePayloadFieldValue({
+    field_name: "尺码表",
+    field_type: "MULTI_TEXT",
+    required: true,
+    blocking: true,
+    value_json: {
+      title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重",
+      "130cm": "130cm,130,43,,85,61,130,25",
+    },
+  });
+  assert.deepEqual(legacyDuplicateApparelTable, {
+    title: "尺码,衣长,肩宽,胸围,袖长,身高,体重",
+    "130cm": "130,43,,85,61,130,25",
   });
 
   const ordinaryTable = service.productArchivePayloadFieldValue({
@@ -4064,7 +4080,7 @@ test("product archive payload preserves forced main size-chart columns with blan
   });
   assert.deepEqual(ordinaryTable, {
     title: "尺码,衣长,肩宽,胸围",
-    "130cm": "130cm,43,,85",
+    "130cm": "130,43,,85",
   });
 
   const shoeMainTable = service.productArchivePayloadFieldValue({
@@ -4110,6 +4126,11 @@ test("product archive payload preserves forced main size-chart columns with blan
     title: "身高(cm),体重(斤)",
     "130cm": "130,50",
   });
+});
+
+test("prepared product-archive snapshots invalidate after the apparel main-size payload revision", async () => {
+  const preparedDraftService = await readFile(files.preparedDraftService, "utf8");
+  assert.match(preparedDraftService, /PRODUCT_ARCHIVE_PREPARATION_RULESET_REVISION = "2026-09-05-apparel-main-size-row-key-v1"/);
 });
 
 test("shoe main size-chart manual overrides with old foot-length columns are rebuilt by rules", async () => {

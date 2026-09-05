@@ -3845,8 +3845,8 @@ function productArchiveShoeMainSizeChartNeedsRuleRebuild(input: {
 function shouldPreserveProductArchiveFixedMainSizeChartColumns(fieldName: unknown, valueJson: unknown) {
   if (compactFieldKey(fieldName) !== compactFieldKey("尺码表")) return false
   const title = sizeChartTitleOptions(valueJson).join(",")
-  return title === "尺码,尺码,裤长,腰围,臀围,脚口,身高,体重"
-    || title === "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重"
+  return title === "尺码,裤长,腰围,臀围,脚口,身高,体重"
+    || title === "尺码,衣长,肩宽,胸围,袖长,身高,体重"
 }
 
 function productArchiveSizeChartContextText(
@@ -3869,9 +3869,9 @@ function productArchiveFixedMainSizeChartTitleForContext(
 ) {
   if (compactFieldKey(fieldName) !== compactFieldKey("尺码表")) return ""
   const text = productArchiveSizeChartContextText(spu, sourceRows, draft).replace(/\s+/g, "")
-  if (/牛仔(?:裤|长裤|短裤|中裤)/.test(text)) return "尺码,尺码,裤长,腰围,臀围,脚口,身高,体重"
+  if (/牛仔(?:裤|长裤|短裤|中裤)/.test(text)) return "尺码,裤长,腰围,臀围,脚口,身高,体重"
   if (/上装|衣|衫|外套|卫衣|夹克|大衣|马甲|背心|羽绒服|棉服|冲锋衣|防晒服|功能中间层/.test(text)) {
-    return "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重"
+    return "尺码,衣长,肩宽,胸围,袖长,身高,体重"
   }
   return ""
 }
@@ -3997,7 +3997,7 @@ export function isZeroPaddedProductArchiveSizeChartValue(valueJson: unknown) {
   return zeroLikeValues > 0 && meaningfulMeasuredValues === 0
 }
 
-function productArchiveMainSizeChartFirstSizeColumnNeedsDisplayUnit(fieldName: unknown, valueJson: unknown) {
+function productArchiveMainSizeChartFirstSizeColumnNeedsBareValue(fieldName: unknown, valueJson: unknown) {
   if (!isProductArchiveMainSizeChartFieldName(fieldName)) return false
   const titles = sizeChartTitleOptions(valueJson)
   const firstSizeColumnIndex = titles.findIndex((title) => ["尺码", "尺寸"].includes(compactFieldKey(title)))
@@ -4006,12 +4006,12 @@ function productArchiveMainSizeChartFirstSizeColumnNeedsDisplayUnit(fieldName: u
     const expected = deepdrawSizeValue(rawSize)
     if (!/cm$/i.test(expected)) continue
     const value = sizeChartCellValues(rawValues)[firstSizeColumnIndex] ?? ""
-    if (value !== expected) return true
+    if (value !== expected.replace(/cm$/i, "")) return true
   }
   return false
 }
 
-function productArchiveMainSizeChartNeedsApparelDualSizeColumns(input: {
+function productArchiveMainSizeChartHasApparelDuplicateSizeColumns(input: {
   fieldName: unknown
   valueJson: unknown
   spu: JsonRecord
@@ -4023,8 +4023,7 @@ function productArchiveMainSizeChartNeedsApparelDualSizeColumns(input: {
   const genericSizeColumnCount = titles
     .filter((title) => ["尺码", "尺寸"].includes(compactFieldKey(title)))
     .length
-  if (genericSizeColumnCount >= 2) return false
-  return sizeChartDataEntries(input.valueJson).some(([rawSize]) => /cm$/i.test(deepdrawSizeValue(rawSize)))
+  return genericSizeColumnCount >= 2
 }
 
 function isStaleStructuredSizeChartManualOverride(input: {
@@ -4064,8 +4063,8 @@ function isStaleStructuredSizeChartManualOverride(input: {
     spu: input.spu,
     sourceRows: input.sourceRows,
   })) return true
-  if (productArchiveMainSizeChartFirstSizeColumnNeedsDisplayUnit(input.fieldName, valueJson)) return true
-  if (productArchiveMainSizeChartNeedsApparelDualSizeColumns({
+  if (productArchiveMainSizeChartFirstSizeColumnNeedsBareValue(input.fieldName, valueJson)) return true
+  if (productArchiveMainSizeChartHasApparelDuplicateSizeColumns({
     fieldName: input.fieldName,
     valueJson,
     spu: input.spu,
@@ -13021,16 +13020,21 @@ export function productArchivePayloadFieldValue(field: JsonRecord, options: {
     ) return null
     if (hasProductArchiveSizeChartTableValue(jsonValue)) {
       if (!isStructuredProductPayloadField(field)) return null
-      const shoeMainSizeChart = isProductArchiveMainSizeChartFieldName(field.field_name)
+      const mainSizeChart = isProductArchiveMainSizeChartFieldName(field.field_name)
+      const shoeMainSizeChart = mainSizeChart
         && productArchiveSizeChartLooksLikeShoeMainTable(jsonValue)
+      const duplicateApparelMainSizeColumn = mainSizeChart
+        && !shoeMainSizeChart
+        && sizeChartTitleOptions(jsonValue)
+          .filter((title) => ["尺码", "尺寸"].includes(compactFieldKey(title)))
+          .length >= 2
       const cleanedValue = multiPlatformSizeField
         ? jsonValue
         : cleanProductArchiveSizeChartTableValue(jsonValue, {
-          preserveBlankColumns: isProductArchiveMainSizeChartFieldName(field.field_name)
+          preserveBlankColumns: mainSizeChart
             || shouldPreserveProductArchiveFixedMainSizeChartColumns(field.field_name, jsonValue),
-          displaySizeFirstColumn: isProductArchiveMainSizeChartFieldName(field.field_name) && !shoeMainSizeChart,
           displayShoeSizeFirstColumn: shoeMainSizeChart,
-          omitSizeFirstColumn: shoeMainSizeChart,
+          omitSizeFirstColumn: shoeMainSizeChart || duplicateApparelMainSizeColumn,
         })
       return hasProductArchiveSizeChartTableValue(cleanedValue) ? cleanedValue : null
     }

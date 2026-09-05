@@ -370,18 +370,16 @@ function multiPlatformSizeTargetFields() {
 function mainSizeChartTargetFields(rawTargetFields = [], garmentType = "", options = {}) {
   const garmentKey = apparelGarmentKey(garmentType);
   const text = stringValue(garmentType).replace(/\s+/g, "");
-  if (/牛仔(?:裤|长裤|短裤|中裤)/.test(text)) return ["尺码", "尺码", "裤长", "腰围", "臀围", "脚口", "身高", "体重"];
-  if (garmentKey === "top") return ["尺码", "尺码", "衣长", "肩宽", "胸围", "袖长", "身高", "体重"];
+  if (/牛仔(?:裤|长裤|短裤|中裤)/.test(text)) return ["尺码", "裤长", "腰围", "臀围", "脚口", "身高", "体重"];
+  if (garmentKey === "top") return ["尺码", "衣长", "肩宽", "胸围", "袖长", "身高", "体重"];
   if (garmentKey === "bottom") {
     return [
-      "尺码",
       "尺码",
       ...rawTargetFields.filter((field) => !isGenericBareSizeTargetFieldName(field)),
     ];
   }
   if (options.apparelProduct) {
     return [
-      "尺码",
       "尺码",
       ...rawTargetFields.filter((field) => !isGenericBareSizeTargetFieldName(field)),
     ];
@@ -586,9 +584,9 @@ function derivedValueForMapping(mapping, size, context = {}) {
     return balabalaApparelRecommendedSize({ size, gender: context.gender, garmentType: "下装" });
   }
   if (isGenericSizeTargetField(mapping?.targetField)) {
-    if (context.mainSizeTableField && Number(context.sizeColumnOrdinal ?? 0) === 0) {
-      return normalizeDeepdrawSize(size);
-    }
+    // The object key is the unit-bearing row label (for example `120cm`).
+    // A main-table body column therefore carries only the bare size value.
+    if (context.mainSizeTableField) return sizeLabelNumber(size) || stringValue(size);
     return sizeLabelNumber(size);
   }
   if (targetKey === compactKey("身高") && sourceKey === compactKey("尺码")) {

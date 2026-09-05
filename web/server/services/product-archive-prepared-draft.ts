@@ -33,7 +33,7 @@ const DEFAULT_TTL_MS = 30 * 60 * 1000
 // Bump this when deterministic payload-building rules change. Prepared drafts
 // cache the resulting external payload, so source-code-only fixes otherwise
 // leave a still-valid snapshot carrying the old field values.
-const PRODUCT_ARCHIVE_PREPARATION_RULESET_REVISION = "2026-09-05-price-range-and-optional-maternity-v1"
+const PRODUCT_ARCHIVE_PREPARATION_RULESET_REVISION = "2026-09-05-apparel-main-size-row-key-v1"
 
 function stringValue(value: unknown) {
   return value == null ? "" : String(value).trim()
