@@ -166,7 +166,7 @@ test("SHEIN platform products UI uses the same permission keys as its API action
   assert.match(page, /disabled=\{!canSync \|\| syncStatusMutation\.isPending\}/);
   assert.match(page, /disabled=\{!canSync \|\| regressionLogMutation\.isPending\}/);
 
-  assert.match(page, /disabled=\{!canPublish \|\| updateCostMutation\.isPending\}/);
+  assert.match(page, /disabled=\{!canPublish \|\| updateCostMutation\.isPending \|\| Boolean\(costCurrencyValidation\)\}/);
   assert.match(page, /disabled=\{!canPublish \|\| retryOperationMutation\.isPending\}/);
   assert.match(page, /disabled=\{!canPublish \|\| revokeMutation\.isPending\}/);
   assert.match(page, /disabled=\{!canPublish \|\| fieldEditMutation\.isPending/);

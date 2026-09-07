@@ -642,6 +642,155 @@ function insertProductSaleSite(
   )
 }
 
+function activeSaleSiteNamesForProduct(db: SyncPostgresDatabase, productId: number) {
+  const rows = db.prepare(`
+    select
+      site_abbr,
+      max(nullif(site_name, '')) as site_name
+    from shein_platform_product_sale_site
+    where product_id = ?
+      and shelf_status = 1
+    group by site_abbr
+  `).all(productId) as JsonRecord[]
+  return new Map(rows
+    .map((row) => [stringValue(row.site_abbr), stringValue(row.site_name)] as const)
+    .filter(([siteAbbr]) => siteAbbr))
+}
+
+function supportsPostgresRowLocks(db: SyncPostgresDatabase) {
+  return typeof (db as unknown as { queryResult?: unknown }).queryResult === "function"
+}
+
+function lockProductForDetailPersist(
+  db: SyncPostgresDatabase,
+  context: SheinPlatformContext,
+  spuName: string,
+) {
+  ensureProduct(db, context, spuName)
+  const lockClause = supportsPostgresRowLocks(db) ? " for update" : ""
+  return db.prepare(`
+    select *
+    from shein_platform_product
+    where platform = ?
+      and platform_account_key = ?
+      and spu_name = ?${lockClause}
+  `).get(context.platform, context.platformAccountKey, spuName) as JsonRecord
+}
+
+function summarySiteCount(
+  db: SyncPostgresDatabase,
+  context: SheinPlatformContext,
+  siteAbbr: string,
+) {
+  return db.prepare(`
+    select
+      max(nullif(site_name, '')) as site_name,
+      count(distinct product_id) as active_product_count
+    from shein_platform_product_sale_site
+    where platform = ?
+      and platform_account_key = ?
+      and site_abbr = ?
+      and shelf_status = 1
+  `).get(context.platform, context.platformAccountKey, siteAbbr) as JsonRecord
+}
+
+function lockSaleSiteSummary(
+  db: SyncPostgresDatabase,
+  context: SheinPlatformContext,
+  siteAbbr: string,
+  siteName: string,
+) {
+  const updatedAt = nowIso()
+  db.prepare(`
+    insert into shein_platform_sale_site_summary (
+      platform,
+      platform_account_key,
+      site_abbr,
+      site_name,
+      active_product_count,
+      updated_at
+    )
+    values (?, ?, ?, ?, 0, ?)
+    on conflict(platform, platform_account_key, site_abbr) do nothing
+  `).run(
+    context.platform,
+    context.platformAccountKey,
+    siteAbbr,
+    siteName || null,
+    updatedAt,
+  )
+  const lockClause = supportsPostgresRowLocks(db) ? " for update" : ""
+  return db.prepare(`
+    select active_product_count
+    from shein_platform_sale_site_summary
+    where platform = ?
+      and platform_account_key = ?
+      and site_abbr = ?${lockClause}
+  `).get(context.platform, context.platformAccountKey, siteAbbr) as JsonRecord
+}
+
+function refreshSaleSiteSummary(
+  db: SyncPostgresDatabase,
+  context: SheinPlatformContext,
+  siteAbbr: string,
+  fallbackSiteName = "",
+  expectedDelta?: number,
+) {
+  const lockedSummary = lockSaleSiteSummary(db, context, siteAbbr, fallbackSiteName)
+  const counted = summarySiteCount(db, context, siteAbbr)
+  const actualCount = Number(counted.active_product_count ?? 0)
+  const recordedCount = Number(lockedSummary.active_product_count ?? 0)
+  const expectedCount = expectedDelta == null ? recordedCount : recordedCount + expectedDelta
+  if (expectedCount !== actualCount) {
+    console.warn("SHEIN sale-site summary drift repaired", {
+      platform: context.platform,
+      platformAccountKey: context.platformAccountKey,
+      siteAbbr,
+      recordedCount,
+      actualCount,
+    })
+  }
+  db.prepare(`
+    update shein_platform_sale_site_summary
+    set site_name = coalesce(nullif(?, ''), site_name),
+      active_product_count = ?,
+      updated_at = ?
+    where platform = ?
+      and platform_account_key = ?
+      and site_abbr = ?
+  `).run(
+    firstString(counted.site_name, fallbackSiteName) || null,
+    actualCount,
+    nowIso(),
+    context.platform,
+    context.platformAccountKey,
+    siteAbbr,
+  )
+}
+
+function refreshProductSaleSiteSummary(
+  db: SyncPostgresDatabase,
+  context: SheinPlatformContext,
+  productId: number,
+  previousSiteNames: Map<string, string>,
+) {
+  const currentSiteNames = activeSaleSiteNamesForProduct(db, productId)
+  const siteAbbrs = new Set([...previousSiteNames.keys(), ...currentSiteNames.keys()])
+  for (const siteAbbr of siteAbbrs) {
+    refreshSaleSiteSummary(
+      db,
+      context,
+      siteAbbr,
+      currentSiteNames.get(siteAbbr) || previousSiteNames.get(siteAbbr) || "",
+      (currentSiteNames.has(siteAbbr) ? 1 : 0) - (previousSiteNames.has(siteAbbr) ? 1 : 0),
+    )
+  }
+}
+
+function runSynchronousTransaction<T>(db: SyncPostgresDatabase, operation: () => T) {
+  return db.transaction(operation)()
+}
+
 function persistProductSaleSites(
   db: SyncPostgresDatabase,
   context: SheinPlatformContext,
@@ -650,6 +799,7 @@ function persistProductSaleSites(
   rawInfo: JsonRecord,
   skcs: Array<{ id: number; skcName: string; supplierCode: string; raw: JsonRecord }>,
   siteNames: Map<string, string> = safeSiteNameLookup(db, context),
+  previousSiteNames: Map<string, string>,
 ) {
   db.prepare("delete from shein_platform_product_sale_site where product_id = ?").run(productId)
 
@@ -661,11 +811,47 @@ function persistProductSaleSites(
 
   for (const skc of skcs) {
     for (const site of arrayRecords(skc.raw.shelfStatusInfoList ?? skc.raw.shelf_status_info_list)
-      .map((item) => normalizeSaleSite(item, skc.skcName || "SKC", siteNames))
-      .filter((site): site is SaleSiteDetail => Boolean(site))) {
+    .map((item) => normalizeSaleSite(item, skc.skcName || "SKC", siteNames))
+    .filter((site): site is SaleSiteDetail => Boolean(site))) {
       insertProductSaleSite(db, context, productId, spuName, site, skc)
     }
   }
+  refreshProductSaleSiteSummary(db, context, productId, previousSiteNames)
+}
+
+export function reconcileProductSaleSiteSummary(
+  db: SyncPostgresDatabase,
+  context: SheinPlatformContext,
+) {
+  return runSynchronousTransaction(db, () => {
+    const rows = db.prepare(`
+      select site_abbr, max(site_name) as site_name
+      from (
+        select site_abbr, site_name
+        from shein_platform_sale_site_summary
+        where platform = ?
+          and platform_account_key = ?
+        union all
+        select site_abbr, site_name
+        from shein_platform_product_sale_site
+        where platform = ?
+          and platform_account_key = ?
+          and shelf_status = 1
+      ) candidate
+      group by site_abbr
+      order by site_abbr
+    `).all(
+      context.platform,
+      context.platformAccountKey,
+      context.platform,
+      context.platformAccountKey,
+    ) as JsonRecord[]
+    for (const row of rows) {
+      const siteAbbr = stringValue(row.site_abbr)
+      if (siteAbbr) refreshSaleSiteSummary(db, context, siteAbbr, stringValue(row.site_name))
+    }
+    return { siteCount: rows.length }
+  })
 }
 
 function productListData(info: JsonRecord) {
@@ -996,119 +1182,122 @@ export function persistProductDetailResult(
   const detail = normalizeProductDetail(result)
   if (!detail) return { persisted: false, skcCount: 0, skuCount: 0 }
 
-  const product = ensureProduct(db, context, detail.spuName)
-  const productId = Number(product.id)
-  db.prepare(`
-    update shein_platform_product
-    set platform_integration_id = ?,
-      supplier_code = ?,
-      product_name = ?,
-      brand_code = ?,
-      brand_name = ?,
-      category_id = ?,
-      category_name = ?,
-      product_type_id = ?,
-      shelf_status_text = ?,
-      raw_detail_payload_json = ?,
-      last_detail_synced_at = ?,
-      updated_at = ?
-    where id = ?
-  `).run(
-    context.platformIntegrationId,
-    detail.supplierCode,
-    detail.productName,
-    detail.brandCode,
-    detail.brandName,
-    detail.categoryId,
-    detail.categoryName,
-    detail.productTypeId,
-    detail.shelfText,
-    jsonText(result.payload),
-    nowIso(),
-    nowIso(),
-    productId,
-  )
-
-  db.prepare("delete from shein_platform_product_sale_site where product_id = ?").run(productId)
-  db.prepare("delete from shein_platform_skc where product_id = ?").run(productId)
-  let skuCount = 0
-  const persistedSkcs: Array<{ id: number; skcName: string; supplierCode: string; raw: JsonRecord }> = []
-  for (const skc of detail.skcs) {
-    const skcResult = db.prepare(`
-      insert into shein_platform_skc (
-        product_id,
-        skc_name,
-        supplier_code,
-        sale_attribute_text,
-        shelf_status_text,
-        image_url,
-        raw_payload_json,
-        updated_at
-      )
-      values (?, ?, ?, ?, ?, ?, ?, ?)
+  const persistence = runSynchronousTransaction(db, () => {
+    const product = lockProductForDetailPersist(db, context, detail.spuName)
+    const productId = Number(product.id)
+    const previousSaleSiteNames = activeSaleSiteNamesForProduct(db, productId)
+    db.prepare(`
+      update shein_platform_product
+      set platform_integration_id = ?,
+        supplier_code = ?,
+        product_name = ?,
+        brand_code = ?,
+        brand_name = ?,
+        category_id = ?,
+        category_name = ?,
+        product_type_id = ?,
+        shelf_status_text = ?,
+        raw_detail_payload_json = ?,
+        last_detail_synced_at = ?,
+        updated_at = ?
+      where id = ?
     `).run(
-      productId,
-      skc.skcName,
-      skc.supplierCode,
-      skc.saleText,
-      skc.shelfText,
-      skc.imageUrl,
-      jsonText(skc.raw),
+      context.platformIntegrationId,
+      detail.supplierCode,
+      detail.productName,
+      detail.brandCode,
+      detail.brandName,
+      detail.categoryId,
+      detail.categoryName,
+      detail.productTypeId,
+      detail.shelfText,
+      jsonText(result.payload),
       nowIso(),
+      nowIso(),
+      productId,
     )
-    const skcId = Number(skcResult.lastInsertRowid)
-    persistedSkcs.push({
-      id: skcId,
-      skcName: skc.skcName,
-      supplierCode: skc.supplierCode,
-      raw: skc.raw,
-    })
-    for (const sku of skc.skus) {
-      db.prepare(`
-        insert into shein_platform_sku (
-          skc_id,
-          sku_code,
-          supplier_sku,
+
+    db.prepare("delete from shein_platform_skc where product_id = ?").run(productId)
+    let skuCount = 0
+    const persistedSkcs: Array<{ id: number; skcName: string; supplierCode: string; raw: JsonRecord }> = []
+    for (const skc of detail.skcs) {
+      const skcResult = db.prepare(`
+        insert into shein_platform_skc (
+          product_id,
+          skc_name,
+          supplier_code,
           sale_attribute_text,
-          mall_state,
-          stop_purchase,
-          package_weight,
-          package_length,
-          package_width,
-          package_height,
-          cost_price,
-          currency,
-          cost_text,
-          price_text,
+          shelf_status_text,
+          image_url,
           raw_payload_json,
           updated_at
         )
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        values (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        skcId,
-        sku.skuCode,
-        sku.supplierSku,
-        sku.saleText,
-        sku.mallState,
-        sku.stopPurchase,
-        sku.weight,
-        sku.length,
-        sku.width,
-        sku.height,
-        sku.currentCost,
-        sku.currency,
-        sku.costText,
-        sku.priceText,
-        jsonText(sku.raw),
+        productId,
+        skc.skcName,
+        skc.supplierCode,
+        skc.saleText,
+        skc.shelfText,
+        skc.imageUrl,
+        jsonText(skc.raw),
         nowIso(),
       )
-      skuCount += 1
+      const skcId = Number(skcResult.lastInsertRowid)
+      persistedSkcs.push({
+        id: skcId,
+        skcName: skc.skcName,
+        supplierCode: skc.supplierCode,
+        raw: skc.raw,
+      })
+      for (const sku of skc.skus) {
+        db.prepare(`
+          insert into shein_platform_sku (
+            skc_id,
+            sku_code,
+            supplier_sku,
+            sale_attribute_text,
+            mall_state,
+            stop_purchase,
+            package_weight,
+            package_length,
+            package_width,
+            package_height,
+            cost_price,
+            currency,
+            cost_text,
+            price_text,
+            raw_payload_json,
+            updated_at
+          )
+          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          skcId,
+          sku.skuCode,
+          sku.supplierSku,
+          sku.saleText,
+          sku.mallState,
+          sku.stopPurchase,
+          sku.weight,
+          sku.length,
+          sku.width,
+          sku.height,
+          sku.currentCost,
+          sku.currency,
+          sku.costText,
+          sku.priceText,
+          jsonText(sku.raw),
+          nowIso(),
+        )
+        skuCount += 1
+      }
     }
-  }
-  persistProductSaleSites(db, context, productId, detail.spuName, detail.rawInfo, persistedSkcs)
-  refreshProductCounts(db, productId)
+    persistProductSaleSites(db, context, productId, detail.spuName, detail.rawInfo, persistedSkcs, undefined, previousSaleSiteNames)
+    refreshProductCounts(db, productId)
+    return { persisted: true, skcCount: detail.skcs.length, skuCount }
+  })
   clearProductFilterCache()
-  return { persisted: true, skcCount: detail.skcs.length, skuCount }
+  return persistence
 }
 
 function persistSitesResult(
@@ -1585,17 +1774,7 @@ function saleSiteFilterOptions(db: SyncPostgresDatabase, context: SheinPlatformC
       and platform_account_key = ?
     order by site_name asc, site_abbr asc
   `).all(context.platform, context.platformAccountKey) as JsonRecord[]
-  const countRows = db.prepare(`
-    select
-      site_abbr,
-      max(nullif(site_name, '')) as site_name,
-      count(distinct product_id) as count
-    from shein_platform_product_sale_site
-    where platform = ?
-      and platform_account_key = ?
-      and shelf_status = 1
-    group by site_abbr
-  `).all(context.platform, context.platformAccountKey) as JsonRecord[]
+  const countRows = saleSiteSummaryCountRows(db, context)
   const counts = new Map(countRows
     .map((row) => [stringValue(row.site_abbr), {
       siteName: stringValue(row.site_name),
@@ -1643,6 +1822,30 @@ function saleSiteFilterOptionsFallback(siteNames: Map<string, string>) {
     .map(([value, label]) => ({ value, label: label || value, count: 0 }))
     .filter((row) => row.value)
     .sort((left, right) => left.label.localeCompare(right.label))
+}
+
+function saleSiteSummaryCountRows(db: SyncPostgresDatabase, context: SheinPlatformContext) {
+  try {
+    return db.prepare(`
+      select site_abbr, site_name, active_product_count as count
+      from shein_platform_sale_site_summary
+      where platform = ?
+        and platform_account_key = ?
+    `).all(context.platform, context.platformAccountKey) as JsonRecord[]
+  } catch (error) {
+    warnAuxiliaryQuery("sale-site summary", error)
+    return db.prepare(`
+      select
+        site_abbr,
+        max(nullif(site_name, '')) as site_name,
+        count(distinct product_id) as count
+      from shein_platform_product_sale_site
+      where platform = ?
+        and platform_account_key = ?
+        and shelf_status = 1
+      group by site_abbr
+    `).all(context.platform, context.platformAccountKey) as JsonRecord[]
+  }
 }
 
 function saleSiteFilterTerms(

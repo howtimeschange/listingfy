@@ -81,6 +81,12 @@ import {
   type CostImportProgress,
   type CostImportRow,
 } from "@/lib/shein-cost-import"
+import {
+  currencyForForm,
+  detailQueryForView,
+  saleSitesForDialog,
+  validateCurrencySelection,
+} from "@/lib/shein-platform-product-page-state"
 import { exportSpreadsheet, readSpreadsheetFile, type SpreadsheetRow } from "@/lib/spreadsheet"
 
 type JsonRecord = Record<string, unknown>
@@ -683,24 +689,27 @@ function productRevokeUrl(spuName: string) {
   return `/shein-platform-products/${encodeURIComponent(spuName)}/revoke`
 }
 
-function useStoreSites() {
+function useStoreSites(enabled: boolean) {
   return useQuery<StoreSitesResponse>({
     queryKey: ["shein-platform-products", "sites"],
+    enabled,
     queryFn: () => api.get("/shein-platform-products/sites"),
   })
 }
 
-function usePlatformProducts(params: ProductQueryParams) {
+function usePlatformProducts(params: ProductQueryParams, enabled: boolean) {
   return useQuery<ProductListResponse>({
     queryKey: ["shein-platform-products", "list", params],
+    enabled,
     queryFn: () => api.get(platformProductsListUrl(params)),
     placeholderData: keepPreviousData,
   })
 }
 
-function useSyncSchedule() {
+function useSyncSchedule(enabled: boolean) {
   return useQuery<SyncScheduleConfig>({
     queryKey: ["shein-platform-products", "sync-schedule"],
+    enabled,
     queryFn: () => api.get("/shein-platform-products/sync-schedule"),
   })
 }
@@ -721,10 +730,10 @@ function platformProductsListUrl(
   return `/shein-platform-products?${search.toString()}`
 }
 
-function useProductDetail(spuName: string) {
+function useProductDetail(spuName: string, enabled: boolean) {
   return useQuery<ProductDetailResponse>({
     queryKey: ["shein-platform-products", "detail", spuName],
-    enabled: Boolean(spuName.trim()),
+    enabled: enabled && Boolean(spuName.trim()),
     retry: false,
     queryFn: () => api.get(productDetailUrl(spuName.trim())),
   })
@@ -748,9 +757,10 @@ function useVariantTemplate(spuName: string, enabled: boolean) {
   })
 }
 
-function useCostChangeReasons() {
+function useCostChangeReasons(enabled: boolean) {
   return useQuery<CostChangeReasonResponse>({
     queryKey: ["shein-operations", "price-reasons"],
+    enabled,
     queryFn: () => api.get("/shein-operations/price-reasons"),
   })
 }
@@ -827,13 +837,22 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
     siteFilter: "",
   })
 
-  const sitesQuery = useStoreSites()
-  const productsQuery = usePlatformProducts(queryParams)
-  const syncScheduleQuery = useSyncSchedule()
-  const detailQuery = useProductDetail(selectedSpuName)
+  const detailQueryState = detailQueryForView({
+    view,
+    selectedSpuName,
+    saleSitesDialogSpuName: saleSitesDialogProduct?.spuName,
+  })
+  const detailDataEnabled = detailQueryState.enabled
+  const listViewEnabled = view === "list"
+  const productListDataEnabled = listViewEnabled || (operationsDialogOpen && !detailDataEnabled)
+  const siteDataEnabled = view === "sites" || costDialogOpen || costImportDialogOpen || variantDialogOpen
+  const sitesQuery = useStoreSites(siteDataEnabled)
+  const productsQuery = usePlatformProducts(queryParams, productListDataEnabled)
+  const syncScheduleQuery = useSyncSchedule(listViewEnabled)
+  const detailQuery = useProductDetail(detailQueryState.spuName, detailDataEnabled)
   const editTemplateQuery = useEditTemplate(selectedSpuName, editDialogOpen)
   const variantTemplateQuery = useVariantTemplate(selectedSpuName, variantDialogOpen)
-  const costReasonsQuery = useCostChangeReasons()
+  const costReasonsQuery = useCostChangeReasons(costDialogOpen)
 
   const siteRows = useMemo(() => sitesQuery.data?.items ?? [], [sitesQuery.data])
   const productRows = productsQuery.data?.items ?? []
@@ -846,18 +865,28 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const detail = detailQuery.data ?? null
   const detailProduct = detail?.product
   const detailSaleSites = detailProduct?.saleSites ?? EMPTY_SALE_SITES
-  const saleSitesDialogSites = saleSitesDialogProduct?.spuName === detailProduct?.spuName
-    ? detailProduct?.saleSites ?? EMPTY_SALE_SITES
-    : EMPTY_SALE_SITES
+  const saleSitesDialogSites = saleSitesForDialog(saleSitesDialogProduct?.spuName, detailProduct)
   const saleSitesDialogLoading = Boolean(
     saleSitesDialogProduct
-      && selectedSpuName === saleSitesDialogProduct.spuName
+      && detailQueryState.spuName === saleSitesDialogProduct.spuName
       && detailQuery.isLoading,
   )
   const currencyOptions = useMemo(() => {
     const currencies = Array.from(new Set(siteRows.map((site) => site.currency).filter(Boolean)))
-    return currencies.length ? currencies : ["CNY", "USD", "EUR"]
+    return currencies
   }, [siteRows])
+  const siteCurrencyError = sitesQuery.error instanceof Error ? sitesQuery.error.message : "站点币种加载失败"
+  const siteCurrenciesLoading = siteDataEnabled && sitesQuery.isLoading
+  const effectiveCostCurrency = currencyForForm(costForm.currency, currencyOptions)
+  const effectiveVariantCurrency = currencyForForm(variantForm.currency, currencyOptions)
+  const costCurrencyValidation = sitesQuery.isError
+    ? `无法读取站点币种：${siteCurrencyError}`
+    : validateCurrencySelection(effectiveCostCurrency, currencyOptions)
+  const variantCurrencyValidation = variantForm.cost
+    ? (sitesQuery.isError
+        ? `无法读取站点币种：${siteCurrencyError}`
+        : validateCurrencySelection(effectiveVariantCurrency, currencyOptions))
+    : ""
 
   const pagination = {
     total: productsQuery.data?.pagination.total ?? queryParams.pagination.total,
@@ -1121,6 +1150,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
       const templatePayload = recordValue(variantTemplateQuery.data?.payload)
       const skcList = recordArray(templatePayload.skc_list)
       const cost = numberValue(variantForm.cost)
+      if (cost && variantCurrencyValidation) throw new Error(variantCurrencyValidation)
       const supplierSku = variantForm.skuSupplierSku.trim()
       const newSku = compactRecord({
         supplier_sku: supplierSku,
@@ -1139,7 +1169,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
         cost_info: cost
           ? {
               cost_price: cost.toFixed(2),
-              currency: variantForm.currency,
+              currency: effectiveVariantCurrency,
             }
           : undefined,
       })
@@ -1204,6 +1234,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
       if (!Number.isFinite(cost) || cost <= 0 || cost >= 100000) {
         throw new Error("供货价需大于 0 且小于 100000")
       }
+      if (costCurrencyValidation) throw new Error(costCurrencyValidation)
       if (costIncreased && !costForm.changeReasonCode) {
         throw new Error("成本价上涨时请选择涨价原因")
       }
@@ -1219,7 +1250,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
           sku_info_list: items.map((item) => ({
             sku_code: item.skuCode,
             cost: cost.toFixed(2),
-            currency: costForm.currency,
+            currency: effectiveCostCurrency,
           })),
         })),
       })
@@ -1239,6 +1270,11 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   const costImportMutation = useMutation({
     mutationFn: async () => {
       const batch = buildCostImportRequests(costImportRows)
+      if (sitesQuery.isError) throw new Error(`无法读取站点币种：${siteCurrencyError}`)
+      for (const request of batch.requests) {
+        const validation = validateCurrencySelection(request.currency, currencyOptions)
+        if (validation) throw new Error(`${validation}（SPU ${request.spuName}）`)
+      }
       setCostImportProgress({
         completedGroups: 0,
         totalGroups: batch.requests.length,
@@ -1341,7 +1377,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
   function openCostDialog(input: { spuName: string; skcName: string; skuCode: string; supplierSku: string; cost: string; currency: string }) {
     setCostForm({
       ...DEFAULT_COST_FORM,
-      currency: input.currency || currencyOptions[0] || DEFAULT_COST_FORM.currency,
+      currency: currencyForForm(input.currency, currencyOptions),
       spuName: input.spuName,
       cost: input.cost || "",
       items: [
@@ -1381,7 +1417,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
     setCostForm({
       ...DEFAULT_COST_FORM,
       spuName: spuName.trim(),
-      currency: defaultCurrency || currencyOptions[0] || DEFAULT_COST_FORM.currency,
+      currency: currencyForForm(defaultCurrency, currencyOptions),
       items,
     })
     setCostDialogOpen(true)
@@ -1489,7 +1525,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
     setSelectedSpuName(normalized)
     setVariantForm({
       ...DEFAULT_VARIANT_FORM,
-      currency: currencyOptions[0] || DEFAULT_VARIANT_FORM.currency,
+      currency: currencyForForm("", currencyOptions),
     })
     setVariantDialogOpen(true)
   }
@@ -2368,6 +2404,12 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                         加载销售站点明细...
                       </TableCell>
                     </TableRow>
+                  ) : detailQuery.isError ? (
+                    <TableRow>
+                      <TableCell colSpan={6} className="h-24 text-center text-destructive">
+                        {detailQuery.error instanceof Error ? detailQuery.error.message : "销售站点明细加载失败"}
+                      </TableCell>
+                    </TableRow>
                   ) : saleSitesDialogSites.length ? (
                     saleSitesDialogSites.map((site) => (
                       <TableRow key={`${site.siteAbbr}-${site.source}`}>
@@ -2883,8 +2925,9 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                 <div className="grid gap-2">
                   <Label>币种</Label>
                   <Select
-                    value={costForm.currency}
+                    value={effectiveCostCurrency}
                     onValueChange={(currency) => setCostForm((current) => ({ ...current, currency }))}
+                    disabled={!currencyOptions.length}
                   >
                     <SelectTrigger className="w-full">
                       <SelectValue />
@@ -2899,6 +2942,13 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                   </Select>
                 </div>
               </div>
+              {siteCurrenciesLoading ? (
+                <p className="text-xs text-muted-foreground">正在加载站点币种，加载完成后才能提交。</p>
+              ) : sitesQuery.isError ? (
+                <p className="text-xs text-destructive">无法读取站点币种：{siteCurrencyError}</p>
+              ) : costCurrencyValidation ? (
+                <p className="text-xs text-destructive">{costCurrencyValidation}</p>
+              ) : null}
               {costIncreased ? (
                 <div className="grid gap-2">
                   <Label>涨价原因</Label>
@@ -2928,7 +2978,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             <Button variant="outline" onClick={() => setCostDialogOpen(false)}>
               取消
             </Button>
-            <Button onClick={() => updateCostMutation.mutate()} disabled={!canPublish || updateCostMutation.isPending}>
+            <Button onClick={() => updateCostMutation.mutate()} disabled={!canPublish || updateCostMutation.isPending || Boolean(costCurrencyValidation)}>
               {updateCostMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <DollarSign className="size-4" />}
               提交更新
             </Button>
@@ -2973,6 +3023,11 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
               </Badge>
               <span>已解析 {formatNumber(costImportRows.length)} 行</span>
             </div>
+            {siteCurrenciesLoading ? (
+              <p className="text-sm text-muted-foreground">正在加载站点币种，加载完成后才可提交导入。</p>
+            ) : sitesQuery.isError ? (
+              <p className="text-sm text-destructive">无法读取站点币种：{siteCurrencyError}</p>
+            ) : null}
             {costImportProgress ? (
               <div className="rounded-md border p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
@@ -3014,7 +3069,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                           <TableCell className="truncate font-mono text-xs">{row.skcName || "—"}</TableCell>
                           <TableCell className="truncate font-mono text-xs">{row.skuCode || "—"}</TableCell>
                           <TableCell className="truncate">{row.cost || "—"}</TableCell>
-                          <TableCell className="truncate">{row.currency || "CNY"}</TableCell>
+                          <TableCell className="truncate">{row.currency || "缺少币种"}</TableCell>
                           <TableCell className="truncate">{row.changeReasonCode || "—"}</TableCell>
                         </TableRow>
                       ))
@@ -3034,7 +3089,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             <Button variant="outline" onClick={() => handleCostImportDialogOpenChange(false)} disabled={costImportMutation.isPending}>
               取消
             </Button>
-            <Button onClick={() => costImportMutation.mutate()} disabled={!canPublish || costImportMutation.isPending || !costImportRows.length}>
+            <Button onClick={() => costImportMutation.mutate()} disabled={!canPublish || costImportMutation.isPending || !costImportRows.length || !currencyOptions.length || sitesQuery.isError}>
               {costImportMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <DollarSign className="size-4" />}
               {costImportMutation.isPending && costImportProgress
                 ? `处理中 ${formatNumber(costImportProgress.completedGroups)}/${formatNumber(costImportProgress.totalGroups)}`
@@ -3498,7 +3553,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                     </div>
                     <div className="grid gap-2">
                       <Label>币种</Label>
-                      <Select value={variantForm.currency} onValueChange={(currency) => setVariantForm((current) => ({ ...current, currency }))}>
+                      <Select value={effectiveVariantCurrency} onValueChange={(currency) => setVariantForm((current) => ({ ...current, currency }))} disabled={!currencyOptions.length}>
                         <SelectTrigger className="w-full">
                           <SelectValue />
                         </SelectTrigger>
@@ -3514,6 +3569,13 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
                   </div>
                 </div>
               </div>
+              {siteCurrenciesLoading ? (
+                <p className="text-xs text-muted-foreground">正在加载站点币种，加载完成后才能提交带成本价的拼款。</p>
+              ) : sitesQuery.isError ? (
+                <p className="text-xs text-destructive">无法读取站点币种：{siteCurrencyError}</p>
+              ) : variantCurrencyValidation ? (
+                <p className="text-xs text-destructive">{variantCurrencyValidation}</p>
+              ) : null}
               {variantTemplateQuery.data?.notes?.length ? (
                 <div className="rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground">
                   {variantTemplateQuery.data.notes.join(" ")}
@@ -3531,7 +3593,7 @@ export default function SheinPlatformProductsPage({ view = "list" }: SheinPlatfo
             <Button variant="outline" onClick={() => setVariantDialogOpen(false)}>
               取消
             </Button>
-            <Button onClick={() => addVariantTemplateMutation.mutate()} disabled={!canPublish || addVariantTemplateMutation.isPending || variantTemplateQuery.isLoading}>
+            <Button onClick={() => addVariantTemplateMutation.mutate()} disabled={!canPublish || addVariantTemplateMutation.isPending || variantTemplateQuery.isLoading || Boolean(variantCurrencyValidation)}>
               {addVariantTemplateMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <GitMerge className="size-4" />}
               提交拼款模板
             </Button>

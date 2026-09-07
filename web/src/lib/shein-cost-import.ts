@@ -124,7 +124,7 @@ export function parseCostImportRows(rows: SpreadsheetRow[]): CostImportRow[] {
     skcName: spreadsheetValue(row, "SKC", "skc", "skcName"),
     skuCode: spreadsheetValue(row, "SKU", "sku", "skuCode"),
     cost: spreadsheetValue(row, "供货价", "成本价", "cost", "costPrice"),
-    currency: spreadsheetValue(row, "币种", "currency") || "CNY",
+    currency: spreadsheetValue(row, "币种", "currency"),
     changeReasonCode: spreadsheetValue(row, "涨价原因", "changeReasonCode", "原因代码"),
     rowNumber: index + 2,
   })).filter((row) => row.spuName || row.skcName || row.skuCode || row.cost)
@@ -138,10 +138,12 @@ export function buildCostImportRequests(rows: CostImportRow[]): CostImportReques
     return !Number.isFinite(cost) || cost <= 0 || cost >= 100000
   })
   if (invalidRow) throw new Error(`第 ${invalidRow.rowNumber} 行供货价需大于 0 且小于 100000`)
+  const missingCurrencyRow = validRows.find((row) => !row.currency)
+  if (missingCurrencyRow) throw new Error(`第 ${missingCurrencyRow.rowNumber} 行缺少币种`)
 
   const groups = new Map<string, CostImportRow[]>()
   for (const row of validRows) {
-    const key = [row.spuName, row.currency || "CNY", row.changeReasonCode || ""].join(COST_IMPORT_GROUP_SEPARATOR)
+    const key = [row.spuName, row.currency, row.changeReasonCode || ""].join(COST_IMPORT_GROUP_SEPARATOR)
     const groupRows = groups.get(key)
     if (groupRows) {
       groupRows.push(row)
@@ -170,7 +172,7 @@ export function buildCostImportRequests(rows: CostImportRow[]): CostImportReques
           sku_info_list: skcRows.map((row) => ({
             sku_code: row.skuCode,
             cost: Number(row.cost).toFixed(2),
-            currency: row.currency || currency || "CNY",
+            currency: row.currency || currency,
           })),
         })),
       }

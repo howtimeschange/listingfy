@@ -176,6 +176,16 @@ if command -v node >/dev/null 2>&1; then
   HOST_NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 fi
 
+stop_listingify_api_writer() {
+  echo "===== Stop API writers before SHEIN summary migration/reconciliation ====="
+  if command -v pm2 >/dev/null 2>&1; then
+    pm2 delete listingfy-api || true
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    docker rm -f listingfy-api >/dev/null 2>&1 || true
+  fi
+}
+
 if [ "$HOST_NODE_MAJOR" -ge 24 ]; then
   export DEEPDRAW_M2_REPOSITORY="${DEEPDRAW_M2_REPOSITORY:-$DEEPDRAW_M2_DIR/repository}"
   export DEEPDRAW_MAVEN_MIRROR_URL="$DEEPDRAW_MAVEN_MIRROR_URL_VALUE"
@@ -188,14 +198,20 @@ if [ "$HOST_NODE_MAJOR" -ge 24 ]; then
   echo "===== Build web on host ====="
   npm --prefix web run build
 
+  stop_listingify_api_writer
+
   echo "===== Migrate database on host ====="
-  npm run db:migrate
+  DATABASE_URL="$DATABASE_URL_VALUE" DATABASE_PROVIDER=postgres npm run db:migrate
+
   if [ "$RUN_SEED_IMPORT_VALUE" = "1" ]; then
     echo "===== Import seed data on host ====="
     npm run seed:import
   else
     echo "===== Skip seed import; set RUN_SEED_IMPORT=1 to enable ====="
   fi
+
+  echo "===== Reconcile SHEIN sale-site summaries while API writers are stopped ====="
+  DATABASE_URL="$DATABASE_URL_VALUE" DATABASE_PROVIDER=postgres npm run shein:sale-site-summary:reconcile
 else
   echo "Host Node >=24 is unavailable; deploying with Docker Node runtime."
   if ! command -v docker >/dev/null 2>&1; then
@@ -245,6 +261,8 @@ RUN java -version && javac -version && mvn -version
 DOCKERFILE
   fi
 
+  stop_listingify_api_writer
+
   docker run --rm --network host \
     -v "$PREPARED_DIR:/app" \
     -v "$DEEPDRAW_M2_DIR:/app/.m2" \
@@ -255,7 +273,7 @@ DOCKERFILE
     -e RUN_SEED_IMPORT="$RUN_SEED_IMPORT_VALUE" \
     "${DOCKER_NPM_ENV[@]}" \
     "$RUNTIME_IMAGE" \
-    bash -c 'set -e; node -v; npm -v; java -version; javac -version; npm --prefix web ci --include=dev --prefer-offline; node scripts/deepdraw_sdk_prepare.mjs /app; npm --prefix web run build; npm run db:migrate; if [ "${RUN_SEED_IMPORT:-0}" = "1" ]; then echo "===== Import seed data in Docker ====="; npm run seed:import; else echo "===== Skip seed import; set RUN_SEED_IMPORT=1 to enable ====="; fi'
+    bash -c 'set -e; node -v; npm -v; java -version; javac -version; npm --prefix web ci --include=dev --prefer-offline; node scripts/deepdraw_sdk_prepare.mjs /app; npm --prefix web run build; npm run db:migrate; if [ "${RUN_SEED_IMPORT:-0}" = "1" ]; then echo "===== Import seed data in Docker ====="; npm run seed:import; else echo "===== Skip seed import; set RUN_SEED_IMPORT=1 to enable ====="; fi; npm run shein:sale-site-summary:reconcile'
 fi
 
 echo "===== Write web server config ====="

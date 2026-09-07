@@ -19,6 +19,7 @@ const JOB_ITEM_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/034_shein
 const SYNC_SCHEDULE_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/035_shein_platform_product_sync_schedule.sql");
 const SYNC_SCHEDULE_OPT_IN_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/041_shein_sync_schedule_opt_in.sql");
 const SALE_SITE_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/037_shein_platform_product_sale_sites.sql");
+const PERFORMANCE_MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/057_shein_launch_operations_performance.sql");
 
 async function fileText(file) {
   try {
@@ -31,6 +32,7 @@ async function fileText(file) {
 async function createTempDb() {
   const tempPath = await mkdtemp(path.join(os.tmpdir(), "listingify-shein-platform-products-"));
   const db = new DatabaseSync(path.join(tempPath, "test.sqlite"));
+  addTransactionSemantics(db);
   db.exec("pragma foreign_keys = on");
   db.exec(`
     create table platform_integration (
@@ -61,6 +63,7 @@ async function createTempDb() {
       updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
   `);
+  db.exec(await readFile(PERFORMANCE_MIGRATION_FILE, "utf8"));
   return {
     db,
     async cleanup() {
@@ -69,6 +72,188 @@ async function createTempDb() {
     },
   };
 }
+
+function addTransactionSemantics(db) {
+  let depth = 0;
+  let savepointId = 0;
+  db.transaction = (operation) => (...args) => {
+    const savepoint = `shein_test_${++savepointId}`;
+    const outermost = depth === 0;
+    depth += 1;
+    try {
+      db.exec(outermost ? "begin" : `savepoint ${savepoint}`);
+      const result = operation(...args);
+      db.exec(outermost ? "commit" : `release savepoint ${savepoint}`);
+      return result;
+    } catch (error) {
+      db.exec(outermost ? "rollback" : `rollback to savepoint ${savepoint}`);
+      if (!outermost) db.exec(`release savepoint ${savepoint}`);
+      throw error;
+    } finally {
+      depth -= 1;
+    }
+  };
+}
+
+function failStatementRun(db, matcher, message) {
+  const prepare = db.prepare.bind(db);
+  let pending = true;
+  db.prepare = (sql) => {
+    const statement = prepare(sql);
+    if (!pending || !matcher.test(String(sql))) return statement;
+    return new Proxy(statement, {
+      get(target, property) {
+        if (property === "run") {
+          return () => {
+            pending = false;
+            throw new Error(message);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  };
+}
+
+function detailPayload({
+  spuName = "SPU-TRANSACTION",
+  productName = "新详情",
+  skuCode = "SKU-NEW",
+  siteAbbr = "FR",
+  shelfStatus = 1,
+} = {}) {
+  return {
+    status: 200,
+    payload: {
+      code: "0",
+      info: {
+        spuName,
+        supplierCode: "SUP-DETAIL",
+        productMultiNameList: [{ language: "zh-cn", productName }],
+        skcInfoList: [{
+          skcName: "SKC-DETAIL",
+          supplierCode: "SKC-SUP-DETAIL",
+          shelfStatusInfoList: [{ shelfStatus, siteAbbr }],
+          skuInfoList: [{ skuCode, supplierSku: `${skuCode}-SUP` }],
+        }],
+      },
+    },
+  };
+}
+
+function detailPersistenceSnapshot(db, context, spuName) {
+  return {
+    product: db.prepare(`
+      select product_name, raw_detail_payload_json, skc_count, sku_count
+      from shein_platform_product
+      where platform = ? and platform_account_key = ? and spu_name = ?
+    `).get(context.platform, context.platformAccountKey, spuName),
+    saleSites: db.prepare(`
+      select site_abbr, shelf_status, skc_name
+      from shein_platform_product_sale_site
+      where platform = ? and platform_account_key = ? and spu_name = ?
+      order by site_abbr, skc_name
+    `).all(context.platform, context.platformAccountKey, spuName),
+    summary: db.prepare(`
+      select site_abbr, active_product_count
+      from shein_platform_sale_site_summary
+      where platform = ? and platform_account_key = ?
+      order by site_abbr
+    `).all(context.platform, context.platformAccountKey),
+  };
+}
+
+test("SHEIN detail replacement rolls back product, sale sites, and summaries when any write fails", async (t) => {
+  const failurePoints = [
+    { name: "old SKC deletion", matcher: /delete from shein_platform_skc where product_id = \?/i },
+    { name: "SKU insertion", matcher: /insert into shein_platform_sku/i },
+    { name: "summary refresh", matcher: /update shein_platform_sale_site_summary/i },
+  ];
+
+  for (const failurePoint of failurePoints) {
+    await t.test(failurePoint.name, async () => {
+      const { db, cleanup } = await createTempDb();
+      try {
+        const service = await importService();
+        const context = testContext();
+        service.persistProductDetailResult(db, context, detailPayload({
+          spuName: "SPU-TRANSACTION",
+          productName: "旧详情",
+          skuCode: "SKU-OLD",
+          siteAbbr: "DE",
+        }));
+        const before = detailPersistenceSnapshot(db, context, "SPU-TRANSACTION");
+        failStatementRun(db, failurePoint.matcher, `injected ${failurePoint.name} failure`);
+
+        assert.throws(
+          () => service.persistProductDetailResult(db, context, detailPayload()),
+          new RegExp(`injected ${failurePoint.name} failure`),
+        );
+        assert.deepEqual(detailPersistenceSnapshot(db, context, "SPU-TRANSACTION"), before);
+      } finally {
+        await cleanup();
+      }
+    });
+  }
+});
+
+test("SHEIN sale-site summaries self-heal from a missing or drifted row and reconcile old-writer changes idempotently", async () => {
+  const { db, cleanup } = await createTempDb();
+  try {
+    const service = await importService();
+    const context = testContext();
+    service.persistProductDetailResult(db, context, detailPayload({
+      spuName: "SPU-SELF-HEAL",
+      siteAbbr: "DE",
+    }));
+    db.prepare(`
+      delete from shein_platform_sale_site_summary
+      where platform = ? and platform_account_key = ? and site_abbr = 'DE'
+    `).run(context.platform, context.platformAccountKey);
+    service.persistProductDetailResult(db, context, detailPayload({
+      spuName: "SPU-SELF-HEAL",
+      siteAbbr: "DE",
+    }));
+    assert.equal(db.prepare(`
+      select active_product_count as count from shein_platform_sale_site_summary
+      where platform = ? and platform_account_key = ? and site_abbr = 'DE'
+    `).get(context.platform, context.platformAccountKey).count, 1);
+
+    db.prepare(`
+      update shein_platform_sale_site_summary
+      set active_product_count = 99
+      where platform = ? and platform_account_key = ? and site_abbr = 'DE'
+    `).run(context.platform, context.platformAccountKey);
+    service.persistProductDetailResult(db, context, detailPayload({
+      spuName: "SPU-SELF-HEAL",
+      siteAbbr: "DE",
+    }));
+    assert.equal(db.prepare(`
+      select active_product_count as count from shein_platform_sale_site_summary
+      where platform = ? and platform_account_key = ? and site_abbr = 'DE'
+    `).get(context.platform, context.platformAccountKey).count, 1);
+
+    const productId = Number(db.prepare(`
+      insert into shein_platform_product (platform, platform_account_key, spu_name, updated_at)
+      values (?, ?, 'SPU-OLD-WRITER', '2026-01-01T00:00:00.000Z')
+    `).run(context.platform, context.platformAccountKey).lastInsertRowid);
+    db.prepare(`
+      insert into shein_platform_product_sale_site (
+        platform, platform_account_key, product_id, spu_name, site_abbr, shelf_status, updated_at
+      ) values (?, ?, ?, 'SPU-OLD-WRITER', 'DE', 1, '2026-01-01T00:00:00.000Z')
+    `).run(context.platform, context.platformAccountKey, productId);
+
+    service.reconcileProductSaleSiteSummary(db, context);
+    service.reconcileProductSaleSiteSummary(db, context);
+    assert.equal(db.prepare(`
+      select active_product_count as count from shein_platform_sale_site_summary
+      where platform = ? and platform_account_key = ? and site_abbr = 'DE'
+    `).get(context.platform, context.platformAccountKey).count, 2);
+  } finally {
+    await cleanup();
+  }
+});
 
 async function createTempScheduledSyncDb() {
   const tempPath = await mkdtemp(path.join(os.tmpdir(), "listingify-shein-scheduled-sync-"));
@@ -179,8 +364,9 @@ test("SHEIN platform products have persistent product, variant, site, and operat
 });
 
 test("SHEIN platform products normalize sale sites for indexed list filtering", async () => {
-  const [migration, service] = await Promise.all([
+  const [migration, performanceMigration, service] = await Promise.all([
     fileText(SALE_SITE_MIGRATION_FILE),
+    fileText(PERFORMANCE_MIGRATION_FILE),
     fileText(SERVICE_FILE),
   ]);
 
@@ -194,7 +380,10 @@ test("SHEIN platform products normalize sale sites for indexed list filtering", 
   assert.match(service, /persistProductSaleSites/);
   assert.match(service, /insert into shein_platform_product_sale_site/);
   assert.match(service, /from shein_platform_product_sale_site sale_site/);
-  assert.match(service, /count\(distinct product_id\) as count/);
+  assert.match(performanceMigration, /create table if not exists shein_platform_sale_site_summary/);
+  assert.match(performanceMigration, /count\(distinct product_id\) as active_product_count/);
+  assert.match(service, /function refreshProductSaleSiteSummary/);
+  assert.match(service, /function saleSiteSummaryCountRows[\s\S]*from shein_platform_sale_site_summary/);
 });
 
 test("SHEIN platform product async jobs are durable across API workers", async () => {
@@ -791,6 +980,40 @@ test("SHEIN platform product persistence stores list rows and SPU detail variant
     assert.equal(saleSite.spu_name, "SPU001");
     assert.equal(saleSite.skc_supplier_code, "SUP-SKC");
     assert.equal(saleSite.shelf_status, 1);
+
+    const saleSiteSummary = db.prepare(`
+      select active_product_count
+      from shein_platform_sale_site_summary
+      where platform = 'SHEIN'
+        and platform_account_key = 'test-account'
+        and site_abbr = 'DE'
+    `).get();
+    assert.equal(saleSiteSummary.active_product_count, 1);
+
+    service.persistProductDetailResult(db, context, {
+      status: 200,
+      payload: {
+        code: "0",
+        info: {
+          spuName: "SPU001",
+          skcInfoList: [
+            {
+              skcName: "SKC001",
+              shelfStatusInfoList: [{ shelfStatus: 0, siteAbbr: "DE" }],
+              skuInfoList: [],
+            },
+          ],
+        },
+      },
+    });
+    const inactiveSaleSiteSummary = db.prepare(`
+      select active_product_count
+      from shein_platform_sale_site_summary
+      where platform = 'SHEIN'
+        and platform_account_key = 'test-account'
+        and site_abbr = 'DE'
+    `).get();
+    assert.equal(inactiveSaleSiteSummary.active_product_count, 0);
   } finally {
     await cleanup();
   }

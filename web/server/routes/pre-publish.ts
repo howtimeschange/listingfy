@@ -290,6 +290,7 @@ type CategoryOverride = {
 type CategoryReadinessOptions = {
   ignoreListingCategory?: boolean
   ignoreStoredCategory?: boolean
+  onRequiredAttributes?: (attributes: RequiredAttribute[]) => void
 }
 
 type CategoryCandidate = {
@@ -1115,16 +1116,43 @@ function getRequiredAttributes(
     attributeCategoryId,
   ) as SourceRow[]
 
-  const valueStmt = db.prepare(`
-    select attribute_value_id, attribute_value, attribute_value_en
-    from channel_attribute_value
-    where platform = 'SHEIN'
-      and product_type_id = ?
-      and attribute_id = ?
-      and coalesce(is_black, 0) = 0
-    order by is_show desc, attribute_value
-    limit 120
-  `)
+  const attributeIds = rows.map((row) => Number(row.attribute_id))
+  const valuePlaceholders = rows.map(() => "?").join(", ")
+  const valueRows = valuePlaceholders
+    ? db.prepare(`
+      with ranked_values as (
+        select
+          attribute_id,
+          attribute_value_id,
+          attribute_value,
+          attribute_value_en,
+          row_number() over (
+            partition by attribute_id
+            order by is_show desc, attribute_value
+          ) as value_rank
+        from channel_attribute_value
+        where platform = 'SHEIN'
+          and product_type_id = ?
+          and attribute_id in (${valuePlaceholders})
+          and coalesce(is_black, 0) = 0
+      )
+      select attribute_id, attribute_value_id, attribute_value, attribute_value_en
+      from ranked_values
+      where value_rank <= 120
+      order by attribute_id, value_rank
+    `).all(productTypeId, ...attributeIds) as SourceRow[]
+    : []
+  const valuesByAttributeId = new Map<number, AttributeValue[]>()
+  for (const value of valueRows) {
+    const attributeId = Number(value.attribute_id)
+    const values = valuesByAttributeId.get(attributeId) ?? []
+    values.push({
+      attribute_value_id: Number(value.attribute_value_id),
+      attribute_value: String(value.attribute_value ?? ""),
+      attribute_value_en: value.attribute_value_en == null ? null : String(value.attribute_value_en),
+    })
+    valuesByAttributeId.set(attributeId, values)
+  }
 
   return rows.map((row) => ({
     category_id: Number(row.category_id),
@@ -1141,7 +1169,7 @@ function getRequiredAttributes(
     is_size_attribute: asNumber(row.is_size_attribute),
     values_count: Number(row.values_count ?? 0),
     sample_values_json: normalizeText(row.sample_values_json),
-    values: valueStmt.all(productTypeId, Number(row.attribute_id)) as AttributeValue[],
+    values: valuesByAttributeId.get(Number(row.attribute_id)) ?? [],
   })) as RequiredAttribute[]
 }
 
@@ -1745,6 +1773,7 @@ function buildRow({
   fills,
   categoryOverride,
   ignoreStoredCategory = false,
+  onRequiredAttributes,
 }: {
   db: ReturnType<typeof getDb>
   row: SourceRow
@@ -1754,6 +1783,7 @@ function buildRow({
   fills: Map<string, SourceRow>
   categoryOverride?: CategoryOverride | null
   ignoreStoredCategory?: boolean
+  onRequiredAttributes?: (attributes: RequiredAttribute[]) => void
 }): ReadinessRow {
   const spuCode = String(row.spu_code)
   const fields = getProductFields(db, row.content_package_id)
@@ -1795,6 +1825,7 @@ function buildRow({
       error: categoryPair.error,
     }
   const attrs = getRequiredAttributes(db, category.category_id, category.product_type_id)
+  onRequiredAttributes?.(attrs)
   const sizeAttr = findSizeSaleAttribute(attrs)
   const priceConfig = getSheinPriceConfig(db)
   const discountRule = discounts.get(spuCode)
@@ -2379,6 +2410,7 @@ function getReadinessForListing(
     fills,
     categoryOverride: override,
     ignoreStoredCategory: options.ignoreStoredCategory,
+    onRequiredAttributes: options.onRequiredAttributes,
   })
   let adjustedReadiness = readiness
   const listingTitle = normalizeText(listing.title)
@@ -3907,7 +3939,12 @@ function getListingDetail(db: ReturnType<typeof getDb>, listingId: number) {
   `).get(listingId) as ListingRow | undefined
   if (!listing) return null
 
-  const readiness = getReadinessForListing(db, listing)
+  let requiredAttributes: RequiredAttribute[] = []
+  const readiness = getReadinessForListing(db, listing, {
+    onRequiredAttributes: (attributes) => {
+      requiredAttributes = attributes
+    },
+  })
   if (!readiness) return null
   const skcs = db.prepare(`
     select skc.*
@@ -3983,8 +4020,7 @@ function getListingDetail(db: ReturnType<typeof getDb>, listingId: number) {
   const size_chart_attributes = getSizeChartAttributes(db, listing.product_type_id)
   const manual_size_chart = getManualSizeChart(db, listing)
   const image_requirements = getImageRequirements(db, listing)
-  const sale_attributes = getRequiredAttributes(db, asNumber(listing.platform_category_id), asNumber(listing.product_type_id))
-    .filter((attr) => attr.attribute_type === 1)
+  const sale_attributes = requiredAttributes.filter((attr) => attr.attribute_type === 1)
 
   const selectedReadiness = displayReadinessForSelectedSkcs(readiness, skcs, readiness.skcs)
   const sourceSnapshot = parseJsonObject(listing.source_snapshot_json)

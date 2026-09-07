@@ -46,18 +46,25 @@ test("SHEIN cost import parses spreadsheet rows into normalized cost rows", () =
       skcName: "sk25021214656069611",
       skuCode: "I62syz504c6n",
       cost: "59.7",
-      currency: "CNY",
+      currency: "",
       changeReasonCode: "",
       rowNumber: 2,
     },
   ]);
 });
 
+test("SHEIN cost import requires an explicit currency instead of silently submitting CNY", () => {
+  assert.throws(
+    () => buildCostImportRequests([costRow(1, { currency: "" })]),
+    /第 3 行缺少币种/,
+  )
+})
+
 test("SHEIN cost import builds one update request per SPU/currency/reason group", () => {
   const requests = buildCostImportRequests([
     costRow(1, { spuName: "spu-a", skcName: "skc-a", skuCode: "sku-a1" }),
     costRow(2, { spuName: "spu-a", skcName: "skc-a", skuCode: "sku-a2" }),
-    costRow(3, { spuName: "spu-b", skcName: "skc-b", skuCode: "sku-b1", currency: "" }),
+    costRow(3, { spuName: "spu-b", skcName: "skc-b", skuCode: "sku-b1", currency: "EUR" }),
   ]);
 
   assert.equal(requests.rowCount, 3);
@@ -80,7 +87,7 @@ test("SHEIN cost import builds one update request per SPU/currency/reason group"
       {
         skc_name: "skc-b",
         sku_info_list: [
-          { sku_code: "sku-b1", cost: "59.70", currency: "CNY" },
+          { sku_code: "sku-b1", cost: "59.70", currency: "EUR" },
         ],
       },
     ],
