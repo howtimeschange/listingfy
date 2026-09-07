@@ -49,7 +49,7 @@ test("all backend requeue helpers reject active parent jobs", async () => {
 
   assert.match(categoryRoute, /normalizeText\(row\.status\) !== "completed"/);
   assert.match(categoryRoute, /select \*[\s\S]+category_ai_suggestion_job[\s\S]+for update/);
-  assert.equal((draftRoute.match(/readCompletedProductArchiveTask<NonNullable<ReturnType/g) ?? []).length, 5);
+  assert.equal((draftRoute.match(/readCompletedProductArchiveTask<NonNullable<ReturnType/g) ?? []).length, 6);
   assert.match(draftRoute, /from product_archive_sync_job[\s\S]+for update[\s\S]+!== "completed"/);
   assert.match(platformJobs, /shein_platform_product_job[\s\S]+for update[\s\S]+job\.status !== "completed"/);
 });
