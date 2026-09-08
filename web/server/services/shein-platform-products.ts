@@ -1,3 +1,4 @@
+import { isSheinSuccessResult } from "../../../scripts/lib/shein_client.mjs"
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import { getDb } from "../db"
 import { currentUser, type AuthUser } from "../lib/auth"
@@ -251,8 +252,7 @@ function responseTraceId(result?: PlatformRequestResult | null) {
 }
 
 function responseOk(result?: PlatformRequestResult | null) {
-  const code = responseCode(result)
-  return Boolean(result) && result.status >= 200 && result.status < 300 && (!code || code === "0")
+  return isSheinSuccessResult(result)
 }
 
 function readLimit(value: unknown, fallback = 50, max = 200) {
@@ -1446,7 +1446,10 @@ async function runLifecycleCall(
   })
   try {
     const result = await call(context)
-    finishLifecycleOperation(db, operationId, responseOk(result) ? "SUCCESS" : "FAILED", result)
+    const receiptError = !responseCode(result)
+      ? new Error("平台未返回有效业务回执，操作结果未知，请先同步平台数据核实")
+      : undefined
+    finishLifecycleOperation(db, operationId, responseOk(result) ? "SUCCESS" : "FAILED", result, receiptError)
     return { db, context, result, operationId }
   } catch (error) {
     finishLifecycleOperation(db, operationId, "FAILED", null, error)
@@ -3063,6 +3066,15 @@ async function runRetriedOperation(
   }
 }
 
+export function assertLifecycleOperationRetryable(operation: JsonRecord) {
+  if (firstString(operation.status) !== "FAILED") throw new Error("只有失败操作可以重试")
+  const type = firstString(operation.operation_type).replace(/^RETRY_/, "")
+  const writes = ["FIELD_EDIT_PRODUCT", "PARTIAL_EDIT_PRODUCT", "ADD_VARIANTS", "UPDATE_COST", "REVOKE_PRODUCT"]
+  if (writes.includes(type) && !firstString(operation.response_code)) {
+    throw new Error("平台未返回有效业务回执，原操作结果未知；请先同步平台数据核实，不能直接重试")
+  }
+}
+
 export async function retryLifecycleOperation(
   operationId: number,
   payload: unknown = {},
@@ -3072,7 +3084,7 @@ export async function retryLifecycleOperation(
   const context = platformContext(db)
   const original = operationForRetry(db, context, operationId)
   if (!original) throw new Error("生命周期操作不存在")
-  if (firstString(original.status) !== "FAILED") throw new Error("只有失败操作可以重试")
+  assertLifecycleOperationRetryable(original)
   const overridePayload = recordValue(payload)
   const requestPayload = isRecord(overridePayload.requestPayload) || isRecord(overridePayload.request_payload)
     ? recordValue(overridePayload.requestPayload ?? overridePayload.request_payload)

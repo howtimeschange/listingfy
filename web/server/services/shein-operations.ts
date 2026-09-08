@@ -1,3 +1,4 @@
+import { isSheinSuccessResult } from "../../../scripts/lib/shein_client.mjs"
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import { getDb } from "../db"
 import { currentUser, type AuthUser } from "../lib/auth"
@@ -101,9 +102,6 @@ function responseInfo(result?: PlatformRequestResult | { payload: unknown } | nu
   return recordValue(responsePayload(result).info)
 }
 
-function responseCode(result?: PlatformRequestResult | null) {
-  return stringValue(responsePayload(result).code)
-}
 
 function responseMessage(result?: PlatformRequestResult | null) {
   return stringValue(responsePayload(result).msg || responsePayload(result).message)
@@ -114,8 +112,7 @@ function responseTraceId(result?: PlatformRequestResult | null) {
 }
 
 function responseOk(result?: PlatformRequestResult | null) {
-  const code = responseCode(result)
-  return Boolean(result) && Number(result?.status ?? 0) >= 200 && Number(result?.status ?? 0) < 300 && (!code || code === "0")
+  return isSheinSuccessResult(result)
 }
 
 function readLimit(value: unknown, fallback = 50, max = 200) {

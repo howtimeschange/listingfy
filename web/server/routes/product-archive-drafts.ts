@@ -1811,6 +1811,7 @@ function cloneProductArchivePublishJob(job: ProductArchivePublishJob) {
 
 type ProductArchivePublishSlotRunner = <T>(
   run: (signal: AbortSignal) => Promise<T>,
+  options?: { signal?: AbortSignal },
 ) => Promise<T>
 
 export function createProductArchivePublishQueue({
@@ -1819,7 +1820,7 @@ export function createProductArchivePublishQueue({
   getDatabase = getDb,
   prepareDraftForSubmit = (db, draftId, options) => prepareProductArchiveDraftForSubmit(db, draftId, options),
   submitDraft = (_db, draftId, options) => submitProductArchiveDraft(getDatabase(), draftId, options),
-  runWithSlot = (run) => withBackgroundTaskSlot("product_archive_publish", run),
+  runWithSlot = (run, options) => withBackgroundTaskSlot("product_archive_publish", run, options),
   onSnapshot = () => undefined,
   onInternalError = (error: unknown) => console.error("Product archive publish queue internal error", error),
   wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -1940,6 +1941,13 @@ export function createProductArchivePublishQueue({
     },
     signal?: AbortSignal,
   ) {
+    const assertActive = async () => {
+      throwIfTaskAborted(signal)
+      if (store.requiresLease && store.renew && await store.renew(job.id) === false) {
+        throw new ProductArchiveSyncLeaseError()
+      }
+      throwIfTaskAborted(signal)
+    }
     item.started_at ??= new Date(now()).toISOString()
     while (item.attempt_count < item.max_attempts) {
       throwIfTaskAborted(signal)
@@ -1953,6 +1961,7 @@ export function createProductArchivePublishQueue({
           "publish.prepare",
           { jobId: job.id, draftId: item.draft_id, submitMode: job.options.submitMode },
           async () => {
+            await assertActive()
             await prepareDraftForSubmit(getDatabase(), item.draft_id, {
               submitMode: job.options.submitMode,
               includeMultiPlatformSizeFieldInUpdate: fullUpdate,
@@ -1962,7 +1971,7 @@ export function createProductArchivePublishQueue({
         ))
         throwIfTaskAborted(signal)
         const submitResult = await providerLimiter(() => runWithSlot(
-          async () => recordProductArchivePublishSpan(
+          async (slotSignal) => recordProductArchivePublishSpan(
             "publish.submit",
             { jobId: job.id, draftId: item.draft_id, submitMode: job.options.submitMode },
             async () => {
@@ -1971,7 +1980,13 @@ export function createProductArchivePublishQueue({
                 draftId: item.draft_id,
                 submitMode: job.options.submitMode,
               })
+              const beforeWrite = async () => {
+                throwIfTaskAborted(slotSignal)
+                await assertActive()
+              }
+              await beforeWrite()
               const result = await submitDraft(getDatabase(), item.draft_id, {
+                beforeWrite,
                 dryRun: false,
                 submitMode: job.options.submitMode,
                 updateExisting: fullUpdate,
@@ -1984,6 +1999,7 @@ export function createProductArchivePublishQueue({
               return result
             },
           ),
+          { signal },
         ))
         throwIfTaskAborted(signal)
         recordPerformanceSpan("publish.persist", 0, {

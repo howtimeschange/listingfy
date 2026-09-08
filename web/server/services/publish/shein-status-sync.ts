@@ -1,8 +1,8 @@
-import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
+import type { SyncPostgresDatabase } from "../../../../scripts/lib/postgres_db.mjs"
 import { requestSheinWithCredentialsAndRetry } from "../../../../scripts/lib/shein_client.mjs"
 import { resolveSheinCredentials } from "../../lib/platform-config"
 import {
-  markPublishTaskFailed,
+  recordPublishStatusQueryFailure,
   markPublishTaskStatusSynced,
 } from "./publish-job-service"
 import { upsertAuditStatusSnapshots } from "../shein-operations"
@@ -120,6 +120,32 @@ function taskForStatusSync(db: SyncPostgresDatabase, taskId: number) {
   `).get(taskId) as SourceRow | undefined
 }
 
+// All audit polling entry points share this error handling. A failed query
+// says nothing about whether the preceding publish succeeded.
+export async function queryPublishTaskStatus(
+  db: SyncPostgresDatabase, taskId: number, body: unknown,
+  request = requestSheinWithCredentialsAndRetry,
+) {
+  let result
+  try {
+    result = await request("/open-api/goods/query-document-state", {
+      body,
+      credentials: resolveSheinCredentials(db),
+    })
+  } catch (error) {
+    result = { status: 502, payload: { code: "SHEIN_STATUS_QUERY_FAILED", msg: error instanceof Error ? error.message : String(error) } }
+  }
+  const httpOk = result.status >= 200 && result.status < 300
+  const code = responseCode(result.payload)
+  if (!httpOk || code !== "0") {
+    const errorCode = !httpOk && code === "0" ? `HTTP_${result.status}` : code || "SHEIN_STATUS_QUERY_FAILED"
+    const message = responseMessage(result.payload) || "SHEIN 审核状态查询失败"
+    recordPublishStatusQueryFailure(db, { taskId, errorCode, errorMessage: message })
+    return { ...result, payload: { ...parseJsonObject(result.payload), code: errorCode, msg: message } }
+  }
+  return result
+}
+
 export async function syncPublishTaskStatus(db: SyncPostgresDatabase, taskId: number) {
   const task = taskForStatusSync(db, taskId)
   if (!task) {
@@ -152,19 +178,11 @@ export async function syncPublishTaskStatus(db: SyncPostgresDatabase, taskId: nu
       },
     ],
   }
-  const result = await requestSheinWithCredentialsAndRetry("/open-api/goods/query-document-state", {
-    body,
-    credentials: resolveSheinCredentials(db),
-  })
+  const result = await queryPublishTaskStatus(db, taskId, body)
   const code = responseCode(result.payload)
   if (code !== "0") {
     const message = responseMessage(result.payload) || "SHEIN 审核状态查询失败"
-    markPublishTaskFailed(db, {
-      taskId,
-      responsePayload: result.payload,
-      errorCode: code || String(result.status),
-      errorMessage: message,
-    })
+
     return {
       ok: false,
       task_id: taskId,

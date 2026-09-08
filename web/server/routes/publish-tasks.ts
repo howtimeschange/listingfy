@@ -3,10 +3,10 @@ import type { Context } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
 import { requirePermission } from "../lib/auth"
-import { requestSheinWithRetry } from "../../../scripts/lib/shein_client.mjs"
+import { queryPublishTaskStatus } from "../services/publish/shein-status-sync"
 import {
-  markPublishTaskFailed,
   markPublishTaskStatusSynced,
+  retryPublishTask,
   refreshBatchPublishSummary as refreshBatchPublishSummaryForBatch,
 } from "../services/publish/publish-job-service"
 import {
@@ -353,7 +353,7 @@ publishTasks.post("/audit-status/sync", async (c) => {
         },
       ],
     }
-    const result = await requestSheinWithRetry("/open-api/goods/query-document-state", { body })
+    const result = await queryPublishTaskStatus(db, Number(task.id), body)
     if (responseCode(result.payload) === "0") {
       upsertAuditStatusSnapshots(db, {
         sourceType: "PUBLISH_TASK",
@@ -389,12 +389,6 @@ publishTasks.post("/audit-status/sync", async (c) => {
       results.push({ task_id: task.id, ok: true, status: nextStatus })
     } else {
       const message = responseMessage(result.payload) || "SHEIN 审核状态查询失败"
-      markPublishTaskFailed(db, {
-        taskId: Number(task.id),
-        responsePayload: result.payload,
-        errorCode: responseCode(result.payload) || String(result.status),
-        errorMessage: message,
-      })
       results.push({ task_id: task.id, ok: false, error_message: message })
     }
   }
@@ -468,71 +462,14 @@ publishTasks.post("/:id/retry", (c) => {
   requirePermission(c, "PUBLISH_RUN")
   const db = getDb()
   const taskId = Number(c.req.param("id"))
-  const task = db.prepare(`
-    ${taskSelect()}
-    ${taskBaseFrom()}
-    where task.id = ?
-  `).get(taskId) as SourceRow | undefined
-  if (!task) {
-    throw new HTTPException(404, { message: "发布任务不存在" })
-  }
-  const status = normalizeText(task.status)
-  if (!["PUBLISH_FAILED", "FAILED", "REJECTED", "PARTIALLY_APPROVED"].includes(status)) {
-    throw new HTTPException(400, { message: "只有失败或驳回任务可以从任务页重提" })
-  }
-
-  const latestVersion = db.prepare(`
-    select coalesce(max(version_no), 0) + 1 as next_no
-    from listing_publish_version
-    where listing_id = ?
-  `).get(task.listing_id) as SourceRow
-  const requestPayload = parseJsonObject(task.request_payload_json)
-  const responsePayload = parseJsonObject(task.response_payload_json)
-  const result = db.prepare(`
-    insert into listing_publish_version (
-      listing_id,
-      version_no,
-      version_type,
-      status,
-      change_summary,
-      source_snapshot_json,
-      request_payload_json,
-      response_payload_json,
-      error_code,
-      error_message,
-      created_by
-    )
-    values (?, ?, 'RETRY', 'DRAFT', ?, ?, ?, ?, ?, ?, 'codex')
-  `).run(
-    task.listing_id,
-    Number(latestVersion.next_no ?? 1),
-    `从发布任务 #${task.id} 失败结果重提`,
-    JSON.stringify({
-      retry_from_task_id: task.id,
-      retry_from_version_id: task.publish_version_id,
-      retry_reason: task.error_message,
-      listing_status: task.listing_status,
-      validation_status: task.validation_status,
-    }),
-    JSON.stringify(requestPayload),
-    JSON.stringify(responsePayload),
-    normalizeText(task.error_code) || null,
-    normalizeText(task.error_message) || null,
-  )
-  const version = db.prepare("select * from listing_publish_version where id = ?").get(result.lastInsertRowid) as SourceRow
-  db.prepare(`
-    update listing
-    set status = 'READY_TO_VALIDATE',
-      validation_status = 'NOT_VALIDATED',
-      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-    where id = ?
-  `).run(task.listing_id)
-  updateListingAndBucketStatus(db, task.listing_id, "READY_TO_VALIDATE")
+  const result = retryPublishTask(db, taskId)
+  const listingId = result.task.listing_id
   return c.json({
     ok: true,
-    version,
-    listing_id: task.listing_id,
-    redirect_to: `/pre-publish-validation/${task.listing_id}`,
+    version: result.version,
+    listing_id: listingId,
+    deduplicated: !result.created,
+    redirect_to: `/pre-publish-validation/${listingId}`,
   })
 })
 
@@ -562,16 +499,10 @@ publishTasks.post("/:id/sync-status", async (c) => {
       },
     ],
   }
-  const result = await requestSheinWithRetry("/open-api/goods/query-document-state", { body })
+  const result = await queryPublishTaskStatus(db, Number(task.id), body)
   const code = responseCode(result.payload)
   if (code !== "0") {
     const message = responseMessage(result.payload) || "SHEIN 审核状态查询失败"
-    markPublishTaskFailed(db, {
-      taskId: Number(task.id),
-      responsePayload: result.payload,
-      errorCode: code || String(result.status),
-      errorMessage: message,
-    })
     throw new HTTPException(502, { message })
   }
   const parsedStates = parseSheinDocumentStates(result.payload)

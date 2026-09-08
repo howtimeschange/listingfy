@@ -53,6 +53,8 @@ interface PublishTask {
   platform_version: string | null
   error_code: string | null
   error_message: string | null
+  status_sync_error_message?: string | null
+  status_sync_attempted_at?: string | null
   started_at: string | null
   finished_at: string | null
   created_at: string
@@ -452,6 +454,11 @@ export default function PublishTasksPage() {
                         </div>
                       </TableCell>
                       <TableCell className="max-w-[340px]">
+                        {item.status_sync_error_message && (
+                          <p className="mb-2 text-xs text-amber-700">
+                            审核查询失败，保留原状态：{item.status_sync_error_message}
+                          </p>
+                        )}
                         {item.error_message ? (
                           <div className="space-y-1">
                             <Badge variant="outline" className="border-[#f1cccc] bg-[#fff1f1] text-[#d45656]">

@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 import { HTTPException } from "hono/http-exception"
 import { getDb } from "../db"
-import { hashPassword, requirePermission } from "../lib/auth"
+import { hashPassword, resetUserPassword, requirePermission } from "../lib/auth"
 import { auditFromContext } from "../lib/audit"
 
 const users = new Hono()
@@ -149,15 +149,7 @@ users.post("/:id/reset-password", async (c) => {
   const userId = Number(c.req.param("id"))
   const body = await c.req.json().catch(() => ({})) as { password?: string }
   const password = String(body.password ?? "")
-  if (password.length < 8) throw new HTTPException(400, { message: "密码至少 8 位" })
-  const { salt, hash } = hashPassword(password)
-  getDb().prepare(`
-    update app_user
-    set password_hash = ?,
-      password_salt = ?,
-      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-    where id = ?
-  `).run(hash, salt, userId)
+  resetUserPassword(getDb(), userId, password)
   auditFromContext(c, {
     module: "USER",
     action: "RESET_PASSWORD",

@@ -41,6 +41,9 @@ async function createTempDb() {
       failure_category text,
       failure_fingerprint text,
       retryable integer not null default 0,
+      status_sync_error_code text,
+      status_sync_error_message text,
+      status_sync_attempted_at text,
       last_status_synced_at text
     );
     create unique index ux_listing_publish_task_idempotency

@@ -236,6 +236,13 @@ export async function requestSheinWithCredentialsAndRetry(path, options = {}) {
   return lastResult;
 }
 
+export function isSheinSuccessResult(result) {
+  const payload = result?.payload;
+  return result?.status >= 200 && result?.status < 300
+    && payload !== null && typeof payload === "object" && !Array.isArray(payload)
+    && (payload.code === "0" || payload.code === 0);
+}
+
 export function assertSheinSuccess(result, context) {
   if (result?.payload?.code !== "0") {
     const code = result?.payload?.code ?? result?.status;

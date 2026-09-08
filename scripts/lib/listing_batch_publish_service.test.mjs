@@ -120,6 +120,9 @@ async function createTempDb() {
       failure_category text,
       failure_fingerprint text,
       retryable integer not null default 0,
+      status_sync_error_code text,
+      status_sync_error_message text,
+      status_sync_attempted_at text,
       last_status_synced_at text
     );
     create unique index ux_listing_publish_task_idempotency
@@ -332,4 +335,77 @@ test("markPublishTransportUnknown closes publishing state without allowing blind
   } finally {
     await cleanup();
   }
+});
+
+
+function addFailedTask(db) {
+  db.prepare("insert into listing_publish_version(id,listing_id,version_no,version_type,status) values(201,101,1,'PUBLISH','FAILED')").run();
+  return service.ensurePublishTask(db,{listingId:101,publishVersionId:201,status:"PUBLISH_FAILED",requestPayload:{old:true}}).task;
+}
+
+test("both retry entry points reject obsolete failures after a newer task or draft", async () => {
+  for (const newerStatus of ["APPROVED","UNDER_REVIEW","PUBLISH_SUBMITTED","PUBLISH_RESULT_UNKNOWN","PENDING_CONFIRM","PUBLISH_FAILED",null]) {
+    const {db,cleanup}=await createTempDb();
+    try {
+      const old=addFailedTask(db);
+      db.prepare("update listing_publish_task set retryable=1 where id=?").run(old.id);
+      db.prepare("insert into listing_publish_version(id,listing_id,version_no,version_type) values(202,101,2,'PUBLISH')").run();
+      if(newerStatus) service.ensurePublishTask(db,{listingId:101,publishVersionId:202,status:newerStatus,requestPayload:{current:true}});
+      // Polling an old failure updates timestamps, but must not make it current.
+      db.prepare("update listing_publish_task set updated_at='2099-01-01' where id=?").run(old.id);
+      db.prepare("update listing set status=? where id=101").run(newerStatus || "READY_TO_VALIDATE");
+      assert.throws(()=>service.retryPublishTask(db,old.id),/不能重试历史失败任务/);
+      const result=service.retryFailedBatchTasks(db,{platform:"SHEIN",batchNo:"BATCH-1",retryableOnly:true});
+      assert.equal(result.created_count,0, String(newerStatus));
+      assert.equal(db.prepare("select count(*) as n from listing_publish_version").get().n,2);
+      assert.equal(db.prepare("select status from listing where id=101").get().status,newerStatus || "READY_TO_VALIDATE");
+    } finally {await cleanup();}
+  }
+});
+
+test("single task retries are idempotent and cannot reset an already validated retry", async () => {
+  const {db,cleanup}=await createTempDb();
+  try {
+    const task=addFailedTask(db);
+    const first=service.retryPublishTask(db,task.id);
+    db.prepare("update listing set status='READY_TO_PUBLISH',validation_status='PASSED' where id=101").run();
+    const repeated=service.retryPublishTask(db,task.id);
+    assert.equal(first.created,true);
+    assert.equal(repeated.created,false);
+    assert.equal(first.retry_task.id,repeated.retry_task.id);
+    assert.equal(db.prepare("select status from listing where id=101").get().status,"READY_TO_PUBLISH");
+  } finally {await cleanup();}
+});
+
+test("audit query errors preserve publish state, payload and retry policy", async () => {
+  const {syncPublishTaskStatus,queryPublishTaskStatus}=await import("../../web/server/services/publish/shein-status-sync.ts");
+  const {db,cleanup}=await createTempDb();
+  const originalFetch=globalThis.fetch;
+  try {
+    const task=service.ensurePublishTask(db,{listingId:101,publishVersionId:201,status:"UNDER_REVIEW",requestPayload:{product:"TEST"}}).task;
+    db.exec("create table platform_identity(id integer,platform text,channel_account_id integer,local_type text,local_id integer,platform_type text,platform_id text); insert into platform_identity values(1,'SHEIN',1,'listing',101,'SPU','TEST')");
+    const wrapper={prepare(sql){if(sql.includes("from platform_integration"))return {get:()=>({id:1,base_url:"https://test.invalid",open_key_id:"test",secret_key:"test"})}; return db.prepare(sql);}};
+    for (const payload of [{code:"429",msg:"rate limit"}, "<html>gateway error</html>", {}]) {
+      globalThis.fetch=async()=>new Response(typeof payload === "string" ? payload : JSON.stringify(payload),{status:payload.code === "429" ? 429 : 200});
+      const result=await syncPublishTaskStatus(wrapper,task.id);
+      assert.equal(result.ok,false);
+      const row=db.prepare("select * from listing_publish_task where id=?").get(task.id);
+      assert.equal(row.status,"UNDER_REVIEW");
+      assert.equal(row.retryable,0);
+      assert.equal(row.error_code,null);
+      assert.equal(row.response_payload_json,"{}");
+      assert.ok(row.status_sync_error_code);
+      assert.ok(row.status_sync_attempted_at);
+    }
+    await queryPublishTaskStatus(wrapper,task.id,{},async()=>{throw new Error("socket disconnected")});
+    assert.equal(db.prepare("select status from listing_publish_task where id=?").get(task.id).status,"UNDER_REVIEW");
+    assert.equal(db.prepare("select status_sync_error_message from listing_publish_task where id=?").get(task.id).status_sync_error_message,"socket disconnected");
+    const invalidHttp=await queryPublishTaskStatus(wrapper,task.id,{},async()=>({status:503,payload:{code:"0"}}));
+    assert.equal(invalidHttp.payload.code,"HTTP_503");
+    service.markPublishTaskStatusSynced(db,{taskId:task.id,status:"APPROVED",responsePayload:{code:"0"}});
+    const recovered=db.prepare("select * from listing_publish_task where id=?").get(task.id);
+    assert.equal(recovered.status,"APPROVED");
+    assert.equal(recovered.status_sync_error_code,null);
+    assert.equal(recovered.status_sync_error_message,null);
+  } finally {globalThis.fetch=originalFetch; await cleanup();}
 });

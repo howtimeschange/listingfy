@@ -129,6 +129,23 @@ export function hashPassword(password: string, salt = crypto.randomBytes(16).toS
   return { salt, hash }
 }
 
+export function resetUserPassword(db: SyncPostgresDatabase, userId: number, password: string) {
+  if (!Number.isInteger(userId) || userId <= 0) throw new HTTPException(400, { message: "用户 ID 不合法" })
+  if (password.length < 8) throw new HTTPException(400, { message: "密码至少 8 位" })
+  const { salt, hash } = hashPassword(password)
+  db.transaction(() => {
+    const result = db.prepare(`
+      update app_user
+      set password_hash = ?, password_salt = ?,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      where id = ?
+    `).run(hash, salt, userId)
+    if (!result.changes) throw new HTTPException(404, { message: "用户不存在" })
+    db.prepare("delete from user_session where user_id = ?").run(userId)
+    clearLoginFailures(db, userId)
+  })()
+}
+
 export function verifyPassword(password: string, salt: string, expectedHash: string) {
   const actual = crypto.scryptSync(password, salt, 64)
   const expected = Buffer.from(expectedHash, "hex")
@@ -242,9 +259,8 @@ export function clearLoginFailures(db: SyncPostgresDatabase, userId: number) {
   `).run(userId)
 }
 
-export async function requireAuth(c: Context, next: Next) {
-  const { getDb } = await import("../db")
-  const db = getDb()
+export async function requireAuth(c: Context, next: Next, database?: SyncPostgresDatabase) {
+  const db = database ?? (await import("../db")).getDb()
   const sessionId = getCookie(c, SESSION_COOKIE)
   if (!sessionId) throw new HTTPException(401, { message: "请先登录" })
 
@@ -272,13 +288,22 @@ export async function requireAuth(c: Context, next: Next) {
   await next()
 }
 
-export function createSession(c: Context, db: SyncPostgresDatabase, userId: number) {
+export function createSession(c: Context, db: SyncPostgresDatabase, userId: number, expectedPasswordHash?: string) {
   const sessionId = crypto.randomBytes(32).toString("hex")
   const expiry = expiresAt()
-  db.prepare(`
-    insert into user_session(id, user_id, expires_at, created_at, last_seen_at)
-    values (?, ?, ?, ?, ?)
-  `).run(sessionId, userId, expiry, nowIso(), nowIso())
+  db.transaction(() => {
+    if (expectedPasswordHash !== undefined) {
+      const locking = typeof (db as unknown as { queryResult?: unknown }).queryResult === "function" ? " for update" : ""
+      const user = db.prepare(`
+        select id from app_user where id = ? and password_hash = ? and status = 'ACTIVE'${locking}
+      `).get(userId, expectedPasswordHash)
+      if (!user) throw new HTTPException(401, { message: "密码或账号状态已变更，请重新登录" })
+    }
+    db.prepare(`
+      insert into user_session(id, user_id, expires_at, created_at, last_seen_at)
+      values (?, ?, ?, ?, ?)
+    `).run(sessionId, userId, expiry, nowIso(), nowIso())
+  })()
   setCookie(c, SESSION_COOKIE, sessionId, {
     path: "/",
     httpOnly: true,

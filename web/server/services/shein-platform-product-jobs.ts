@@ -1,3 +1,4 @@
+import { isSheinSuccessResult } from "../../../scripts/lib/shein_client.mjs"
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import { randomUUID } from "node:crypto"
 import { mkdir, unlink } from "node:fs/promises"
@@ -854,10 +855,7 @@ function responsePayload(result: unknown) {
 }
 
 function responseOk(result: unknown) {
-  const record = recordValue(result)
-  const status = Number(record.status ?? 0)
-  const code = stringValue(responsePayload(result).code)
-  return status >= 200 && status < 300 && (!code || code === "0")
+  return isSheinSuccessResult(result)
 }
 
 function responseMessage(result: unknown) {

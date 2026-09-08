@@ -260,7 +260,8 @@ test("publish queue renews a durable lease while provider submission is still ru
 });
 
 test("publish queue does not complete after its durable lease renewal fails", async () => {
-  const store = createLeasedMemoryStore({ renew: () => false });
+  let submissionIsRunning = false;
+  const store = createLeasedMemoryStore({ renew: () => !submissionIsRunning });
   let resolveSubmission;
   let submissionStartedResolve;
   const submissionStarted = new Promise((resolve) => {
@@ -274,6 +275,7 @@ test("publish queue does not complete after its durable lease renewal fails", as
     getDatabase: () => createFakeDb(),
     prepareDraftForSubmit: () => ({ payload: {}, validation: { summary: { blocker_count: 0 } } }),
     submitDraft: async () => {
+      submissionIsRunning = true;
       submissionStartedResolve();
       await submission;
       return { ok: true, status: "readback_verified" };
@@ -338,4 +340,62 @@ test("publish page describes submitting and readback instead of accepted-submit 
   assert.match(source, /提交后继续等待深绘回读校验/);
   assert.match(source, /提交中\/回读中/);
   assert.doesNotMatch(source, /提交受理即视为发布成功/);
+});
+
+
+test("stopping while waiting for a global slot prevents any provider submission", async () => {
+  const { acquireBackgroundTaskSlot, backgroundTaskLimiterSnapshot } = await import("../../web/server/lib/background-task-limiter.ts");
+  const previous = process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
+  process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = "1";
+  const release = await acquireBackgroundTaskSlot("product_archive_ocr");
+  let stopped = false;
+  let leaseLost = false;
+  let submissions = 0;
+  const store = createLeasedMemoryStore({ renew: () => !stopped });
+  const queue = createProductArchivePublishQueue({
+    store,
+    getDatabase: () => createFakeDb(),
+    prepareDraftForSubmit: () => ({}),
+    submitDraft: async () => { submissions++; return { ok: true, status: "readback_verified" }; },
+    onInternalError: (_error, context) => { if (context?.phase === "lease_renew") leaseLost = true; },
+  });
+  try {
+    queue.enqueue({ targets: [{ draftId: 501, spuCode: "STOP-501" }], actor: null, ipAddress: null, maxAttempts: 1 });
+    for (let i = 0; i < 100 && backgroundTaskLimiterSnapshot().queuedCount === 0; i++) await delay(2);
+    assert.equal(backgroundTaskLimiterSnapshot().queuedCount, 1);
+    stopped = true;
+    for (let i = 0; i < 100 && !leaseLost; i++) await delay(2);
+    assert.equal(leaseLost, true);
+    release();
+    await delay(20);
+    assert.equal(submissions, 0);
+    assert.equal(backgroundTaskLimiterSnapshot().queuedCount, 0);
+  } finally {
+    release();
+    if (previous === undefined) delete process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE;
+    else process.env.LISTINGIFY_BACKGROUND_MAX_ACTIVE = previous;
+  }
+});
+
+test("publish checks its lease at the final write boundary even before the next heartbeat", async () => {
+  let stopped = false;
+  let providerWrites = 0;
+  const store = createLeasedMemoryStore({ leaseRenewIntervalMs: 10000, renew: () => !stopped });
+  const queue = createProductArchivePublishQueue({
+    store,
+    getDatabase: () => createFakeDb(),
+    prepareDraftForSubmit: () => ({}),
+    submitDraft: async (_db, _id, options) => {
+      stopped = true; // Simulate stop during duplicate lookup.
+      await options.beforeWrite();
+      providerWrites++;
+      return { ok: true, status: "readback_verified" };
+    },
+    runWithSlot: (run) => run(new AbortController().signal),
+    onInternalError: () => {},
+  });
+  queue.enqueue({ targets: [{ draftId: 502, spuCode: "STOP-502" }], actor: null, ipAddress: null, maxAttempts: 1 });
+  await delay(30);
+  assert.equal(stopped, true);
+  assert.equal(providerWrites, 0);
 });

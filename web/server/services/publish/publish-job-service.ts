@@ -1,4 +1,5 @@
-import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
+import { HTTPException } from "hono/http-exception"
+import type { SyncPostgresDatabase } from "../../../../scripts/lib/postgres_db.mjs"
 
 export type PublishTaskRow = Record<string, unknown> & {
   id: number
@@ -445,6 +446,17 @@ export function markPublishTaskFailed(db: SyncPostgresDatabase, input: MarkPubli
   return { task: taskById(db, input.taskId), failure }
 }
 
+export function recordPublishStatusQueryFailure(
+  db: SyncPostgresDatabase,
+  input: { taskId: number; errorCode: string; errorMessage: string },
+) {
+  db.prepare(`
+    update listing_publish_task
+    set status_sync_error_code = ?, status_sync_error_message = ?, status_sync_attempted_at = ?
+    where id = ?
+  `).run(input.errorCode, input.errorMessage, nowIso(), input.taskId)
+}
+
 export function markPublishTaskStatusSynced(db: SyncPostgresDatabase, input: MarkPublishTaskStatusSyncedInput) {
   const now = input.now ?? new Date()
   const errorCode = normalizeText(input.errorCode)
@@ -462,6 +474,9 @@ export function markPublishTaskStatusSynced(db: SyncPostgresDatabase, input: Mar
       failure_fingerprint = ?,
       retryable = ?,
       next_retry_at = null,
+      status_sync_error_code = null,
+      status_sync_error_message = null,
+      status_sync_attempted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
       last_status_synced_at = ?,
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     where id = ?
@@ -617,116 +632,98 @@ function nextVersionNo(db: SyncPostgresDatabase, listingId: number) {
   return Number(row.next_no ?? 1)
 }
 
+const RETRYABLE_PUBLISH_STATUSES = new Set(["PUBLISH_FAILED", "FAILED", "REJECTED", "PARTIALLY_APPROVED"])
+const RETRY_FENCED_LISTING_STATUSES = new Set(["APPROVED", "PUBLISHING", "PUBLISH_SUBMITTED", "SUBMITTED", "UNDER_REVIEW", "PUBLISH_RESULT_UNKNOWN", "PUBLISHED"])
+
+function retryPublishTaskInTransaction(db: SyncPostgresDatabase, taskId: number, now: Date) {
+  const original = taskById(db, taskId)
+  if (!original) throw new HTTPException(404, { message: "发布任务不存在" })
+  // Publish also locks the listing, so recheck tasks/versions after this lock.
+  const locking = typeof (db as unknown as { queryResult?: unknown }).queryResult === "function" ? " for update" : ""
+  const listing = db.prepare(`select * from listing where id = ?${locking}`).get(original.listing_id) as SourceRow | undefined
+  const task = taskById(db, taskId)
+  if (!listing || !task) throw new HTTPException(404, { message: "发布任务不存在" })
+  if (!RETRYABLE_PUBLISH_STATUSES.has(task.status)) {
+    throw new HTTPException(409, { message: "只有失败或驳回任务可以重试" })
+  }
+  if (RETRY_FENCED_LISTING_STATUSES.has(normalizeText(listing.status))) {
+    throw new HTTPException(409, { message: "商品已发布、审核中或发布结果未知，不能重试历史失败任务" })
+  }
+  const latestTask = db.prepare(`
+    select * from listing_publish_task
+    where listing_id = ? and platform = ? and task_type = ?
+    order by id desc limit 1
+  `).get(task.listing_id, task.platform, task.task_type) as PublishTaskRow
+  const latestVersion = db.prepare(`
+    select * from listing_publish_version where listing_id = ?
+    order by version_no desc, id desc limit 1
+  `).get(task.listing_id) as SourceRow | undefined
+  const retryVersion = existingRetryForTask(db, taskId)
+  const isExistingPendingRetry = retryVersion
+    && Number(latestVersion?.id) === Number(retryVersion.id)
+    && Number(latestTask.publish_version_id) === Number(retryVersion.id)
+    && latestTask.status === "PENDING_CONFIRM"
+  if (isExistingPendingRetry) return { task, version: retryVersion, retry_task: latestTask, created: false }
+  if (Number(latestTask.id) !== taskId || (latestVersion && Number(latestVersion.id) !== Number(task.publish_version_id))) {
+    throw new HTTPException(409, { message: "已有更新的发布任务或版本，不能重试历史失败任务" })
+  }
+  const requestPayload = parseJsonObject(task.request_payload_json)
+  if (!Object.keys(requestPayload).length) throw new HTTPException(409, { message: "原失败任务缺少 request payload" })
+  const result = db.prepare(`
+    insert into listing_publish_version (
+      listing_id, version_no, version_type, status, change_summary, source_snapshot_json,
+      request_payload_json, response_payload_json, error_code, error_message, created_by
+    ) values (?, ?, 'RETRY', 'DRAFT', ?, ?, ?, ?, ?, ?, 'codex')
+  `).run(
+    task.listing_id, nextVersionNo(db, task.listing_id), `重试发布任务 #${task.id}`,
+    json({ retry_from_task_id: task.id, retry_from_version_id: task.publish_version_id, retry_reason: task.error_message, batch_no: listing.listing_batch_no }),
+    json(requestPayload), normalizeText(task.response_payload_json) || "{}",
+    normalizeText(task.error_code) || null, normalizeText(task.error_message) || null,
+  )
+  const version = db.prepare("select * from listing_publish_version where id = ?").get(result.lastInsertRowid) as SourceRow
+  const ensured = ensurePublishTask(db, {
+    listingId: task.listing_id, publishVersionId: Number(version.id), platform: task.platform,
+    taskType: task.task_type, status: "PENDING_CONFIRM", attemptCount: 0, requestPayload,
+  })
+  if (!ensured.created) throw new HTTPException(409, { message: "已有其他发布任务，请刷新后重试" })
+  db.prepare(`
+    update listing_publish_task set last_retry_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?
+  `).run(nowIso(now), task.id)
+  db.prepare(`
+    update listing set status = 'READY_TO_VALIDATE', validation_status = 'NOT_VALIDATED',
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?
+  `).run(task.listing_id)
+  if (listing.spu_code) {
+    db.prepare(`
+      update shein_product_bucket set latest_listing_id = ?, latest_publish_status = 'READY_TO_VALIDATE',
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where spu_code = ?
+    `).run(task.listing_id, listing.spu_code)
+  }
+  return { task, version, retry_task: ensured.task, created: true }
+}
+
+export function retryPublishTask(db: SyncPostgresDatabase, taskId: number, now = new Date()) {
+  return db.transaction(() => retryPublishTaskInTransaction(db, taskId, now))()
+}
+
 export function retryFailedBatchTasks(db: SyncPostgresDatabase, input: RetryFailedBatchTasksInput) {
   const platform = platformOf(input.platform)
   const batchNo = normalizeText(input.batchNo)
-  const now = input.now ?? new Date()
-  const created: Array<{ task: PublishTaskRow; version: SourceRow; retry_task: PublishTaskRow }> = []
-  const existing: Array<{ task: PublishTaskRow; version: SourceRow; retry_task: PublishTaskRow | null }> = []
+  const created: Array<ReturnType<typeof retryPublishTaskInTransaction>> = []
+  const existing: Array<ReturnType<typeof retryPublishTaskInTransaction>> = []
   const skipped: Array<{ task_id: number; listing_id: number; reason: string }> = []
-
-  const transaction = db.transaction(() => {
-    const candidates = failedBatchTasksForRetry(db, { ...input, platform, batchNo })
-    const existingRetryRows = db.prepare(`
-      select task.*
-      from listing_publish_task task
-      join listing on listing.id = task.listing_id
-      join listing_publish_version version on version.id = task.publish_version_id
-      where listing.platform = ?
-        and listing.listing_batch_no = ?
-        and version.version_type = 'RETRY'
-        and task.status in ('PENDING_CONFIRM', 'PUBLISHING', 'PUBLISH_SUBMITTED', 'UNDER_REVIEW')
-    `).all(platform, batchNo) as PublishTaskRow[]
-    const existingRetryByListing = new Map(existingRetryRows.map((task) => [Number(task.listing_id), task]))
-
-    for (const task of candidates) {
-      const listingId = Number(task.listing_id)
-      const inFlightRetryTask = existingRetryByListing.get(listingId)
-      if (inFlightRetryTask) {
-        const version = db.prepare("select * from listing_publish_version where id = ?").get(inFlightRetryTask.publish_version_id) as SourceRow
-        existing.push({ task, version, retry_task: inFlightRetryTask })
-        continue
-      }
-
-      let retryVersion = existingRetryForTask(db, Number(task.id))
-      if (!retryVersion) {
-        const requestPayload = parseJsonObject(task.request_payload_json)
-        if (Object.keys(requestPayload).length === 0) {
-          skipped.push({ task_id: Number(task.id), listing_id: listingId, reason: "原失败任务缺少 request payload" })
-          continue
-        }
-        const result = db.prepare(`
-          insert into listing_publish_version (
-            listing_id,
-            version_no,
-            version_type,
-            status,
-            change_summary,
-            source_snapshot_json,
-            request_payload_json,
-            response_payload_json,
-            error_code,
-            error_message,
-            created_by
-          )
-          values (?, ?, 'RETRY', 'DRAFT', ?, ?, ?, ?, ?, ?, 'codex')
-        `).run(
-          listingId,
-          nextVersionNo(db, listingId),
-          `批量重试发布任务 #${task.id}`,
-          JSON.stringify({
-            retry_from_task_id: task.id,
-            retry_from_version_id: task.publish_version_id,
-            retry_reason: task.error_message,
-            batch_no: batchNo,
-          }),
-          JSON.stringify(requestPayload),
-          normalizeText(task.response_payload_json) || "{}",
-          normalizeText(task.error_code) || null,
-          normalizeText(task.error_message) || null,
-        )
-        retryVersion = db.prepare("select * from listing_publish_version where id = ?").get(result.lastInsertRowid) as SourceRow
-      }
-
-      const ensured = ensurePublishTask(db, {
-        listingId,
-        publishVersionId: Number(retryVersion.id),
-        platform,
-        taskType: "PUBLISH_LISTING",
-        status: "PENDING_CONFIRM",
-        attemptCount: 0,
-        requestPayload: parseJsonObject(retryVersion.request_payload_json),
-      })
-      db.prepare(`
-        update listing_publish_task
-        set last_retry_at = ?,
-          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        where id = ?
-      `).run(nowIso(now), task.id)
-      db.prepare(`
-        update listing
-        set status = 'READY_TO_VALIDATE',
-          validation_status = 'NOT_VALIDATED',
-          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        where id = ?
-      `).run(listingId)
-      if (ensured.created) created.push({ task, version: retryVersion, retry_task: ensured.task })
-      else existing.push({ task, version: retryVersion, retry_task: ensured.task })
+  // Each retry is atomic. A stale candidate must not roll back other listings.
+  for (const task of failedBatchTasksForRetry(db, { ...input, platform, batchNo })) {
+    try {
+      const result = retryPublishTask(db, Number(task.id), input.now ?? new Date())
+      if (result.created) created.push(result)
+      else existing.push(result)
+    } catch (error) {
+      if (!(error instanceof HTTPException) || ![404, 409].includes(error.status)) throw error
+      skipped.push({ task_id: Number(task.id), listing_id: Number(task.listing_id), reason: error.message })
     }
-  })
-  transaction()
-
-  const summary = refreshBatchPublishSummary(db, { platform, batchNo })
-  return {
-    ok: true,
-    platform,
-    batch_no: batchNo,
-    created_count: created.length,
-    existing_count: existing.length,
-    skipped_count: skipped.length,
-    created,
-    existing,
-    skipped,
-    summary,
   }
+  const summary = refreshBatchPublishSummary(db, { platform, batchNo })
+  return { ok: true, platform, batch_no: batchNo, created_count: created.length, existing_count: existing.length,
+    skipped_count: skipped.length, created, existing, skipped, summary }
 }

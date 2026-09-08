@@ -39,7 +39,7 @@ auth.post("/login", async (c) => {
     throw new HTTPException(401, { message: "账号或密码错误" })
   }
 
-  createSession(c, db, user.id)
+  createSession(c, db, user.id, user.password_hash)
   clearLoginFailures(db, user.id)
   db.prepare(`
     update app_user

@@ -36,6 +36,8 @@ interface PublishTaskDetail {
     platform_version: string | null
     error_code: string | null
     error_message: string | null
+    status_sync_error_message?: string | null
+    status_sync_attempted_at?: string | null
     started_at: string | null
     finished_at: string | null
     created_at: string
@@ -242,6 +244,13 @@ export default function PublishTaskDetailPage() {
             <CardTitle>失败定位</CardTitle>
           </CardHeader>
           <CardContent>
+            {task.status_sync_error_message && (
+              <div className="mb-3 rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                <p>审核查询失败，原发布状态保持不变。</p>
+                <p className="mt-1">{task.status_sync_error_message}</p>
+                <p className="mt-1 text-xs">查询时间：{formatDateTime(task.status_sync_attempted_at ?? null)}</p>
+              </div>
+            )}
             {task.error_message ? (
               <div className="space-y-3">
                 <Badge variant="outline" className="border-[#f1cccc] bg-[#fff1f1] text-[#d45656]">

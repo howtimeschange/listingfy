@@ -206,6 +206,7 @@ function assertProductArchiveSubmitModeExecutable(mode: ProductArchiveSubmitMode
 }
 
 interface SubmitOptions {
+  beforeWrite?: () => void | Promise<void>
   dryRun?: boolean
   updateExisting?: boolean
   submitMode?: ProductArchiveSubmitMode
@@ -14667,6 +14668,16 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
       throw updateError
     }
 
+    try {
+      await options.beforeWrite?.()
+    } catch (error) {
+      // A completed create must retain its claim for readback, even when the
+      // follow-up update is cancelled. No write was sent for an existing edit.
+      if (updateMode === "existing") {
+        restoreProductArchiveDraftAfterSubmitPreparationFailure(db, draftId, claimToken, claimedDraft.submit_claim_previous_status)
+      }
+      throw error
+    }
     let result: DeepdrawResult
     try {
       result = await runUpdate(payload, productId)
@@ -14735,6 +14746,12 @@ export async function submitProductArchiveDraft(db: SyncPostgresDatabase, draftI
       timeoutMs: Number(process.env.DEEPDRAW_TIMEOUT_MS ?? 30000),
     }) as DeepdrawResult
   })
+  try {
+    await options.beforeWrite?.()
+  } catch (error) {
+    restoreProductArchiveDraftAfterSubmitPreparationFailure(db, draftId, claimToken, claimedDraft.submit_claim_previous_status)
+    throw error
+  }
   let result: DeepdrawResult
   try {
     result = await runCreate(payload)
