@@ -3029,10 +3029,23 @@ function primaryMaterialComponents(sourceRows: JsonRecord[]) {
   return total > 0 && total <= 100.000001 ? components : []
 }
 
-function materialCompositionPercentageIssue(fieldName: unknown, value: unknown) {
+function materialCompositionPercentageIssue(
+  fieldName: unknown,
+  value: unknown,
+  template: { fieldType?: unknown; options?: unknown[] } = {},
+) {
   if (!["材质成分", "京东材质成分", "抖音面料材质"].includes(compactFieldKey(fieldName))) return ""
+  const fieldType = stringValue(template.fieldType).toUpperCase()
+  // Match the editor's choice-field detection, including older templates
+  // that expose enum options under TEXT or MULTI_TEXT.
+  if (template.options?.length || [
+    "SINGLE_CHOICE", "SINGLE_SELECT", "SELECT", "RADIO", "ENUM",
+    "MULTI_CHOICE", "MULTIPLE_CHOICE", "MULTI_SELECT", "CHECKBOX",
+  ].includes(fieldType)) return ""
   const text = stringValue(value)
-  if (!text) return ""
+  // A material name alone is not a composition ratio. Once a ratio pair
+  // is present, validate every component (including malformed entries).
+  if (!/[,，]/.test(text)) return ""
   const percentages = semicolonTextValues(text).map((item) => {
     const parts = item.split(/[,，]/)
     return parts.length === 2 && parts[1].trim() ? Number(parts[1].replace(/%$/, "")) : NaN
@@ -12227,7 +12240,10 @@ export function evaluateProductArchiveDraftValidation(input: {
     } else {
       status = "valid"
     }
-    const percentageIssue = materialCompositionPercentageIssue(fieldName, field.value_text)
+    const percentageIssue = materialCompositionPercentageIssue(fieldName, field.value_text, {
+      fieldType: template?.fieldType ?? field.field_type,
+      options,
+    })
     if (percentageIssue && status !== "skipped") {
       status = "invalid"
       message = percentageIssue
@@ -13177,7 +13193,10 @@ export function productArchivePayloadValidationIssues(payload: JsonRecord) {
       : payload.fields,
   ).map((field) => recordValue(field))
   for (const field of [...arrayValue(payload.fields), ...arrayValue(payload.legacyUpdateFields)].map(recordValue)) {
-    const issue = materialCompositionPercentageIssue(field.name, field.value)
+    const issue = materialCompositionPercentageIssue(field.name, field.value, {
+      fieldType: field.fieldType ?? field.field_type,
+      options: arrayValue(field.options ?? field.options_json),
+    })
     if (issue && !issues.includes(issue)) issues.push(issue)
   }
   const saleSizeValue = stringValue(fields.find((field) => isProductArchiveSkuSizeFieldName(field.name) && typeof field.value === "string")?.value)

@@ -9930,6 +9930,37 @@ test("material percentages block invalid AI or manual values at validation and p
 });
 
 
+test("material choices use enum validation without ratio validation at draft and payload boundaries", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  for (const name of ["材质成分", "京东材质成分", "抖音面料材质"]) {
+    for (const fieldType of ["SINGLE_CHOICE", "SINGLE_SELECT", "SELECT", "RADIO", "ENUM", "MULTI_CHOICE", "MULTIPLE_CHOICE", "MULTI_SELECT", "CHECKBOX", "TEXT", "MULTI_TEXT", ""]) {
+      const options = ["棉", "氨纶", "棉,200"];
+      for (const value of ["棉", "棉;氨纶", "棉,200", "未知材质"]) {
+        const result = service.evaluateProductArchiveDraftValidation({
+          draft: { spu_code: "test", title: "test", trade_id: "9652" },
+          fields: [{ id: 1, field_name: name, value_text: value, required: true }], skus: [],
+          templateLookup: new Map([[name, { options, required: true, rawPayload: {}, fieldType }]]),
+          now: "2026-09-11T00:00:00Z",
+        });
+        assert.equal(result.issues.some((issue) => issue.issueType === "material_percentage_invalid"), false);
+        assert.equal(result.issues.some((issue) => issue.issueType === "field_option_invalid"), value === "未知材质");
+        const field = { name, value, fieldType, options };
+        assert.deepEqual(service.productArchivePayloadValidationIssues({ date: "2026-09-11", fields: [field], legacyUpdateFields: [field] }), []);
+      }
+    }
+    // Explicit choice types take precedence even if options have not loaded.
+    for (const fieldType of ["SINGLE_CHOICE", "MULTI_CHOICE"]) {
+      assert.deepEqual(service.productArchivePayloadValidationIssues({ date: "2026-09-11", fields: [{ name, value: "棉,200", fieldType }] }), []);
+    }
+    for (const value of ["棉", "棉;氨纶", "棉,50", "棉,100"]) {
+      assert.deepEqual(service.productArchivePayloadValidationIssues({ date: "2026-09-11", fields: [{ name, value, fieldType: "TEXT" }] }), []);
+    }
+    for (const value of ["棉,", "棉,0", "棉,50;氨纶", "棉,101"]) {
+      assert.ok(service.productArchivePayloadValidationIssues({ date: "2026-09-11", fields: [], legacyUpdateFields: [{ name, value, fieldType: "TEXT" }] }).some((issue) => issue.includes("100%")));
+    }
+  }
+});
+
 test("JD dispatch location replaces the legacy concatenated fixed mapping", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   assert.equal(service.resolveProductArchiveSourceRuleValue("京东发货地", {
