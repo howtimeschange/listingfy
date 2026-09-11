@@ -1938,3 +1938,12 @@ test("manual draft description takes precedence over stale listing snapshot and 
   assert.match(detailPage, /\["category", "title_cn", "title_en", "brand", "product_description"\]\.includes\(field.key\)/);
   assert.doesNotMatch(source, /value: compactText\(productDescription, 160\)/);
 });
+
+
+test("verified unisex shoe categories survive the neutral-SKC planner", () => {
+  const base = { apply: true, category: { categoryId: 2069, productTypeId: 371, categoryName: "儿童平底鞋", path: "儿童 > 儿童鞋子 > 儿童平底鞋" } };
+  assert.equal(prePublishRoute.isUnisexShoeCategoryDecision(base), true);
+  assert.equal(prePublishRoute.isUnisexShoeCategoryDecision({ ...base, apply: false }), false);
+  assert.equal(prePublishRoute.isUnisexShoeCategoryDecision({ ...base, category: { ...base.category, path: "儿童 > 女童服装 > 女童外套" } }), false);
+  assert.equal(prePublishRoute.isUnisexShoeCategoryDecision({ ...base, category: { ...base.category, path: "儿童 > 儿童鞋子 > 女童靴子" } }), false);
+});

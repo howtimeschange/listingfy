@@ -4416,6 +4416,12 @@ function buildReadinessWithCategoryOverride(
   })
 }
 
+export function isUnisexShoeCategoryDecision(decision: CategoryAutoSelectionDecision) {
+  if (!decision.apply || !decision.category) return false
+  const text = `${decision.category.path ?? ""} ${decision.category.categoryName ?? ""}`
+  return /儿童鞋子/.test(text) && !/男|女|boys?|girls?/i.test(text)
+}
+
 async function readinessForDraftCreation(
   db: ReturnType<typeof getDb>,
   sourceRow: SourceRow,
@@ -4429,7 +4435,7 @@ async function readinessForDraftCreation(
   const initialDecision = categoryDecisionForReadiness(db, readiness.category, {
     allowRuleFallback: true,
   })
-  if (initialDecision.apply && !neutralProduct) {
+  if (initialDecision.apply && (!neutralProduct || isUnisexShoeCategoryDecision(initialDecision))) {
     return {
       readiness,
       decision: initialDecision,
@@ -4786,7 +4792,7 @@ function expandNeutralSkcDraftInputs(
     },
   })
 
-  if (plan.status === "NOT_APPLICABLE") {
+  if (plan.status === "NOT_APPLICABLE" || isUnisexShoeCategoryDecision(input.categoryDecision)) {
     return [{
       ...input,
       skcCodes: input.skcCodes,
@@ -4795,8 +4801,8 @@ function expandNeutralSkcDraftInputs(
       splitGender: null,
       splitEvidenceBasis: null,
       aiSkcEvidence: [],
-      splitPlanStatus: plan.status,
-      splitPlanReason: plan.reason,
+      splitPlanStatus: "NOT_APPLICABLE" as const,
+      splitPlanReason: isUnisexShoeCategoryDecision(input.categoryDecision) ? "类目不区分男女，无需拆分" : plan.reason,
     }]
   }
   if (plan.status !== "READY") {
