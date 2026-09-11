@@ -5,6 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { isAsyncTaskTerminal } from "../../web/src/lib/async-task-context.ts";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const MIGRATION_FILE = path.join(PROJECT_ROOT, "db/migrations/021_shein_platform_products.sql");
@@ -489,7 +490,11 @@ test("SHEIN platform product export keeps final workbook generation visible and 
   assert.match(jobService, /spu_code: "读取平台商品数据"/);
   assert.match(jobService, /job\.items\[0\]\.spu_code = "生成 Excel 文件"/);
   assert.match(jobService, /job\.completed_count = rowCount/);
-  assert.match(taskCenter, /if \(job\.status !== "completed"\) return Math\.min\(99, progress\)/);
+  const progressSource = taskCenter.slice(taskCenter.indexOf("function taskProgress("), taskCenter.indexOf("function activeTaskCount("));
+  const taskProgress = new Function("isAsyncTaskTerminal", `${progressSource.replace("job?: AsyncTaskJob | null", "job")} return taskProgress;`)(isAsyncTaskTerminal);
+  assert.equal(taskProgress({ status: "running", total_count: 10, completed_count: 10, failed_count: 0 }), 99);
+  assert.equal(taskProgress({ status: "completed", total_count: 10, completed_count: 10, failed_count: 0 }), 100);
+  assert.equal(taskProgress({ status: "running", total_count: 10, completed_count: 4, failed_count: 0 }), 40);
   assert.match(taskCenter, /当前并发/);
   assert.match(taskCenter, /当前：\$\{runningItem\.spu_code\}/);
 });
