@@ -88,3 +88,7 @@ export function useAsyncTasks() {
   if (!context) throw new Error("useAsyncTasks must be used within AsyncTaskProvider")
   return context
 }
+
+export function isAsyncTaskTerminal(job?: Pick<AsyncTaskJob, "status"> | null) {
+  return job != null && ["completed", "failed", "cancelled"].includes(job.status)
+}

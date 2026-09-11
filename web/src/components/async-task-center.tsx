@@ -3,6 +3,7 @@ import { Activity, AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, CircleS
 import { api } from "@/lib/api-client"
 import {
   AsyncTaskContext,
+  isAsyncTaskTerminal,
   asyncTaskStorageKeys,
   useAsyncTasks,
   type AddTaskInput,
@@ -83,18 +84,18 @@ function retainedTasks(tasks: AsyncTaskRecord[], now = Date.now()) {
 function taskProgress(job?: AsyncTaskJob | null) {
   if (!job?.total_count) return 0
   const progress = Math.round(((job.completed_count + job.failed_count) / job.total_count) * 100)
-  if (job.status !== "completed") return Math.min(99, progress)
+  if (!isAsyncTaskTerminal(job)) return Math.min(99, progress)
   return progress
 }
 
 function activeTaskCount(tasks: AsyncTaskRecord[]) {
-  return tasks.filter((task) => task.job?.status !== "completed").length
+  return tasks.filter((task) => !isAsyncTaskTerminal(task.job)).length
 }
 
 function unreadCompletedTaskCount(tasks: AsyncTaskRecord[], lastSeenAt: string) {
   const lastSeenTime = timeValue(lastSeenAt)
   return tasks.filter((task) => {
-    if (task.job?.status !== "completed") return false
+    if (!isAsyncTaskTerminal(task.job)) return false
     const completedAt = taskCompletedTime(task) || taskCreatedTime(task)
     return completedAt > lastSeenTime
   }).length
@@ -146,7 +147,7 @@ function asyncTaskEndpoint(type: AsyncTaskRecord["type"], jobId: string) {
 
 function canRequeueTask(task: AsyncTaskRecord) {
   const job = task.job
-  if (job?.status !== "completed") return false
+  if (!job || !isAsyncTaskTerminal(job)) return false
   if (task.type === "listing_launch_plan_import") return false
   if (job.outcome === "stopped" || job.outcome === "failed" || job.outcome === "partial_failure") return true
   return (job.failed_count ?? 0) > 0 || (job.total_count ?? 0) > (job.completed_count ?? 0)
@@ -395,7 +396,7 @@ export function AsyncTaskProvider({ children }: { children: ReactNode }) {
   const refreshTasks = useCallback(async () => {
     if (refreshInFlight.current) return refreshInFlight.current
     const generation = refreshGeneration.current
-    const activeTasks = tasks.filter((task) => task.job?.status !== "completed")
+    const activeTasks = tasks.filter((task) => !isAsyncTaskTerminal(task.job))
     if (activeTasks.length === 0) return
     const run = (async () => {
       const updates = await Promise.all(activeTasks.map(async (task) => {
@@ -590,7 +591,7 @@ function AsyncTaskDrawer({
   const deleteTask = useCallback(async (task: AsyncTaskRecord) => {
     setBusyTaskId(task.id)
     try {
-      if (task.job?.status === "completed") {
+      if (isAsyncTaskTerminal(task.job)) {
         await api.delete<AsyncTaskActionResponse>(`/system/async-tasks/${task.type}/${encodeURIComponent(task.id)}`)
       } else {
         const result = await api.post<AsyncTaskActionResponse>(`/system/async-tasks/${task.type}/${encodeURIComponent(task.id)}/stop`, {})
@@ -631,7 +632,7 @@ function AsyncTaskDrawer({
               const runningItems = runningTaskItems(task)
               const runningItem = runningItems[0] ?? null
               const runningCount = Math.max(numberResultValue(job?.running_count), runningItems.length)
-              const done = job?.status === "completed"
+              const done = isAsyncTaskTerminal(job)
               const ocrSummary = hangtagWashlabelOcrTaskSummary(task)
               const aiFillSummary = aiFillTaskSummary(task)
               const rebuildSummary = rebuildTaskSummary(task)
@@ -647,7 +648,7 @@ function AsyncTaskDrawer({
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 text-sm font-medium">
-                        {done ? <CheckCircle2 className="size-4 text-[#0fa76e]" /> : <Clock className="size-4 text-[#3772cf]" />}
+                        {job?.status === "failed" || (done && failures.length > 0) ? <AlertCircle className="size-4 text-[#d45656]" /> : job?.status === "cancelled" ? <CircleStop className="size-4 text-muted-foreground" /> : done ? <CheckCircle2 className="size-4 text-[#0fa76e]" /> : <Clock className="size-4 text-[#3772cf]" />}
                         <span className="truncate">{task.title}</span>
                       </div>
                       {task.description ? (

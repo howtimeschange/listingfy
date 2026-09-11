@@ -287,6 +287,7 @@ interface RefreshSourceBatchInput {
 }
 
 interface RefreshSourceBatchChunkOptions {
+  runChunk?: (run: (signal?: AbortSignal) => Promise<ProductArchiveDraftRefreshSummary>) => Promise<ProductArchiveDraftRefreshSummary>
   chunkSize?: number
   yieldEvery?: number
   yieldDelayMs?: number
@@ -10883,11 +10884,17 @@ export async function refreshProductArchiveDraftsFromSourceBatchInChunks(
     throwIfAborted(options.signal)
     const remainingUntilYield = yieldEvery - (processedDraftCount % yieldEvery)
     const end = Math.min(drafts.length, start + chunkSize, start + remainingUntilYield)
-    const chunkResult = refreshProductArchiveDraftsBatch(
-      db,
-      drafts.slice(start, end).map((draft) => Number(draft.id)),
-      { sourceType, sourceBatchId, signal: options.signal, drafts: drafts.slice(start, end) },
-    )
+    const run = async (signal = options.signal) => {
+      throwIfAborted(options.signal)
+      throwIfAborted(signal)
+      return refreshProductArchiveDraftsBatch(
+        db,
+        drafts.slice(start, end).map((draft) => Number(draft.id)),
+        { sourceType, sourceBatchId, signal, drafts: drafts.slice(start, end) },
+      )
+    }
+    // Bound each chunk, not the total duration of a large source sheet.
+    const chunkResult = await (options.runChunk ? options.runChunk(run) : run())
     refreshedDraftCount += chunkResult.refreshedDraftCount
     validatedDraftCount += chunkResult.validatedDraftCount
     autoAppliedTradeCount += chunkResult.autoAppliedTradeCount

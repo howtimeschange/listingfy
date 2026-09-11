@@ -625,39 +625,39 @@ async function processImportJob(job: ImportJob) {
       listingPlanImport = recordValue(job.result.listingPlanImportPayload)
     }
 
-    let refreshSummaries = parseJsonArray(job.result.refreshSummaries).map(recordValue)
+    const refreshSummaries = parseJsonArray(job.result.refreshSummaries).map(recordValue)
     if (job.items[3]?.status !== "completed") {
       setStageRunning(job, 3)
       saveProgress()
       const sourceBatchIds = sourceBatchIdsFromJob(job)
-      refreshSummaries = []
-      for (let index = 0; index < sourceBatchIds.length; index += 1) {
+      // Completed sheets are durable checkpoints; only the interrupted sheet is replayed.
+      for (let index = refreshSummaries.length; index < sourceBatchIds.length; index += 1) {
         const sourceBatchId = sourceBatchIds[index]
         assertActive()
-        const summary = await withBackgroundTaskSlot(
-          "listing_launch_plan_import",
-          (signal) => refreshProductArchiveDraftsFromSourceBatchInChunks(getDb(), {
-            sourceBatchId,
-            sourceType: "launch_plan",
-          }, {
-            chunkSize: 1,
-            yieldEvery: 1,
-            yieldDelayMs: 10,
-            signal,
-            onProgress: (progress) => {
-              const item = job.items[3]
-              if (item) {
-                item.result = {
-                  sourceBatchIndex: index + 1,
-                  sourceBatchCount: sourceBatchIds.length,
-                  ...progress,
-                }
+        const summary = await refreshProductArchiveDraftsFromSourceBatchInChunks(getDb(), {
+          sourceBatchId,
+          sourceType: "launch_plan",
+        }, {
+          chunkSize: 1,
+          yieldEvery: 1,
+          yieldDelayMs: 10,
+          signal: controller.signal,
+          runChunk: (run) => withBackgroundTaskSlot("listing_launch_plan_import", (signal) => {
+            assertActive()
+            return run(signal)
+          }, { signal: controller.signal }),
+          onProgress: (progress) => {
+            const item = job.items[3]
+            if (item) {
+              item.result = {
+                sourceBatchIndex: index + 1,
+                sourceBatchCount: sourceBatchIds.length,
+                ...progress,
               }
-              saveProgress()
-            },
-          }),
-          { signal: controller.signal },
-        )
+            }
+            saveProgress()
+          },
+        })
         refreshSummaries.push(recordValue(summary))
         job.result = { ...job.result, refreshSummaries }
         saveProgress()

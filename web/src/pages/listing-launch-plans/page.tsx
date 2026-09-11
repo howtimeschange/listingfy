@@ -293,7 +293,10 @@ export default function ListingLaunchPlansPage() {
       const message = trackedImportJob.error
         || trackedImportJob.items?.find((item) => item.status === "failed")?.error
         || "导入上市计划表失败"
-      toast.error(message)
+      const importedRows = trackedImportJob.result?.insertedRowCount
+      toast.error(importedRows && trackedImportJob.items?.[2]?.status === "completed"
+        ? `计划表已导入 ${formatNumber(importedRows)} 行，关联草稿刷新未完成：${message}`
+        : message)
       queryClient.invalidateQueries({ queryKey: ["listing-launch-plan-rows"] })
       return
     }

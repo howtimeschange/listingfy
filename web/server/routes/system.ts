@@ -534,7 +534,7 @@ function deleteCompletedRow(tableName: "listing_launch_plan_import_job" | "categ
   if (ACTIVE_JOB_STATUSES.has(stringValue(row.status))) {
     throw new HTTPException(409, { message: "任务还在执行中，请先暂停任务，再移除任务卡片" })
   }
-  db.prepare(`delete from ${tableName} where id = ? and status = 'completed'`).run(jobId)
+  db.prepare(`delete from ${tableName} where id = ? and status in ('completed', 'failed', 'cancelled')`).run(jobId)
   return { ok: true, deleted: true }
 }
 
