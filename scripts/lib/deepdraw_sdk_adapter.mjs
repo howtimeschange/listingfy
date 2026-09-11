@@ -158,6 +158,7 @@ function sizeMatchKeys(value) {
   const text = stringValue(value)
     .split("*")[0]
     .replace(/[（(]\s*充绒量[^）)]*[）)]/g, "")
+    .replace(/^(\d+(?:\.5)?码)[（(]脚长[^()（）]+\/内长[^()（）]+[）)]$/, "$1")
     .trim();
   if (!text) return [];
   const normalized = sdkSizeValue(text);
@@ -562,7 +563,8 @@ function shoeMultiPlatformCellValue({ column, cell, size, options = {} }) {
   const displaySize = shoeMultiPlatformSizeText(size);
   const remark = sizeRemarkForPayload(displaySize, options.sizeRemarks);
   if (text && (!remark || /(?:脚长|内长)/.test(text))) return text;
-  return remark ? `${displaySize}(${remark})` : "";
+  const platformRemark = remark.replace(/^脚长[（(](.*)[）)]$/, "脚长$1");
+  return platformRemark ? `${displaySize}(${platformRemark})` : "";
 }
 
 function normalizeShoeMultiPlatformSizeField(value, sizeValues = [], options = {}) {
@@ -602,6 +604,8 @@ function normalizeSizeTableField(value, sizeValues = [], name = "", options = {}
       output[size] = title;
       continue;
     }
+    // DeepDraw silently drops Vipshop rows whose keys include display remarks.
+    // Resolve those labels back to sale-size identities before sending the table.
     const normalizedSize = options.preserveStructuredSizeRowKeysForProbe === true
       ? stringValue(size)
       : sdkPayloadSizeValue(size, sizeValues);
@@ -1292,6 +1296,9 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
     const value = fieldValue(field);
     const type = fieldType(field);
     const key = compactKey(name);
+    // Shoe products never construct Vipshop weight/package fields, including stale values.
+    if (shoeSizes && (/^唯品(?:会)?重量$/.test(key)
+      || /^唯品(?:会)?(?:商品)?【?包装】?(?:重量|长度|宽度|高度|长|宽|高)$/.test(key))) continue;
     const explicitMultiPlatformDisable = key === compactKey("多平台尺码")
       && payload.includeMultiPlatformSizeField === true
       && value
@@ -1314,6 +1321,8 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
           })
         : key === compactKey("抖音面料材质")
           ? normalizeDouyinMaterialFieldValue(value)
+        : key === compactKey("原产国") && stringValue(field.id ?? field.fieldId) === "44338" && stringValue(value) === "中国"
+          ? "142"
         : key === compactKey("所在地")
           ? normalizeDeepdrawLocation(value)
         : key === compactKey("售后服务承诺")

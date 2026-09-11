@@ -829,7 +829,7 @@ test("buildDeepdrawProductFullUpdateInput keeps shoe size enum values and only i
       legacyUpdateFields: [
         { name: "尺码", value: "26码" },
         { name: "尺码表", fieldType: "MULTI_TEXT", value: { title: "适合脚长,鞋内长", "26码": "16,17" } },
-        { name: "唯品会尺码表", fieldType: "MULTI_TEXT", value: { title: "欧洲码,脚长,鞋内长", "26码": "26码,160,170.32" } },
+        { name: "唯品会尺码表", fieldType: "MULTI_TEXT", value: { title: "欧洲码,脚长,鞋内长", "26码(脚长15.8-16.2/内长17)": "26码,160,170.32" } },
         { name: "天猫尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长,鞋内长", "26码": "16,17" } },
         { name: "抖音尺码表", fieldType: "MULTI_TEXT", value: { title: "脚长(cm),备注", "26码": "16,脚长15.8-16.2/内长17" } },
         {
@@ -1873,4 +1873,27 @@ test("getDeepdrawProductWithSdk preserves an explicit resource filter", async ()
   });
 
   assert.equal(seen[0].query.resource, "form");
+});
+
+test("country 44338 sends the provider option code while AKC keeps its label", () => {
+  const { product } = buildDeepdrawSdkProductInput({ payload: { fields: [
+    { id: "44338", name: "原产国", fieldType: "TEXT", value: "中国" },
+    { name: "原产国(AKC)", fieldType: "SINGLE_CHOICE", value: "中国" },
+  ] } });
+  assert.equal(product.fields["原产国"], "142");
+  assert.equal(product.fields["原产国(AKC)"], "中国");
+});
+
+test("shoe Vipshop uses sale size keys and omits stale weight/package values", () => {
+  const names = ["唯品重量", "唯品【包装】长", "唯品【包装】宽", "唯品【包装】高"];
+  const fields = [
+    { name: "尺码", value: "26码" },
+    { name: "唯品会尺码表", fieldType: "MULTI_TEXT", value: { title: "欧洲码,脚长,鞋内长", "26码": "26,160,170.32" } },
+    ...names.map(name => ({ name, value: "1" })),
+  ];
+  for (const build of [buildDeepdrawSdkProductInput, buildDeepdrawProductFullUpdateInput]) {
+    const { product } = build({ payload: { shoeSizes: true, fields, legacyUpdateFields: fields } });
+    for (const name of names) assert.equal(Object.hasOwn(product.fields, name), false);
+    assert.deepEqual(product.fields["唯品会尺码表"], { title: "欧洲码,脚长,鞋内长", "26码": "26,160,170.32" });
+  }
 });

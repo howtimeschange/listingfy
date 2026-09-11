@@ -89,9 +89,17 @@ function parenthesizedShoeSizeRemark(value: unknown) {
 }
 
 function shoeSizeRemarkSuffix(row: ShoeSizeChartRow) {
-  return stringValue(row.general_mapping_text)
+  const text = (stringValue(row.general_mapping_text)
     || stringValue(row.douyin_mapping_text)
-    || `脚长${footRange(row)}/内长${innerLength(row)}`
+    || `脚长${footRange(row)}/内长${innerLength(row)}`)
+    .replace(/（/g, "(").replace(/）/g, ")")
+  const unwrapped = text.startsWith("(") && text.endsWith(")") ? text.slice(1, -1) : text
+  return unwrapped.replace(/^脚长\((.*)\)$/, "脚长$1")
+}
+
+function shoeSaleSizeRemark(row: ShoeSizeChartRow) {
+  const text = shoeSizeRemarkSuffix(row)
+  return text.startsWith("脚长") ? `脚长(${text.slice(2)})` : parenthesizedShoeSizeRemark(text)
 }
 
 function shoePlatformSizeRemark(row: ShoeSizeChartRow) {
@@ -112,7 +120,7 @@ export function buildShoeSizeRemarks(input: {
   return Object.fromEntries(input.rows
     .map((row) => [
       normalizeShoeSkuSize(row.size_value),
-      parenthesizedShoeSizeRemark(row.general_mapping_text),
+      shoeSaleSizeRemark(row),
     ])
     .filter(([size, remark]) => allowed.has(size) && Boolean(remark)))
 }

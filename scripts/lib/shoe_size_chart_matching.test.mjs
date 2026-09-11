@@ -184,9 +184,9 @@ test("shoe size remarks preserve the template foot-length and inner-length paren
     rows: shoeRows,
     skuSizes: ["21码", "26", "38cm"],
   }), {
-    "21": "(脚长12.8-13.2/内长14.2)",
-    "26": "(脚长15.8-16.2/内长17)",
-    "38": "(脚长23.8-24.2/内长25)",
+    "21": "脚长(12.8-13.2/内长14.2)",
+    "26": "脚长(15.8-16.2/内长17)",
+    "38": "脚长(23.8-24.2/内长25)",
   });
 });
 
@@ -374,7 +374,7 @@ test("shoe launch-plan evidence deterministically fills required material, age, 
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("帮面材质(多选)", input), "织物");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("材质(1688)", input), "织物");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("材质功能", input), "防渗水");
-  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("鞋垫材质", input), "");
+  assert.equal(service.buildProductArchiveSourceDerivedFieldValue("鞋垫材质", input), "其他");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("产地", input), "浙江杭州");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("原产国(AKC)", input), "中国");
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("适用年龄", input), "7岁-14岁");
@@ -414,7 +414,7 @@ test("shoe static facts fall back to older launch-plan rows without reviving dyn
   assert.equal(service.buildProductArchiveSourceDerivedFieldValue("鞋垫材质", {
     spu: { product_line_name: "鞋品", subclass_name: "雪地靴" },
     sourceRows: rows,
-  }), "");
+  }), "其他");
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("鞋垫材质", "15mm长毛绒", [
     "纺织品类", "人造长毛绒", "其他",
   ]), "人造长毛绒");
@@ -483,4 +483,49 @@ test("25 shoe size-table AI is limited to sandals that still need visual classif
     tradeId: "537",
     tradePath: "童鞋/亲子鞋 / 凉鞋",
   }), false);
+});
+
+
+test("shoe remarks normalize old, new and missing mapping text without nested parentheses", async () => {
+  const service = await import("../../web/server/services/shoe-size-chart-matching.ts");
+  for (const mapping of ["脚长15.8-16.2/内长17", "(脚长15.8-16.2/内长17)", "脚长(15.8-16.2/内长17)", "脚长（15.8-16.2/内长17）", null]) {
+    const row = { ...shoeRows.find((row) => String(row.size_value) === "26"), general_mapping_text: mapping, douyin_mapping_text: null };
+    assert.deepEqual(service.buildShoeSizeRemarks({ rows: [row], skuSizes: ["26码"] }), { "26": "脚长(15.8-16.2/内长17)" });
+  }
+});
+
+
+test("generated shoe remarks survive SDK update while Vipshop rows retain sale-size identity", async () => {
+  const service = await import("../../web/server/services/shoe-size-chart-matching.ts");
+  const drafts = await import("../../web/server/services/product-archive-drafts.ts");
+  const { buildDeepdrawProductFullUpdateInput } = await import("./deepdraw_sdk_adapter.mjs");
+  const result = service.buildShoeSizeChartFieldValues({
+    rows: shoeRows, skuSizes: ["26"], match: { status: "matched" },
+    fieldTemplates: [{ fieldName: "唯品会尺码表", options: ["欧洲码", "脚长", "鞋内长"] }],
+  });
+  const table = drafts.productArchivePayloadFieldValue({
+    field_name: "唯品会尺码表", field_type: "MULTI_TEXT", required: true, value_json: result["唯品会尺码表"].valueJson,
+  });
+  const input = buildDeepdrawProductFullUpdateInput({
+    config: { baseUrl: "http://open.deepdraw.cn", appKey: "test", appSecret: "test", dopKey: "test", merchantId: "1162" },
+    productId: "123",
+    payload: {
+      code: "test", title: "童鞋", shoeSizes: true, withSizeRemarks: true,
+      sizeRemarks: service.buildShoeSizeRemarks({ rows: shoeRows, skuSizes: ["26"] }),
+      fields: [{ name: "尺码", value: "26码" }],
+      legacyUpdateFields: [{ name: "尺码", value: "26码" }, { name: "唯品会尺码表", fieldType: "MULTI_TEXT", value: table }],
+    },
+  });
+  assert.equal(input.product.fields["尺码"], "26码*脚长(15.8-16.2/内长17)");
+  assert.deepEqual(input.product.fields["唯品会尺码表"], {
+    title: "欧洲码,脚长,鞋内长", "26码": "26,160,170.32",
+  });
+});
+
+
+test("Vipshop measurement labels validate against their original shoe SKU", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const table = { title: "欧洲码,脚长,鞋内长", "26码(脚长15.8-16.2/内长17)": "26,160,170.32" };
+  assert.deepEqual(service.validateProductArchiveSizeChartValue({ fieldName: "唯品会尺码表", valueJson: table, allowedSizes: ["26码"] }), []);
+  assert.equal(service.validateProductArchiveSizeChartValue({ fieldName: "唯品会尺码表", valueJson: table, allowedSizes: ["27码"] })[0].issueType, "size_chart_size_not_in_sku");
 });

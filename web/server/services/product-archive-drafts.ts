@@ -1926,6 +1926,7 @@ function isProductArchiveForcedFixedDerivedField(
       || isProductArchiveVipApparelWarmTipField(fieldName, templatePlatform, spu, sourceRows)
       || key === "销售渠道类型"
       || key === "是否商场同款"
+      || (isShoeProduct(spu, sourceRows) && key === "鞋垫材质")
       || (isApparelProduct(spu, sourceRows) && isProductArchiveMainlandOriginField(fieldName))
     )
 }
@@ -2093,11 +2094,6 @@ function shoeLiningMaterialText(sourceRows: JsonRecord[]) {
 
 function shoeSoleMaterialText(sourceRows: JsonRecord[]) {
   return copyOrLaunchValue(sourceRows, "鞋底材质")
-}
-
-function shoeInsoleMaterialText(sourceRows: JsonRecord[]) {
-  return copyOrLaunchValue(sourceRows, "鞋垫材质")
-    || sectionTextFromMaterialSource(sourceRows, ["鞋垫材质", "鞋垫材料", "鞋垫面料", "鞋垫"])
 }
 
 function stripGenericMaterialPrefix(value: unknown) {
@@ -3393,7 +3389,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
     return shoeLiningMaterialText(sourceRows)
   }
   if (shoeProduct && ["鞋底材质", "鞋底材质多选"].includes(key)) return shoeSoleMaterialText(sourceRows)
-  if (shoeProduct && key === "鞋垫材质") return shoeInsoleMaterialText(sourceRows)
+  if (shoeProduct && key === "鞋垫材质") return "其他"
   if (shoeProduct && ["详情页面料", "唯品会材质", "25面料成分"].includes(key)) return shoeDetailMaterialText(sourceRows)
   if (shoeProduct && key === "材质akc") return shoeAkcMaterialValue(sourceRows)
   if (shoeProduct && ["商品名称", "产品名称", "25产品名称"].includes(key)) return shoeProductNameValue(sourceRows)
@@ -3447,7 +3443,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (apparelProduct && key === "天猫导购标题") return buildTmallGuideTitleValue(input.spu, sourceRows)
   if (apparelProduct && key === "天猫推荐理由") return tmallRecommendationReasonValue(sourceRows)
   if (apparelProduct && key === "报价方式") return "按产品数量报价"
-  if (apparelProduct && key === "件重尺") return "按规格设置"
+  if ((shoeProduct || apparelProduct) && key === "件重尺") return "按规格设置"
   if (apparelProduct && (key === "1688供货方式" || key === "供货方式1688")) return "现货"
   if ((shoeProduct || apparelProduct) && key === "所在地") return "浙江,杭州"
   if (key === "材质成分") return materialCompositionValue(sourceRows)
@@ -3957,10 +3953,10 @@ export function productArchiveShoeVipSizeChartNeedsRuleRebuild(input: {
   if (!hasProductArchiveSizeChartTableValue(valueJson)) return false
   const europeanCodeIndex = sizeChartTitleOptions(valueJson)
     .findIndex((title) => compactFieldKey(title) === compactFieldKey("欧洲码"))
-  if (europeanCodeIndex < 0) return false
-  return sizeChartDataEntries(valueJson).some(([, rawValues]) => {
+  return sizeChartDataEntries(valueJson).some(([size, rawValues]) => {
     const values = sizeChartCellValues(rawValues)
-    return hasProductArchiveShoeEuropeanCodeUnit(values[europeanCodeIndex])
+    return /^\d+(?:\.5)?码[（(]脚长/.test(size)
+      || (europeanCodeIndex >= 0 && hasProductArchiveShoeEuropeanCodeUnit(values[europeanCodeIndex]))
   })
 }
 
@@ -5887,6 +5883,7 @@ function sizeMatchKeys(value: unknown) {
   const text = stringValue(value)
     .split("*")[0]
     ?.replace(/[（(]\s*充绒量[^）)]*[）)]/g, "")
+    .replace(/^(\d+(?:\.5)?码)[（(]脚长[^()（）]+\/内长[^()（）]+[）)]$/, "$1")
     .trim() ?? ""
   if (!text) return []
   const normalized = deepdrawSizeValue(text)
@@ -8805,40 +8802,14 @@ function ruleContextSpu(draft: JsonRecord, spu: JsonRecord = {}) {
   }
 }
 
-function shoeInsoleMaterialEvidenceRule(input: {
-  fieldName: string
-  options: unknown[]
-  sourceRows: JsonRecord[]
-}) {
-  const sourceValue = shoeInsoleMaterialText(input.sourceRows)
-  const other = pickOtherOption(input.options)
-  if (sourceValue) {
-    const normalized = normalizeProductArchiveDeepdrawFieldValue(input.fieldName, sourceValue, input.options)
-    if (normalized && productArchiveFieldValueMatchesOptions(normalized, input.options, input.fieldName)) {
-      return {
-        value: normalized,
-        sourceType: "source_rule",
-        sourceRef: "文案表/上市计划:鞋垫材质",
-        reason: "根据文案表或上市计划中明确的鞋垫材质归一到深绘模板选项",
-      }
-    }
-    if (other) {
-      return {
-        value: other,
-        sourceType: "source_rule",
-        sourceRef: "文案表/上市计划:鞋垫材质",
-        reason: "来源明确提到鞋垫材质但未命中当前模板具体枚举，按模板其他选项兜底",
-      }
-    }
-    return null
-  }
+function shoeInsoleMaterialFixedRule(options: unknown[]) {
+  const other = pickOtherOption(options)
   if (!other) return null
   return {
     value: other,
-    sourceType: "ai_rule_fallback",
-    sourceRef: "鞋垫材质兜底",
-    confidence: 0.86,
-    reason: "当前字段未被 OCR 证据补齐，且文案表/上市计划没有明确鞋垫材质，按模板其他选项兜底",
+    sourceType: "fixed",
+    sourceRef: "鞋垫材质固定规则",
+    reason: "鞋品鞋垫材质固定选择其他",
   }
 }
 
@@ -8931,7 +8902,7 @@ function evidenceRuleValueForField(input: {
     }
   }
   if (key === "鞋垫材质" && isShoeDraftContext({ draft: input.draft, spu: contextSpu, sourceRows: input.sourceRows })) {
-    const rule = shoeInsoleMaterialEvidenceRule({ fieldName, options, sourceRows: input.sourceRows })
+    const rule = shoeInsoleMaterialFixedRule(options)
     if (rule) return rule
   }
   if (isProductArchiveDownContentPercentFieldKey(key)) {
@@ -9130,9 +9101,9 @@ export function buildProductArchiveEvidenceRuleFills(input: {
 
 function shoeVisualEnumClassificationPrompt() {
   return [
-    "鞋类阻断枚举补齐规则：当字段为材质(1688)、靴筒高度、鞋垫材质、厚薄、里绒情况、闭合方式、款式(单选)、类型/类型(多选)、适用人群(多选)或风格时，必须结合商品主图、平铺图、标题、类目和已填字段，在该字段给定的枚举中选择最贴切的值。",
+    "鞋类阻断枚举补齐规则：当字段为材质(1688)、靴筒高度、厚薄、里绒情况、闭合方式、款式(单选)、类型/类型(多选)、适用人群(多选)或风格时，必须结合商品主图、平铺图、标题、类目和已填字段，在该字段给定的枚举中选择最贴切的值。",
     "1. 闭合方式、靴筒高度、款式和类型优先看鞋面结构：鞋带、魔术贴、搭扣、套脚、拉链、靴筒高低等可见特征；不能把服装结构套用到鞋类。",
-    "2. 材质(1688)、鞋垫材质、厚薄和里绒情况优先采用吊牌、洗唛、文案和已填帮面/里料；图片只可用于明显的绒里、厚薄或通用材质观感，不能编造具体成分。",
+    "2. 鞋垫材质固定选择其他；材质(1688)、厚薄和里绒情况优先采用吊牌、洗唛、文案和已填帮面/里料；图片只可用于明显的绒里、厚薄或通用材质观感，不能编造具体成分。",
     "3. 适用人群和风格结合鞋类目、标题、SKU 尺码段及图片选择；类型(多选)只返回实际同时成立的枚举，多个值用分号分隔，每个值都必须与 options[].value 完全一致。",
     "4. 图片或上下文已足以映射到一个现有枚举时，即使没有逐字的文本证据也应返回，不要因字段来源是 manual 或 skip 而省略；确实无法区分时才留空。",
   ].join("\n")
@@ -13869,6 +13840,8 @@ function productPayload(db: SyncPostgresDatabase, draftId: number, options: {
   const omittedTemplateFieldNames: string[] = []
   const detailFields = detail.fields as JsonRecord[]
   const payloadFieldsFromDetail = (includeOptionalStructuredSizeFields = false) => detailFields
+    .filter((field) => !shoeProduct || ![field.field_name, field.template_field_name]
+      .some((name) => isProductArchiveVipWeightOrPackageFieldKey(businessRuleFieldKey(name))))
     .filter((field) => shouldSubmitProductArchivePayloadField(field, {
       includeMultiPlatformSizeField: productArchivePayloadIncludesMultiPlatformSizeField({
         shoeProduct,

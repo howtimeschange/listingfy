@@ -6851,6 +6851,14 @@ test("product archive rebuilds stale VIP size tables by apparel and shoe rules",
     },
     spu: shoeSpu,
   }), false);
+  assert.equal(service.productArchiveShoeVipSizeChartNeedsRuleRebuild({
+    fieldName: "唯品会尺码表",
+    valueJson: {
+      title: "欧洲码,脚长,鞋内长",
+      "26码(脚长15.8-16.2/内长17)": "26,160,170.32",
+    },
+    spu: shoeSpu,
+  }), true);
   assert.deepEqual(service.productArchivePayloadFieldValue({
     field_name: "唯品会尺码表",
     field_type: "MULTI_TEXT",
@@ -7816,7 +7824,7 @@ test("product archive shoe required fields derive from trusted launch and brand 
   assert.equal(derive("唯品会材质"), "帮面材料：合成革/织物\n里料材质：网布\n鞋底材质：EVA+橡胶");
   assert.equal(derive("25面料成分"), "帮面材料：合成革/织物\n里料材质：网布\n鞋底材质：EVA+橡胶");
   assert.equal(derive("材质(1688)"), "合成革/织物");
-  assert.equal(derive("鞋垫材质"), "");
+  assert.equal(derive("鞋垫材质"), "其他");
   assert.equal(derive("25柔软指数"), "");
   assert.equal(derive("25厚薄指数"), "");
   assert.equal(derive("25弹力指数"), "");
@@ -7825,6 +7833,7 @@ test("product archive shoe required fields derive from trusted launch and brand 
   assert.equal(derive("商品包装长"), "");
   assert.equal(derive("商品包装宽"), "");
   assert.equal(derive("商品包装高"), "");
+  assert.equal(derive("件重尺"), "按规格设置");
   assert.equal(derive("唯品重量"), "");
   assert.equal(derive("唯品【包装】长"), "");
   assert.equal(derive("唯品【包装】宽"), "");
@@ -8503,7 +8512,7 @@ test("product archive AI rules fill shoe product category and insole fallback in
     fill.source_ref,
   ]), [
     ["产品类别", "户外鞋", "source_rule", "深绘类目/来源类目"],
-    ["鞋垫材质", "其他", "ai_rule_fallback", "鞋垫材质兜底"],
+    ["鞋垫材质", "其他", "fixed", "鞋垫材质固定规则"],
   ]);
 
   const explicitInsoleFills = service.buildProductArchiveEvidenceRuleFills({
@@ -8534,7 +8543,7 @@ test("product archive AI rules fill shoe product category and insole fallback in
     fill.field_value,
     fill.source_type,
   ]), [
-    ["鞋垫材质", "纺织布料", "source_rule"],
+    ["鞋垫材质", "其他", "fixed"],
   ]);
 });
 
@@ -9853,4 +9862,18 @@ test("DeepDraw submit restores the fenced pre-claim status when local preparatio
   assert.equal(state.submit_claim_token, null);
   assert.equal(createCalls, 0);
   assert.equal(cleanupWrites.length, 1);
+});
+
+
+test("shoe insole material is fixed to other regardless of source and legacy mapping", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const spu = { product_line_name: "童鞋", category_name: "板鞋" };
+  for (const source_type of ["skip", "manual", "fixed", "mdm", "copywriting"]) {
+    assert.equal(service.resolveProductArchiveSourceRuleValue("鞋垫材质", {
+      spu,
+      sourceRows: [{ source_type: "copywriting", row_json: { "鞋垫材质": "织物" } }],
+      rule: { source_type, default_value: "纺织布料", source_field: "鞋垫材质" },
+    }), "其他");
+  }
+  assert.equal(service.normalizeProductArchiveTemplateFieldValue("鞋垫材质", "其他", [{ value: "纺织布料" }, { value: "其他" }]), "其他");
 });
