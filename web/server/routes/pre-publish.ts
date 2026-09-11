@@ -1894,7 +1894,7 @@ function buildRow({
     {
       key: "product_description",
       label: "商品描述",
-      value: compactText(productDescription, 160),
+      value: productDescription,
       source: "DEEPDRAW",
       status: fieldStatus(productDescription),
       note: productDescription ? null : "深绘字段池未返回商品描述/卖点来源。",
@@ -2424,9 +2424,12 @@ function getReadinessForListing(
     adjustedReadiness = readinessWithListingTitle(adjustedReadiness, listingTitle)
   }
   const listingDescription = sanitizeProductDescription(listing.description)
-  if (listingDescription) {
+  const storedDescription = getStoredFill(fills, listing.spu_code, "product_description")
+  const hasDraftDescription = Boolean(normalizeText(storedDescription?.field_value)
+    && asPositiveNumber(parseJsonObject(storedDescription?.payload_json).listing_id) === Number(listing.id))
+  if (listingDescription && !hasDraftDescription) {
     adjustedReadiness = readinessWithListingDescription(adjustedReadiness, listingDescription)
-  } else if (normalizeText(listing.split_group_key)) {
+  } else if (!hasDraftDescription && normalizeText(listing.split_group_key)) {
     adjustedReadiness = readinessWithoutSharedAiDescription(adjustedReadiness)
   }
   return adjustedReadiness
@@ -3879,9 +3882,9 @@ function assetMatchesRequirement(asset: SourceRow, requirement: PictureRequireme
   return requirement.asset_types.includes(assetType)
 }
 
-function isAutoFallbackColorAsset(asset: SourceRow) {
+export function isAutoFallbackColorAsset(asset: SourceRow) {
   const assetType = normalizeText(asset.asset_type)
-  return normalizeText(asset.source_type) === "SOURCE_FALLBACK"
+  return ["SOURCE_FALLBACK", "SKC_SOURCE_IMAGE"].includes(normalizeText(asset.source_type))
     && (assetType === "COLOR_BLOCK" || assetType === "COLOR")
 }
 
@@ -4198,22 +4201,30 @@ async function safeAiGenerateProductDescription(row: ReadinessRow) {
   return callAiGenerateProductDescription(row).catch(() => sanitizeProductDescription(heuristicProductDescription(row)))
 }
 
+export function applyDraftAiValues(row: ReadinessRow, values?: Record<string, unknown>): ReadinessRow {
+  if (!values || typeof values !== "object" || Array.isArray(values)) return row
+  const titleCn = typeof values.title_cn === "string" ? normalizeText(values.title_cn) : row.title_cn
+  return { ...row, title_cn: titleCn, field_groups: row.field_groups.map((group) => ({
+    ...group, fields: group.fields.map((field) => field.key === "title_cn" ? { ...field, value: titleCn } : field),
+  })) }
+}
+
 async function callAiTranslateTitle(row: ReadinessRow) {
   const config = resolveAiConfig()
   const policy = resolveAiScenarioPolicy("title_translation")
-  if (policy.mode === "disabled") return heuristicEnglishTitle(row)
+  if (policy.mode === "disabled") throw new Error("标题翻译场景未启用")
   if (policy.mode !== "guarded" && !config.apiKey) {
-    return heuristicEnglishTitle(row)
+    throw new Error("AI 标题翻译未配置凭据，请检查模型配置")
   }
   const messages = [
     {
       role: "system",
-      content: "你是跨境童装英文标题编辑，只输出适合 SHEIN 发品的简洁英文标题。",
+      content: "你是跨境童装英文标题编辑，忠实翻译当前中文商品标题，只输出适合 SHEIN 发品的英文标题，不得擅自缩写成通用品名。",
     },
     {
       role: "user",
       content: JSON.stringify({
-        task: "把中文商品标题翻译成英文标题，保留品牌、性别、品类和季节，不要堆砌关键词。",
+        task: "把中文商品标题翻译成英文标题，保留原文中的性别、年龄、品类、季节、材质、功能、版型及设计特点；原文没有品牌时不要从品牌字段补加品牌。只去除重复词，不得遗漏有效商品信息或添加推测信息。",
         output_schema: { title_en: "英文标题" },
         product: {
           spu_code: row.spu_code,
@@ -4228,7 +4239,7 @@ async function callAiTranslateTitle(row: ReadinessRow) {
   const response = await getDefaultAiScenarioRouter({ db: getDb() }).callJson(
     withAiRoutingHashes({
       scenario: "title_translation",
-      promptVersion: "title-translation-v1",
+      promptVersion: "title-translation-v2",
       messages,
       validate: (json: { title_en?: unknown }) =>
         typeof json?.title_en === "string" && Boolean(normalizeText(json.title_en)),
@@ -5536,7 +5547,6 @@ function ensureSkcSourceImageAssetsForPublish(db: ReturnType<typeof getDb>, list
     const skcId = normalizeText(skc.id)
     for (const target of [
       { assetType: "MAIN", sheinImageType: 1, note: "SKC 来源图自动转 SHEIN URL：SKC 主图" },
-      { assetType: "COLOR_BLOCK", sheinImageType: 6, note: "SKC 来源图自动转 SHEIN URL：SKC 色块图" },
     ]) {
       const existing = existingSourceBySkcIdAndType.get(`${skcId}:${target.assetType}`)
       const payload = JSON.stringify({
@@ -5596,7 +5606,7 @@ async function prepareListingImagesForPublish(db: ReturnType<typeof getDb>, list
     select *
     from listing_asset
     where listing_id = ?
-      and not (coalesce(source_type, '') = 'SOURCE_FALLBACK' and asset_type in ('COLOR_BLOCK', 'COLOR'))
+      and not (coalesce(source_type, '') in ('SOURCE_FALLBACK', 'SKC_SOURCE_IMAGE') and asset_type in ('COLOR_BLOCK', 'COLOR'))
       and (
         coalesce(platform_url, '') <> ''
         or coalesce(source_url, '') <> ''
@@ -8186,7 +8196,7 @@ prePublish.post("/drafts/:id/ai-field", async (c) => {
   if (!listing) {
     throw new HTTPException(404, { message: "草稿不存在" })
   }
-  const body = await c.req.json().catch(() => ({})) as { field_key?: string }
+  const body = await c.req.json().catch(() => ({})) as { field_key?: string; values?: Record<string, unknown> }
   const fieldKey = normalizeText(body.field_key)
   if (!fieldKey) {
     throw new HTTPException(400, { message: "缺少字段 key" })
@@ -8196,7 +8206,8 @@ prePublish.post("/drafts/:id/ai-field", async (c) => {
     throw new HTTPException(404, { message: "商品档案不存在" })
   }
   const selectedReadiness = selectedReadinessForListing(db, listingId, readiness)
-  const generatedResult = await generateSingleAiField(selectedReadiness, fieldKey)
+  const aiReadiness = applyDraftAiValues(selectedReadiness, body.values)
+  const generatedResult = await generateSingleAiField(aiReadiness, fieldKey)
     .then((generated) => ({ generated, warningMessage: "" }))
     .catch((error) => {
       if (error instanceof HTTPException && error.status < 500) throw error

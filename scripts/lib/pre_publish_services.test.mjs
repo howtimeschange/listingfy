@@ -1653,7 +1653,7 @@ test("publish preparation auto-converts SKC source images before final SHEIN sub
   assert.match(source, /function ensureSkcSourceImageAssetsForPublish/);
   assert.match(source, /values \(\?, \?, \?, 'SKC_SOURCE_IMAGE', \?, 1,/);
   assert.match(source, /assetType: "MAIN", sheinImageType: 1/);
-  assert.match(source, /assetType: "COLOR_BLOCK", sheinImageType: 6/);
+  assert.doesNotMatch(source, /assetType: "COLOR_BLOCK", sheinImageType: 6/);
   assert.match(source, /shein_image_type: target\.sheinImageType/);
   assert.doesNotMatch(source, /target\.sheinImageType === 6 && assetPreparedForImageType\(existing,\s*6\)/);
   assert.match(source, /function targetImageTypeForAsset/);
@@ -1677,7 +1677,7 @@ test("pre-publish basic fields expose DeepDraw product description", async () =>
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
 
   assert.match(source, /const productDescription = firstField\(fields,\s*\["商品描述", "商品卖点", "产品描述", "卖点", "推荐理由"\]\)/);
-  assert.match(source, /key:\s*"product_description"[\s\S]+label:\s*"商品描述"[\s\S]+compactText\(productDescription,\s*160\)/);
+  assert.match(source, /key:\s*"product_description"[\s\S]+label:\s*"商品描述"[\s\S]+value:\s*productDescription/);
   assert.match(source, /深绘字段池未返回商品描述\/卖点来源/);
   assert.match(source, /function shouldGenerateProductDescription/);
   assert.match(source, /scenario:\s*"shein_description"/);
@@ -1716,7 +1716,7 @@ test("SHEIN SKC title defaults to the product title and AI fill reports warnings
 test("legacy fallback color cards do not masquerade as valid color-block assets", async () => {
   const detailPage = await readFile(path.join(PROJECT_ROOT, "web/src/pages/pre-publish-validation/[listingId]/page.tsx"), "utf8");
 
-  assert.match(detailPage, /asset\.source_type === "SOURCE_FALLBACK" && \["COLOR_BLOCK", "COLOR"\]\.includes\(asset\.asset_type\)/);
+  assert.match(detailPage, /\["SOURCE_FALLBACK", "SKC_SOURCE_IMAGE"\]\.includes\(asset\.source_type\)/);
 });
 
 test("draft category AI recomputes from source data instead of replaying the draft category", async () => {
@@ -1877,7 +1877,7 @@ test("SHEIN title fallback names pants instead of generic clothing", async () =>
   assert.match(source, /title\.includes\("裤"\)[\s\S]+productName = `\$\{genderPrefix\} Pants`/);
   assert.match(source, /colors:\s*selectedSkcsForTitle\(row\)\.map/);
   assert.match(source, /const selectedReadiness = selectedReadinessForListing\(db,\s*listingId,\s*readiness\)/);
-  assert.match(source, /generateSingleAiField\(selectedReadiness,\s*fieldKey\)/);
+  assert.match(source, /generateSingleAiField\(aiReadiness,\s*fieldKey\)/);
 });
 
 test("neutral products use all selected SKC images and expand into gender-specific draft inputs", async () => {
@@ -1911,4 +1911,30 @@ test("neutral SKC uncertainty falls back to one unclassified review draft", asyn
   assert.match(source, /plan\.status !== "READY"/);
   assert.match(source, /categoryDecision:\s*neutralReviewDecision/);
   assert.match(source, /category_needs_review:\s*!categoryDecision\.apply/);
+});
+
+test("single-field AI uses the current unsaved Chinese title without mutating saved readiness", () => {
+  const row = { title_cn: "旧标题", field_groups: [{ fields: [{ key: "title_cn", value: "旧标题" }, { key: "brand", value: "品牌" }] }] };
+  const result = prePublishRoute.applyDraftAiValues(row, { title_cn: "儿童防水加绒雪地靴", brand: "伪造品牌" });
+  assert.equal(result.title_cn, "儿童防水加绒雪地靴");
+  assert.equal(result.field_groups[0].fields[0].value, result.title_cn);
+  assert.equal(result.field_groups[0].fields[1].value, "品牌");
+  assert.equal(row.title_cn, "旧标题");
+  assert.equal(prePublishRoute.applyDraftAiValues(row, {}).title_cn, "旧标题");
+});
+
+test("whole product source images never count as genuine swatches", () => {
+  for (const source_type of ["SOURCE_FALLBACK", "SKC_SOURCE_IMAGE"]) {
+    assert.equal(prePublishRoute.isAutoFallbackColorAsset({ source_type, asset_type: "COLOR_BLOCK" }), true);
+    assert.equal(prePublishRoute.isAutoFallbackColorAsset({ source_type, asset_type: "MAIN" }), false);
+  }
+  assert.equal(prePublishRoute.isAutoFallbackColorAsset({ source_type: "MANUAL_UPLOAD", asset_type: "COLOR_BLOCK" }), false);
+});
+
+test("manual draft description takes precedence over stale listing snapshot and stays editable", async () => {
+  const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
+  const detailPage = await readFile(path.join(PROJECT_ROOT, "web/src/pages/pre-publish-validation/[listingId]/page.tsx"), "utf8");
+  assert.match(source, /listingDescription && !hasDraftDescription/);
+  assert.match(detailPage, /\["category", "title_cn", "title_en", "brand", "product_description"\]\.includes\(field.key\)/);
+  assert.doesNotMatch(source, /value: compactText\(productDescription, 160\)/);
 });

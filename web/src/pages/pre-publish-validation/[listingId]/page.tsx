@@ -582,7 +582,7 @@ function isSizeSaleAttribute(attribute: SaleAttribute) {
 }
 
 function isPublishFocusedField(field: FillField) {
-  if (["category", "title_cn", "title_en", "brand"].includes(field.key)) return true
+  if (["category", "title_cn", "title_en", "brand", "product_description"].includes(field.key)) return true
   if (field.key.startsWith("attr:")) return true
   if (["skc_code", "skc_image", "color", "size_conversion", "supply_price", "package_weight", "size_chart"].includes(field.key)) return true
   return field.status === "MISSING" || field.status === "NEEDS_AI" || field.status === "WARNING"
@@ -948,7 +948,7 @@ function assetTypeLabel(value: string | null | undefined) {
 }
 
 function assetMatchesImageRequirement(asset: ListingAsset, requirement: ImageRequirement) {
-  if (asset.source_type === "SOURCE_FALLBACK" && ["COLOR_BLOCK", "COLOR"].includes(asset.asset_type)) return false
+  if (["SOURCE_FALLBACK", "SKC_SOURCE_IMAGE"].includes(asset.source_type) && ["COLOR_BLOCK", "COLOR"].includes(asset.asset_type)) return false
   return requirement.asset_types.includes(asset.asset_type)
 }
 
@@ -2348,11 +2348,13 @@ export default function PrePublishDraftDetailPage() {
   const publishing = publishMutation.isPending || saveDraftMutation.isPending
 
   const aiEnrichMutation = useMutation({
-    mutationFn: (mode: "all" | "attributes" | "category" | "title" | "description") =>
-      api.post<AiEnrichResult>(
+    mutationFn: async (mode: "all" | "attributes" | "category" | "title" | "description") => {
+      await api.post(`/pre-publish/drafts/${listingId}/save`, buildSaveDraftPayload())
+      return api.post<AiEnrichResult>(
         `/pre-publish/drafts/${listingId}/ai-enrich`,
         { mode },
-      ),
+      )
+    },
     onSuccess: (result, mode) => {
       if (mode === "category") {
         const selection = result.category_selection
@@ -2394,7 +2396,7 @@ export default function PrePublishDraftDetailPage() {
         warnings?: Array<{ message?: string }>
       }>(
         `/pre-publish/drafts/${listingId}/ai-field`,
-        { field_key: field.key },
+        { field_key: field.key, values: manualValues },
       ),
     onSuccess: (result, field) => {
       const fieldValue = result.field?.field_value ?? ""
@@ -2406,7 +2408,7 @@ export default function PrePublishDraftDetailPage() {
       } else {
         toast.warning(`${field.label} AI 暂未生成，字段未改动`)
       }
-      queryClient.invalidateQueries({ queryKey: ["pre-publish", "draft", listingId] })
+      // Keep unsaved edits in the form; the generated field is applied above.
       queryClient.invalidateQueries({ queryKey: ["pre-publish", "drafts"] })
     },
     onError: (error) => {

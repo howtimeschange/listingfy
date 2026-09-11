@@ -15,7 +15,7 @@ const [prePublish, productArchive, categoryMatcher] = await Promise.all([
 test("SHEIN title and enum attributes use the persistent scenario router", () => {
   assert.match(prePublish, /getDefaultAiScenarioRouter/);
   assert.match(prePublish, /scenario:\s*"title_translation"/);
-  assert.match(prePublish, /promptVersion:\s*"title-translation-v1"/);
+  assert.match(prePublish, /promptVersion:\s*"title-translation-v2"/);
   assert.match(prePublish, /scenario:\s*"shein_attribute"/);
   assert.match(prePublish, /promptVersion:\s*"shein-enum-attribute-v1"/);
   assert.match(prePublish, /scenario:\s*"shein_description"/);
