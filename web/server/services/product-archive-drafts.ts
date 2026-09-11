@@ -1919,6 +1919,7 @@ function isProductArchiveForcedFixedDerivedField(
   return (isShoeProduct(spu, sourceRows) || isApparelProduct(spu, sourceRows))
     && (
       key === "抖音商品重量"
+      || key === "京东发货地"
       || key === "价格区间"
       || key === "导购短标题"
       || key === "抖音导购短标题"
@@ -2693,6 +2694,7 @@ const MATERIAL_SECTION_LABEL = [
   "填充物",
   "填充料",
   "里料",
+  "里布",
   "衬里",
   "花边",
   "配料",
@@ -2707,7 +2709,7 @@ const MATERIAL_SECTION_LABEL = [
   "面料",
 ].join("|")
 
-const SECONDARY_MATERIAL_SECTION = "复合底布|梭织面料|针织面料|帽里料|里料|衬里|花边|填充物|填充料|配料|辅料|罗纹|帽里|胆料|内胆|装饰物|鞋面|鞋底"
+const SECONDARY_MATERIAL_SECTION = "复合底布|梭织面料|针织面料|帽里料|里料|里布|衬里|花边|填充物|填充料|配料|辅料|罗纹|帽里|胆料|内胆|装饰物|鞋面|鞋底"
 
 function normalizeMaterialSourceSections(value: unknown) {
   return stringValue(value)
@@ -2743,8 +2745,8 @@ function primaryMaterialRawSection(value: unknown) {
   if (!text) return ""
   const primaryLabel = /(?:^|\n)(?:主面料复合面布|主面料|大身面料|复合面布|面料)\s*[:：]\s*/g
   const labelMatch = primaryLabel.exec(text)
-  const afterLabel = labelMatch ? text.slice(labelMatch.index + labelMatch[0].length) : text
-  const secondaryLabel = new RegExp(`(?:^|\\n)(?:${SECONDARY_MATERIAL_SECTION})\\s*[:：]`)
+  const afterLabel = labelMatch ? text.slice(labelMatch.index + labelMatch[0].length) : text.replace(/^[^\n:：]+[:：]\s*/, "")
+  const secondaryLabel = /(?:^|\n)\s*(?:[^\n:：]+[:：]|[^\n]*成分\s*(?:\n|$)|(?:填充物|填充料|配件|辅款|主款|上衣|裤子|马甲)\s*(?:\n|$))/
   const secondaryIndex = afterLabel.search(secondaryLabel)
   return (secondaryIndex >= 0 ? afterLabel.slice(0, secondaryIndex) : afterLabel).trim()
 }
@@ -2811,8 +2813,7 @@ function apparelDetailMaterialText(sourceRows: JsonRecord[]) {
     .replace(/\r/g, "")
     .replace(/^\s*(?:成分|材质成分|面料成分)\s*[:：]?\s*/i, "")
   if (!sourceText) return ""
-  const fillerIndex = sourceText.search(/(?:^|\n)\s*(?:填充物|填充料)\s*(?:[:：]|\n|$)/)
-  return (fillerIndex >= 0 ? sourceText.slice(0, fillerIndex) : sourceText)
+  return sourceText
     .split("\n")
     .map((line) => line.trim().replace(/^([^:：\n]{1,24})\s*:\s*/, "$1："))
     .filter(Boolean)
@@ -3023,7 +3024,23 @@ function productionEnterpriseAddress(spu: JsonRecord) {
 }
 
 function primaryMaterialComponents(sourceRows: JsonRecord[]) {
-  return materialComponentsFromText(materialCompositionSourceText(sourceRows))
+  const components = materialComponentsFromText(materialCompositionSourceText(sourceRows))
+  const total = components.reduce((sum, component) => sum + Number(component.percent), 0)
+  return total > 0 && total <= 100.000001 ? components : []
+}
+
+function materialCompositionPercentageIssue(fieldName: unknown, value: unknown) {
+  if (!["材质成分", "京东材质成分", "抖音面料材质"].includes(compactFieldKey(fieldName))) return ""
+  const text = stringValue(value)
+  if (!text) return ""
+  const percentages = semicolonTextValues(text).map((item) => {
+    const parts = item.split(/[,，]/)
+    return parts.length === 2 && parts[1].trim() ? Number(parts[1].replace(/%$/, "")) : NaN
+  })
+  const total = percentages.reduce((sum, percent) => sum + percent, 0)
+  return percentages.some((percent) => !Number.isFinite(percent) || percent <= 0) || total > 100.000001
+    ? `${stringValue(fieldName)}成分比例必须为有效正数且合计不得超过100%`
+    : ""
 }
 
 function materialCompositionValue(sourceRows: JsonRecord[], jd = false) {
@@ -3199,6 +3216,9 @@ function downFillerFromCompositionForColor(composition: string, colorHints: stri
 }
 
 function copywritingFillerMaterialValue(sourceRows: JsonRecord[]) {
+  const compositionText = sourceRowJsonByType(sourceRows, "copywriting")
+    .map((row) => stringValue(row.面料成分 ?? row.材质成分)).join("\n")
+  if (compositionText.includes("白鸭绒") && compositionText.includes("灰鸭绒")) return "白鸭绒;灰鸭绒"
   for (const row of sourceRowJsonByType(sourceRows, "copywriting")) {
     const composition = stringValue(row.面料成分 ?? row.材质成分)
     if (!composition) continue
@@ -3357,7 +3377,7 @@ export function buildProductArchiveSourceDerivedFieldValue(fieldName: string, in
   if (shoeProduct && key === "最快出货时间") return "48小时"
   if (shoeProduct && key === "最晚发货时间") return "2天"
   if (shoeProduct && ["单用户累计限购件", "每次限购件"].includes(businessRuleFieldKey(fieldName))) return "5"
-  if (shoeProduct && key.includes("京东发货地")) return "杭州"
+  if ((shoeProduct || apparelProduct) && key.includes("京东发货地")) return "浙江,杭州"
   if (shoeProduct && key.includes("京东商品重量")) return "1"
   if ((shoeProduct || apparelProduct) && key === "抖音商品重量") return "1"
   if (shoeProduct && /京东.*包装.*[宽长高]/.test(fieldName)) return "100"
@@ -4263,7 +4283,7 @@ function productArchiveDownFillWeightRemark(rawSize: unknown, weight: unknown) {
 }
 
 function productArchiveDownFillWeightSaleSizeRemark(weight: unknown) {
-  return `充绒量${stringValue(weight)}g`
+  return `(充绒量${stringValue(weight)}g)`
 }
 
 function appendProductArchiveSizeChartTitle(titles: string[], title: string) {
@@ -7775,6 +7795,15 @@ export function normalizeProductArchiveDeepdrawFieldValue(fieldName: string, val
         (option) => /^(?:无|无填充|不填充)$/.test(option),
         (option) => option === "其他" || /其他|无填充|不填充/.test(option),
       ]) || text
+    }
+    if (text.includes("白鸭绒") && text.includes("灰鸭绒")) {
+      const generic = pickOption(options, [(option) => option === "鸭绒"])
+      if (generic) return generic
+      if (key.includes("多选")) {
+        const colors = ["白鸭绒", "灰鸭绒"].filter((name) => optionValues(options).includes(name))
+        if (colors.length === 2) return colors.join(";")
+      }
+      if (!options.length) return text
     }
     const filler = downFillerNameFromText(text)
     if (filler) {
@@ -12198,6 +12227,12 @@ export function evaluateProductArchiveDraftValidation(input: {
     } else {
       status = "valid"
     }
+    const percentageIssue = materialCompositionPercentageIssue(fieldName, field.value_text)
+    if (percentageIssue && status !== "skipped") {
+      status = "invalid"
+      message = percentageIssue
+      issues.push({ severity: "blocker", issueType: "material_percentage_invalid", fieldName, message })
+    }
     fieldUpdates.push({ id: field.id, status, message: message || null })
   }
 
@@ -13141,6 +13176,10 @@ export function productArchivePayloadValidationIssues(payload: JsonRecord) {
       ? (payload as JsonRecord).legacyUpdateFields
       : payload.fields,
   ).map((field) => recordValue(field))
+  for (const field of [...arrayValue(payload.fields), ...arrayValue(payload.legacyUpdateFields)].map(recordValue)) {
+    const issue = materialCompositionPercentageIssue(field.name, field.value)
+    if (issue && !issues.includes(issue)) issues.push(issue)
+  }
   const saleSizeValue = stringValue(fields.find((field) => isProductArchiveSkuSizeFieldName(field.name) && typeof field.value === "string")?.value)
   const saleSizes = new Set(saleSizeValue.split(/[;；]/).map((size) => size.trim()).filter(Boolean))
   if (saleSizes.size > 0) {

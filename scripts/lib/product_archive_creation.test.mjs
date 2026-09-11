@@ -6066,6 +6066,9 @@ test("apparel mapping rules cover the 202426107205 copywriting and Merchant SKU 
     "大身/领子：100%锦纶",
     "袖子/侧缝：61.3%聚酯纤维 38.7%棉",
     "里料：100%锦纶",
+    "填充物",
+    "灰鸭绒",
+    "绒子含量：90%",
   ].join("\n"));
   assert.equal(derive("里料"), "100%锦纶");
   assert.equal(derive("里料成分"), "100%锦纶");
@@ -6893,8 +6896,8 @@ test("product archive apparel sale-size remarks use down-fill evidence without z
       },
     },
   ]), {
-    "140cm": "充绒量100g",
-    "150cm": "充绒量120g",
+    "140cm": "(充绒量100g)",
+    "150cm": "(充绒量120g)",
   });
 
   assert.deepEqual(service.buildProductArchiveApparelSizeRemarks([
@@ -6907,7 +6910,7 @@ test("product archive apparel sale-size remarks use down-fill evidence without z
       },
     },
   ]), {
-    "140cm": "充绒量100g",
+    "140cm": "(充绒量100g)",
   });
 });
 
@@ -7875,7 +7878,7 @@ test("product archive shoe required fields derive from trusted launch and brand 
   assert.equal(derive("京东[包装]宽"), "100");
   assert.equal(derive("京东[包装]长"), "100");
   assert.equal(derive("京东[包装]高"), "100");
-  assert.equal(derive("京东发货地"), "杭州");
+  assert.equal(derive("京东发货地"), "浙江,杭州");
   assert.equal(derive("京东商品重量"), "1");
   assert.equal(derive("售后服务承诺"), "延保90天");
   assert.equal(derive("所在地"), "浙江,杭州");
@@ -9876,4 +9879,71 @@ test("shoe insole material is fixed to other regardless of source and legacy map
     }), "其他");
   }
   assert.equal(service.normalizeProductArchiveTemplateFieldValue("鞋垫材质", "其他", [{ value: "纺织布料" }, { value: "其他" }]), "其他");
+});
+
+test("down jacket composition retains all detail sections but selects only the first shell for percentages", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const composition = [
+    "灰红色调成分", "面料:100%聚酯纤维", "里布:100%聚酯纤维", "(罗纹除外）",
+    "填充物", "大身/袖子:白鸭绒", "绒子含量:85%", "其余部位:100%聚酯纤维",
+    "咖色调成分", "面料:100%聚酯纤维", "里布:100%聚酯纤维", "(罗纹除外）",
+    "填充物", "大身/袖子:灰鸭绒", "绒子含量:85%", "其余部位:100%聚酯纤维",
+  ].join("\n");
+  const derive = (name, text = composition) => service.buildProductArchiveSourceDerivedFieldValue(name, {
+    spu: { spu_name: "女童羽绒服", product_line_name: "童装服饰", subclass_name: "羽绒服" },
+    sourceRows: [{ source_type: "copywriting", row_json: { "面料成分": text } }],
+  });
+  assert.equal(derive("详情页面料"), composition.replaceAll(":", "："));
+  assert.equal(derive("材质成分"), "聚酯纤维,100");
+  assert.equal(derive("京东材质成分"), "涤纶(聚酯纤维),100");
+  assert.equal(derive("抖音面料材质"), "聚酯纤维,100");
+  assert.equal(derive("京东发货地"), "浙江,杭州");
+  for (const text of [
+    "红色成分\n面料:65%棉 35%聚酯纤维\n蓝色成分\n面料:100%锦纶",
+    "主款\n面料:65%棉 35%聚酯纤维\n配件\n面料:100%锦纶",
+    "面料:65%棉 35%聚酯纤维\n填充物\n100%聚酯纤维",
+  ]) assert.equal(derive("材质成分", text), "棉,65;聚酯纤维,35");
+  assert.equal(derive("材质成分", "面料:80%棉 30%聚酯纤维"), "");
+  const value = derive("填充物(多选)");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("填充物(多选)", value,
+    ["灰鸭绒", "白鸭绒", "鸭绒"]), "鸭绒");
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("填充物(多选)", value,
+    ["灰鸭绒", "白鸭绒"]), "白鸭绒;灰鸭绒");
+});
+
+
+test("material percentages block invalid AI or manual values at validation and payload boundaries", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  for (const name of ["材质成分", "京东材质成分", "抖音面料材质"]) {
+    for (const value of ["棉,80;聚酯纤维,30", "聚酯纤维,200", "棉,-1", "棉,NaN"]) {
+      const result = service.evaluateProductArchiveDraftValidation({
+        draft: { spu_code: "test", title: "test", trade_id: "9652" },
+        fields: [{ id: 1, field_name: name, value_text: value }], skus: [],
+        templateLookup: new Map([[name, { options: [], required: false, rawPayload: {}, fieldType: "TEXT" }]]),
+        now: "2026-09-11T00:00:00Z",
+      });
+      assert.ok(result.issues.some((issue) => issue.issueType === "material_percentage_invalid" && issue.severity === "blocker"));
+      assert.ok(service.productArchivePayloadValidationIssues({ date: "2026-09-11", fields: [{ name, value }] }).some((issue) => issue.includes("100%")));
+    }
+    assert.deepEqual(service.productArchivePayloadValidationIssues({date: "2026-09-11", fields: [{name, value: "棉,65;聚酯纤维,35"}]}), []);
+  }
+});
+
+
+test("JD dispatch location replaces the legacy concatenated fixed mapping", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  assert.equal(service.resolveProductArchiveSourceRuleValue("京东发货地", {
+    spu: { spu_name: "女童羽绒服", subclass_name: "羽绒服" },
+    rule: { source_type: "fixed", default_value: "浙江杭州" },
+  }), "浙江,杭州");
+});
+
+
+test("filler selection combines duck colors across separate source rows", async () => {
+  const service = await import("../../web/server/services/product-archive-drafts.ts");
+  const value = service.buildProductArchiveSourceDerivedFieldValue("填充物(多选)", {
+    spu: { spu_name: "羽绒服" },
+    sourceRows: ["白鸭绒", "灰鸭绒"].map((filler) => ({source_type: "copywriting", row_json: {"面料成分": `面料:100%聚酯纤维\n填充物:${filler}`}})),
+  });
+  assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("填充物(多选)", value, ["灰鸭绒", "白鸭绒", "鸭绒"]), "鸭绒");
 });

@@ -200,9 +200,10 @@ function normalizeSizeRemarkText(value) {
   const text = stringValue(value);
   if (!text) return "";
   const bracketed = text.match(/^[（(]\s*(.*?)\s*[）)]$/);
-  return stringValue(bracketed ? bracketed[1] : text)
+  const normalized = stringValue(bracketed ? bracketed[1] : text)
     .replace(/[;；]+/g, "/")
     .replace(/\*/g, "");
+  return /^充绒量\s*\d+(?:\.\d+)?g$/.test(normalized) ? `(${normalized})` : normalized;
 }
 
 function saleSizeLookup(sizeValues = []) {

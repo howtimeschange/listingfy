@@ -1897,3 +1897,13 @@ test("shoe Vipshop uses sale size keys and omits stale weight/package values", (
     assert.deepEqual(product.fields["唯品会尺码表"], { title: "欧洲码,脚长,鞋内长", "26码": "26,160,170.32" });
   }
 });
+
+
+test("create and full update retain parentheses in down-fill size remarks", () => {
+  const config = {baseUrl: "http://open.deepdraw.cn", appKey: "test", appSecret: "test", dopKey: "test", merchantId: "1162"};
+  const payload = {code: "202426107020-test", title: "羽绒服", tradeId: "9652", date: "2026-09-11", withSizeRemarks: true,
+    sizeRemarks: {"110cm": "(充绒量72g)", "120cm": "充绒量81g"}, fields: [{name: "尺码", value: "110cm;120cm"}], skus: []};
+  for (const input of [buildDeepdrawSdkProductInput({config,payload}), buildDeepdrawProductFullUpdateInput({config,productId: "123",payload})]) {
+    assert.equal(input.product.fields["尺码"], "110cm*(充绒量72g);120cm*(充绒量81g)");
+  }
+});
