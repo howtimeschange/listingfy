@@ -172,7 +172,7 @@ test("duplicate re-locks the SPU and source listing before deriving a new draft"
   );
 
   assert.match(duplicateRoute, /const result = db\.transaction\(\(\) => \{[\s\S]*lockProductSpuForPublishScope/);
-  assert.match(duplicateRoute, /lockListingForMutation\(db, listingId\)[\s\S]*getSourceProductRow\(db, lockedListing\.spu_code\)/);
+  assert.match(duplicateRoute, /select \* from listing where id = \? for update[\s\S]*getSourceProductRow\(db, lockedListing\.spu_code\)/);
   assert.match(duplicateRoute, /getReadinessForListing\(db, lockedListing\)/);
   assert.doesNotMatch(duplicateRoute, /const listing = db\.prepare\("select \* from listing where id = \?"\)[\s\S]*const sourceRow = getSourceProductRow/);
 });
@@ -216,7 +216,7 @@ test("SHEIN publish scope fences task-only review and approved status drift", as
     assert.doesNotMatch(activeTaskStatuses, new RegExp(`\\"${terminalStatus}\\"`));
   }
 
-  assert.match(scopeAssertion, /const busyTask = scope\.activeTasks\.find\(\(task\) => Number\(task\.listing_id\) !== listingId\)/);
+  assert.match(scopeAssertion, /const busyTask = scope\.activeTasks\.find\(\(task\) => Number\(task\.listing_id\) !== listingId[\s\S]*conflicts\(sibling\)/);
   assert.match(scopeAssertion, /throw new HTTPException\(409, \{[\s\S]*SHEIN 发布范围已有未解决的发布任务/);
   assert.match(scopeAssertion, /findUnresolvedPublishTask\(db, listingId\)/);
 });
@@ -549,12 +549,12 @@ test("field-fill helpers infer related tariff values for child and baby category
   );
 });
 
-test("pre-publish route applies tariff candidates before SHEIN payload submission", async () => {
+test("pre-publish keeps selected tariff unchanged before SHEIN payload submission", async () => {
   const source = await readFile(path.join(PROJECT_ROOT, "web/server/routes/pre-publish.ts"), "utf8");
-  assert.match(source, /tariffValueCandidatesForContext\(context,\s*attr\.values\)/);
-  assert.match(source, /tariffValueCandidatesForContext\(text,\s*field\.options/);
-  assert.match(source, /function tariffFieldValuesForListing/);
-  assert.match(source, /field\.label\.includes\("关税"\)[\s\S]+tariffFieldValuesForListing\(field,\s*listing\)/);
+  const section = source.slice(source.indexOf("function tariffFieldValuesForListing"), source.indexOf("function buildProductAttributeList"));
+  assert.match(section, /return coerceFieldValues\(field, field\.value\)/);
+  assert.doesNotMatch(section, /tariffValueCandidatesForContext/);
+  assert.match(source, /validateAssociatedPublishAttributes\(db, preview\.payload\)/);
 });
 
 test("pre-publish route exposes the deprecated tariff/material customs field when tariff is unspecified", async () => {

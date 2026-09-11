@@ -91,7 +91,7 @@ test("SHEIN kids category fallback only resolves deterministic gendered kids tit
   ];
 
   for (const item of unresolvedCases) {
-    assert.equal(resolveSheinKidsCategoryFallback(item.row), null, item.row.spu_code);
+    assert.equal(resolveSheinKidsCategoryFallback(item.row)?.category_id ?? null, null, item.row.spu_code);
   }
 
   const cases = [

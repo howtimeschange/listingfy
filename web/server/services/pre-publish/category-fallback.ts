@@ -1,3 +1,5 @@
+import { businessCategoryMapping } from "./business-category-mappings"
+
 export type CategoryFallbackRow = Record<string, unknown>
 
 export type CategoryFallbackResult = {
@@ -285,7 +287,8 @@ function kidsCardiganFallbackCategory(row: CategoryFallbackRow): CategoryFallbac
 }
 
 export function resolveSheinKidsCategoryFallback(row: CategoryFallbackRow): CategoryFallbackResult | null {
-  return kidsPantsFallbackCategory(row)
+  return businessCategoryMapping(row)
+    ?? kidsPantsFallbackCategory(row)
     ?? kidsTshirtFallbackCategory(row)
     ?? kidsSweatshirtFallbackCategory(row)
     ?? kidsOuterwearFallbackCategory(row)

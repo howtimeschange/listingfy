@@ -16,3 +16,11 @@ export function canTransitionDraftStatus(currentStatus: string, nextStatus: stri
   }
   return (transitions[current] ?? ["DRAFT", "NEEDS_ENRICHMENT", "READY_TO_VALIDATE", "PAUSED", "ARCHIVED"]).includes(next)
 }
+
+// First/legacy draft retains the historical code. Further publish units have a
+// stable identity independent of category, gender, or the selected SKCs.
+export function publishSupplierCode(listing: { id?: unknown; spu_code?: unknown; publish_unit_no?: unknown }) {
+  const original = normalizeText(listing.spu_code)
+  const unit = normalizeText(listing.publish_unit_no)
+  return !unit || unit === 'default' || unit === 'draft-001' ? original : `${original}-L${listing.id}`
+}

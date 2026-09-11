@@ -26,6 +26,7 @@ const ROUTES = [
       ["post", "/drafts/:id/refresh-weights", "LISTING_WRITE"],
       ["patch", "/drafts/:id/image-confirmation", "LISTING_WRITE"],
       ["post", "/drafts/:id/save", "LISTING_WRITE"],
+      ["post", "/drafts/:id/associated-attributes", "LISTING_WRITE"],
       ["post", "/drafts/:id/ai-enrich", "LISTING_WRITE"],
       ["post", "/drafts/:id/ai-field", "LISTING_WRITE"],
       ["post", "/drafts/batch-import-folders", "LISTING_WRITE"],

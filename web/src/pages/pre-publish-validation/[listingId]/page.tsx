@@ -306,6 +306,7 @@ interface ListingDetail {
     status: string
     validation_status: string
     completeness: number
+    platform_supplier_code?: string
     platform_category_id: number | null
     product_type_id: number | null
     platform_category_name: string | null
@@ -1882,6 +1883,20 @@ export default function PrePublishDraftDetailPage() {
     () => data?.readiness.field_groups.flatMap((group) => group.fields) ?? [],
     [data],
   )
+  const [associatedValues, setAssociatedValues] = useState<Record<string, string>>({})
+  useEffect(() => {
+    const timer = window.setTimeout(() => setAssociatedValues(manualValues), 400)
+    return () => window.clearTimeout(timer)
+  }, [manualValues])
+  const associatedQuery = useQuery({
+    queryKey: ["draft-associated-attributes", listingId, data?.listing.platform_category_id, associatedValues],
+    queryFn: () => api.post<{ fields: FillField[]; errors: string[] }>(
+      `/pre-publish/drafts/${listingId}/associated-attributes`, { values: associatedValues },
+    ),
+    enabled: Boolean(data?.listing.platform_category_id),
+    retry: false,
+  })
+  const associatedFields = associatedQuery.data?.fields ?? []
   const colorAttribute = useMemo(
     () => data?.sale_attributes.find((attribute) => attribute.attribute_label === 1 && attribute.attribute_name.includes("颜色")),
     [data],
@@ -1944,6 +1959,13 @@ export default function PrePublishDraftDetailPage() {
   const focusedFieldGroups = publishFocusedGroups(
     dimensionGroups.find((group) => group.dimension === "SPU")?.groups ?? data?.readiness.field_groups ?? [],
   )
+  for (const field of associatedFields) {
+    const group = focusedFieldGroups.find((item) => item.fields.some((item) => item.key === field.key))
+    if (group) group.fields = group.fields.map((item) => item.key === field.key ? field : item)
+  }
+  const additionalAssociatedFields = associatedFields.filter((field) => !focusedFieldGroups.some((group) => group.fields.some((item) => item.key === field.key)))
+  if (additionalAssociatedFields.length) focusedFieldGroups.push({ group: "关税与商品属性联动必填", fields: additionalAssociatedFields })
+
   const fieldValidationIssues = issuesByFieldKey(data?.validation_issues ?? [], focusedFieldGroups)
   const imageValidationIssues = issuesForKeys(data?.validation_issues ?? [], ["SKC 图片", "skc_image"])
   const skuCommercialValidationIssues = issuesForKeys(data?.validation_issues ?? [], ["产品毛重/g", "package_weight"])
@@ -2031,7 +2053,7 @@ export default function PrePublishDraftDetailPage() {
 
   function buildSaveDraftPayload() {
     return {
-      fields: fields.map((field) => ({
+      fields: [...new Map([...fields, ...associatedFields].map((field) => [field.key, field])).values()].map((field) => ({
         field_key: field.key,
         field_label: field.label,
         field_value: manualValues[field.key] ?? toInputValue(field.value),
@@ -2799,6 +2821,8 @@ export default function PrePublishDraftDetailPage() {
                 <Badge variant="outline">{data.listing.skc_count} 款色 / {data.listing.sku_count} SKU</Badge>
               </div>
               <h2 className="mt-3 truncate text-lg font-semibold">{data.listing.title || data.listing.spu_code}</h2>
+              <p className="mt-1 text-sm text-muted-foreground">原款号：{data.listing.spu_code} · 平台商品编码：{data.listing.platform_supplier_code || data.listing.spu_code}</p>
+              <p className="mt-1 text-sm text-muted-foreground">男女分开上架时，请人工确认类目与每个 SKC 的归属；不同草稿不要重复勾选同一 SKC。</p>
               <p className="mt-1 text-sm text-muted-foreground">
                 {data.listing.platform_category_name || data.readiness.category.category_name || "未匹配类目"}
               </p>
@@ -2883,6 +2907,8 @@ export default function PrePublishDraftDetailPage() {
               </p>
             </CardHeader>
             <CardContent className="space-y-5">
+              {associatedQuery.isFetching && <p className="text-sm text-muted-foreground">正在按当前属性查询 SHEIN 联动必填项…</p>}
+              {associatedQuery.isError && <p role="alert" className="text-sm text-destructive">联动必填查询失败：{associatedQuery.error.message}。请重试后发布。<Button variant="link" onClick={() => associatedQuery.refetch()}>重试</Button></p>}
               <FieldGroupsTable
                 groups={focusedFieldGroups}
                 manualValues={manualValues}

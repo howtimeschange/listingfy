@@ -1,3 +1,5 @@
+import { queryAssociatedRules, associatedAttributeErrors } from "../services/pre-publish/associated-attributes"
+import { publishSupplierCode } from "../services/pre-publish/drafts"
 import fs from "node:fs"
 import { randomUUID } from "node:crypto"
 import path from "node:path"
@@ -317,7 +319,7 @@ type LiveAiDraftCategory = {
   skcSuggestions: unknown[]
 }
 
-function activeFillMap(db: ReturnType<typeof getDb>, spuCodes: string[]) {
+function activeFillMap(db: ReturnType<typeof getDb>, spuCodes: string[], listingId?: number) {
   if (spuCodes.length === 0) return new Map<string, SourceRow>()
   const placeholders = spuCodes.map(() => "?").join(",")
   const rows = db.prepare(`
@@ -326,7 +328,11 @@ function activeFillMap(db: ReturnType<typeof getDb>, spuCodes: string[]) {
     where status = 'ACTIVE'
       and spu_code in (${placeholders})
   `).all(...spuCodes) as SourceRow[]
-  return new Map(rows.map((row) => [String(row.scope_key), row]))
+  const visible = rows.filter((row) => {
+    const owner = asPositiveNumber(parseJsonObject(row.payload_json).listing_id)
+    return listingId ? !owner || owner === listingId : !String(row.scope_key).startsWith("listing:")
+  }).sort((a, b) => Number(String(a.scope_key).startsWith("listing:")) - Number(String(b.scope_key).startsWith("listing:")))
+  return new Map(visible.map((row) => [String(row.scope_key).replace(/^listing:\d+:/, ""), row]))
 }
 
 function getStoredFill(
@@ -1211,7 +1217,6 @@ function getAttributeById(
       and attribute_id = ?
       and coalesce(is_black, 0) = 0
     order by is_show desc, attribute_value
-    limit 320
   `).all(productTypeId, attributeId) as AttributeValue[]
   return {
     category_id: Number(row.category_id ?? 0),
@@ -1825,6 +1830,15 @@ function buildRow({
       error: categoryPair.error,
     }
   const attrs = getRequiredAttributes(db, category.category_id, category.product_type_id)
+  // Retain manually completed associated attributes in the draft and payload,
+  // even when the base template marks them optional.
+  for (const stored of fills.values()) {
+    const id = Number(normalizeText(stored.field_key).match(/^attr:(\d+)$/)?.[1])
+    if (!id || attrs.some((attr) => attr.attribute_id === id)) continue
+    const attr = getAttributeById(db, category.category_id, category.product_type_id, id)
+    if (attr && [3, 4].includes(Number(attr.attribute_type))) attrs.push(attr)
+  }
+
   onRequiredAttributes?.(attrs)
   const sizeAttr = findSizeSaleAttribute(attrs)
   const priceConfig = getSheinPriceConfig(db)
@@ -2318,15 +2332,7 @@ function storedReviewCategoryOverrideForListing(
   productTypeId: number,
   metadata?: SourceRow | null,
 ): CategoryOverride | null {
-  const stored = db.prepare(`
-    select *
-    from listing_field_fill
-    where spu_code = ?
-      and field_key = 'category'
-      and coalesce(status, 'ACTIVE') = 'ACTIVE'
-    order by updated_at desc, id desc
-    limit 1
-  `).get(listing.spu_code) as SourceRow | undefined
+  const stored = getStoredFill(activeFillMap(db, [listing.spu_code], Number(listing.id)), listing.spu_code, "category")
   if (!stored) return null
   const payload = parseJsonObject(stored.payload_json)
   const storedCategoryId = asPositiveNumber(payload.category_id)
@@ -2399,7 +2405,7 @@ function getReadinessForListing(
   const sizeConversions = activeSizeConversions(db)
   const discounts = activeDiscounts(db)
   const weights = activeWeights(db)
-  const fills = activeFillMap(db, [listing.spu_code])
+  const fills = activeFillMap(db, [listing.spu_code], Number(listing.id))
   const override = options.ignoreListingCategory ? null : listingCategoryOverride(db, listing)
   const readiness = buildRow({
     db,
@@ -3308,6 +3314,7 @@ function summarizeListings(
     }))
     return {
       ...displayListingForSelectedSkcs(listing, selectedSkcs, allSkcs),
+      platform_supplier_code: publishSupplierCode(listing),
       latest_version_no: summary.latest_version_no ?? null,
       latest_version_status: summary.latest_version_status ?? null,
       latest_version_summary: summary.latest_version_summary ?? null,
@@ -3382,6 +3389,7 @@ function summarizeListing(db: ReturnType<typeof getDb>, listing: SourceRow, opti
   `).all(listing.id) as SourceRow[]
   return {
     ...displayListingForSelectedSkcs(listing, selectedSkcs, allSkcs),
+    platform_supplier_code: publishSupplierCode(listing),
     latest_version_no: latestVersion?.version_no ?? null,
     latest_version_status: latestVersion?.status ?? null,
     latest_version_summary: latestVersion?.change_summary ?? null,
@@ -3756,7 +3764,7 @@ function lockPublishScope(db: ReturnType<typeof getDb>, listing: ListingRow) {
   return { listing: lockedListing, siblings, activeTasks }
 }
 
-function assertPublishScopeAvailable(
+export function assertPublishScopeAvailable(
   db: ReturnType<typeof getDb>,
   listing: ListingRow,
   scope: { siblings: ListingRow[]; activeTasks: SourceRow[] },
@@ -3765,16 +3773,24 @@ function assertPublishScopeAvailable(
   const unresolvedTask = findUnresolvedPublishTask(db, listingId)
   if (unresolvedTask) return { deduplicatedTask: unresolvedTask }
 
+  const selectedCodes = (id: number) => new Set((db.prepare(
+    "select skc_code from listing_skc where listing_id = ? and coalesce(selected_for_publish, 1) = 1",
+  ).all(id) as SourceRow[]).map((row) => normalizeText(row.skc_code)))
+  const ownCodes = selectedCodes(listingId)
+  const conflicts = (sibling: ListingRow) => publishSupplierCode(sibling) === publishSupplierCode(listing)
+    || [...selectedCodes(Number(sibling.id))].some((code) => ownCodes.has(code))
   const busySibling = scope.siblings.find((sibling) => (
-    PUBLISH_SCOPE_FENCED_STATUSES.has(normalizeText(sibling.status).toUpperCase())
+    conflicts(sibling)
+    && PUBLISH_SCOPE_FENCED_STATUSES.has(normalizeText(sibling.status).toUpperCase())
     && Number(sibling.id) !== listingId
   ))
   if (busySibling) {
     throw new HTTPException(409, {
-      message: `SHEIN 发布范围已有进行中的草稿（${normalizeText(busySibling.publish_unit_no) || busySibling.id}），请先完成或解除该草稿`,
+      message: `SHEIN 发布范围已有进行中的草稿（${normalizeText(busySibling.publish_unit_no) || busySibling.id}），所选 SKC 或平台商品编码重叠，请调整 SKC 归属或处理原草稿`,
     })
   }
-  const busyTask = scope.activeTasks.find((task) => Number(task.listing_id) !== listingId)
+  const busyTask = scope.activeTasks.find((task) => Number(task.listing_id) !== listingId
+    && scope.siblings.some((sibling) => Number(sibling.id) === Number(task.listing_id) && conflicts(sibling)))
   if (busyTask) {
     throw new HTTPException(409, {
       message: "SHEIN 发布范围已有未解决的发布任务，请先同步或处理原任务",
@@ -5257,6 +5273,7 @@ async function generateSingleAiField(readiness: ReadinessRow, fieldKey: string) 
 
 function persistFill({
   db,
+  listingId,
   spuCode,
   fieldKey,
   fieldLabel,
@@ -5266,6 +5283,7 @@ function persistFill({
   payload,
 }: {
   db: ReturnType<typeof getDb>
+  listingId?: number
   spuCode: string
   fieldKey: string
   fieldLabel: string
@@ -5274,7 +5292,7 @@ function persistFill({
   confidence?: number | null
   payload?: unknown
 }) {
-  const scopeKey = buildScopeKey({ spuCode, fieldKey })
+  const scopeKey = (listingId ? `listing:${listingId}:` : "") + buildScopeKey({ spuCode, fieldKey })
   db.prepare(`
     insert into listing_field_fill (
       scope_key,
@@ -5305,7 +5323,7 @@ function persistFill({
     fieldValue,
     source,
     confidence ?? null,
-    JSON.stringify(payload ?? {}),
+    JSON.stringify({ ...parseJsonObject(payload), ...(listingId ? { listing_id: listingId } : {}) }),
   )
 }
 
@@ -5362,31 +5380,17 @@ function buildDependentAttributeItems(db: ReturnType<typeof getDb>, listing: Lis
   }]
 }
 
-function tariffFieldValuesForListing(field: FillField, listing: ListingRow) {
-  const currentValues = coerceFieldValues(field, field.value)
-  const context = [
-    listing.platform_category_name,
-    listing.platform_category_path,
-    listing.title,
-    listing.spu_name,
-    listing.middle_class_name,
-    listing.subclass_name,
-  ].map(normalizeText).join(" ")
-  const candidates = tariffValueCandidatesForContext(context, field.options ?? [])
-  if (candidates.length === 1 && candidates[0] === UNSPECIFIED_TARIFF_VALUE) return currentValues
-  const currentSpecificValues = currentValues.filter((value) =>
-    value !== UNSPECIFIED_TARIFF_VALUE && candidates.includes(value),
-  )
-  if (currentSpecificValues.length > 0) return currentSpecificValues
-  const inferred = findEnumValue((field.options ?? []) as AttributeValue[], candidates)
-  return inferred ? [inferred.attribute_value] : currentValues
+function tariffFieldValuesForListing(field: FillField) {
+  // Publishing must retain the selected customs declaration. Re-inference here
+  // could silently replace a padded garment with a different tariff kind.
+  return coerceFieldValues(field, field.value)
 }
 
 function buildProductAttributeList(db: ReturnType<typeof getDb>, listing: ListingRow) {
   const fields = requiredFillFields(db, listing)
   const compositionSource = fields.find((field) => field.key === "composition_text")?.value
   const tariffField = fields.find((field) => field.attribute_id === TARIFF_ATTRIBUTE_ID)
-  const publishTariffValues = tariffField ? tariffFieldValuesForListing(tariffField, listing) : []
+  const publishTariffValues = tariffField ? tariffFieldValuesForListing(tariffField) : []
   const includeDeprecatedTariffMaterial = publishTariffValues.includes(UNSPECIFIED_TARIFF_VALUE)
   const output: Array<Record<string, unknown>> = []
   for (const field of fields) {
@@ -5398,7 +5402,7 @@ function buildProductAttributeList(db: ReturnType<typeof getDb>, listing: Listin
       continue
     }
     const values = field.attribute_id === TARIFF_ATTRIBUTE_ID
-      ? tariffFieldValuesForListing(field, listing)
+      ? tariffFieldValuesForListing(field)
       : coerceFieldValues(field, field.value)
     for (const value of values) {
       const option = optionForFieldValue(field, value)
@@ -6321,7 +6325,7 @@ function buildPublishPayload(db: ReturnType<typeof getDb>, listingId: number, op
     product_type_id: Number(listing.product_type_id),
     source_system: "OpenAPI",
     suit_flag: "0",
-    supplier_code: normalizeText(listing.spu_code),
+    supplier_code: publishSupplierCode(listing),
     is_spu_pic: false,
     ...(fieldShown(publishFields, "brand_code") && brandCode ? { brand_code: brandCode } : {}),
     ...(fieldShown(publishFields, "package_type") ? { package_type: resolvePackageRule(db, listing).type } : {}),
@@ -6650,7 +6654,7 @@ function persistDraftFields({
   for (const field of fields) {
     const fieldKey = normalizeText(field.field_key)
     if (!fieldKey) continue
-    const scopeKey = buildScopeKey({
+    const scopeKey = `listing:${listingId}:` + buildScopeKey({
       spuCode: listing.spu_code,
       skcCode: field.skc_code,
       skuCode: field.sku_code,
@@ -6744,6 +6748,7 @@ function applyDraftCategorySelection({
     where id = ?
   `).run(categoryId, productTypeId, category.category_name, category.path, listingId)
   persistFill({
+    listingId,
     db,
     spuCode: listing.spu_code,
     fieldKey: "category",
@@ -7425,13 +7430,17 @@ prePublish.post("/drafts/:id/duplicate", async (c) => {
       throw new HTTPException(404, { message: "草稿不存在" })
     }
     lockProductSpuForPublishScope(db, Number(sourceHint.product_spu_id))
-    const lockedListing = lockListingForMutation(db, listingId)
+    const lockedListing = db.prepare("select * from listing where id = ? for update").get(listingId) as ListingRow
     const sourceRow = getSourceProductRow(db, lockedListing.spu_code)
     const readiness = getReadinessForListing(db, lockedListing)
     if (!sourceRow || !readiness) {
       throw new HTTPException(404, { message: "商品档案不存在，无法派生草稿" })
     }
     const draft = createDraft(db, readiness, sourceRow, lockedListing.platform)
+    persistDraftFields({ db, listing: draft.listing as ListingRow, listingId: Number(draft.listing.id),
+      fields: readiness.field_groups.flatMap((group) => group.fields).filter((field) => field.key !== "category").map((field) => ({
+        field_key: field.key, field_label: field.label, field_value: field.value, source: field.source,
+      })), savedFrom: "duplicate_draft" })
     updateBucketLatestForSpu(db, lockedListing.spu_code)
     return draft
   })()
@@ -7590,6 +7599,7 @@ prePublish.post("/drafts/:id/convert-openapi-single-item", async (c) => {
   const transaction = db.transaction(() => {
     lockListingForMutation(db, listingId)
     persistFill({
+      listingId,
       db,
       spuCode: listing.spu_code,
       fieldKey: "category",
@@ -7609,6 +7619,7 @@ prePublish.post("/drafts/:id/convert-openapi-single-item", async (c) => {
     })
     if (titleCn) {
       persistFill({
+        listingId,
         db,
         spuCode: listing.spu_code,
         fieldKey: "title_cn",
@@ -7624,6 +7635,7 @@ prePublish.post("/drafts/:id/convert-openapi-single-item", async (c) => {
     }
     if (titleEn) {
       persistFill({
+        listingId,
         db,
         spuCode: listing.spu_code,
         fieldKey: "title_en",
@@ -7776,6 +7788,56 @@ prePublish.patch("/drafts/:id/image-confirmation", async (c) => {
   transaction()
   return c.json({ ok: true, detail: getListingDetail(db, listingId) })
 })
+
+// Read-only metadata query; unsaved form values do not mutate the draft.
+prePublish.post("/drafts/:id/associated-attributes", async (c) => {
+  requirePermission(c, "LISTING_WRITE")
+  const db = getDb()
+  const listing = db.prepare("select * from listing where id = ?").get(Number(c.req.param("id"))) as ListingRow | undefined
+  if (!listing) throw new HTTPException(404, { message: "草稿不存在" })
+  const body = await c.req.json() as { values?: Record<string, string> }
+  const categoryId = Number(listing.platform_category_id)
+  const productTypeId = Number(listing.product_type_id)
+  if (!categoryId || !productTypeId) return c.json({ fields: [], errors: [] })
+  const base = requiredFillFields(db, listing)
+  const values = { ...Object.fromEntries(base.map((field) => [field.key, field.value])), ...body.values }
+  const attributes: Array<Record<string, unknown>> = []
+  for (const [key, value] of Object.entries(values)) {
+    const id = Number(key.match(/^attr:(\d+)$/)?.[1])
+    if (!id || !normalizeText(value)) continue
+    const attr = getAttributeById(db, categoryId, productTypeId, id)
+    if (!attr || ![3, 4].includes(Number(attr.attribute_type))) continue
+    const field = { ...attributeFillMeta(attr) }
+    for (const selected of coerceFieldValues(field, value)) {
+      const option = findEnumOption(attr.values, [selected])
+      if (option) attributes.push({ attribute_id: id, attribute_value_id: option.attribute_value_id })
+      else if (field.render_kind === "text" || field.render_kind === "enum_with_text") attributes.push({ attribute_id: id, attribute_extra_value: selected })
+    }
+  }
+  const rules = await queryAssociatedRules(resolveSheinCredentials(db), categoryId, productTypeId, attributes)
+    .catch((error: Error) => { throw new HTTPException(502, { message: error.message }) })
+  const fields = rules.map((rule) => {
+    const attr = getAttributeById(db, categoryId, productTypeId, rule.attribute_id)
+    if (!attr) throw new HTTPException(409, { message: `平台要求属性 ${rule.attribute_id}，本地模板缺失，请同步 SHEIN 属性元数据后重试` })
+    const meta = attributeFillMeta(attr)
+    const options = rule.allowed_value_ids.length ? attr.values.filter((option) => rule.allowed_value_ids.includes(option.attribute_value_id)) : attr.values
+    if (rule.allowed_value_ids.length && options.length !== rule.allowed_value_ids.length) {
+      throw new HTTPException(409, { message: `「${attr.attribute_name}」关联取值元数据不完整，请同步 SHEIN 属性元数据后重试` })
+    }
+    const value = values[`attr:${rule.attribute_id}`] ?? ""
+    const errors = associatedAttributeErrors([rule], attributes, () => attr.attribute_name)
+    return { ...meta, options, key: `attr:${rule.attribute_id}`, label: attr.attribute_name,
+      value, is_required: 1, source: "SHEIN 关联规则", status: errors.length ? "MISSING" : "READY",
+      note: "当前商品属性组合触发平台必填，请按实际商品信息填写。" }
+  })
+  return c.json({ fields, errors: associatedAttributeErrors(rules, attributes, (id) => fields.find((field) => field.attribute_id === id)?.label ?? String(id)) })
+})
+
+async function validateAssociatedPublishAttributes(db: ReturnType<typeof getDb>, payload: Record<string, unknown>) {
+  const attributes = payload.product_attribute_list as Array<Record<string, unknown>>
+  const rules = await queryAssociatedRules(resolveSheinCredentials(db), Number(payload.category_id), Number(payload.product_type_id), attributes)
+  return associatedAttributeErrors(rules, attributes, (id) => getAttributeById(db, Number(payload.category_id), Number(payload.product_type_id), id)?.attribute_name ?? String(id))
+}
 
 prePublish.post("/drafts/:id/save", async (c) => {
   requirePermission(c, "LISTING_WRITE")
@@ -7964,6 +8026,7 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
       db.transaction(() => {
         lockListingForMutation(db, listingId)
         persistFill({
+          listingId,
           db,
           spuCode: enrichmentReadiness.spu_code,
           fieldKey: "title_en",
@@ -7993,6 +8056,7 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
         db.transaction(() => {
           lockListingForMutation(db, listingId)
           persistFill({
+            listingId,
             db,
             spuCode: enrichmentReadiness.spu_code,
             fieldKey: "product_description",
@@ -8029,6 +8093,7 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
         const fieldValue = normalizeFillFieldValue(field.key, field.label, field.value)
         if (!fieldValue) continue
         persistFill({
+          listingId,
           db,
           spuCode: enrichmentReadiness.spu_code,
           fieldKey: field.key,
@@ -8068,6 +8133,7 @@ prePublish.post("/drafts/:id/ai-enrich", async (c) => {
         if (!fieldValue) continue
         const confidence = Number(aiFill?.confidence)
         persistFill({
+          listingId,
           db,
           spuCode: enrichmentReadiness.spu_code,
           fieldKey: field.key,
@@ -8153,6 +8219,7 @@ prePublish.post("/drafts/:id/ai-field", async (c) => {
   const refreshed = db.transaction(() => {
     lockListingForMutation(db, listingId)
     persistFill({
+      listingId,
       db,
       spuCode: selectedReadiness.spu_code,
       fieldKey: generated.field.key,
@@ -9944,6 +10011,7 @@ prePublish.post("/drafts/:id/publish", async (c) => {
       throw new HTTPException(404, { message: "草稿不存在" })
     }
     const preview = buildPublishPayload(db, listingId, { skcCodes, allowDefaultSkuWeight })
+    preview.errors.push(...await validateAssociatedPublishAttributes(db, preview.payload))
     return c.json({
       ok: preview.errors.length === 0,
       dry_run: true,
@@ -10028,6 +10096,7 @@ prePublish.post("/drafts/:id/publish", async (c) => {
       requirePreparedImages: false,
       allowDefaultSkuWeight,
     })
+    preview.errors.push(...await validateAssociatedPublishAttributes(db, preview.payload))
     if (preview.errors.length > 0) {
       const errorMessage = `发布前仍有阻断项：${preview.errors.join("；")}`
       const localValidationPayload = preview.payload

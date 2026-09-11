@@ -216,7 +216,7 @@ function categoryFallbackInputForGroup(group: UnmappedGroup) {
 }
 
 function filterGroupsWithoutCodeFallback(groups: UnmappedGroup[]) {
-  return groups.filter((group) => !resolveSheinKidsCategoryFallback(categoryFallbackInputForGroup(group)))
+  return groups.filter((group) => !resolveSheinKidsCategoryFallback(categoryFallbackInputForGroup(group))?.category_id)
 }
 
 function collectCandidateKeywords(groups: UnmappedGroup[]) {

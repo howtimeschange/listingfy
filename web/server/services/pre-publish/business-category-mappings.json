@@ -1,0 +1,1676 @@
+[
+  {
+    "spu_code": "208326149201",
+    "middle_class_name": "鞋配饰",
+    "subclass_name": "鞋垫",
+    "category_id": 9159,
+    "product_type_id": 5839,
+    "category_name": "儿童鞋垫",
+    "path": "儿童 > 儿童鞋子 > 儿童鞋子护理及配件 > 儿童鞋垫"
+  },
+  {
+    "spu_code": "208326140206",
+    "middle_class_name": "运动鞋",
+    "subclass_name": "跑步鞋",
+    "category_id": 2070,
+    "product_type_id": 374,
+    "category_name": "儿童运动鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童运动鞋"
+  },
+  {
+    "spu_code": "208326140011",
+    "middle_class_name": "运动鞋",
+    "subclass_name": "运动生活鞋",
+    "category_id": 2070,
+    "product_type_id": 374,
+    "category_name": "儿童运动鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童运动鞋"
+  },
+  {
+    "spu_code": "208326141001",
+    "middle_class_name": "休闲鞋",
+    "subclass_name": "板鞋",
+    "category_id": 2070,
+    "product_type_id": 374,
+    "category_name": "儿童运动鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童运动鞋"
+  },
+  {
+    "spu_code": "208326100108",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 1997,
+    "product_type_id": 9736,
+    "category_name": "男童（大）T恤",
+    "path": "儿童 > 男童（大）服装 > 男童（大）上衣 > 男童（大）T恤"
+  },
+  {
+    "spu_code": "208926166213",
+    "middle_class_name": "包",
+    "subclass_name": "休闲包",
+    "category_id": 2361,
+    "product_type_id": 369,
+    "category_name": "儿童背包",
+    "path": "儿童 > 儿童箱包 > 儿童背包"
+  },
+  {
+    "spu_code": "208326141011",
+    "middle_class_name": "休闲鞋",
+    "subclass_name": "时尚生活鞋",
+    "category_id": 2069,
+    "product_type_id": 371,
+    "category_name": "儿童平底鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童平底鞋"
+  },
+  {
+    "spu_code": "209926171202",
+    "middle_class_name": "家居服",
+    "subclass_name": "家居上装",
+    "category_id": 2013,
+    "product_type_id": 9738,
+    "category_name": "女童（大）T恤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）上衣 > 女童（大）T恤"
+  },
+  {
+    "spu_code": "208326108215",
+    "middle_class_name": "长裤",
+    "subclass_name": "梭织长裤",
+    "category_id": 1993,
+    "product_type_id": 9600,
+    "category_name": "男童（大）裤子",
+    "path": "儿童 > 男童（大）服装 > 男童（大）下装 > 男童（大）裤子"
+  },
+  {
+    "spu_code": "208326141206",
+    "middle_class_name": "休闲鞋",
+    "subclass_name": "板鞋",
+    "category_id": 2070,
+    "product_type_id": 374,
+    "category_name": "儿童运动鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童运动鞋"
+  },
+  {
+    "spu_code": "208326140003",
+    "middle_class_name": "运动鞋",
+    "subclass_name": "运动生活鞋",
+    "category_id": 2070,
+    "product_type_id": 374,
+    "category_name": "儿童运动鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童运动鞋"
+  },
+  {
+    "spu_code": "208326100207",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2105,
+    "product_type_id": 9740,
+    "category_name": "男童（小）T恤",
+    "path": "儿童 > 男童（小）服装 > 男童（小）上衣 > 男童（小）T恤"
+  },
+  {
+    "spu_code": "208326108012",
+    "middle_class_name": "长裤",
+    "subclass_name": "针织长裤",
+    "category_id": 2119,
+    "product_type_id": 9602,
+    "category_name": "女童（小）长裤",
+    "path": "儿童 > 女童（小）服装 > 女童（小）下装 > 女童（小）长裤"
+  },
+  {
+    "spu_code": "208326140009",
+    "middle_class_name": "运动鞋",
+    "subclass_name": "运动生活鞋",
+    "category_id": 2070,
+    "product_type_id": 374,
+    "category_name": "儿童运动鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童运动鞋"
+  },
+  {
+    "spu_code": "208326102205",
+    "middle_class_name": "长袖衬衫",
+    "subclass_name": "梭织长袖衬衫",
+    "category_id": 2102,
+    "product_type_id": 7404,
+    "category_name": "男童（小）衬衫",
+    "path": "儿童 > 男童（小）服装 > 男童（小）上衣 > 男童（小）衬衫"
+  },
+  {
+    "spu_code": "208326141008",
+    "middle_class_name": "休闲鞋",
+    "subclass_name": "时尚生活鞋",
+    "category_id": 2069,
+    "product_type_id": 371,
+    "category_name": "儿童平底鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童平底鞋"
+  },
+  {
+    "spu_code": "208326102002",
+    "middle_class_name": "长袖衬衫",
+    "subclass_name": "梭织长袖衬衫",
+    "category_id": 2002,
+    "product_type_id": 7401,
+    "category_name": "女童（大）衬衫",
+    "path": "儿童 > 女童（大）服装 > 女童（大）上衣 > 女童（大）衬衫"
+  },
+  {
+    "spu_code": "208426101206",
+    "middle_class_name": "马甲",
+    "subclass_name": "针织马甲",
+    "category_id": 2064,
+    "product_type_id": 9340,
+    "category_name": "女童（小）外套",
+    "path": "儿童 > 女童（小）服装 > 女童（小）外套 > 女童（小）外套"
+  },
+  {
+    "spu_code": "208326141002",
+    "middle_class_name": "休闲鞋",
+    "subclass_name": "板鞋",
+    "category_id": 2070,
+    "product_type_id": 374,
+    "category_name": "儿童运动鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童运动鞋"
+  },
+  {
+    "spu_code": "208326100203",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2105,
+    "product_type_id": 9740,
+    "category_name": "男童（小）T恤",
+    "path": "儿童 > 男童（小）服装 > 男童（小）上衣 > 男童（小）T恤"
+  },
+  {
+    "spu_code": "208326141010",
+    "middle_class_name": "休闲鞋",
+    "subclass_name": "时尚生活鞋",
+    "category_id": 2069,
+    "product_type_id": 371,
+    "category_name": "儿童平底鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童平底鞋"
+  },
+  {
+    "spu_code": "208926171001",
+    "middle_class_name": "家居服",
+    "subclass_name": "家居套装",
+    "category_id": 2006,
+    "product_type_id": 1544,
+    "category_name": "女童（大）家居服",
+    "path": "儿童 > 女童（大）服装 > 女童（大）家居服"
+  },
+  {
+    "spu_code": "208426105204",
+    "middle_class_name": "便服",
+    "subclass_name": "针织便服",
+    "category_id": 2525,
+    "product_type_id": 1355,
+    "category_name": "女童（大）夹克",
+    "path": "儿童 > 女童（大）服装 > 女童（大）外套 > 女童（大）夹克"
+  },
+  {
+    "spu_code": "208326140202",
+    "middle_class_name": "运动鞋",
+    "subclass_name": "运动生活鞋",
+    "category_id": 2070,
+    "product_type_id": 374,
+    "category_name": "儿童运动鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童运动鞋"
+  },
+  {
+    "spu_code": "209926170118",
+    "middle_class_name": "内裤",
+    "subclass_name": "平角裤",
+    "category_id": 14970,
+    "product_type_id": 10688,
+    "category_name": "男童（大）平角内裤",
+    "path": "儿童 > 男童（大）服装 > 男童（大）内衣 > 男童（大）平角内裤"
+  },
+  {
+    "spu_code": "208926166212",
+    "middle_class_name": "包",
+    "subclass_name": "休闲包",
+    "category_id": 2361,
+    "product_type_id": 369,
+    "category_name": "儿童背包",
+    "path": "儿童 > 儿童箱包 > 儿童背包"
+  },
+  {
+    "spu_code": "208326141019",
+    "middle_class_name": "休闲鞋",
+    "subclass_name": "时尚生活鞋",
+    "category_id": 2069,
+    "product_type_id": 371,
+    "category_name": "儿童平底鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童平底鞋"
+  },
+  {
+    "spu_code": "204326140010",
+    "middle_class_name": "运动鞋",
+    "subclass_name": "运动生活鞋",
+    "category_id": 2070,
+    "product_type_id": 374,
+    "category_name": "儿童运动鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童运动鞋"
+  },
+  {
+    "spu_code": "208326100211",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2013,
+    "product_type_id": 9738,
+    "category_name": "女童（大）T恤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）上衣 > 女童（大）T恤"
+  },
+  {
+    "spu_code": "208326100209",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2116,
+    "product_type_id": 9739,
+    "category_name": "女童（小）T恤",
+    "path": "儿童 > 女童（小）服装 > 女童（小）上衣 > 女童（小）T恤"
+  },
+  {
+    "spu_code": "208326146202",
+    "middle_class_name": "宝宝鞋",
+    "subclass_name": "学步鞋",
+    "category_id": 2082,
+    "product_type_id": 1699,
+    "category_name": "婴儿运动鞋",
+    "path": "婴儿 > 婴儿鞋 > 婴儿运动鞋"
+  },
+  {
+    "spu_code": "208326169201",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣套装",
+    "category_id": 2006,
+    "product_type_id": 1544,
+    "category_name": "女童（大）家居服",
+    "path": "儿童 > 女童（大）服装 > 女童（大）家居服"
+  },
+  {
+    "spu_code": "208326104004",
+    "middle_class_name": "套装",
+    "subclass_name": "针织套装",
+    "category_id": 15264,
+    "product_type_id": 10944,
+    "category_name": "女童（大）卫衣套装",
+    "path": "儿童 > 女童（大）服装 > 女童（大）套装 > 女童（大）卫衣套装"
+  },
+  {
+    "spu_code": "208326105004",
+    "middle_class_name": "便服",
+    "subclass_name": "针织便服",
+    "category_id": 2004,
+    "product_type_id": 9342,
+    "category_name": "女童（大）外套",
+    "path": "儿童 > 女童（大）服装 > 女童（大）外套 > 女童（大）外套"
+  },
+  {
+    "spu_code": "208326100105",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 1997,
+    "product_type_id": 9736,
+    "category_name": "男童（大）T恤",
+    "path": "儿童 > 男童（大）服装 > 男童（大）上衣 > 男童（大）T恤"
+  },
+  {
+    "spu_code": "208326108102",
+    "middle_class_name": "长裤",
+    "subclass_name": "梭织长裤",
+    "category_id": 2101,
+    "product_type_id": 9603,
+    "category_name": "男童（小）裤子",
+    "path": "儿童 > 男童（小）服装 > 男童（小）下装 > 男童（小）裤子"
+  },
+  {
+    "spu_code": "204326141026",
+    "middle_class_name": "休闲鞋",
+    "subclass_name": "时尚生活鞋",
+    "category_id": 2069,
+    "product_type_id": 371,
+    "category_name": "儿童平底鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童平底鞋"
+  },
+  {
+    "spu_code": "208326108002",
+    "middle_class_name": "长裤",
+    "subclass_name": "牛仔长裤",
+    "category_id": 2015,
+    "product_type_id": 1393,
+    "category_name": "女童（大）牛仔裤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）牛仔 > 女童（大）牛仔裤"
+  },
+  {
+    "spu_code": "208326140008",
+    "middle_class_name": "运动鞋",
+    "subclass_name": "运动生活鞋",
+    "category_id": 2070,
+    "product_type_id": 374,
+    "category_name": "儿童运动鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童运动鞋"
+  },
+  {
+    "spu_code": "209926170119",
+    "middle_class_name": "内裤",
+    "subclass_name": "平角裤",
+    "category_id": 14970,
+    "product_type_id": 10688,
+    "category_name": "男童（大）平角内裤",
+    "path": "儿童 > 男童（大）服装 > 男童（大）内衣 > 男童（大）平角内裤"
+  },
+  {
+    "spu_code": "208326100216",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 1997,
+    "product_type_id": 9736,
+    "category_name": "男童（大）T恤",
+    "path": "儿童 > 男童（大）服装 > 男童（大）上衣 > 男童（大）T恤"
+  },
+  {
+    "spu_code": "208326103202",
+    "middle_class_name": "毛衫",
+    "subclass_name": "开襟毛衫",
+    "category_id": 2499,
+    "product_type_id": 9343,
+    "category_name": "男童（小）开襟衫",
+    "path": "儿童 > 男童（小）服装 > 男童（小）针织衫 > 男童（小）开襟衫"
+  },
+  {
+    "spu_code": "208326100104",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 1997,
+    "product_type_id": 9736,
+    "category_name": "男童（大）T恤",
+    "path": "儿童 > 男童（大）服装 > 男童（大）上衣 > 男童（大）T恤"
+  },
+  {
+    "spu_code": "208326100001",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2013,
+    "product_type_id": 9738,
+    "category_name": "女童（大）T恤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）上衣 > 女童（大）T恤"
+  },
+  {
+    "spu_code": "208326146207",
+    "middle_class_name": "宝宝鞋",
+    "subclass_name": "学步鞋",
+    "category_id": 2082,
+    "product_type_id": 1699,
+    "category_name": "婴儿运动鞋",
+    "path": "婴儿 > 婴儿鞋 > 婴儿运动鞋"
+  },
+  {
+    "spu_code": "208326100218",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 1997,
+    "product_type_id": 9736,
+    "category_name": "男童（大）T恤",
+    "path": "儿童 > 男童（大）服装 > 男童（大）上衣 > 男童（大）T恤"
+  },
+  {
+    "spu_code": "208326100214",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 1997,
+    "product_type_id": 9736,
+    "category_name": "男童（大）T恤",
+    "path": "儿童 > 男童（大）服装 > 男童（大）上衣 > 男童（大）T恤"
+  },
+  {
+    "spu_code": "208326100017",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2116,
+    "product_type_id": 9739,
+    "category_name": "女童（小）T恤",
+    "path": "儿童 > 女童（小）服装 > 女童（小）上衣 > 女童（小）T恤"
+  },
+  {
+    "spu_code": "208926166215",
+    "middle_class_name": "包",
+    "subclass_name": "休闲包",
+    "category_id": 2361,
+    "product_type_id": 369,
+    "category_name": "儿童背包",
+    "path": "儿童 > 儿童箱包 > 儿童背包"
+  },
+  {
+    "spu_code": "208326101203",
+    "middle_class_name": "马甲",
+    "subclass_name": "针织马甲",
+    "category_id": 2434,
+    "product_type_id": 438,
+    "category_name": "婴童（女）外套",
+    "path": "婴儿 > 婴童（女）服装 > 婴童（女）外套 > 婴童（女）外套"
+  },
+  {
+    "spu_code": "208326108015",
+    "middle_class_name": "长裤",
+    "subclass_name": "针织长裤",
+    "category_id": 2007,
+    "product_type_id": 9601,
+    "category_name": "女童（大）长裤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）下装 > 女童（大）长裤"
+  },
+  {
+    "spu_code": "208326104002",
+    "middle_class_name": "套装",
+    "subclass_name": "针织套装",
+    "category_id": 15263,
+    "product_type_id": 10945,
+    "category_name": "女童（大）外套套装",
+    "path": "儿童 > 女童（大）服装 > 女童（大）套装 > 女童（大）外套套装"
+  },
+  {
+    "spu_code": "208326104211",
+    "middle_class_name": "套装",
+    "subclass_name": "针织套装",
+    "category_id": 15264,
+    "product_type_id": 10944,
+    "category_name": "女童（大）卫衣套装",
+    "path": "儿童 > 女童（大）服装 > 女童（大）套装 > 女童（大）卫衣套装"
+  },
+  {
+    "spu_code": "208326171001",
+    "middle_class_name": "家居服",
+    "subclass_name": "家居套装",
+    "category_id": 2006,
+    "product_type_id": 1544,
+    "category_name": "女童（大）家居服",
+    "path": "儿童 > 女童（大）服装 > 女童（大）家居服"
+  },
+  {
+    "spu_code": "208326171102",
+    "middle_class_name": "家居服",
+    "subclass_name": "家居套装",
+    "category_id": 1992,
+    "product_type_id": 1543,
+    "category_name": "男童（大）家居服",
+    "path": "儿童 > 男童（大）服装 > 男童（大）家居服"
+  },
+  {
+    "spu_code": "208326171005",
+    "middle_class_name": "家居服",
+    "subclass_name": "家居套装",
+    "category_id": 2006,
+    "product_type_id": 1544,
+    "category_name": "女童（大）家居服",
+    "path": "儿童 > 女童（大）服装 > 女童（大）家居服"
+  },
+  {
+    "spu_code": "208326146210",
+    "middle_class_name": "宝宝鞋",
+    "subclass_name": "稳步鞋",
+    "category_id": 2070,
+    "product_type_id": 374,
+    "category_name": "儿童运动鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童运动鞋"
+  },
+  {
+    "spu_code": "208326100202",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2105,
+    "product_type_id": 9740,
+    "category_name": "男童（小）T恤",
+    "path": "儿童 > 男童（小）服装 > 男童（小）上衣 > 男童（小）T恤"
+  },
+  {
+    "spu_code": "208326105207",
+    "middle_class_name": "便服",
+    "subclass_name": "梭织便服",
+    "category_id": 15253,
+    "product_type_id": 10938,
+    "category_name": "男童（小）外套套装",
+    "path": "儿童 > 男童（小）服装 > 男童（小）套装 > 男童（小）外套套装"
+  },
+  {
+    "spu_code": "208326101201",
+    "middle_class_name": "马甲",
+    "subclass_name": "毛织马甲",
+    "category_id": 2499,
+    "product_type_id": 9343,
+    "category_name": "男童（小）开襟衫",
+    "path": "儿童 > 男童（小）服装 > 男童（小）针织衫 > 男童（小）开襟衫"
+  },
+  {
+    "spu_code": "208326108101",
+    "middle_class_name": "长裤",
+    "subclass_name": "梭织长裤",
+    "category_id": 2101,
+    "product_type_id": 9603,
+    "category_name": "男童（小）裤子",
+    "path": "儿童 > 男童（小）服装 > 男童（小）下装 > 男童（小）裤子"
+  },
+  {
+    "spu_code": "208326100208",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2105,
+    "product_type_id": 9740,
+    "category_name": "男童（小）T恤",
+    "path": "儿童 > 男童（小）服装 > 男童（小）上衣 > 男童（小）T恤"
+  },
+  {
+    "spu_code": "209926170022",
+    "middle_class_name": "内裤",
+    "subclass_name": "平角裤",
+    "category_id": 14977,
+    "product_type_id": 10694,
+    "category_name": "女童（大）内裤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）内衣 > 女童（大）内裤"
+  },
+  {
+    "spu_code": "208326146201",
+    "middle_class_name": "宝宝鞋",
+    "subclass_name": "学步鞋",
+    "category_id": 2082,
+    "product_type_id": 1699,
+    "category_name": "婴儿运动鞋",
+    "path": "婴儿 > 婴儿鞋 > 婴儿运动鞋"
+  },
+  {
+    "spu_code": "208926166003",
+    "middle_class_name": "包",
+    "subclass_name": "休闲包",
+    "category_id": 2361,
+    "product_type_id": 369,
+    "category_name": "儿童背包",
+    "path": "儿童 > 儿童箱包 > 儿童背包"
+  },
+  {
+    "spu_code": "208926160209",
+    "middle_class_name": "帽子",
+    "subclass_name": "棒球帽",
+    "category_id": 4944,
+    "product_type_id": 2101,
+    "category_name": "婴儿&儿童帽子",
+    "path": "儿童 > 儿童配饰 > 婴儿&儿童帽子"
+  },
+  {
+    "spu_code": "208926170006",
+    "middle_class_name": "内裤",
+    "subclass_name": "平角裤",
+    "category_id": 14977,
+    "product_type_id": 10694,
+    "category_name": "女童（大）内裤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）内衣 > 女童（大）内裤"
+  },
+  {
+    "spu_code": "208326102203",
+    "middle_class_name": "长袖衬衫",
+    "subclass_name": "梭织长袖衬衫",
+    "category_id": 2002,
+    "product_type_id": 7401,
+    "category_name": "女童（大）衬衫",
+    "path": "儿童 > 女童（大）服装 > 女童（大）上衣 > 女童（大）衬衫"
+  },
+  {
+    "spu_code": "208326169002",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣背心",
+    "category_id": 2489,
+    "product_type_id": 500,
+    "category_name": "女童（大）打底内衣",
+    "path": "儿童 > 女童（大）服装 > 女童（大）内衣 > 女童（大）打底内衣"
+  },
+  {
+    "spu_code": "209426120201",
+    "middle_class_name": "外出连体衣",
+    "subclass_name": "针织连体衣",
+    "category_id": 2131,
+    "product_type_id": 502,
+    "category_name": "婴童（女）连体裤",
+    "path": "婴儿 > 婴童（女）服装 > 婴童（女）连体衣 > 婴童（女）连体裤"
+  },
+  {
+    "spu_code": "208326103201",
+    "middle_class_name": "毛衫",
+    "subclass_name": "开襟毛衫",
+    "category_id": 2508,
+    "product_type_id": 9344,
+    "category_name": "女童（小）开襟衫",
+    "path": "儿童 > 女童（小）服装 > 女童（小）针织衫 > 女童（小）开襟衫"
+  },
+  {
+    "spu_code": "208326100015",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "翻领长袖T恤",
+    "category_id": 2116,
+    "product_type_id": 9739,
+    "category_name": "女童（小）T恤",
+    "path": "儿童 > 女童（小）服装 > 女童（小）上衣 > 女童（小）T恤"
+  },
+  {
+    "spu_code": "209926169005",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣套装",
+    "category_id": 2006,
+    "product_type_id": 1544,
+    "category_name": "女童（大）家居服",
+    "path": "儿童 > 女童（大）服装 > 女童（大）家居服"
+  },
+  {
+    "spu_code": "208326100006",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2013,
+    "product_type_id": 9738,
+    "category_name": "女童（大）T恤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）上衣 > 女童（大）T恤"
+  },
+  {
+    "spu_code": "208326105103",
+    "middle_class_name": "便服",
+    "subclass_name": "梭织便服",
+    "category_id": 1990,
+    "product_type_id": 9341,
+    "category_name": "男童（大）外套",
+    "path": "儿童 > 男童（大）服装 > 男童（大）外套 > 男童（大）外套"
+  },
+  {
+    "spu_code": "208326105212",
+    "middle_class_name": "便服",
+    "subclass_name": "针织便服",
+    "category_id": 2004,
+    "product_type_id": 9342,
+    "category_name": "女童（大）外套",
+    "path": "儿童 > 女童（大）服装 > 女童（大）外套 > 女童（大）外套"
+  },
+  {
+    "spu_code": "208326100102",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2105,
+    "product_type_id": 9740,
+    "category_name": "男童（小）T恤",
+    "path": "儿童 > 男童（小）服装 > 男童（小）上衣 > 男童（小）T恤"
+  },
+  {
+    "spu_code": "208326171002",
+    "middle_class_name": "家居服",
+    "subclass_name": "家居套装",
+    "category_id": 4902,
+    "product_type_id": 2108,
+    "category_name": "女童（小）家居服",
+    "path": "儿童 > 女童（小）服装 > 女童（小）家居服"
+  },
+  {
+    "spu_code": "208326103004",
+    "middle_class_name": "毛衫",
+    "subclass_name": "翻领毛衫",
+    "category_id": 2010,
+    "product_type_id": 9632,
+    "category_name": "女童（大）毛衣",
+    "path": "儿童 > 女童（大）服装 > 女童（大）针织衫 > 女童（大）毛衣"
+  },
+  {
+    "spu_code": "208326123004",
+    "middle_class_name": "打底裤",
+    "subclass_name": "打底长裤",
+    "category_id": 2007,
+    "product_type_id": 9601,
+    "category_name": "女童（大）长裤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）下装 > 女童（大）长裤"
+  },
+  {
+    "spu_code": "208326169205",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣套装",
+    "category_id": 2006,
+    "product_type_id": 1544,
+    "category_name": "女童（大）家居服",
+    "path": "儿童 > 女童（大）服装 > 女童（大）家居服"
+  },
+  {
+    "spu_code": "208326146005",
+    "middle_class_name": "宝宝鞋",
+    "subclass_name": "稳步鞋",
+    "category_id": 2082,
+    "product_type_id": 1699,
+    "category_name": "婴儿运动鞋",
+    "path": "婴儿 > 婴儿鞋 > 婴儿运动鞋"
+  },
+  {
+    "spu_code": "208326140201",
+    "middle_class_name": "运动鞋",
+    "subclass_name": "户外鞋",
+    "category_id": 2070,
+    "product_type_id": 374,
+    "category_name": "儿童运动鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童运动鞋"
+  },
+  {
+    "spu_code": "208326146209",
+    "middle_class_name": "宝宝鞋",
+    "subclass_name": "稳步鞋",
+    "category_id": 2070,
+    "product_type_id": 374,
+    "category_name": "儿童运动鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童运动鞋"
+  },
+  {
+    "spu_code": "208326100008",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2013,
+    "product_type_id": 9738,
+    "category_name": "女童（大）T恤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）上衣 > 女童（大）T恤"
+  },
+  {
+    "spu_code": "208326100204",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2105,
+    "product_type_id": 9740,
+    "category_name": "男童（小）T恤",
+    "path": "儿童 > 男童（小）服装 > 男童（小）上衣 > 男童（小）T恤"
+  },
+  {
+    "spu_code": "208326103209",
+    "middle_class_name": "毛衫",
+    "subclass_name": "圆领毛衫",
+    "category_id": 1991,
+    "product_type_id": 9631,
+    "category_name": "男童（大）毛衣",
+    "path": "儿童 > 男童（大）服装 > 男童（大）针织衫 > 男童（大）毛衣"
+  },
+  {
+    "spu_code": "208326100007",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2013,
+    "product_type_id": 9738,
+    "category_name": "女童（大）T恤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）上衣 > 女童（大）T恤"
+  },
+  {
+    "spu_code": "208326100002",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2013,
+    "product_type_id": 9738,
+    "category_name": "女童（大）T恤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）上衣 > 女童（大）T恤"
+  },
+  {
+    "spu_code": "208326105209",
+    "middle_class_name": "便服",
+    "subclass_name": "梭织便服",
+    "category_id": 2098,
+    "product_type_id": 9339,
+    "category_name": "男童（小）外套",
+    "path": "儿童 > 男童（小）服装 > 男童（小）外套 > 男童（小）外套"
+  },
+  {
+    "spu_code": "208326100106",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2001,
+    "product_type_id": 9737,
+    "category_name": "男童（大）Polo衫",
+    "path": "儿童 > 男童（大）服装 > 男童（大）上衣 > 男童（大）Polo衫"
+  },
+  {
+    "spu_code": "208326100107",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 1997,
+    "product_type_id": 9736,
+    "category_name": "男童（大）T恤",
+    "path": "儿童 > 男童（大）服装 > 男童（大）上衣 > 男童（大）T恤"
+  },
+  {
+    "spu_code": "208326146208",
+    "middle_class_name": "宝宝鞋",
+    "subclass_name": "学步鞋",
+    "category_id": 2082,
+    "product_type_id": 1699,
+    "category_name": "婴儿运动鞋",
+    "path": "婴儿 > 婴儿鞋 > 婴儿运动鞋"
+  },
+  {
+    "spu_code": "208926160208",
+    "middle_class_name": "帽子",
+    "subclass_name": "棒球帽",
+    "category_id": 4944,
+    "product_type_id": 2101,
+    "category_name": "婴儿&儿童帽子",
+    "path": "儿童 > 儿童配饰 > 婴儿&儿童帽子"
+  },
+  {
+    "spu_code": "208326123001",
+    "middle_class_name": "打底裤",
+    "subclass_name": "打底长裤",
+    "category_id": 2583,
+    "product_type_id": 1391,
+    "category_name": "女童（小）打底裤",
+    "path": "儿童 > 女童（小）服装 > 女童（小）下装 > 女童（小）打底裤"
+  },
+  {
+    "spu_code": "208326105203",
+    "middle_class_name": "便服",
+    "subclass_name": "针织便服",
+    "category_id": 2098,
+    "product_type_id": 9339,
+    "category_name": "男童（小）外套",
+    "path": "儿童 > 男童（小）服装 > 男童（小）外套 > 男童（小）外套"
+  },
+  {
+    "spu_code": "208326169101",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣背心",
+    "category_id": 1999,
+    "product_type_id": 1368,
+    "category_name": "男童（大）打底内衣",
+    "path": "儿童 > 男童（大）服装 > 男童（大）内衣 > 男童（大）打底内衣"
+  },
+  {
+    "spu_code": "208926170106",
+    "middle_class_name": "内裤",
+    "subclass_name": "平角裤",
+    "category_id": 14970,
+    "product_type_id": 10688,
+    "category_name": "男童（大）平角内裤",
+    "path": "儿童 > 男童（大）服装 > 男童（大）内衣 > 男童（大）平角内裤"
+  },
+  {
+    "spu_code": "208326108203",
+    "middle_class_name": "长裤",
+    "subclass_name": "针织长裤",
+    "category_id": 2101,
+    "product_type_id": 9603,
+    "category_name": "男童（小）裤子",
+    "path": "儿童 > 男童（小）服装 > 男童（小）下装 > 男童（小）裤子"
+  },
+  {
+    "spu_code": "209926171203",
+    "middle_class_name": "家居服",
+    "subclass_name": "家居套装",
+    "category_id": 2006,
+    "product_type_id": 1544,
+    "category_name": "女童（大）家居服",
+    "path": "儿童 > 女童（大）服装 > 女童（大）家居服"
+  },
+  {
+    "spu_code": "208426103202",
+    "middle_class_name": "毛衫",
+    "subclass_name": "圆领毛衫",
+    "category_id": 1991,
+    "product_type_id": 9631,
+    "category_name": "男童（大）毛衣",
+    "path": "儿童 > 男童（大）服装 > 男童（大）针织衫 > 男童（大）毛衣"
+  },
+  {
+    "spu_code": "209426171202",
+    "middle_class_name": "家居服",
+    "subclass_name": "家居套装",
+    "category_id": 1992,
+    "product_type_id": 1543,
+    "category_name": "男童（大）家居服",
+    "path": "儿童 > 男童（大）服装 > 男童（大）家居服"
+  },
+  {
+    "spu_code": "208426107203",
+    "middle_class_name": "羽绒服",
+    "subclass_name": "常规羽绒服",
+    "category_id": 2004,
+    "product_type_id": 9342,
+    "category_name": "女童（大）外套",
+    "path": "儿童 > 女童（大）服装 > 女童（大）外套 > 女童（大）外套"
+  },
+  {
+    "spu_code": "209326172214",
+    "middle_class_name": "袜子",
+    "subclass_name": "短袜",
+    "category_id": 2086,
+    "product_type_id": 186,
+    "category_name": "婴儿&儿童袜子",
+    "path": "儿童 > 婴儿&儿童袜子和打底袜 > 婴儿&儿童袜子"
+  },
+  {
+    "spu_code": "208326172211",
+    "middle_class_name": "袜子",
+    "subclass_name": "短袜",
+    "category_id": 2086,
+    "product_type_id": 186,
+    "category_name": "婴儿&儿童袜子",
+    "path": "儿童 > 婴儿&儿童袜子和打底袜 > 婴儿&儿童袜子"
+  },
+  {
+    "spu_code": "208926172207",
+    "middle_class_name": "袜子",
+    "subclass_name": "中袜",
+    "category_id": 2086,
+    "product_type_id": 186,
+    "category_name": "婴儿&儿童袜子",
+    "path": "儿童 > 婴儿&儿童袜子和打底袜 > 婴儿&儿童袜子"
+  },
+  {
+    "spu_code": "209426108202",
+    "middle_class_name": "长裤",
+    "subclass_name": "针织长裤",
+    "category_id": 1993,
+    "product_type_id": 9600,
+    "category_name": "男童（大）裤子",
+    "path": "儿童 > 男童（大）服装 > 男童（大）下装 > 男童（大）裤子"
+  },
+  {
+    "spu_code": "208326108212",
+    "middle_class_name": "长裤",
+    "subclass_name": "梭织长裤",
+    "category_id": 1993,
+    "product_type_id": 9600,
+    "category_name": "男童（大）裤子",
+    "path": "儿童 > 男童（大）服装 > 男童（大）下装 > 男童（大）裤子"
+  },
+  {
+    "spu_code": "208926169201",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣裤装",
+    "category_id": 2101,
+    "product_type_id": 9603,
+    "category_name": "男童（小）裤子",
+    "path": "儿童 > 男童（小）服装 > 男童（小）下装 > 男童（小）裤子"
+  },
+  {
+    "spu_code": "208326108209",
+    "middle_class_name": "长裤",
+    "subclass_name": "梭织长裤",
+    "category_id": 2101,
+    "product_type_id": 9603,
+    "category_name": "男童（小）裤子",
+    "path": "儿童 > 男童（小）服装 > 男童（小）下装 > 男童（小）裤子"
+  },
+  {
+    "spu_code": "209326169201",
+    "middle_class_name": "内衣",
+    "subclass_name": "打底衫",
+    "category_id": 1997,
+    "product_type_id": 9736,
+    "category_name": "男童（大）T恤",
+    "path": "儿童 > 男童（大）服装 > 男童（大）上衣 > 男童（大）T恤"
+  },
+  {
+    "spu_code": "208426123201",
+    "middle_class_name": "打底裤",
+    "subclass_name": "打底长裤",
+    "category_id": 2583,
+    "product_type_id": 1391,
+    "category_name": "女童（小）打底裤",
+    "path": "儿童 > 女童（小）服装 > 女童（小）下装 > 女童（小）打底裤"
+  },
+  {
+    "spu_code": "208326105202",
+    "middle_class_name": "便服",
+    "subclass_name": "针织便服",
+    "category_id": 2064,
+    "product_type_id": 9340,
+    "category_name": "女童（小）外套",
+    "path": "儿童 > 女童（小）服装 > 女童（小）外套 > 女童（小）外套"
+  },
+  {
+    "spu_code": "208326169008",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣裤装",
+    "category_id": 2006,
+    "product_type_id": 1544,
+    "category_name": "女童（大）家居服",
+    "path": "儿童 > 女童（大）服装 > 女童（大）家居服"
+  },
+  {
+    "spu_code": "208326169103",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣裤装",
+    "category_id": 1992,
+    "product_type_id": 1543,
+    "category_name": "男童（大）家居服",
+    "path": "儿童 > 男童（大）服装 > 男童（大）家居服"
+  },
+  {
+    "spu_code": "208326105205",
+    "middle_class_name": "便服",
+    "subclass_name": "梭织便服",
+    "category_id": 2098,
+    "product_type_id": 9339,
+    "category_name": "男童（小）外套",
+    "path": "儿童 > 男童（小）服装 > 男童（小）外套 > 男童（小）外套"
+  },
+  {
+    "spu_code": "208326169005",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣裤装",
+    "category_id": 2006,
+    "product_type_id": 1544,
+    "category_name": "女童（大）家居服",
+    "path": "儿童 > 女童（大）服装 > 女童（大）家居服"
+  },
+  {
+    "spu_code": "208426171202",
+    "middle_class_name": "家居服",
+    "subclass_name": "家居套装",
+    "category_id": 2006,
+    "product_type_id": 1544,
+    "category_name": "女童（大）家居服",
+    "path": "儿童 > 女童（大）服装 > 女童（大）家居服"
+  },
+  {
+    "spu_code": "209926169008",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣套装",
+    "category_id": 2006,
+    "product_type_id": 1544,
+    "category_name": "女童（大）家居服",
+    "path": "儿童 > 女童（大）服装 > 女童（大）家居服"
+  },
+  {
+    "spu_code": "208326169202",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣套装",
+    "category_id": 4899,
+    "product_type_id": 2115,
+    "category_name": "男童（小）家居服",
+    "path": "儿童 > 男童（小）服装 > 男童（小）家居服"
+  },
+  {
+    "spu_code": "209926169007",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣套装",
+    "category_id": 2006,
+    "product_type_id": 1544,
+    "category_name": "女童（大）家居服",
+    "path": "儿童 > 女童（大）服装 > 女童（大）家居服"
+  },
+  {
+    "spu_code": "208426134201",
+    "middle_class_name": "内着套装",
+    "subclass_name": "内着圆领肩开套装",
+    "category_id": 4899,
+    "product_type_id": 2115,
+    "category_name": "男童（小）家居服",
+    "path": "儿童 > 男童（小）服装 > 男童（小）家居服"
+  },
+  {
+    "spu_code": "208426107210",
+    "middle_class_name": "羽绒服",
+    "subclass_name": "常规羽绒服",
+    "category_id": 1990,
+    "product_type_id": 9341,
+    "category_name": "男童（大）外套",
+    "path": "儿童 > 男童（大）服装 > 男童（大）外套 > 男童（大）外套"
+  },
+  {
+    "spu_code": "208426101201",
+    "middle_class_name": "马甲",
+    "subclass_name": "梭织马甲",
+    "category_id": 2064,
+    "product_type_id": 9340,
+    "category_name": "女童（小）外套",
+    "path": "儿童 > 女童（小）服装 > 女童（小）外套 > 女童（小）外套"
+  },
+  {
+    "spu_code": "208426101203",
+    "middle_class_name": "马甲",
+    "subclass_name": "梭织马甲",
+    "category_id": 2098,
+    "product_type_id": 9339,
+    "category_name": "男童（小）外套",
+    "path": "儿童 > 男童（小）服装 > 男童（小）外套 > 男童（小）外套"
+  },
+  {
+    "spu_code": "208426107213",
+    "middle_class_name": "羽绒服",
+    "subclass_name": "常规羽绒服",
+    "category_id": 2064,
+    "product_type_id": 9340,
+    "category_name": "女童（小）外套",
+    "path": "儿童 > 女童（小）服装 > 女童（小）外套 > 女童（小）外套"
+  },
+  {
+    "spu_code": "208326103002",
+    "middle_class_name": "毛衫",
+    "subclass_name": "开襟毛衫",
+    "category_id": 2503,
+    "product_type_id": 9345,
+    "category_name": "女童（大）开襟衫",
+    "path": "儿童 > 女童（大）服装 > 女童（大）针织衫 > 女童（大）开襟衫"
+  },
+  {
+    "spu_code": "208426103203",
+    "middle_class_name": "毛衫",
+    "subclass_name": "开襟毛衫",
+    "category_id": 2496,
+    "product_type_id": 9346,
+    "category_name": "男童（大）开襟衫",
+    "path": "儿童 > 男童（大）服装 > 男童（大）针织衫 > 男童（大）开襟衫"
+  },
+  {
+    "spu_code": "209426107203",
+    "middle_class_name": "羽绒服",
+    "subclass_name": "短羽绒服",
+    "category_id": 2004,
+    "product_type_id": 9342,
+    "category_name": "女童（大）外套",
+    "path": "儿童 > 女童（大）服装 > 女童（大）外套 > 女童（大）外套"
+  },
+  {
+    "spu_code": "208426107211",
+    "middle_class_name": "羽绒服",
+    "subclass_name": "中长羽绒服",
+    "category_id": 2004,
+    "product_type_id": 9342,
+    "category_name": "女童（大）外套",
+    "path": "儿童 > 女童（大）服装 > 女童（大）外套 > 女童（大）外套"
+  },
+  {
+    "spu_code": "208426107212",
+    "middle_class_name": "羽绒服",
+    "subclass_name": "短羽绒服",
+    "category_id": 2098,
+    "product_type_id": 9339,
+    "category_name": "男童（小）外套",
+    "path": "儿童 > 男童（小）服装 > 男童（小）外套 > 男童（小）外套"
+  },
+  {
+    "spu_code": "208326108103",
+    "middle_class_name": "长裤",
+    "subclass_name": "梭织长裤",
+    "category_id": 1993,
+    "product_type_id": 9600,
+    "category_name": "男童（大）裤子",
+    "path": "儿童 > 男童（大）服装 > 男童（大）下装 > 男童（大）裤子"
+  },
+  {
+    "spu_code": "208326105106",
+    "middle_class_name": "便服",
+    "subclass_name": "牛仔便服",
+    "category_id": 2547,
+    "product_type_id": 9628,
+    "category_name": "男童（小）牛仔夹克和外套",
+    "path": "儿童 > 男童（小）服装 > 男童（小）牛仔 > 男童（小）牛仔夹克和外套"
+  },
+  {
+    "spu_code": "209426171201",
+    "middle_class_name": "家居服",
+    "subclass_name": "家居上装",
+    "category_id": 2004,
+    "product_type_id": 9342,
+    "category_name": "女童（大）外套",
+    "path": "儿童 > 女童（大）服装 > 女童（大）外套 > 女童（大）外套"
+  },
+  {
+    "spu_code": "208326100019",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2116,
+    "product_type_id": 9739,
+    "category_name": "女童（小）T恤",
+    "path": "儿童 > 女童（小）服装 > 女童（小）上衣 > 女童（小）T恤"
+  },
+  {
+    "spu_code": "208326103005",
+    "middle_class_name": "毛衫",
+    "subclass_name": "圆领毛衫",
+    "category_id": 2010,
+    "product_type_id": 9632,
+    "category_name": "女童（大）毛衣",
+    "path": "儿童 > 女童（大）服装 > 女童（大）针织衫 > 女童（大）毛衣"
+  },
+  {
+    "spu_code": "208326108008",
+    "middle_class_name": "长裤",
+    "subclass_name": "针织长裤",
+    "category_id": 2007,
+    "product_type_id": 9601,
+    "category_name": "女童（大）长裤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）下装 > 女童（大）长裤"
+  },
+  {
+    "spu_code": "208926179211",
+    "middle_class_name": "杯子",
+    "subclass_name": "冷水杯",
+    "category_id": 12605,
+    "product_type_id": 9306,
+    "category_name": "儿童运动水壶",
+    "path": "儿童 > 儿童运动&户外用品 > 儿童运动&户外配件 > 儿童运动水壶"
+  },
+  {
+    "spu_code": "208326105005",
+    "middle_class_name": "便服",
+    "subclass_name": "针织便服",
+    "category_id": 2064,
+    "product_type_id": 9340,
+    "category_name": "女童（小）外套",
+    "path": "儿童 > 女童（小）服装 > 女童（小）外套 > 女童（小）外套"
+  },
+  {
+    "spu_code": "208326103207",
+    "middle_class_name": "毛衫",
+    "subclass_name": "圆领毛衫",
+    "category_id": 1991,
+    "product_type_id": 9631,
+    "category_name": "男童（大）毛衣",
+    "path": "儿童 > 男童（大）服装 > 男童（大）针织衫 > 男童（大）毛衣"
+  },
+  {
+    "spu_code": "208326100213",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 1997,
+    "product_type_id": 9736,
+    "category_name": "男童（大）T恤",
+    "path": "儿童 > 男童（大）服装 > 男童（大）上衣 > 男童（大）T恤"
+  },
+  {
+    "spu_code": "208326171004",
+    "middle_class_name": "家居服",
+    "subclass_name": "家居套装",
+    "category_id": 2006,
+    "product_type_id": 1544,
+    "category_name": "女童（大）家居服",
+    "path": "儿童 > 女童（大）服装 > 女童（大）家居服"
+  },
+  {
+    "spu_code": "208326121001",
+    "middle_class_name": "卫衣",
+    "subclass_name": "圆领卫衣",
+    "category_id": 2011,
+    "product_type_id": 9335,
+    "category_name": "女童（大）卫衣",
+    "path": "儿童 > 女童（大）服装 > 女童（大）卫衣"
+  },
+  {
+    "spu_code": "208326103208",
+    "middle_class_name": "毛衫",
+    "subclass_name": "圆领毛衫",
+    "category_id": 1991,
+    "product_type_id": 9631,
+    "category_name": "男童（大）毛衣",
+    "path": "儿童 > 男童（大）服装 > 男童（大）针织衫 > 男童（大）毛衣"
+  },
+  {
+    "spu_code": "208326111001",
+    "middle_class_name": "连衣裙",
+    "subclass_name": "针织连衣裙",
+    "category_id": 2063,
+    "product_type_id": 5926,
+    "category_name": "女童（小）连衣裙",
+    "path": "儿童 > 女童（小）服装 > 女童（小）连衣裙"
+  },
+  {
+    "spu_code": "208326123002",
+    "middle_class_name": "打底裤",
+    "subclass_name": "打底长裤",
+    "category_id": 2583,
+    "product_type_id": 1391,
+    "category_name": "女童（小）打底裤",
+    "path": "儿童 > 女童（小）服装 > 女童（小）下装 > 女童（小）打底裤"
+  },
+  {
+    "spu_code": "208326169208",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣套装",
+    "category_id": 2006,
+    "product_type_id": 1544,
+    "category_name": "女童（大）家居服",
+    "path": "儿童 > 女童（大）服装 > 女童（大）家居服"
+  },
+  {
+    "spu_code": "208326108211",
+    "middle_class_name": "长裤",
+    "subclass_name": "针织长裤",
+    "category_id": 1993,
+    "product_type_id": 9600,
+    "category_name": "男童（大）裤子",
+    "path": "儿童 > 男童（大）服装 > 男童（大）下装 > 男童（大）裤子"
+  },
+  {
+    "spu_code": "208926170009",
+    "middle_class_name": "内裤",
+    "subclass_name": "四角裤",
+    "category_id": 2489,
+    "product_type_id": 500,
+    "category_name": "女童（大）打底内衣",
+    "path": "儿童 > 女童（大）服装 > 女童（大）内衣 > 女童（大）打底内衣"
+  },
+  {
+    "spu_code": "208926170108",
+    "middle_class_name": "内裤",
+    "subclass_name": "平角裤",
+    "category_id": 4900,
+    "product_type_id": 2113,
+    "category_name": "男童（小）打底内衣",
+    "path": "儿童 > 男童（小）服装 > 男童（小）内衣 > 男童（小）打底内衣"
+  },
+  {
+    "spu_code": "208326100018",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2116,
+    "product_type_id": 9739,
+    "category_name": "女童（小）T恤",
+    "path": "儿童 > 女童（小）服装 > 女童（小）上衣 > 女童（小）T恤"
+  },
+  {
+    "spu_code": "208326169203",
+    "middle_class_name": "内衣",
+    "subclass_name": "打底衫",
+    "category_id": 2116,
+    "product_type_id": 9739,
+    "category_name": "女童（小）T恤",
+    "path": "儿童 > 女童（小）服装 > 女童（小）上衣 > 女童（小）T恤"
+  },
+  {
+    "spu_code": "208326104210",
+    "middle_class_name": "套装",
+    "subclass_name": "针织套装",
+    "category_id": 15263,
+    "product_type_id": 10945,
+    "category_name": "女童（大）外套套装",
+    "path": "儿童 > 女童（大）服装 > 女童（大）套装 > 女童（大）外套套装"
+  },
+  {
+    "spu_code": "208926170008",
+    "middle_class_name": "内裤",
+    "subclass_name": "四角裤",
+    "category_id": 2489,
+    "product_type_id": 500,
+    "category_name": "女童（大）打底内衣",
+    "path": "儿童 > 女童（大）服装 > 女童（大）内衣 > 女童（大）打底内衣"
+  },
+  {
+    "spu_code": "208326108204",
+    "middle_class_name": "长裤",
+    "subclass_name": "针织长裤",
+    "category_id": 2101,
+    "product_type_id": 9603,
+    "category_name": "男童（小）裤子",
+    "path": "儿童 > 男童（小）服装 > 男童（小）下装 > 男童（小）裤子"
+  },
+  {
+    "spu_code": "207326160003",
+    "middle_class_name": "帽子",
+    "subclass_name": "棒球帽",
+    "category_id": 4944,
+    "product_type_id": 2101,
+    "category_name": "婴儿&儿童帽子",
+    "path": "儿童 > 儿童配饰 > 婴儿&儿童帽子"
+  },
+  {
+    "spu_code": "208326121202",
+    "middle_class_name": "卫衣",
+    "subclass_name": "圆领卫衣",
+    "category_id": 2013,
+    "product_type_id": 9738,
+    "category_name": "女童（大）T恤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）上衣 > 女童（大）T恤"
+  },
+  {
+    "spu_code": "209926169104",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣套装",
+    "category_id": 1992,
+    "product_type_id": 1543,
+    "category_name": "男童（大）家居服",
+    "path": "儿童 > 男童（大）服装 > 男童（大）家居服"
+  },
+  {
+    "spu_code": "208326171101",
+    "middle_class_name": "家居服",
+    "subclass_name": "家居套装",
+    "category_id": 1992,
+    "product_type_id": 1543,
+    "category_name": "男童（大）家居服",
+    "path": "儿童 > 男童（大）服装 > 男童（大）家居服"
+  },
+  {
+    "spu_code": "206326169014",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣套装",
+    "category_id": 2006,
+    "product_type_id": 1544,
+    "category_name": "女童（大）家居服",
+    "path": "儿童 > 女童（大）服装 > 女童（大）家居服"
+  },
+  {
+    "spu_code": "208326102001",
+    "middle_class_name": "长袖衬衫",
+    "subclass_name": "牛仔长袖衬衫",
+    "category_id": 2002,
+    "product_type_id": 7401,
+    "category_name": "女童（大）衬衫",
+    "path": "儿童 > 女童（大）服装 > 女童（大）上衣 > 女童（大）衬衫"
+  },
+  {
+    "spu_code": "209426108201",
+    "middle_class_name": "长裤",
+    "subclass_name": "针织长裤",
+    "category_id": 2007,
+    "product_type_id": 9601,
+    "category_name": "女童（大）长裤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）下装 > 女童（大）长裤"
+  },
+  {
+    "spu_code": "209426108001",
+    "middle_class_name": "长裤",
+    "subclass_name": "针织长裤",
+    "category_id": 2007,
+    "product_type_id": 9601,
+    "category_name": "女童（大）长裤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）下装 > 女童（大）长裤"
+  },
+  {
+    "spu_code": "208426105201",
+    "middle_class_name": "便服",
+    "subclass_name": "针织便服",
+    "category_id": 2064,
+    "product_type_id": 9340,
+    "category_name": "女童（小）外套",
+    "path": "儿童 > 女童（小）服装 > 女童（小）外套 > 女童（小）外套"
+  },
+  {
+    "spu_code": "208426105202",
+    "middle_class_name": "便服",
+    "subclass_name": "针织便服",
+    "category_id": 2098,
+    "product_type_id": 9339,
+    "category_name": "男童（小）外套",
+    "path": "儿童 > 男童（小）服装 > 男童（小）外套 > 男童（小）外套"
+  },
+  {
+    "spu_code": "208426101202",
+    "middle_class_name": "马甲",
+    "subclass_name": "针织马甲",
+    "category_id": 2098,
+    "product_type_id": 9339,
+    "category_name": "男童（小）外套",
+    "path": "儿童 > 男童（小）服装 > 男童（小）外套 > 男童（小）外套"
+  },
+  {
+    "spu_code": "208326100103",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "翻领长袖T恤",
+    "category_id": 2105,
+    "product_type_id": 9740,
+    "category_name": "男童（小）T恤",
+    "path": "儿童 > 男童（小）服装 > 男童（小）上衣 > 男童（小）T恤"
+  },
+  {
+    "spu_code": "208326104203",
+    "middle_class_name": "套装",
+    "subclass_name": "针织套装",
+    "category_id": 15254,
+    "product_type_id": 10935,
+    "category_name": "男童（小）卫衣套装",
+    "path": "儿童 > 男童（小）服装 > 男童（小）套装 > 男童（小）卫衣套装"
+  },
+  {
+    "spu_code": "208326108009",
+    "middle_class_name": "长裤",
+    "subclass_name": "针织长裤",
+    "category_id": 2007,
+    "product_type_id": 9601,
+    "category_name": "女童（大）长裤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）下装 > 女童（大）长裤"
+  },
+  {
+    "spu_code": "208326104209",
+    "middle_class_name": "套装",
+    "subclass_name": "针织套装",
+    "category_id": 15249,
+    "product_type_id": 10930,
+    "category_name": "男童（大）卫衣套装",
+    "path": "儿童 > 男童（大）服装 > 男童（大）套装 > 男童（大）卫衣套装"
+  },
+  {
+    "spu_code": "208326100212",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 1997,
+    "product_type_id": 9736,
+    "category_name": "男童（大）T恤",
+    "path": "儿童 > 男童（大）服装 > 男童（大）上衣 > 男童（大）T恤"
+  },
+  {
+    "spu_code": "208326123003",
+    "middle_class_name": "打底裤",
+    "subclass_name": "打底长裤",
+    "category_id": 2578,
+    "product_type_id": 1390,
+    "category_name": "女童（大）打底裤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）下装 > 女童（大）打底裤"
+  },
+  {
+    "spu_code": "208326108010",
+    "middle_class_name": "长裤",
+    "subclass_name": "牛仔打底裤",
+    "category_id": 2117,
+    "product_type_id": 1394,
+    "category_name": "女童（小）牛仔裤",
+    "path": "儿童 > 女童（小）服装 > 女童（小）牛仔 > 女童（小）牛仔裤"
+  },
+  {
+    "spu_code": "208326100004",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2013,
+    "product_type_id": 9738,
+    "category_name": "女童（大）T恤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）上衣 > 女童（大）T恤"
+  },
+  {
+    "spu_code": "208326169207",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣套装",
+    "category_id": 2006,
+    "product_type_id": 1544,
+    "category_name": "女童（大）家居服",
+    "path": "儿童 > 女童（大）服装 > 女童（大）家居服"
+  },
+  {
+    "spu_code": "208326108003",
+    "middle_class_name": "长裤",
+    "subclass_name": "牛仔长裤",
+    "category_id": 2015,
+    "product_type_id": 1393,
+    "category_name": "女童（大）牛仔裤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）牛仔 > 女童（大）牛仔裤"
+  },
+  {
+    "spu_code": "208326146204",
+    "middle_class_name": "宝宝鞋",
+    "subclass_name": "稳步鞋",
+    "category_id": 2082,
+    "product_type_id": 1699,
+    "category_name": "婴儿运动鞋",
+    "path": "婴儿 > 婴儿鞋 > 婴儿运动鞋"
+  },
+  {
+    "spu_code": "208326100217",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 1997,
+    "product_type_id": 9736,
+    "category_name": "男童（大）T恤",
+    "path": "儿童 > 男童（大）服装 > 男童（大）上衣 > 男童（大）T恤"
+  },
+  {
+    "spu_code": "208426120205",
+    "middle_class_name": "外出连体衣",
+    "subclass_name": "梭织连体衣",
+    "category_id": 6676,
+    "product_type_id": 3804,
+    "category_name": "婴童（男）连体裤",
+    "path": "婴儿 > 婴童（男）服装 > 婴童（男）连体衣 > 婴童（男）连体裤"
+  },
+  {
+    "spu_code": "208326100003",
+    "middle_class_name": "长袖T恤",
+    "subclass_name": "圆V领长袖T恤",
+    "category_id": 2013,
+    "product_type_id": 9738,
+    "category_name": "女童（大）T恤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）上衣 > 女童（大）T恤"
+  },
+  {
+    "spu_code": "208326104208",
+    "middle_class_name": "套装",
+    "subclass_name": "针织套装",
+    "category_id": 1998,
+    "product_type_id": 9316,
+    "category_name": "男童（大）T恤套装",
+    "path": "儿童 > 男童（大）服装 > 男童（大）套装 > 男童（大）T恤套装"
+  },
+  {
+    "spu_code": "209926170120",
+    "middle_class_name": "内裤",
+    "subclass_name": "平角裤",
+    "category_id": 14970,
+    "product_type_id": 10688,
+    "category_name": "男童（大）平角内裤",
+    "path": "儿童 > 男童（大）服装 > 男童（大）内衣 > 男童（大）平角内裤"
+  },
+  {
+    "spu_code": "208926170005",
+    "middle_class_name": "内裤",
+    "subclass_name": "平角裤",
+    "category_id": 14977,
+    "product_type_id": 10694,
+    "category_name": "女童（大）内裤",
+    "path": "儿童 > 女童（大）服装 > 女童（大）内衣 > 女童（大）内裤"
+  },
+  {
+    "spu_code": "208326108217",
+    "middle_class_name": "长裤",
+    "subclass_name": "梭织长裤",
+    "category_id": 1993,
+    "product_type_id": 9600,
+    "category_name": "男童（大）裤子",
+    "path": "儿童 > 男童（大）服装 > 男童（大）下装 > 男童（大）裤子"
+  },
+  {
+    "spu_code": "208326169001",
+    "middle_class_name": "内衣",
+    "subclass_name": "内衣背心",
+    "category_id": 2489,
+    "product_type_id": 500,
+    "category_name": "女童（大）打底内衣",
+    "path": "儿童 > 女童（大）服装 > 女童（大）内衣 > 女童（大）打底内衣"
+  },
+  {
+    "spu_code": "208326145010",
+    "middle_class_name": "宝宝鞋",
+    "subclass_name": "稳步鞋",
+    "category_id": 2070,
+    "product_type_id": 374,
+    "category_name": "儿童运动鞋",
+    "path": "儿童 > 儿童鞋子 > 儿童运动鞋"
+  }
+]
