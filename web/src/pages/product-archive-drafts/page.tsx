@@ -1,3 +1,4 @@
+import { ApprovalSummary } from "@/components/approval-summary"
 import { useEffect, useMemo, useRef, useState, type FocusEvent, type PointerEvent, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import { Link } from "react-router"
@@ -2198,6 +2199,7 @@ function HangtagWashlabelImportDialog({
               />
               覆盖已有字段值
             </label>
+            <ApprovalSummary title="字段写入范围" scope={preview ? `匹配 ${preview.summary.matchedCount ?? 0} 个草稿` : "按上传文件款号匹配草稿"} effect={overwriteExisting ? "覆盖模式：按识别结果写入已有字段。" : "仅填充空字段，保留已有填写。"} warning={overwriteExisting ? "可能覆盖人工与 AI 填写，请核对预览中的目标字段。" : undefined} />
             <p className="mt-2 text-xs text-muted-foreground">
               默认只补空字段；SCM 结果表里的中文成分会作为明文字段补充，平铺图会进入 AI 多模态参考，带“有模拍”后缀的图片会用于判断模特实拍。
             </p>
@@ -2372,6 +2374,7 @@ export default function ProductArchiveDraftsPage() {
   const [mdmCodes, setMdmCodes] = useState("")
   const [workflowDialogOpen, setWorkflowDialogOpen] = useState(false)
   const [workflowProgressDialogOpen, setWorkflowProgressDialogOpen] = useState(false)
+  const [progressKind, setProgressKind] = useState<"workflow" | "mdm">("mdm")
   const [guideDialogOpen, setGuideDialogOpen] = useState(() => !hasSeenProductArchiveDraftGuide())
   const [ocrDialogOpen, setOcrDialogOpen] = useState(false)
   const [ocrFiles, setOcrFiles] = useState<File[]>([])
@@ -2605,7 +2608,7 @@ export default function ProductArchiveDraftsPage() {
         description: `待同步并生成 ${formatNumber(job.total_count)} 个深绘建档草稿`,
       })
       setBatchJobId(job.id)
-      setWorkflowProgressDialogOpen(true)
+      // Standalone MDM sync stays in the task center; do not reopen an old workflow.
       setMdmDialogOpen(false)
       setMdmCodes("")
       toast.success("MDM 同步建档任务已加入队列")
@@ -2636,6 +2639,7 @@ export default function ProductArchiveDraftsPage() {
       const latestJob = syncJobs.at(-1)
       if (latestJob) {
         setBatchJobId(latestJob.id)
+        setProgressKind("mdm")
         setWorkflowProgressDialogOpen(true)
       }
       toast.success(
@@ -2770,6 +2774,7 @@ export default function ProductArchiveDraftsPage() {
       if (result.workflowJobId) {
         handledWorkflowJobIdRef.current = null
         setWorkflowJobId(result.workflowJobId)
+        setProgressKind("workflow")
         setWorkflowProgressDialogOpen(true)
         setWorkflowDialogOpen(false)
         setCopywritingFile(null)
@@ -2791,6 +2796,7 @@ export default function ProductArchiveDraftsPage() {
           description: `待生成 ${formatNumber(result.syncJob.total_count)} 个深绘建档草稿`,
         })
         setBatchJobId(result.syncJob.id)
+        setProgressKind("mdm")
         setWorkflowProgressDialogOpen(true)
         toast.success("商品建档任务已加入队列")
       } else {
@@ -3134,6 +3140,7 @@ export default function ProductArchiveDraftsPage() {
                     将对已选择的 {formatNumber(selectedDrafts.length)} 个草稿提交后台{draftSubmitModeLabel(batchSubmitMode)}任务。系统会查重、提交并保持提交中/回读中状态直到深绘资源回读校验完成；接口繁忙会自动延迟重试，单款失败不会中断整批。
                   </DialogDescription>
                 </DialogHeader>
+                <ApprovalSummary title="提交前确认" scope={`已选择 ${formatNumber(selectedDrafts.length)} 个草稿`} effect={batchSubmitMode === "full_update" ? "全量更新深绘商品，并等待资源回读校验。" : "发布到深绘，并等待资源回读校验。"} warning={batchSubmitMode === "full_update" ? "全量更新可能覆盖已建档商品字段，请先核对草稿。" : "已存在的商品将按现有查重规则处理。"} />
                 <div className="grid gap-2">
                   <div className="text-xs font-medium text-muted-foreground">提交模式</div>
                   <Select value={batchSubmitMode} onValueChange={(value) => setBatchSubmitMode(value as DraftSubmitMode)}>
@@ -3809,15 +3816,15 @@ export default function ProductArchiveDraftsPage() {
     <Dialog open={workflowProgressDialogOpen} onOpenChange={setWorkflowProgressDialogOpen}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{trackedWorkflowJob ? "深绘建档工作流进度" : "MDM 同步进度"}</DialogTitle>
+          <DialogTitle>{progressKind === "workflow" ? "深绘建档工作流进度" : "MDM 同步进度"}</DialogTitle>
           <DialogDescription>
-            {trackedWorkflowJob
+            {progressKind === "workflow"
               ? "表格解析、来源导入、上市计划和草稿刷新均在后台执行，关闭弹窗后任务仍会继续。"
               : "正在按未建档款号同步 MDM 并生成深绘建档草稿，关闭弹窗后可从任务中心继续查看。"}
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4">
-          {trackedWorkflowJob ? (
+          {progressKind === "workflow" ? trackedWorkflowJob ? (
             <div className="rounded-lg border bg-muted/30 p-4">
               <div className="mb-2 flex items-center justify-between text-sm">
                 <span>已完成 {formatNumber(trackedWorkflowJob.completed_stage_count)} / {formatNumber(trackedWorkflowJob.total_stage_count)} 个阶段</span>
@@ -3836,7 +3843,7 @@ export default function ProductArchiveDraftsPage() {
               </div>
               {trackedWorkflowJob.error_message ? <p className="mt-3 text-sm text-destructive">{trackedWorkflowJob.error_message}</p> : null}
             </div>
-          ) : (
+          ) : <p role="status" className="text-sm text-muted-foreground">正在获取工作流进度…</p> : (
             <>
               <div className="rounded-lg border bg-muted/30 p-4">
                 <div className="mb-2 flex items-center justify-between text-sm">
@@ -3887,7 +3894,7 @@ export default function ProductArchiveDraftsPage() {
             查看任务中心
           </Button>
           <Button type="button" onClick={() => setWorkflowProgressDialogOpen(false)}>
-            {(trackedWorkflowJob?.status === "completed" || trackedWorkflowJob?.status === "failed" || trackedWorkflowJob?.status === "cancelled" || trackedJob?.status === "completed") ? "关闭" : "后台处理"}
+            {(progressKind === "workflow" ? trackedWorkflowJob && ["completed", "failed", "cancelled"].includes(trackedWorkflowJob.status) : trackedJob && ["completed", "failed", "cancelled"].includes(trackedJob.status)) ? "关闭" : "后台处理"}
           </Button>
         </DialogFooter>
       </DialogContent>

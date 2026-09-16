@@ -1,3 +1,4 @@
+import { MotionConfig } from "motion/react"
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 import { RouterProvider } from "react-router"
@@ -20,6 +21,7 @@ const queryClient = new QueryClient({
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
+    <MotionConfig reducedMotion="user">
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={200}>
         <AuthProvider>
@@ -28,5 +30,6 @@ createRoot(document.getElementById("root")!).render(
         <Toaster position="top-right" richColors closeButton />
       </TooltipProvider>
     </QueryClientProvider>
+    </MotionConfig>
   </StrictMode>,
 )

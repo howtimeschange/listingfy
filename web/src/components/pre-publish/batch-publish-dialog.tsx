@@ -1,3 +1,4 @@
+import { ApprovalSummary } from "@/components/approval-summary"
 import { useState } from "react"
 import { Link } from "react-router"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
@@ -426,6 +427,7 @@ export function BatchPublishDialog({
               先对草稿做发布预检；没有阻断的草稿可直接提交，有字段阻断的草稿可在这里快速调整后重新预检。
             </DialogDescription>
           </DialogHeader>
+          <ApprovalSummary title="发布预检确认" scope={`${selectionLabel} ${formatNumber(activeCount)} 个；可提交 ${formatNumber(publishableItems.length)} 个`} effect="通过预检后提交发布任务，最终结果以平台回执和审核状态为准。" warning={blockedItems.length > 0 ? `仍有 ${formatNumber(blockedItems.length)} 个草稿存在阻断，请修正后重新预检。` : "请核对商品图片、价格、尺码与目标平台。"} pending={batchCheckMutation.isPending} />
           <div className="grid gap-3 md:grid-cols-3">
             <div className="rounded border p-3">
               <p className="text-xs text-muted-foreground">{selectionLabel}</p>

@@ -1,3 +1,6 @@
+import { TaskActivity } from "@/components/task-activity"
+import { AnimatedBadge } from "@/components/motion/animated-badge"
+import { taskPresentation } from "@/lib/task-presentation"
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Activity, AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, CircleStop, Clock, Download, Loader2, RotateCcw, Trash2 } from "lucide-react"
 import { api } from "@/lib/api-client"
@@ -182,6 +185,8 @@ function hangtagWashlabelOcrTaskSummary(task: AsyncTaskRecord) {
     skippedCount: numberResultValue(applySummary.skippedCount),
     matchedCount: numberResultValue(previewSummary?.matchedCount),
     importedImageCount: numberResultValue(imageImportSummary?.importedCount),
+    imageMatchedDraftCount: numberResultValue(imageImportSummary?.matchedDraftCount),
+    recognizedFileCount: numberResultValue(previewSummary?.fileCount),
     overwriteExisting: result?.overwriteExisting === true,
   }
 }
@@ -628,6 +633,7 @@ function AsyncTaskDrawer({
               </div>
             ) : currentPageTasks.map((task) => {
               const job = task.job
+              const phase = taskPresentation(job)
               const failures = failedItems(task)
               const runningItems = runningTaskItems(task)
               const runningItem = runningItems[0] ?? null
@@ -654,7 +660,7 @@ function AsyncTaskDrawer({
                       {task.description ? (
                         <p className="mt-1 text-xs text-muted-foreground">{task.description}</p>
                       ) : null}
-                      <p className="mt-1 text-[11px] text-muted-foreground">{formatDateTime(task.createdAt)}</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2"><AnimatedBadge status={phase.status} size="sm" pulse={false}>{phase.label}</AnimatedBadge><span className="text-[11px] text-muted-foreground">{formatDateTime(task.createdAt)}</span></div>
                       {!done && runningItem ? (
                         <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">
                           {runningCount > 1
@@ -749,12 +755,15 @@ function AsyncTaskDrawer({
                     <div className="rounded-md bg-muted px-2 py-1">失败 {formatNumber(job?.failed_count ?? 0)}</div>
                     <div className="rounded-md bg-muted px-2 py-1">总数 {formatNumber(job?.total_count ?? 0)}</div>
                   </div>
+                  <TaskActivity task={task} />
                   {ocrSummary ? (
                     <div className="mt-3 rounded-md border border-[#b9f4d8] bg-[#f2fff8] px-2 py-1.5 text-xs text-[#0f7f58]">
-                      已自动{ocrSummary.overwriteExisting ? "按覆盖模式写入" : "填充空字段"} {formatNumber(ocrSummary.appliedFieldCount)} 个，
-                      匹配草稿 {formatNumber(ocrSummary.appliedDraftCount || ocrSummary.matchedCount)} 个，
-                      参考图 {formatNumber(ocrSummary.importedImageCount)} 张，
-                      跳过 {formatNumber(ocrSummary.skippedCount)} 个。
+                      <p>图片附件已导入 {formatNumber(ocrSummary.importedImageCount)} 张，关联草稿 {formatNumber(ocrSummary.imageMatchedDraftCount)} 个。</p>
+                      {ocrSummary.recognizedFileCount > 0 ? <p>
+                        OCR / 来源字段：匹配草稿 {formatNumber(ocrSummary.matchedCount)} 个，
+                        已自动{ocrSummary.overwriteExisting ? "按覆盖模式写入" : "填充空字段"} {formatNumber(ocrSummary.appliedFieldCount)} 个，
+                        写入草稿 {formatNumber(ocrSummary.appliedDraftCount)} 个，跳过 {formatNumber(ocrSummary.skippedCount)} 个。
+                      </p> : <p>本次未处理 OCR / 来源字段；图片作为参考资料供后续 AI 填充使用。</p>}
                     </div>
                   ) : null}
                   {aiFillSummary ? (

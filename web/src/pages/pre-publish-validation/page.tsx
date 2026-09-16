@@ -1,8 +1,8 @@
+import { FileUpload } from "@/components/motion/file-upload"
 import { useMemo, useState } from "react"
 import { Link, useSearchParams } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
-  Archive,
   CircleHelp,
   CopyPlus,
   FileClock,
@@ -354,6 +354,7 @@ export default function PrePublishValidationPage() {
   const [createDraftDialogOpen, setCreateDraftDialogOpen] = useState(false)
   const [createDraftText, setCreateDraftText] = useState("")
   const [batchImagePackageDialogOpen, setBatchImagePackageDialogOpen] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
   const [batchImagePackageFile, setBatchImagePackageFile] = useState<File | null>(null)
   const [batchImagePackageResult, setBatchImagePackageResult] = useState<BatchImagePackageResult | null>(null)
   const [guideDialogOpen, setGuideDialogOpen] = useState(() => !hasSeenPrePublishDraftGuide())
@@ -445,10 +446,12 @@ export default function PrePublishValidationPage() {
   })
   const batchUploadImagePackageMutation = useMutation({
     mutationFn: async (file: File) => {
+      setUploadProgress(0)
+      setBatchImagePackageResult(null)
       const form = new FormData()
       form.append("file", file)
       form.append("listing_ids", JSON.stringify(Array.from(selectedDraftIds)))
-      return api.postForm<BatchImagePackageResult>("/pre-publish/drafts/batch-upload-image-package", form)
+      return api.postFormWithProgress<BatchImagePackageResult>("/pre-publish/drafts/batch-upload-image-package", form, setUploadProgress)
     },
     onSuccess: async (result) => {
       setBatchImagePackageResult(result)
@@ -531,7 +534,7 @@ export default function PrePublishValidationPage() {
               <CircleHelp className="size-4" />
               使用指南
             </Button>
-            <Dialog open={batchImagePackageDialogOpen} onOpenChange={setBatchImagePackageDialogOpen}>
+            <Dialog open={batchImagePackageDialogOpen} onOpenChange={(open) => { if (!batchUploadImagePackageMutation.isPending) setBatchImagePackageDialogOpen(open) }}>
               <DialogTrigger asChild>
                 <Button type="button" size="sm" variant="outline" disabled={!canWrite}>
                   <Upload className="size-4" />
@@ -546,33 +549,16 @@ export default function PrePublishValidationPage() {
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4">
-                  <div className="rounded-lg border border-dashed p-4">
-                    <div className="flex items-center gap-3">
-                      <span className="flex size-10 items-center justify-center rounded-lg bg-muted">
-                        <Archive className="size-5 text-muted-foreground" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-medium">
-                          {batchImagePackageFile?.name ?? "选择 ZIP 图包"}
-                        </span>
-                        <span className="mt-1 block text-xs text-muted-foreground">
-                          {batchImagePackageFile
-                            ? `${formatNumber(Math.ceil(batchImagePackageFile.size / 1024 / 1024))} MB`
-                            : "最大 600MB；支持 JPG、JPEG、PNG 图片"}
-                        </span>
-                      </span>
-                    </div>
-                    <input
-                      type="file"
-                      aria-label="选择 SHEIN ZIP 图包"
-                      accept=".zip,application/zip,application/x-zip-compressed"
-                      className="mt-3 block w-full rounded-md border bg-background px-3 py-2 text-sm file:mr-3 file:rounded file:border-0 file:bg-muted file:px-3 file:py-1 file:text-sm file:font-medium"
-                      onChange={(event) => {
-                        setBatchImagePackageFile(event.target.files?.[0] ?? null)
-                        setBatchImagePackageResult(null)
-                      }}
-                    />
-                  </div>
+                  <FileUpload
+                    file={batchImagePackageFile}
+                    onFileChange={(file) => { setBatchImagePackageFile(file); setBatchImagePackageResult(null); batchUploadImagePackageMutation.reset(); setUploadProgress(0) }}
+                    accept={{ "application/zip": [".zip"] }} maxSize={600 * 1024 * 1024}
+                    label="选择 SHEIN ZIP 图包" description="ZIP 图包，最大 600MB；包内支持 JPG、JPEG、PNG 图片"
+                    disabled={!canWrite} progress={uploadProgress}
+                    state={batchUploadImagePackageMutation.isPending ? uploadProgress === 100 ? "processing" : "uploading" : batchUploadImagePackageMutation.isError ? "error" : batchImagePackageResult ? "success" : "queued"}
+                    error={batchUploadImagePackageMutation.isError ? errorMessage(batchUploadImagePackageMutation.error, "图包处理失败") : undefined}
+                    onRetry={() => { if (canWrite && batchImagePackageFile) batchUploadImagePackageMutation.mutate(batchImagePackageFile) }}
+                  />
                   <div className="rounded-lg bg-muted/60 px-4 py-3 text-sm">
                     {selectedDraftIds.size > 0 ? (
                       <p>本次只匹配已勾选的 {formatNumber(selectedDraftIds.size)} 个草稿。</p>

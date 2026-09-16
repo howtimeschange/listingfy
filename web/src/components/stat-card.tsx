@@ -1,3 +1,4 @@
+import { AnimatedNumber } from "@/components/motion/animated-number"
 import type { LucideIcon } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
@@ -17,6 +18,7 @@ export function StatCard({
   description,
   className,
 }: StatCardProps) {
+  const numeric = typeof value === "number" ? value : /^-?[\d,]+$/.test(value) ? Number(value.replaceAll(",", "")) : null
   return (
     <Card className={cn("py-5", className)}>
       <CardContent className="px-5">
@@ -27,7 +29,7 @@ export function StatCard({
           {Icon && <Icon className="size-4 text-[var(--brand-deep)]" />}
         </div>
         <p className="mt-2 text-2xl font-semibold leading-tight tracking-[-0.24px] tabular-nums">
-          {value}
+          {numeric != null && Number.isFinite(numeric) ? <AnimatedNumber value={numeric} /> : value}
         </p>
         {description && (
           <p className="mt-1 text-xs text-muted-foreground">{description}</p>

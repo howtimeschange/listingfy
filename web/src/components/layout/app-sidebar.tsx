@@ -58,7 +58,9 @@ type NavGroup = {
   items: NavItem[]
 }
 
-const NAV_GROUPS: NavGroup[] = [
+// Shared read-only navigation config keeps command search aligned with sidebar permissions.
+// eslint-disable-next-line react-refresh/only-export-components
+export const NAV_GROUPS: NavGroup[] = [
   {
     label: "运营总览",
     items: [

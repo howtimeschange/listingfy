@@ -1,4 +1,5 @@
 import { useLocation, useNavigate } from "react-router"
+import { GlobalCommandPalette } from "@/components/global-command-palette"
 import { LogOut } from "lucide-react"
 import { toast } from "sonner"
 import { SidebarTrigger } from "@/components/ui/sidebar"
@@ -66,6 +67,7 @@ export function AppHeader() {
         </BreadcrumbList>
       </Breadcrumb>
       <div className="flex items-center gap-2">
+        <GlobalCommandPalette />
         <AsyncTaskTrigger />
         <Separator orientation="vertical" className="hidden h-4 md:block" />
         <span className="hidden text-sm text-muted-foreground md:inline">

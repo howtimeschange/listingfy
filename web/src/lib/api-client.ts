@@ -92,6 +92,32 @@ export const api = {
       body,
     }),
 
+  postFormWithProgress: <T>(path: string, body: FormData, onProgress: (percent: number) => void) =>
+    new Promise<T>((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open("POST", `${BASE_URL}${path}`)
+      xhr.withCredentials = true
+      xhr.upload.onprogress = (event) => {
+        // Only upload.onload can confirm that transmission has finished.
+        if (event.lengthComputable && event.total > 0) onProgress(Math.min(99, Math.max(0, Math.floor(event.loaded / event.total * 100))))
+      }
+      xhr.upload.onload = () => onProgress(100)
+      xhr.onerror = () => reject(new Error("连接中断，提交结果尚未确认，请先检查草稿状态再决定是否重试。"))
+      xhr.onabort = () => reject(new Error("连接已取消，请检查草稿状态。"))
+      xhr.onload = () => {
+        let result: unknown = xhr.responseText
+        try { result = JSON.parse(xhr.responseText) } catch {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            reject(new Error("响应格式异常，请检查草稿状态后再操作。"))
+            return
+          }
+        }
+        if (xhr.status < 200 || xhr.status >= 300) reject(new ApiError(xhr.status, result))
+        else resolve(result as T)
+      }
+      xhr.send(body)
+    }),
+
   put: <T>(path: string, body?: unknown) =>
     request<T>(path, {
       method: "PUT",
