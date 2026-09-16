@@ -1,4 +1,5 @@
 import { ApprovalSummary } from "@/components/approval-summary"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useEffect, useMemo, useRef, useState, type FocusEvent, type PointerEvent, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import { Link } from "react-router"
@@ -3644,7 +3645,7 @@ export default function ProductArchiveDraftsPage() {
             <QueryErrorState message={drafts.error instanceof Error ? drafts.error.message : undefined} onRetry={() => void drafts.refetch()} />
           ) : null}
           <CompactListTableFrame>
-            <Table className="min-w-[1560px] table-fixed">
+            <Table className="w-full min-w-[1640px] table-fixed">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-10">
@@ -3655,8 +3656,8 @@ export default function ProductArchiveDraftsPage() {
                     />
                   </TableHead>
                   <TableHead className="w-20">图片</TableHead>
-                  <TableHead className="w-40">款号</TableHead>
-                  <TableHead className="w-48">标题</TableHead>
+                  <TableHead className="w-36">款号</TableHead>
+                  <TableHead className="w-[280px]">标题</TableHead>
                   <TableHead className="w-32">租户/商户</TableHead>
                   <TableHead className="w-56">类目</TableHead>
                   <TableHead className="w-24">状态</TableHead>
@@ -3691,12 +3692,19 @@ export default function ProductArchiveDraftsPage() {
                         <Link to={`/product-archive-drafts/${item.id}`} className="font-medium text-primary hover:underline">
                           {item.spu_code}
                         </Link>
-                        <div className="mt-1 font-mono text-[11px] text-muted-foreground">{item.draft_no}</div>
+                        <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground" title={item.draft_no}>{item.draft_no}</div>
                       </TableCell>
                       <TableCell className="whitespace-normal">
-                        <div className="line-clamp-2 break-words leading-5">
-                          {item.title || "未命名"}
-                        </div>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div tabIndex={0} className="line-clamp-2 cursor-help break-words leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                              {item.title || "未命名"}
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent side="top" align="start" className="max-w-[min(28rem,calc(100vw-2rem))] whitespace-normal break-words text-sm leading-6">
+                            {item.title || "未命名"}
+                          </TooltipContent>
+                        </Tooltip>
                       </TableCell>
                       <TableCell>
                         <div>{item.tenant_name}</div>
