@@ -72,6 +72,44 @@ import { Textarea } from "@/components/ui/textarea"
 import { QueryErrorState } from "@/components/query-error-state"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 
+function DraftTitle({ title }: { title: string }) {
+  const titleRef = useRef<HTMLDivElement>(null)
+  const [isTruncated, setIsTruncated] = useState(false)
+
+  useEffect(() => {
+    const element = titleRef.current
+    if (!element) return
+
+    const measure = () => setIsTruncated(element.scrollHeight > element.clientHeight)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [title])
+
+  return (
+    <Tooltip open={isTruncated ? undefined : false}>
+      <TooltipTrigger asChild>
+        <div
+          ref={titleRef}
+          tabIndex={isTruncated ? 0 : undefined}
+          className={cn(
+            "line-clamp-2 break-words leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            isTruncated && "cursor-help",
+          )}
+        >
+          {title}
+        </div>
+      </TooltipTrigger>
+      {isTruncated && (
+        <TooltipContent side="top" align="start" className="w-max max-w-[min(28rem,calc(100vw-2rem))] whitespace-normal break-words text-left text-sm leading-6 [text-wrap:wrap]">
+          {title}
+        </TooltipContent>
+      )}
+    </Tooltip>
+  )
+}
+
 const OCR_UPLOAD_MB = 1024 * 1024
 const OCR_PREVIEW_MAX_FILES = 40
 const OCR_PREVIEW_MAX_BYTES = 128 * OCR_UPLOAD_MB
@@ -3695,16 +3733,7 @@ export default function ProductArchiveDraftsPage() {
                         <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground" title={item.draft_no}>{item.draft_no}</div>
                       </TableCell>
                       <TableCell className="whitespace-normal">
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <div tabIndex={0} className="line-clamp-2 cursor-help break-words leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                              {item.title || "未命名"}
-                            </div>
-                          </TooltipTrigger>
-                          <TooltipContent side="top" align="start" className="max-w-[min(28rem,calc(100vw-2rem))] whitespace-normal break-words text-sm leading-6">
-                            {item.title || "未命名"}
-                          </TooltipContent>
-                        </Tooltip>
+                        <DraftTitle title={item.title || "未命名"} />
                       </TableCell>
                       <TableCell>
                         <div>{item.tenant_name}</div>
