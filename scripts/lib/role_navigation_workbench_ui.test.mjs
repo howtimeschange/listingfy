@@ -86,13 +86,11 @@ test("dashboard becomes a permission-aware cross-workstream cockpit", async () =
   assert.match(dashboard, /canUseShein/);
   assert.match(dashboard, /enabled:\s*canUseDeepdraw/);
   assert.match(dashboard, /enabled:\s*canUseShein/);
-  assert.match(dashboard, /AI 商品运营平台/);
-  assert.match(dashboard, /商品运营中台/);
-  assert.match(dashboard, /AI 商品运营能力/);
-  assert.match(dashboard, /OCR\/AI 补齐/);
-  assert.match(dashboard, /从商品资料到平台回执的统一运营台/);
-  assert.match(dashboard, /深绘建档/);
-  assert.match(dashboard, /SHEIN 上新运营/);
+  assert.match(dashboard, /品牌进展/);
+  assert.match(dashboard, /问题款号/);
+  assert.match(dashboard, /数据完备率/);
+  assert.match(dashboard, /审核通过/);
+  assert.match(dashboard, /建档成功/);
   assert.match(dashboard, /\/product-archive-drafts/);
   assert.match(dashboard, /\/shein-platform-products/);
 });

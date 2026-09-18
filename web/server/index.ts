@@ -5,6 +5,7 @@ import { loadLocalEnv } from "../../scripts/lib/local_env.mjs"
 import { validateProductArchivePerformanceEnv } from "../../scripts/lib/product_archive_performance_config.mjs"
 import { errorHandler, logger } from "./middleware/error-handler"
 import metadata from "./routes/metadata"
+import dashboard from "./routes/dashboard"
 import categoryMapping from "./routes/category-mapping"
 import productArchives, { resumeProductArchiveSyncQueue } from "./routes/product-archives"
 import productArchiveDrafts, { resumeProductArchiveDraftQueue, resumeProductArchiveWorkflowJobs } from "./routes/product-archive-drafts"
@@ -104,6 +105,7 @@ app.route("/api/users", users)
 app.route("/api/platform-integrations", platformIntegrations)
 app.route("/api/system", system)
 app.route("/api/metadata", metadata)
+app.route("/api/dashboard", dashboard)
 app.route("/api/category-mapping", categoryMapping)
 app.route("/api/product-archives", productArchives)
 app.route("/api/product-archive-drafts", productArchiveDrafts)
