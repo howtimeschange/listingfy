@@ -103,6 +103,9 @@ test("shoe size-chart importer normalizes Chinese columns and reports invalid ro
     enabled: true,
     notes: null,
     rowNumber: 2,
+    chinaSize: null,
+    usSize: null,
+    footRangeCm: null,
   }])
   assert.equal(result.errors.length, 1)
   assert.match(result.errors[0].reason, /无法识别模板/)
@@ -149,6 +152,9 @@ test("shoe size-chart importer expands the original Balabala horizontal matrix",
     enabled: true,
     notes: null,
     rowNumber: 6,
+    chinaSize: null,
+    usSize: null,
+    footRangeCm: null,
   })
   assert.equal(result.errors.length, 0)
 })

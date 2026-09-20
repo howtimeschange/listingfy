@@ -45,6 +45,12 @@ interface RowInput {
   pinduoduoMappingText?: unknown
   pinduoduo_mapping_text?: unknown
   enabled?: unknown
+  chinaSize?: unknown
+  china_size?: unknown
+  usSize?: unknown
+  us_size?: unknown
+  footRangeCm?: unknown
+  foot_range_cm?: unknown
   notes?: unknown
 }
 
@@ -63,6 +69,9 @@ export interface ShoeSizeChartImportRow {
   videoPddVipMappingText: string | null
   pinduoduoMappingText: string | null
   enabled: boolean
+  chinaSize?: string | null
+  usSize?: string | null
+  footRangeCm?: string | null
   notes: string | null
   rowNumber?: number
 }
@@ -92,6 +101,9 @@ const IMPORT_FIELD_ALIASES = {
   videoPddVipMappingText: ["视频号/拼多多/唯品会", "视频号拼多多唯品会", "video_pdd_vip_mapping_text", "videopddvipmappingtext"],
   pinduoduoMappingText: ["拼多多", "拼多多尺码映射", "pinduoduo_mapping_text", "pinduoduomappingtext"],
   enabled: ["启用", "状态", "enabled"],
+  chinaSize: ["中国码", "china_size", "chinaSize"],
+  usSize: ["美码", "美国码", "us_size", "usSize"],
+  footRangeCm: ["适合脚长(cm)", "foot_range_cm", "footRangeCm"],
   notes: ["备注", "说明", "notes"],
 } as const
 
@@ -334,6 +346,29 @@ function expandBalabalaConversionRows(rows: SpreadsheetRow[]): PreparedImportRow
   return prepared.length > 0 ? prepared : null
 }
 
+// 2026 workbook uses three header rows and one shared non-sandal size block.
+function expandBalabala2026Rows(rows: SpreadsheetRow[]): PreparedImportRow[] | null {
+  const header = rows.findIndex((row) => sortedCells(row).some(([, value]) => stringValue(value) === "中国码"))
+  if (header < 0 || !rows.slice(0, header + 2).some((row) => sortedCells(row).some(([, value]) => stringValue(value) === "运动鞋/休闲鞋/婴童鞋/其他"))) return null
+  const columns = sortedCells(Object.assign({}, ...rows)).map(([key]) => key)
+  if (columns.length < 15) return null
+  let ageSegment: unknown = null
+  let referenceStage: unknown = null
+  return rows.slice(header + 2).flatMap((source, index) => {
+    const cell = (position: number) => source[columns[position]]
+    if (!importNumber(cell(3)) || !stringValue(cell(10))) return []
+    ageSegment = cell(0) || ageSegment
+    referenceStage = cell(2) || referenceStage
+    return [{ rowNumber: header + index + 3, row: {
+      chartCode: "sport_leisure", sizeValue: cell(3), chinaSize: cell(5), usSize: cell(6),
+      footLengthMm: cell(7), footRangeCm: cell(9), innerLengthMm: cell(10),
+      ageSegment, referenceAge: cell(1), referenceStage,
+      generalMappingText: cell(12), douyinMappingText: cell(13), vipMappingText: cell(14),
+      videoPddVipMappingText: cell(14), pinduoduoMappingText: cell(14), enabled: true,
+    } }]
+  })
+}
+
 function normalizedChartCode(value: unknown, fallback = "") {
   const text = stringValue(value) || fallback
   return CHART_CODE_ALIASES.get(compactHeader(text)) ?? ""
@@ -357,9 +392,10 @@ export function normalizeShoeSizeChartImportRows(
   const deduplicated = new Map<string, ShoeSizeChartImportRow>()
   const defaultChartCode = normalizedChartCode(options.defaultChartCode)
   const safeSourceRows = Array.isArray(sourceRows) ? sourceRows : []
-  const horizontalRows = expandBalabalaHorizontalRows(safeSourceRows)
-  const conversionRows = horizontalRows ? null : expandBalabalaConversionRows(safeSourceRows)
-  const prepared = horizontalRows ?? conversionRows ?? importRowsWithHeaders(safeSourceRows)
+  const sharedRows = expandBalabala2026Rows(safeSourceRows)
+  const horizontalRows = sharedRows ? null : expandBalabalaHorizontalRows(safeSourceRows)
+  const conversionRows = sharedRows || horizontalRows ? null : expandBalabalaConversionRows(safeSourceRows)
+  const prepared = sharedRows ?? horizontalRows ?? conversionRows ?? importRowsWithHeaders(safeSourceRows)
 
   for (const { row, rowNumber } of prepared) {
     if (Object.values(row).every((value) => !stringValue(value))) continue
@@ -397,6 +433,9 @@ export function normalizeShoeSizeChartImportRows(
       videoPddVipMappingText: stringValue(row.videoPddVipMappingText) || null,
       pinduoduoMappingText: stringValue(row.pinduoduoMappingText) || null,
       enabled: booleanValue(row.enabled, true),
+      chinaSize: stringValue(row.chinaSize) || null,
+      usSize: stringValue(row.usSize) || null,
+      footRangeCm: stringValue(row.footRangeCm) || null,
       notes: stringValue(row.notes) || null,
       rowNumber,
     }
@@ -573,6 +612,9 @@ function normalizedRowInput(input: RowInput, current: Record<string, unknown> | 
     videoPddVipMappingText: stringValue(input.videoPddVipMappingText ?? input.video_pdd_vip_mapping_text ?? current?.video_pdd_vip_mapping_text) || null,
     pinduoduoMappingText: stringValue(input.pinduoduoMappingText ?? input.pinduoduo_mapping_text ?? current?.pinduoduo_mapping_text) || null,
     enabled: booleanValue(input.enabled, current ? Boolean(current.enabled) : true),
+    chinaSize: stringValue(input.chinaSize ?? input.china_size ?? current?.china_size) || null,
+    usSize: stringValue(input.usSize ?? input.us_size ?? current?.us_size) || null,
+    footRangeCm: stringValue(input.footRangeCm ?? input.foot_range_cm ?? current?.foot_range_cm) || null,
     notes: stringValue(input.notes ?? current?.notes) || null,
   }
 }
@@ -598,11 +640,14 @@ export function createShoeSizeChartRow(db: SyncPostgresDatabase, input: RowInput
       video_pdd_vip_mapping_text,
       pinduoduo_mapping_text,
       enabled,
+      china_size,
+      us_size,
+      foot_range_cm,
       notes,
       created_by,
       updated_by,
       updated_at
-    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::timestamptz)
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::timestamptz)
     returning *
   `).get(
     chart.id,
@@ -619,6 +664,9 @@ export function createShoeSizeChartRow(db: SyncPostgresDatabase, input: RowInput
     row.videoPddVipMappingText,
     row.pinduoduoMappingText,
     row.enabled,
+    row.chinaSize,
+    row.usSize,
+    row.footRangeCm,
     row.notes,
     input.userId ?? null,
     input.userId ?? null,
@@ -646,6 +694,9 @@ export function updateShoeSizeChartRow(db: SyncPostgresDatabase, rowId: number, 
       video_pdd_vip_mapping_text = ?,
       pinduoduo_mapping_text = ?,
       enabled = ?,
+      china_size = ?,
+      us_size = ?,
+      foot_range_cm = ?,
       notes = ?,
       updated_by = ?,
       updated_at = ?::timestamptz
@@ -665,6 +716,9 @@ export function updateShoeSizeChartRow(db: SyncPostgresDatabase, rowId: number, 
     row.videoPddVipMappingText,
     row.pinduoduoMappingText,
     row.enabled,
+    row.chinaSize,
+    row.usSize,
+    row.footRangeCm,
     row.notes,
     input.userId ?? null,
     nowIso(),
@@ -700,11 +754,14 @@ export function importShoeSizeChartRows(
       video_pdd_vip_mapping_text,
       pinduoduo_mapping_text,
       enabled,
+      china_size,
+      us_size,
+      foot_range_cm,
       notes,
       created_by,
       updated_by,
       updated_at
-    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::timestamptz)
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::timestamptz)
     on conflict (chart_id, size_value) do update set
       foot_length_mm = excluded.foot_length_mm,
       foot_length_tolerance_mm = excluded.foot_length_tolerance_mm,
@@ -718,6 +775,9 @@ export function importShoeSizeChartRows(
       video_pdd_vip_mapping_text = coalesce(excluded.video_pdd_vip_mapping_text, product_archive_shoe_size_chart_row.video_pdd_vip_mapping_text),
       pinduoduo_mapping_text = coalesce(excluded.pinduoduo_mapping_text, product_archive_shoe_size_chart_row.pinduoduo_mapping_text),
       enabled = excluded.enabled,
+      china_size = coalesce(excluded.china_size, product_archive_shoe_size_chart_row.china_size),
+      us_size = coalesce(excluded.us_size, product_archive_shoe_size_chart_row.us_size),
+      foot_range_cm = coalesce(excluded.foot_range_cm, product_archive_shoe_size_chart_row.foot_range_cm),
       notes = excluded.notes,
       updated_by = excluded.updated_by,
       updated_at = excluded.updated_at
@@ -752,6 +812,9 @@ export function importShoeSizeChartRows(
         row.videoPddVipMappingText ?? null,
         row.pinduoduoMappingText ?? null,
         row.enabled,
+        row.chinaSize ?? null,
+        row.usSize ?? null,
+        row.footRangeCm ?? null,
         row.notes ?? null,
         userId,
         userId,

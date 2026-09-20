@@ -310,13 +310,14 @@ function tableValue(
 }
 
 function footRange(row: ShoeSizeChartRow) {
+  if (stringValue(row.foot_range_cm)) return stringValue(row.foot_range_cm)
   const foot = numberValue(row.foot_length_mm)
   const tolerance = numberValue(row.foot_length_tolerance_mm)
   return `${decimalText((foot - tolerance) / 10)}-${decimalText((foot + tolerance) / 10)}`
 }
 
 function baselineFoot(row: ShoeSizeChartRow) {
-  return decimalText(numberValue(row.foot_length_mm) / 10)
+  return String(Number((numberValue(row.foot_length_mm) / 10).toFixed(3)))
 }
 
 function innerLength(row: ShoeSizeChartRow) {
@@ -562,10 +563,15 @@ export function buildShoeSizeChartFieldValues(input: {
 
   const vip = templates.get("唯品会尺码表")
   if (vip) {
-    const columns = supportedColumns(vip, ["欧洲码", "脚长", "鞋内长"], { 鞋内长: ["鞋长"] })
+    const desired = ["欧洲码", "脚长", "鞋内长"]
+    if (rows.some((row) => stringValue(row.us_size))) desired.push("美国码")
+    if (rows.some((row) => stringValue(row.china_size))) desired.push("中国码")
+    const columns = supportedColumns(vip, desired, { 鞋内长: ["鞋长"], 美国码: ["美码"] })
     const value = tableValue(rows, columns, (row, column) => {
       if (column === "欧洲码") return normalizeShoeSkuSize(row.size_value)
       if (column === "脚长") return stringValue(row.foot_length_mm)
+      if (column === "美国码" || column === "美码") return stringValue(row.us_size)
+      if (column === "中国码") return stringValue(row.china_size)
       return stringValue(row.inner_length_mm)
     }, (row) => shoeSizeDisplayLabel(row.size_value))
     if (value && columns.includes("脚长")) output["唯品会尺码表"] = value
