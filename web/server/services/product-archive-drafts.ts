@@ -1588,7 +1588,7 @@ export function isStaleNonSandalAi25ShoeSizeTable(input: {
 }) {
   return compactFieldKey(input.fieldName) === compactFieldKey("25鞋子尺码表")
     && ["ai", "ai_rule_fallback"].includes(stringValue(input.sourceType))
-    && !shouldProductArchiveAiFill25ShoeSizeTable(input)
+    && resolveShoeSizeChartMatch(input).chartCode !== "sandal"
 }
 
 export function listProductArchiveAiFieldStrategies() {
@@ -1956,10 +1956,10 @@ export function isProductArchiveFieldLocallyRequired(fieldName: string, input: {
     && ["尺码表", "唯品会尺码表", "抖音尺码表"].includes(compactFieldKey(fieldName))
   const nonSandal25ShoeSizeTable = Boolean(input.shoeProduct)
     && compactFieldKey(fieldName) === compactFieldKey("25鞋子尺码表")
-    && !shouldProductArchiveAiFill25ShoeSizeTable({
+    && resolveShoeSizeChartMatch({
       tradeId: input.tradeId,
       tradePath: input.tradePath,
-    })
+    }).chartCode !== "sandal"
   if (isProductArchiveCategoryBusinessBlankFieldKey(businessRuleFieldKey(fieldName), {
     shoeProduct: Boolean(input.shoeProduct),
     apparelProduct: Boolean(input.apparelProduct),
@@ -9202,7 +9202,7 @@ function buildDeepdrawAiFillPrompt(input: {
         ? [shoeEnumClassificationPrompt()]
         : []),
       ...(input.fields.some((field) => compactFieldKey(field.fieldName) === compactFieldKey("25鞋子尺码表"))
-        ? [shoeSandalVisualClassificationPrompt(), "凉鞋结构必须优先依据参考图；识别结果只能映射为 25鞋子尺码表 的现有枚举值。"]
+        ? [shoeSandalVisualClassificationPrompt(), "凉鞋尺码数据统一取凉鞋模板，不需要按鞋面结构分类。"]
         : []),
     ],
     product: {

@@ -78,36 +78,17 @@ test("shoe categories resolve the Balabala number chart and DeepDraw enums indep
   }
 });
 
-test("sandal category waits for multimodal evidence and maps visible construction to the right chart", async () => {
+test("sandals use one chart regardless of old visual classification or missing images", async () => {
   const service = await import("../../web/server/services/shoe-size-chart-matching.ts");
-
-  assert.deepEqual(service.resolveShoeSizeChartMatch({
-    tradeId: "537",
-    tradePath: "童鞋/亲子鞋 / 凉鞋",
-  }), {
-    status: "needs_visual_classification",
-    chartCode: "",
-    templateType: "休闲",
-    shoeSizeTableType: "",
-    legacyShoeType: "凉鞋",
-    reason: "sandal_visual_classification_required",
-  });
-  assert.equal(service.resolveShoeSizeChartMatch({
-    tradeId: "537",
-    tradePath: "童鞋/亲子鞋 / 凉鞋",
-    sandalClassification: "前后空凉鞋",
-  }).chartCode, "open_sandal");
-  assert.equal(service.resolveShoeSizeChartMatch({
-    tradeId: "537",
-    tradePath: "童鞋/亲子鞋 / 凉鞋",
-    sandalClassification: "中空凉鞋（前后包鞋面）",
-  }).chartCode, "closed_sandal");
-  assert.match(service.shoeSandalVisualClassificationPrompt(), /前后空凉鞋/);
-  assert.match(service.shoeSandalVisualClassificationPrompt(), /中空凉鞋/);
-  assert.match(service.shoeSandalVisualClassificationPrompt(), /鞋头和后跟/);
-  assert.match(service.shoeEnumClassificationPrompt(), /25鞋子模板类型/);
-  assert.match(service.shoeEnumClassificationPrompt(), /22Q4-童鞋尺码表/);
-  assert.match(service.shoeEnumClassificationPrompt(), /不要把鞋品枚举字段当作 MULTI_TEXT 尺码表/);
+  for (const sandalClassification of [undefined, "前后空凉鞋", "中空凉鞋（前后包鞋面）", "包头凉鞋", "镂空凉鞋", "运动公主鞋", "无法判断"]) {
+    assert.deepEqual(service.resolveShoeSizeChartMatch({ tradeId: "537", sandalClassification }), {
+      status: "matched", chartCode: "sandal", templateType: "休闲", shoeSizeTableType: "凉鞋",
+      legacyShoeType: "凉鞋", reason: "trade_id:537",
+    });
+    assert.equal(service.resolveShoeSizeChartMatch({ tradePath: "童鞋/亲子鞋 / 凉鞋", sandalClassification }).chartCode, "sandal");
+  }
+  assert.match(service.shoeSandalVisualClassificationPrompt(), /统一使用凉鞋尺码模板/);
+  assert.match(service.shoeEnumClassificationPrompt(), /不再影响尺码数据选择/);
 });
 
 test("shoe chart fields are cropped to actual SKU sizes and use live DeepDraw columns", async () => {
@@ -448,7 +429,7 @@ test("25 shoe size-table enum stays scalar while real multi-text size charts sta
   }), true);
 });
 
-test("25 shoe size-table AI is limited to sandals that still need visual classification", async () => {
+test("unified sandal data no longer requires visual AI; sandal enum requirements remain", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
 
   assert.equal(service.shouldProductArchiveAiFill25ShoeSizeTable({
@@ -458,7 +439,7 @@ test("25 shoe size-table AI is limited to sandals that still need visual classif
   assert.equal(service.shouldProductArchiveAiFill25ShoeSizeTable({
     tradeId: "537",
     tradePath: "童鞋/亲子鞋 / 凉鞋",
-  }), true);
+  }), false);
   assert.equal(service.isProductArchiveFieldLocallyRequired("25鞋子尺码表", {
     templateRequired: true,
     templatePresent: true,

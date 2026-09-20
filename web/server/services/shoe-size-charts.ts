@@ -108,6 +108,8 @@ const IMPORT_FIELD_ALIASES = {
 } as const
 
 const CHART_CODE_ALIASES = new Map([
+  ["sandal", "sandal"],
+  ["凉鞋", "sandal"],
   ["opensandal", "open_sandal"],
   ["前后空凉鞋", "open_sandal"],
   ["closedsandal", "closed_sandal"],
@@ -346,26 +348,31 @@ function expandBalabalaConversionRows(rows: SpreadsheetRow[]): PreparedImportRow
   return prepared.length > 0 ? prepared : null
 }
 
-// 2026 workbook uses three header rows and one shared non-sandal size block.
+// 2026 workbook has shared size/foot columns and one or two category blocks.
 function expandBalabala2026Rows(rows: SpreadsheetRow[]): PreparedImportRow[] | null {
   const header = rows.findIndex((row) => sortedCells(row).some(([, value]) => stringValue(value) === "中国码"))
   if (header < 0 || !rows.slice(0, header + 2).some((row) => sortedCells(row).some(([, value]) => stringValue(value) === "运动鞋/休闲鞋/婴童鞋/其他"))) return null
   const columns = sortedCells(Object.assign({}, ...rows)).map(([key]) => key)
   if (columns.length < 15) return null
+  const groups = sortedCells(rows[header]).flatMap(([column, label]) => {
+    const chartCode = stringValue(label) === "凉鞋" ? "sandal"
+      : stringValue(label) === "运动鞋/休闲鞋/婴童鞋/其他" ? "sport_leisure" : ""
+    return chartCode ? [{ chartCode, offset: columns.indexOf(column) }] : []
+  })
   let ageSegment: unknown = null
   let referenceStage: unknown = null
   return rows.slice(header + 2).flatMap((source, index) => {
     const cell = (position: number) => source[columns[position]]
-    if (!importNumber(cell(3)) || !stringValue(cell(10))) return []
+    if (!importNumber(cell(3))) return []
     ageSegment = cell(0) || ageSegment
     referenceStage = cell(2) || referenceStage
-    return [{ rowNumber: header + index + 3, row: {
-      chartCode: "sport_leisure", sizeValue: cell(3), chinaSize: cell(5), usSize: cell(6),
-      footLengthMm: cell(7), footRangeCm: cell(9), innerLengthMm: cell(10),
+    return groups.flatMap(({ chartCode, offset }) => !stringValue(cell(offset)) ? [] : [{ rowNumber: header + index + 3, row: {
+      chartCode, sizeValue: cell(3), chinaSize: cell(5), usSize: cell(6),
+      footLengthMm: cell(7), footRangeCm: cell(9), innerLengthMm: cell(offset),
       ageSegment, referenceAge: cell(1), referenceStage,
-      generalMappingText: cell(12), douyinMappingText: cell(13), vipMappingText: cell(14),
-      videoPddVipMappingText: cell(14), pinduoduoMappingText: cell(14), enabled: true,
-    } }]
+      generalMappingText: cell(offset + 2), douyinMappingText: cell(offset + 3), vipMappingText: cell(offset + 4),
+      videoPddVipMappingText: cell(offset + 4), pinduoduoMappingText: cell(offset + 4), enabled: true,
+    } }])
   })
 }
 
@@ -489,6 +496,7 @@ function nowIso() {
 }
 
 function getChart(db: SyncPostgresDatabase, chartCode: string) {
+  if (["open_sandal", "closed_sandal"].includes(chartCode)) throw new Error("原凉鞋模板已合并，请使用新版凉鞋模板")
   const chart = db.prepare("select * from product_archive_shoe_size_chart where chart_code = ?").get(chartCode)
   if (!chart) throw new Error(`鞋品尺码模板不存在：${chartCode}`)
   return chart as Record<string, unknown>
@@ -505,6 +513,7 @@ export function listShoeSizeCharts(db: SyncPostgresDatabase) {
     left join product_archive_shoe_size_chart_row row
       on row.chart_id = chart.id
       and row.enabled = true
+    where chart.chart_code not in ('open_sandal', 'closed_sandal')
     group by chart.id
     order by chart.id
   `).all()
@@ -514,7 +523,7 @@ export function listShoeSizeChartRows(db: SyncPostgresDatabase, input: ListRowsI
   const limit = readLimit(input.limit)
   const offset = readOffset(input.offset)
   const params: unknown[] = []
-  const where: string[] = []
+  const where: string[] = ["chart.chart_code not in ('open_sandal', 'closed_sandal')"]
   if (input.chartCode && input.chartCode !== "all") {
     where.push("chart.chart_code = ?")
     params.push(input.chartCode)
@@ -676,8 +685,15 @@ export function createShoeSizeChartRow(db: SyncPostgresDatabase, input: RowInput
 
 export function updateShoeSizeChartRow(db: SyncPostgresDatabase, rowId: number, input: RowInput & { userId?: number | null }) {
   if (!Number.isInteger(rowId) || rowId <= 0) throw new Error("无效的尺码明细 ID")
-  const current = db.prepare("select * from product_archive_shoe_size_chart_row where id = ?").get(rowId) as Record<string, unknown> | undefined
+  const current = db.prepare(`
+    select row.*, chart.chart_code from product_archive_shoe_size_chart_row row
+    join product_archive_shoe_size_chart chart on chart.id = row.chart_id
+    where row.id = ?
+  `).get(rowId) as Record<string, unknown> | undefined
   if (!current) throw new Error(`鞋品尺码明细不存在：${rowId}`)
+  if (["open_sandal", "closed_sandal"].includes(stringValue(current.chart_code))) {
+    throw new Error("原凉鞋模板已合并，请使用新版凉鞋模板")
+  }
   const row = normalizedRowInput(input, current)
   return db.prepare(`
     update product_archive_shoe_size_chart_row set

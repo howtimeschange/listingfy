@@ -35,6 +35,7 @@ interface ShoeFieldValue {
 }
 
 const TRADE_MATCHES = new Map<string, Omit<ShoeSizeChartMatch, "status" | "reason">>([
+  ["537", { chartCode: "sandal", templateType: "休闲", shoeSizeTableType: "凉鞋", legacyShoeType: "凉鞋" }],
   ["16608", { chartCode: "sport_leisure", templateType: "运动", shoeSizeTableType: "", legacyShoeType: "轻跑鞋" }],
   ["546", { chartCode: "sport_leisure", templateType: "运动", shoeSizeTableType: "", legacyShoeType: "轻跑鞋" }],
   ["533", { chartCode: "sport_leisure", templateType: "休闲", shoeSizeTableType: "", legacyShoeType: "" }],
@@ -125,42 +126,6 @@ export function buildShoeSizeRemarks(input: {
     .filter(([size, remark]) => allowed.has(size) && Boolean(remark)))
 }
 
-function sandalMatch(classification: unknown): ShoeSizeChartMatch | null {
-  const text = compact(classification)
-  if (!text) return null
-  if (text.includes("运动公主鞋")) {
-    return {
-      status: "matched",
-      chartCode: "sport_leisure",
-      templateType: "休闲",
-      shoeSizeTableType: "运动公主鞋",
-      legacyShoeType: "公主鞋",
-      reason: "sandal_visual:运动公主鞋",
-    }
-  }
-  if (text.includes("中空凉鞋") || text.includes("前后包鞋面") || text.includes("镂空凉鞋") || text.includes("包头凉鞋")) {
-    return {
-      status: "matched",
-      chartCode: "closed_sandal",
-      templateType: "休闲",
-      shoeSizeTableType: text.includes("包头凉鞋") ? "包头凉鞋" : "镂空凉鞋",
-      legacyShoeType: "凉鞋",
-      reason: "sandal_visual:中空凉鞋（前后包鞋面）",
-    }
-  }
-  if (text.includes("前后空凉鞋") || text === "凉鞋") {
-    return {
-      status: "matched",
-      chartCode: "open_sandal",
-      templateType: "休闲",
-      shoeSizeTableType: "凉鞋",
-      legacyShoeType: "凉鞋",
-      reason: "sandal_visual:前后空凉鞋",
-    }
-  }
-  return null
-}
-
 export function isShoeProductContext(input: { tradeId?: unknown; tradePath?: unknown; productLineName?: unknown }) {
   if (TRADE_MATCHES.has(stringValue(input.tradeId))) return true
   return /鞋|靴/.test(`${stringValue(input.tradePath)} ${stringValue(input.productLineName)}`)
@@ -182,15 +147,9 @@ export function resolveShoeSizeChartMatch(input: {
     return { status: "not_shoe", chartCode: "", templateType: "", shoeSizeTableType: "", legacyShoeType: "", reason: "not_shoe_context" }
   }
   if (/凉鞋/.test(context)) {
-    const classified = sandalMatch(input.sandalClassification)
-    if (classified) return classified
     return {
-      status: "needs_visual_classification",
-      chartCode: "",
-      templateType: "休闲",
-      shoeSizeTableType: "",
-      legacyShoeType: "凉鞋",
-      reason: "sandal_visual_classification_required",
+      status: "matched", chartCode: "sandal", templateType: "休闲",
+      shoeSizeTableType: "凉鞋", legacyShoeType: "凉鞋", reason: "category:凉鞋",
     }
   }
   if (/雪地靴/.test(context)) {
@@ -206,12 +165,7 @@ export function resolveShoeSizeChartMatch(input: {
 }
 
 export function shoeSandalVisualClassificationPrompt() {
-  return [
-    "仅根据商品参考图判断凉鞋结构：",
-    "1. 鞋头和后跟都露空，返回 前后空凉鞋；",
-    "2. 鞋头和后跟均有鞋面包覆、中部镂空，返回 中空凉鞋（前后包鞋面）；",
-    "3. 图像证据不足时不要猜测，返回 无法判断。",
-  ].join("\n")
+  return "凉鞋统一使用凉鞋尺码模板，不再根据前后空、中空或包头结构选择尺码数据；25鞋子尺码表使用现有枚举值凉鞋。"
 }
 
 export function shoeEnumClassificationPrompt() {
@@ -219,7 +173,7 @@ export function shoeEnumClassificationPrompt() {
     "鞋品枚举字段判断规则：",
     "1. 25鞋子模板类型 用于鞋品主模板，必须在 运动 / 休闲 / 雪地靴 / 婴童 中按类目、标题、SKU尺码段和参考图选择；非鞋品不要返回。",
     "2. 22Q4-童鞋尺码表 用于童鞋细分类，必须在字段现有枚举里选择最具体鞋型；证据只能支持泛运动鞋时可选轻跑鞋，证据不足则省略。",
-    "3. 25鞋子尺码表 只用于凉鞋结构分类，会影响凉鞋尺码模板选择；只能在凉鞋款且参考图足够判断时选择包头凉鞋、镂空凉鞋、运动公主鞋或凉鞋。",
+    "3. 25鞋子尺码表 对凉鞋统一使用凉鞋枚举；前后空、中空等历史结构分类不再影响尺码数据选择。",
     "4. 不要把鞋品枚举字段当作 MULTI_TEXT 尺码表，不要为这些字段返回尺码行、表头或数值。",
   ].join("\n")
 }

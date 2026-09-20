@@ -8846,7 +8846,7 @@ test("product archive AI fill admits shoe enum fields without admitting structur
   assert.equal(service.shouldProductArchiveAiFillShoeEnumField({
     fieldName: "25鞋子尺码表",
     tradePath: "童鞋/亲子鞋 / 凉鞋",
-  }), true);
+  }), false);
   assert.equal(service.shouldProductArchiveAiFillShoeEnumField({
     fieldName: "22Q4-童鞋尺码表",
     tradePath: "童装婴幼儿服装 / 裤子",

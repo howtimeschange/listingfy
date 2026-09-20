@@ -58,7 +58,7 @@ test("shoe size-chart page is routed under the DeepDraw workstream", async () =>
   assert.match(router, /path: "shoe-size-charts"/)
   assert.match(lazyPages, /ShoeSizeChartsPage/)
   assert.match(page, /title="鞋品尺码表"/)
-  assert.match(page, /脚长范围按基准值 ± 公差计算/)
+  assert.match(page, /适合脚长优先使用填写区间，留空时按基准值 ± 公差计算/)
   assert.match(page, /hasPermission\("PRODUCT_ARCHIVE_RULE_MANAGE"\)/)
 })
 

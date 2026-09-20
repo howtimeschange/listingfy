@@ -71,6 +71,9 @@ interface ShoeSizeChartRow {
   applicable_categories: string
   version_label: string
   size_value: number
+  china_size: string | null
+  us_size: string | null
+  foot_range_cm: string | null
   foot_length_mm: number
   foot_length_tolerance_mm: number
   inner_length_mm: number
@@ -111,6 +114,9 @@ interface RowFormState {
   id?: number
   chartCode: string
   sizeValue: string
+  chinaSize: string
+  usSize: string
+  footRangeCm: string
   footLengthMm: string
   footLengthToleranceMm: string
   innerLengthMm: string
@@ -138,6 +144,9 @@ function emptyRow(chartCode: string): RowFormState {
   return {
     chartCode,
     sizeValue: "",
+    chinaSize: "",
+    usSize: "",
+    footRangeCm: "",
     footLengthMm: "",
     footLengthToleranceMm: "2",
     innerLengthMm: "",
@@ -159,6 +168,9 @@ function rowForm(row: ShoeSizeChartRow): RowFormState {
     id: row.id,
     chartCode: row.chart_code,
     sizeValue: String(row.size_value),
+    chinaSize: row.china_size ?? "",
+    usSize: row.us_size ?? "",
+    footRangeCm: row.foot_range_cm ?? "",
     footLengthMm: String(row.foot_length_mm),
     footLengthToleranceMm: String(row.foot_length_tolerance_mm),
     innerLengthMm: String(row.inner_length_mm),
@@ -189,6 +201,9 @@ function rowPayload(form: RowFormState) {
   return {
     chartCode: form.chartCode,
     sizeValue: Number(form.sizeValue),
+    chinaSize: form.chinaSize.trim(),
+    usSize: form.usSize.trim(),
+    footRangeCm: form.footRangeCm.trim(),
     footLengthMm: Number(form.footLengthMm),
     footLengthToleranceMm: Number(form.footLengthToleranceMm),
     innerLengthMm: Number(form.innerLengthMm),
@@ -206,10 +221,11 @@ function rowPayload(form: RowFormState) {
 }
 
 function cm(value: number) {
-  return (Number(value) / 10).toFixed(1).replace(/\.0$/, "")
+  return String(Number((Number(value) / 10).toFixed(3)))
 }
 
 function footLengthRange(row: ShoeSizeChartRow) {
+  if (row.foot_range_cm) return `${row.foot_range_cm} cm`
   const foot = Number(row.foot_length_mm)
   const tolerance = Number(row.foot_length_tolerance_mm)
   return `${cm(foot - tolerance)}–${cm(foot + tolerance)} cm`
@@ -321,13 +337,13 @@ export default function ShoeSizeChartsPage() {
     <CompactListPage>
       <CompactListHeader
         title="鞋品尺码表"
-        description="集中维护鞋品号码、适合脚长与鞋内长的品类固定规则。当前基线来自 Balabala 2025–2026 对照表，后续深绘回填只引用这里的已启用版本。"
+        description="集中维护鞋品号码、适合脚长与鞋内长的品类固定规则。凉鞋与运动鞋/休闲鞋/婴童鞋/其他分别使用 2026 新表；深绘回填只引用已启用的尺码。"
         summary={`${formatNumber(rows.data?.pagination.total ?? 0)} 条明细 / ${formatNumber(charts.data?.charts.length ?? 0)} 套模板`}
         actions={canManage ? (
           <div className="flex items-center gap-2">
             <ImportDialog
               title="导入覆盖更新鞋品尺码表"
-              description="支持直接上传 Balabala 原始横向 .xlsx，也支持 .xlsx / .csv 纵表。按“模板代码 + 号码”覆盖已有明细并新增缺失号码；纵表未填写模板代码时默认导入当前模板。必填列：号码、脚长基准(mm)、鞋内长(mm)。"
+              description="支持上传 2026 两类鞋品尺码表、Balabala 原始横向 .xlsx 和 .xlsx / .csv 纵表。按“模板代码 + 号码”覆盖已有明细并新增缺失号码；纵表未填写模板代码时默认导入当前模板。必填列：号码、脚长基准(mm)、鞋内长(mm)。"
               trigger={(
                 <Button type="button" size="sm" variant="outline" disabled={importRows.isPending}>
                   <FileSpreadsheet className="size-4" />
@@ -374,7 +390,7 @@ export default function ShoeSizeChartsPage() {
           onRetry={() => void charts.refetch()}
         />
       ) : (
-        <div className="grid gap-3 md:grid-cols-3">
+        <div className="grid gap-3 md:grid-cols-2">
           {(charts.data?.charts ?? []).map((chart) => (
           <button
             key={chart.chart_code}
@@ -454,7 +470,9 @@ export default function ShoeSizeChartsPage() {
                 <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>号码</TableHead>
+                  <TableHead>欧洲码（号码）</TableHead>
+                  <TableHead>中国码</TableHead>
+                  <TableHead>美国码</TableHead>
                   <TableHead>脚长基准</TableHead>
                   <TableHead>适合脚长</TableHead>
                   <TableHead>鞋内长</TableHead>
@@ -469,6 +487,8 @@ export default function ShoeSizeChartsPage() {
                 {(rows.data?.items ?? []).map((row) => (
                   <TableRow key={row.id}>
                     <TableCell className="font-mono font-semibold">{row.size_value} 码</TableCell>
+                    <TableCell className="font-mono">{row.china_size || "—"}</TableCell>
+                    <TableCell className="font-mono">{row.us_size || "—"}</TableCell>
                     <TableCell>{Number(row.foot_length_mm)} mm</TableCell>
                     <TableCell>{footLengthRange(row)}</TableCell>
                     <TableCell>{Number(row.inner_length_mm)} mm / {cm(Number(row.inner_length_mm))} cm</TableCell>
@@ -515,12 +535,13 @@ export default function ShoeSizeChartsPage() {
       </CompactListCard>
 
       <Dialog open={rowDialogOpen} onOpenChange={setRowDialogOpen}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden p-0 sm:max-w-[960px]">
+          <DialogHeader className="shrink-0 border-b px-6 pt-6 pb-4 text-left">
             <DialogTitle>{rowState.id ? "编辑鞋品尺码" : "新增鞋品尺码"}</DialogTitle>
-            <DialogDescription>长度统一以毫米存储，页面同步展示厘米；脚长范围按基准值 ± 公差计算。</DialogDescription>
+            <DialogDescription>欧洲码对应号码；中国码、美国码按来源表填写。适合脚长优先使用填写区间，留空时按基准值 ± 公差计算。</DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 py-2 md:grid-cols-2">
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-2">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div className="space-y-2">
               <Label>尺码模板</Label>
               <Select value={rowState.chartCode} onValueChange={(value) => updateRow("chartCode", value)} disabled={Boolean(rowState.id)}>
@@ -530,22 +551,28 @@ export default function ShoeSizeChartsPage() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2"><Label>号码</Label><Input type="number" value={rowState.sizeValue} onChange={(event) => updateRow("sizeValue", event.target.value)} /></div>
+            <div className="space-y-2"><Label htmlFor="shoe-eu-size">欧洲码（号码）</Label><Input id="shoe-eu-size" type="number" value={rowState.sizeValue} onChange={(event) => updateRow("sizeValue", event.target.value)} /></div>
+            <div className="space-y-2"><Label htmlFor="shoe-china-size">中国码</Label><Input id="shoe-china-size" value={rowState.chinaSize} onChange={(event) => updateRow("chinaSize", event.target.value)} placeholder="如 175" /></div>
+            <div className="space-y-2"><Label htmlFor="shoe-us-size">美国码</Label><Input id="shoe-us-size" value={rowState.usSize} onChange={(event) => updateRow("usSize", event.target.value)} placeholder="如 11C" /></div>
+            <div className="space-y-2"><Label htmlFor="shoe-foot-range">适合脚长（cm）</Label><Input id="shoe-foot-range" value={rowState.footRangeCm} onChange={(event) => updateRow("footRangeCm", event.target.value)} placeholder="如 17-17.7；留空按公差计算" /></div>
             <div className="space-y-2"><Label>脚长基准（mm）</Label><Input type="number" step="0.01" value={rowState.footLengthMm} onChange={(event) => updateRow("footLengthMm", event.target.value)} /></div>
             <div className="space-y-2"><Label>脚长公差（mm）</Label><Input type="number" step="0.01" value={rowState.footLengthToleranceMm} onChange={(event) => updateRow("footLengthToleranceMm", event.target.value)} /></div>
             <div className="space-y-2"><Label>鞋内长（mm）</Label><Input type="number" step="0.01" value={rowState.innerLengthMm} onChange={(event) => updateRow("innerLengthMm", event.target.value)} /></div>
             <div className="space-y-2"><Label>岁段</Label><Input value={rowState.ageSegment} onChange={(event) => updateRow("ageSegment", event.target.value)} /></div>
             <div className="space-y-2"><Label>参考年龄</Label><Input value={rowState.referenceAge} onChange={(event) => updateRow("referenceAge", event.target.value)} /></div>
             <div className="space-y-2"><Label>参考阶段</Label><Input value={rowState.referenceStage} onChange={(event) => updateRow("referenceStage", event.target.value)} /></div>
-            <div className="space-y-2 md:col-span-2"><Label>通用（脚长内长上新）</Label><Input value={rowState.generalMappingText} onChange={(event) => updateRow("generalMappingText", event.target.value)} /></div>
-            <div className="space-y-2 md:col-span-2"><Label>抖音</Label><Input value={rowState.douyinMappingText} onChange={(event) => updateRow("douyinMappingText", event.target.value)} /></div>
-            <div className="space-y-2 md:col-span-2"><Label>唯品</Label><Input value={rowState.vipMappingText} onChange={(event) => updateRow("vipMappingText", event.target.value)} /></div>
-            <div className="space-y-2 md:col-span-2"><Label>视频号/拼多多/唯品会（唯品会兼容渠道口径）</Label><Input value={rowState.videoPddVipMappingText} onChange={(event) => updateRow("videoPddVipMappingText", event.target.value)} /></div>
-            <div className="space-y-2 md:col-span-2"><Label>拼多多</Label><Input value={rowState.pinduoduoMappingText} onChange={(event) => updateRow("pinduoduoMappingText", event.target.value)} /></div>
-            <div className="space-y-2 md:col-span-2"><Label>备注</Label><Textarea value={rowState.notes} onChange={(event) => updateRow("notes", event.target.value)} /></div>
-            <label className="flex items-center gap-2 text-sm md:col-span-2"><Checkbox checked={rowState.enabled} onCheckedChange={(checked) => updateRow("enabled", checked === true)} />启用本条尺码</label>
           </div>
-          <DialogFooter>
+          <div className="mt-5 grid gap-4 border-t pt-5 sm:grid-cols-2">
+            <div className="space-y-2"><Label>通用（脚长内长上新）</Label><Input value={rowState.generalMappingText} onChange={(event) => updateRow("generalMappingText", event.target.value)} /></div>
+            <div className="space-y-2"><Label>抖音</Label><Input value={rowState.douyinMappingText} onChange={(event) => updateRow("douyinMappingText", event.target.value)} /></div>
+            <div className="space-y-2"><Label>唯品</Label><Input value={rowState.vipMappingText} onChange={(event) => updateRow("vipMappingText", event.target.value)} /></div>
+            <div className="space-y-2"><Label>视频号/拼多多/唯品会（唯品会兼容渠道口径）</Label><Input value={rowState.videoPddVipMappingText} onChange={(event) => updateRow("videoPddVipMappingText", event.target.value)} /></div>
+            <div className="space-y-2"><Label>拼多多</Label><Input value={rowState.pinduoduoMappingText} onChange={(event) => updateRow("pinduoduoMappingText", event.target.value)} /></div>
+            <div className="space-y-2 sm:col-span-2"><Label>备注</Label><Textarea value={rowState.notes} onChange={(event) => updateRow("notes", event.target.value)} /></div>
+            <label className="flex items-center gap-2 text-sm sm:col-span-2"><Checkbox checked={rowState.enabled} onCheckedChange={(checked) => updateRow("enabled", checked === true)} />启用本条尺码</label>
+          </div>
+          </div>
+          <DialogFooter className="shrink-0 border-t px-6 py-4">
             <Button type="button" variant="outline" onClick={() => setRowDialogOpen(false)}>取消</Button>
             <Button type="button" onClick={() => saveRow.mutate(rowState)} disabled={saveRow.isPending}>保存</Button>
           </DialogFooter>
