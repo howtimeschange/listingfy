@@ -75,8 +75,13 @@ export function createManualCategoryAdviceService({db=getDb(),contextForDraft=ca
             const claim=db.prepare(`insert into deepdraw_category_advice_cache(cache_key,status,lease_until,claim_token)
               values (?,'running',clock_timestamp()+interval '2 minutes',?) on conflict(cache_key) do update
               set status='running',lease_until=excluded.lease_until,claim_token=excluded.claim_token,updated_at=clock_timestamp()
-              where deepdraw_category_advice_cache.lease_until<clock_timestamp() returning cache_key`).get(input.cacheKey,token)
-            if (!claim) throw new ManualCategoryAdviceError('同类商品的 AI 推荐正在生成，请稍后重试。')
+              where deepdraw_category_advice_cache.lease_until<clock_timestamp() or deepdraw_category_advice_cache.status='failed' returning cache_key`).get(input.cacheKey,token)
+            if (!claim) {
+              const state=db.prepare('select status from deepdraw_category_advice_cache where cache_key=?').get(input.cacheKey) as Row | undefined
+              throw new ManualCategoryAdviceError(state?.status==='failed'
+                ? 'AI 推荐暂时不可用，请重新获取。'
+                : '同类商品的 AI 推荐正在生成，请稍后重试。')
+            }
             try {
               result=await requestAdvice(categoryAdviceRequest(input.facts,input.candidates))
               if (!result) throw new Error('typesafe_empty_result')
@@ -85,7 +90,7 @@ export function createManualCategoryAdviceService({db=getDb(),contextForDraft=ca
                 where cache_key=? and claim_token=? returning cache_key`).get(JSON.stringify(result),input.cacheKey,token)
               if (!saved) throw new ManualCategoryAdviceError('推荐状态已更新，请重新获取。')
             } catch(error) {
-              db.prepare(`update deepdraw_category_advice_cache set status='failed',claim_token=null,lease_until=clock_timestamp()+interval '30 seconds'
+              db.prepare(`update deepdraw_category_advice_cache set status='failed',claim_token=null,lease_until=clock_timestamp()
                 where cache_key=? and claim_token=?`).run(input.cacheKey,token)
               throw error
             }
@@ -115,8 +120,10 @@ export function createManualCategoryAdviceService({db=getDb(),contextForDraft=ca
           latencyMs:result?.latencyMs,usage:{inputTokens:result?.usage.input_tokens,outputTokens:result?.usage.output_tokens}})
         return dto(owned(id,draftId,userId))
       } catch(error) {
-        db.prepare("update deepdraw_category_manual_request set status=?,error_code='manual_advice_failed',updated_at=clock_timestamp() where id=? and status='running'").run(error instanceof ManualCategoryAdviceError && error.stale ? "stale" : "failed",id)
-        audit({scenario:'deepdraw_category_advice',mode:'manual',role:'advisor',providerKey:'typesafe',model:CATEGORY_ADVICE_MODEL,status:'error',errorCode:'manual_advice_failed',result:{requestId:id}})
+        const code=error instanceof Error && /^typesafe_(?:http_\d{3}|transport_failure|cancelled|missing_key|invalid_json|invalid_response|empty_result)$/.test(error.message)
+          ? error.message : 'manual_advice_failed'
+        db.prepare("update deepdraw_category_manual_request set status=?,error_code=?,updated_at=clock_timestamp() where id=? and status='running'").run(error instanceof ManualCategoryAdviceError && error.stale ? "stale" : "failed",code,id)
+        audit({scenario:'deepdraw_category_advice',mode:'manual',role:'advisor',providerKey:'typesafe',model:CATEGORY_ADVICE_MODEL,status:'error',errorCode:code,result:{requestId:id}})
         if (error instanceof ManualCategoryAdviceError) throw error
         throw new ManualCategoryAdviceError('AI 推荐暂时不可用，请稍后重试；当前类目未更改。',503)
       }

@@ -23,3 +23,15 @@ test('rules and human decisions bypass model; actual facts restrict candidates',
  assert.equal(categoryCandidateMatchesFacts({trade_path:'童鞋/女童鞋/靴子'},facts),true);
  assert.equal(categoryCandidateMatchesFacts({trade_path:'童装婴幼儿服装/婴童配件/帽子'},{officialCategory:['帽子'],age:['中童']}),false);
 });
+test('transient network and 503 failures retry quickly; permanent auth errors do not retry',async()=>{
+ let attempts=0;
+ const result=await requestCategoryAdvice(request,{apiKey:'secret',fetchImpl:async()=>{
+  attempts++;if(attempts===1)throw Error('network');if(attempts===2)return new Response('',{status:503});return new Response(JSON.stringify(payload));
+ }});
+ assert.equal(attempts,3);assert.equal(result.transportAttempts,3);
+ attempts=0;await assert.rejects(requestCategoryAdvice(request,{apiKey:'secret',fetchImpl:async()=>{attempts++;return new Response('',{status:401});}}),/typesafe_http_401/);
+ assert.equal(attempts,1);
+ const controller=new AbortController();attempts=0;
+ await assert.rejects(requestCategoryAdvice(request,{apiKey:'secret',signal:controller.signal,fetchImpl:async()=>{attempts++;controller.abort();throw Error('aborted');}}),/typesafe_cancelled/);
+ assert.equal(attempts,1);
+});

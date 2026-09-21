@@ -1,3 +1,4 @@
+import { CurrentTradeSummary, TradeSelectionContext } from '@/components/product-archive/trade-selection-context'
 import { AiTradeAdvicePanel } from '@/components/product-archive/ai-trade-advice-panel'
 import { Fragment, useMemo, useRef, useState, type ReactNode } from "react"
 import { Link, useParams } from "react-router"
@@ -2321,52 +2322,17 @@ export default function ProductArchiveDraftDetailPage() {
               <DialogDescription>
                 从已同步的深绘类目主数据中选择模板，应用后会按类目字段重新生成草稿字段。
               </DialogDescription>
+            <CurrentTradeSummary tradeId={draft?.trade_id} tradePath={draft?.trade_path} />
             </DialogHeader>
-            <div className="grid max-h-[min(38dvh,360px)] min-h-0 gap-3 overflow-y-auto pr-1 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] [scrollbar-gutter:stable]">
-              <div className="lg:col-span-2">
+            <div className="max-h-[min(34dvh,300px)] min-h-0 space-y-3 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+              <TradeSelectionContext decision={tradeSelectionDecision} reference={launchPlanReference} />
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-muted-foreground">AI 类目建议</div>
                   <AiTradeAdvicePanel key={draftId} draftId={Number(draftId)} disabled={!canWrite || applyTrade.isPending}
                     onApplied={() => {
                       setTradeDialogOpen(false);setSelectedTradeId(null);setFieldValues({})
                       invalidateDraftSummary();invalidateDraftFields();invalidateDraftIssues()
                     }} />
-              </div>
-              {tradeSelectionDecision ? (
-                <div className={cn("rounded-lg border p-3", tradeSelectionClass(tradeSelectionDecision.status))}>
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <div className="text-xs text-muted-foreground">系统选择结论</div>
-                      <div className="mt-0.5 text-sm font-medium">{tradeSelectionTitle(tradeSelectionDecision.status)}</div>
-                    </div>
-                    <Badge variant="outline">{tradeSelectionConfidenceLabel(tradeSelectionDecision.confidence)}</Badge>
-                  </div>
-                  <div className="mt-2 text-sm leading-5 text-muted-foreground">{tradeSelectionDecision.reason}</div>
-                  <div className="mt-2 text-xs">
-                    推荐：{tradeSelectionDecision.recommendedTrade?.tradePath || "暂无唯一推荐"}
-                    {tradeSelectionDecision.recommendedTrade ? ` · ${tradeSelectionDecision.recommendedTrade.tradeId}` : ""}
-                  </div>
-                </div>
-              ) : null}
-              <div className="rounded-lg border bg-muted/30 p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-sm font-medium">上市计划表类目参考</div>
-                  <Badge variant={launchPlanReference.matched ? "secondary" : "outline"}>
-                    {launchPlanReference.matched ? "已匹配上市计划表" : "未匹配上市计划表"}
-                  </Badge>
-                </div>
-                {launchPlanReference.matched ? (
-                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    {launchPlanReference.fields.map((field) => (
-                      <div key={field.key} className="rounded-md border bg-background px-3 py-2">
-                        <div className="text-xs text-muted-foreground">{field.label}</div>
-                        <div className="mt-1 break-words text-sm leading-5">{field.value}</div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="mt-3 rounded-md border border-dashed bg-background px-3 py-2 text-sm text-muted-foreground">
-                    未匹配上市计划表
-                  </div>
-                )}
               </div>
             </div>
             <div className="relative">
@@ -2410,6 +2376,9 @@ export default function ProductArchiveDraftDetailPage() {
               </div>
             </ScrollArea>
             <DialogFooter>
+              <div className="mr-auto min-w-0 self-center text-left text-xs text-muted-foreground">
+                {selectedTradeId && selectedTradeId !== draft?.trade_id ? <>待应用：<span className="font-medium text-foreground">{selectedTrade?.trade_path || selectedTradeId}</span><span className="ml-1">（尚未保存）</span></> : '选择新类目后，在此确认应用；当前类目保持不变'}
+              </div>
               <Button type="button" variant="outline" onClick={() => setTradeDialogOpen(false)}>
                 取消
               </Button>

@@ -97,3 +97,11 @@ test('source change during request is stale; NEEDS_REVIEW is not exposed or adop
   assert.equal(f.db.prepare('select shown_count from deepdraw_category_manual_metrics').get().shown_count,0);
  }finally{f.close();}
 });
+test('provider failure keeps sanitized cause and allows immediate retry', {skip:!url},async()=>{
+ const f=fixture();try{
+  f.insert(1);const s=service(f,{requestAdvice:async()=>{throw Error('typesafe_http_503')}});
+  const id=randomUUID();await assert.rejects(s.recommend(1,7,id),e=>e.status===503);
+  assert.equal(f.db.prepare('select error_code from deepdraw_category_manual_request where id=?').get(id).error_code,'typesafe_http_503');
+  const retry=service(f);const result=await retry.recommend(1,7,randomUUID());assert.equal(result.status,'ready');
+ }finally{f.close();}
+});
