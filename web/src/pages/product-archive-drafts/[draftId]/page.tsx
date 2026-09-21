@@ -1,3 +1,4 @@
+import { AiTradeAdvicePanel } from '@/components/product-archive/ai-trade-advice-panel'
 import { Fragment, useMemo, useRef, useState, type ReactNode } from "react"
 import { Link, useParams } from "react-router"
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -2322,6 +2323,13 @@ export default function ProductArchiveDraftDetailPage() {
               </DialogDescription>
             </DialogHeader>
             <div className="grid max-h-[min(38dvh,360px)] min-h-0 gap-3 overflow-y-auto pr-1 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] [scrollbar-gutter:stable]">
+              <div className="lg:col-span-2">
+                  <AiTradeAdvicePanel key={draftId} draftId={Number(draftId)} disabled={!canWrite || applyTrade.isPending}
+                    onApplied={() => {
+                      setTradeDialogOpen(false);setSelectedTradeId(null);setFieldValues({})
+                      invalidateDraftSummary();invalidateDraftFields();invalidateDraftIssues()
+                    }} />
+              </div>
               {tradeSelectionDecision ? (
                 <div className={cn("rounded-lg border p-3", tradeSelectionClass(tradeSelectionDecision.status))}>
                   <div className="flex flex-wrap items-center justify-between gap-2">

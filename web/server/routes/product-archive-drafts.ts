@@ -1,3 +1,4 @@
+import { createManualCategoryAdviceService, ManualCategoryAdviceError } from '../services/deepdraw-manual-category-advice'
 import { createHash, randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
 import path from "node:path"
@@ -5561,6 +5562,38 @@ productArchiveDrafts.get("/:draftId", (c) => {
   requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_READ")
   const db = getDb()
   return c.json(getProductArchiveDraftDetail(db, readId(c.req.param("draftId"))))
+})
+
+function manualCategoryAdviceException(error: unknown) {
+  if (error instanceof ManualCategoryAdviceError) return new HTTPException(error.status, { message: error.message })
+  return productArchiveDraftMutationException(error)
+}
+
+productArchiveDrafts.post("/:draftId/trade/ai-advice", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const body = await readJson(c)
+  try {
+    return c.json(await createManualCategoryAdviceService().recommend(readId(c.req.param("draftId")), user.id, stringValue(body.requestId)))
+  } catch (error) { throw manualCategoryAdviceException(error) }
+})
+
+productArchiveDrafts.post("/:draftId/trade/ai-advice/:adviceId/shown", (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  try {
+    return c.json(createManualCategoryAdviceService().shown(readId(c.req.param("draftId")), user.id, c.req.param("adviceId")))
+  } catch (error) { throw manualCategoryAdviceException(error) }
+})
+
+productArchiveDrafts.post("/:draftId/trade/ai-advice/:adviceId/apply", async (c) => {
+  const user = requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const draftId = readId(c.req.param("draftId"))
+  const body = await readJson(c)
+  try {
+    const result = createManualCategoryAdviceService().apply(draftId, user.id, c.req.param("adviceId"), stringValue(body.tradeId))
+    auditFromContext(c, { action: "draft.trade.ai_adopted", module: "PRODUCT_ARCHIVE_DRAFT", entityType: "product_archive_draft",
+      entityId: draftId, summary: `确认采用 AI 类目 ${draftId}`, metadata: { requestId: c.req.param("adviceId"), tradeId: result.tradeId } })
+    return c.json(result)
+  } catch (error) { throw manualCategoryAdviceException(error) }
 })
 
 productArchiveDrafts.patch("/:draftId/trade", async (c) => {

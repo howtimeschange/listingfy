@@ -1,3 +1,4 @@
+import { startCategoryAdviceWorker } from './services/deepdraw-category-advice'
 import { Hono } from "hono"
 import { serve } from "@hono/node-server"
 import { cors } from "hono/cors"
@@ -135,12 +136,14 @@ if (encryptedPlatformCredentials) console.log(`Encrypted platform credentials: $
 
 startPlatformProductNightlyFullSyncScheduler()
 const server = serve({ fetch: app.fetch, port })
+const stopCategoryAdvice = startCategoryAdviceWorker()
 
 let shuttingDown = false
 async function shutdown(signal: string) {
   if (shuttingDown) return
   shuttingDown = true
   console.log(`Received ${signal}; closing database pools`)
+  await stopCategoryAdvice()
   server.close(() => {
     closeAsyncPool()
       .catch((error) => {

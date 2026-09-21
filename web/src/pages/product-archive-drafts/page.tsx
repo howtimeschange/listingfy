@@ -1,3 +1,4 @@
+import { AiTradeAdvicePanel } from '@/components/product-archive/ai-trade-advice-panel'
 import { ApprovalSummary } from "@/components/approval-summary"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useEffect, useMemo, useRef, useState, type FocusEvent, type PointerEvent, type ReactNode } from "react"
@@ -3257,6 +3258,13 @@ export default function ProductArchiveDraftsPage() {
             </div>
           ) : (
             <div className="grid max-h-[min(38dvh,360px)] min-h-0 gap-3 overflow-y-auto pr-1 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] [scrollbar-gutter:stable]">
+              <div className="lg:col-span-2">
+                  {tradeEditorDraft ? <AiTradeAdvicePanel key={tradeEditorDraft.id} draftId={tradeEditorDraft.id} disabled={!canWrite || applyTradeFromList.isPending}
+                    onApplied={() => {
+                      void queryClient.invalidateQueries({queryKey:["product-archive-drafts",tradeEditorDraft.id]})
+                      setTradeEditorDraft(null);setSelectedTradeId(null);setTradeSearch("");setQuickFieldValues({});refetchDraftQueries()
+                    }} /> : null}
+              </div>
               {activeDraftDetail.data?.tradeSelectionDecision ? (
                 <div className={cn("rounded-lg border p-3", tradeSelectionClass(activeDraftDetail.data.tradeSelectionDecision.status))}>
                   <div className="flex flex-wrap items-center justify-between gap-2">

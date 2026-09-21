@@ -15074,3 +15074,26 @@ export function listProductArchiveSubmitLogs(db: SyncPostgresDatabase, draftId: 
     order by created_at desc, id desc
   `).all(draftId)
 }
+
+/** Shadow advice context: reuse the production policy and never change the draft. */
+export function categoryAdviceContextForDraft(db: SyncPostgresDatabase, draft: JsonRecord, options: { forceCandidates?: boolean } = {}) {
+  const sourceRows = referenceSourceRowsForDraft(db, draft)
+  const decision = currentTradeSelectionDecision(db, draft)
+  const tenantName = stringValue(draft.tenant_name)
+  const merchantId = stringValue(draft.merchant_id)
+  if (!options.forceCandidates && !["missing_semantic_match", "ambiguous_match"].includes(decision.reasonCode)) {
+    return { sourceRows, decision, candidates: [] as JsonRecord[], tenantName, merchantId }
+  }
+  const rawTrades = listDeepdrawTradeSelectionCandidates(db, tenantName, merchantId)
+  const trades = enrichDeepdrawTradeCandidatesWithSizeOptions(rawTrades,
+    deepdrawTradeSizeOptionsById(db, tenantName, merchantId, rawTrades.map(t => stringValue(t.trade_id))))
+  const categories = launchPlanCategoryValues(sourceRows)
+  const platformGroups = requiredLaunchPlanPlatformGroups(categories)
+  const sizes = skuSizeRequirements(draftSkusForDraft(db, numberValue(draft.id) ?? 0))
+  const parentIds = new Set(trades.map(t => stringValue(t.parent_trade_id)))
+  const candidates = deepdrawTradePriorityTiers(tenantName, trades).flatMap(t => t.candidates.map(c => c.trade))
+    .filter(t => !parentIds.has(stringValue(t.trade_id))
+      && hasTradePlatformMetadata(t) && tradeCoversPlatformGroups(t, platformGroups)
+      && (sizes.length === 0 || (tradeSizeTemplateOptions(t).length > 0 && tradeMatchesRequiredSizes(t, sizes))))
+  return { sourceRows, decision, candidates, tenantName, merchantId }
+}
