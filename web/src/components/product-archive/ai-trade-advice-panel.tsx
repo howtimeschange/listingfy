@@ -49,16 +49,17 @@ export function AiTradeAdvicePanel({draftId,disabled,onApplied}: {
   }
   return <div className="space-y-2">
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-    <Button type="button" size="sm" className="h-9 bg-emerald-700 px-4 font-semibold text-white shadow-sm hover:bg-emerald-800" disabled={disabled || loading || applying!==null} onClick={() => void recommend()}>
+    <Button type="button" size="sm" variant="brand" title="Powered by Jev" className="relative h-9 px-4 font-semibold" disabled={disabled || loading || applying!==null} onClick={() => void recommend()}>
       {loading ? <Loader2 className="size-4 animate-spin"/> : <Sparkles className="size-4"/>}
       {loading ? '正在推荐…' : advice ? '重新获取 AI 推荐' : 'AI 推荐类目'}
+      <span aria-label="Powered by Jev" className="pointer-events-none absolute -right-1 -top-1 rounded-full border border-background bg-foreground px-1.5 text-[9px] font-semibold leading-3.5 text-background">Jev</span>
     </Button>
     <p className="text-xs text-muted-foreground">参考官方类目与上市计划，确认后应用并重建字段。</p>
     </div>
     {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
     {advice?.message ? <p role="status" className="text-sm text-muted-foreground">{advice.message}</p> : null}
     {advice?.candidates.length ? <div aria-label="AI 推荐候选" className="grid gap-2 md:grid-cols-3">
-      {advice.candidates.map(candidate => <div key={candidate.tradeId} className={`flex min-w-0 items-center gap-2 rounded-md border px-2.5 py-2 ${candidate.primary ? "border-emerald-200 bg-emerald-50/60" : "bg-background"}`}>
+      {advice.candidates.map(candidate => <div key={candidate.tradeId} className={`flex min-w-0 items-center gap-2 rounded-md border px-2.5 py-2 ${candidate.primary ? "border-[var(--brand)]/30 bg-[var(--brand-light)]/30" : "bg-background"}`}>
         <div className="min-w-0 flex-1">
           <div className="text-[11px] text-muted-foreground">{candidate.primary ? 'AI 首选' : '备选'} · {candidate.tradeId}</div>
           <div title={candidate.tradePath} className="mt-0.5 line-clamp-2 break-words text-xs leading-4">{candidate.tradePath}</div>
