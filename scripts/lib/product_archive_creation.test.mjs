@@ -841,7 +841,7 @@ test("Bala DeepDraw priority prefers the more specific leaf contained by an offi
     deepdrawChild("535", "531", "棉鞋", "童鞋/亲子鞋 / 棉鞋"),
   ].map((trade) => ({
     ...trade,
-    third_platforms: BALA_TRADE_TEST_PLATFORMS,
+    third_platforms: `${BALA_TRADE_TEST_PLATFORMS},VIP,DOUYIN`,
   })), {
     tenantName: "电商巴拉巴拉",
     evaluatedAt: "2026-08-21T10:36:49.153Z",
@@ -875,7 +875,7 @@ test("Bala DeepDraw priority falls back to the neutral shoe leaf when launch row
     deepdrawChild("10183", "10160", "学步鞋", "童鞋/亲子鞋 / 女童鞋 / 学步鞋"),
   ].map((trade) => ({
     ...trade,
-    third_platforms: BALA_TRADE_TEST_PLATFORMS,
+    third_platforms: `${BALA_TRADE_TEST_PLATFORMS},VIP,DOUYIN`,
   })), {
     tenantName: "电商巴拉巴拉",
     evaluatedAt: "2026-08-21T10:37:11.971Z",

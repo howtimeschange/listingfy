@@ -1,0 +1,926 @@
+{
+  "capturedAt": "2026-09-21T10:30:25.184Z",
+  "policy": "Official shoe category overrides other channel and planning categories. Expected IDs independently specified for these real cases.",
+  "trades": [
+    {
+      "trade_id": "531",
+      "parent_trade_id": null,
+      "trade_name": "童鞋/亲子鞋",
+      "trade_path": "童鞋/亲子鞋",
+      "third_platforms": ""
+    },
+    {
+      "trade_id": "16644",
+      "parent_trade_id": "531",
+      "trade_name": "稳步鞋",
+      "trade_path": "童鞋/亲子鞋 / 稳步鞋",
+      "third_platforms": "AIKUCUN,DOUYIN,DOUYINXSG,KUAISHOU,HAOYK,JD,WEIXINXIAODIAN,KAOLA,XIAOHONGSHU,PDD,TAOBAO,TMALL,ALIEXPRESS,VIP,YOUZAN"
+    },
+    {
+      "trade_id": "16608",
+      "parent_trade_id": "531",
+      "trade_name": "户外鞋",
+      "trade_path": "童鞋/亲子鞋 / 户外鞋",
+      "third_platforms": "ALIBABA,DOUYIN,JD,PDD,XIAOHONGSHU,KUAISHOU,HAOYK,VIP,YOUZAN,DOUYINXSG,WEIXINXIAODIAN,KAOLA,TAOBAO,TMALL,ALIEXPRESS"
+    },
+    {
+      "trade_id": "16609",
+      "parent_trade_id": "531",
+      "trade_name": "体考鞋",
+      "trade_path": "童鞋/亲子鞋 / 体考鞋",
+      "third_platforms": "DOUYIN,DOUYINXSG,HAOYK,JD,PDD,XIAOHONGSHU,KUAISHOU,WEIXINXIAODIAN,VIP,KAOLA,TAOBAO,TMALL,ALIEXPRESS"
+    },
+    {
+      "trade_id": "9602",
+      "parent_trade_id": "531",
+      "trade_name": "鞋配件",
+      "trade_path": "童鞋/亲子鞋 / 鞋配件",
+      "third_platforms": ""
+    },
+    {
+      "trade_id": "9599",
+      "parent_trade_id": "9602",
+      "trade_name": "鞋垫",
+      "trade_path": "童鞋/亲子鞋 / 鞋配件 / 鞋垫",
+      "third_platforms": "AIKUCUN,ALIBABA,DOUYIN,DOUYINXSG,JD,VIP,KAOLA,XIAOHONGSHU,KUAISHOU,WEIXINXIAODIAN,PDD,TAOBAO,TMALL,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "9601",
+      "parent_trade_id": "9602",
+      "trade_name": "其他鞋配件",
+      "trade_path": "童鞋/亲子鞋 / 鞋配件 / 其他鞋配件",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,KUAISHOU,DOUYIN,DOUYINXSG,VIP,PDD,TAOBAO,TMALL,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "9600",
+      "parent_trade_id": "9602",
+      "trade_name": "鞋带",
+      "trade_path": "童鞋/亲子鞋 / 鞋配件 / 鞋带",
+      "third_platforms": "AIKUCUN,ALIBABA,DOUYIN,DOUYINXSG,JD,VIP,KUAISHOU,WEIXINXIAODIAN,PDD,TAOBAO,TMALL,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "14550",
+      "parent_trade_id": "531",
+      "trade_name": "演出小黑鞋",
+      "trade_path": "童鞋/亲子鞋 / 演出小黑鞋",
+      "third_platforms": "ALIBABA,JD,VIP,PDD,DOUYIN,WEIXINXIAODIAN,DOUYINXSG,HAOYK,XIAOHONGSHU,KAOLA,TAOBAO,TMALL,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "541",
+      "parent_trade_id": "531",
+      "trade_name": "传统布鞋",
+      "trade_path": "童鞋/亲子鞋 / 传统布鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,PDD,WEIXINXIAODIAN,TMALL,HAOYK,DOUYIN,DOUYINXSG,KUAISHOU,TAOBAO,ALIEXPRESS,VIP,YOUZAN"
+    },
+    {
+      "trade_id": "16719",
+      "parent_trade_id": "531",
+      "trade_name": "棉拖鞋",
+      "trade_path": "童鞋/亲子鞋 / 棉拖鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,VIP,PDD,KUAISHOU,HAOYK,WEIXINXIAODIAN,TMALL,DOUYIN,DOUYINXSG,KAOLA,XIAOHONGSHU,TAOBAO,YOUZAN,ALIEXPRESS"
+    },
+    {
+      "trade_id": "532",
+      "parent_trade_id": "531",
+      "trade_name": "舞蹈鞋",
+      "trade_path": "童鞋/亲子鞋 / 舞蹈鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,VIP,PDD,TMALL,HAOYK,DOUYIN,DOUYINXSG,KUAISHOU,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "543",
+      "parent_trade_id": "531",
+      "trade_name": "皮鞋",
+      "trade_path": "童鞋/亲子鞋 / 皮鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,WEIXINXIAODIAN,TMALL,VIP,PDD,KUAISHOU,HAOYK,DOUYIN,DOUYINXSG,XIAOHONGSHU,KAOLA,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "546",
+      "parent_trade_id": "531",
+      "trade_name": "运动鞋",
+      "trade_path": "童鞋/亲子鞋 / 运动鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,DOUYIN,JD,VIP,YOUZAN,PDD,TMALL,KUAISHOU,HAOYK,DOUYINXSG,XIAOHONGSHU,KAOLA,TAOBAO,WEIXINXIAODIAN,ALIEXPRESS"
+    },
+    {
+      "trade_id": "545",
+      "parent_trade_id": "531",
+      "trade_name": "虎头鞋",
+      "trade_path": "童鞋/亲子鞋 / 虎头鞋",
+      "third_platforms": "ALIBABA,JD,HAOYK,KUAISHOU,DOUYIN,TAOBAO,TMALL,ALIEXPRESS,VIP,YOUZAN"
+    },
+    {
+      "trade_id": "537",
+      "parent_trade_id": "531",
+      "trade_name": "凉鞋",
+      "trade_path": "童鞋/亲子鞋 / 凉鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,KUAISHOU,WEIXINXIAODIAN,PDD,XIAOHONGSHU,HAOYK,VIP,DOUYIN,TMALL,DOUYINXSG,KAOLA,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "535",
+      "parent_trade_id": "531",
+      "trade_name": "棉鞋",
+      "trade_path": "童鞋/亲子鞋 / 棉鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,VIP,DOUYIN,XIAOHONGSHU,WEIXINXIAODIAN,TMALL,PDD,KUAISHOU,HAOYK,DOUYINXSG,KAOLA,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10381",
+      "parent_trade_id": "531",
+      "trade_name": "板鞋",
+      "trade_path": "童鞋/亲子鞋 / 板鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,DOUYIN,HAOYK,JD,PDD,XIAOHONGSHU,KUAISHOU,WEIXINXIAODIAN,VIP,YOUZAN,DOUYINXSG,KAOLA,TAOBAO,TMALL,ALIEXPRESS"
+    },
+    {
+      "trade_id": "544",
+      "parent_trade_id": "531",
+      "trade_name": "雨靴",
+      "trade_path": "童鞋/亲子鞋 / 雨靴",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,XIAOHONGSHU,WEIXINXIAODIAN,PDD,DOUYIN,HAOYK,TMALL,VIP,DOUYINXSG,KAOLA,KUAISHOU,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "539",
+      "parent_trade_id": "531",
+      "trade_name": "婴儿步前鞋",
+      "trade_path": "童鞋/亲子鞋 / 婴儿步前鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,VIP,PDD,KUAISHOU,YOUZAN,DOUYIN,DOUYINXSG,HAOYK,KAOLA,XIAOHONGSHU,TAOBAO,TMALL,WEIXINXIAODIAN,ALIEXPRESS"
+    },
+    {
+      "trade_id": "10160",
+      "parent_trade_id": "531",
+      "trade_name": "女童鞋",
+      "trade_path": "童鞋/亲子鞋 / 女童鞋",
+      "third_platforms": ""
+    },
+    {
+      "trade_id": "10191",
+      "parent_trade_id": "10160",
+      "trade_name": "运动鞋",
+      "trade_path": "童鞋/亲子鞋 / 女童鞋 / 运动鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,DOUYIN,JD,VIP,YOUZAN,PDD,TMALL,HAOYK,DOUYINXSG,XIAOHONGSHU,KAOLA,KUAISHOU,TAOBAO,WEIXINXIAODIAN,ALIEXPRESS"
+    },
+    {
+      "trade_id": "10185",
+      "parent_trade_id": "10160",
+      "trade_name": "帆布鞋",
+      "trade_path": "童鞋/亲子鞋 / 女童鞋 / 帆布鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,DOUYIN,JD,PDD,XIAOHONGSHU,KUAISHOU,WEIXINXIAODIAN,VIP,TMALL,HAOYK,DOUYINXSG,KAOLA,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10182",
+      "parent_trade_id": "10160",
+      "trade_name": "凉鞋",
+      "trade_path": "童鞋/亲子鞋 / 女童鞋 / 凉鞋",
+      "third_platforms": "ALIBABA,JD,PDD,XIAOHONGSHU,KUAISHOU,HAOYK,WEIXINXIAODIAN,VIP,DOUYIN,TMALL,DOUYINXSG,KAOLA,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10180",
+      "parent_trade_id": "10160",
+      "trade_name": "棉鞋",
+      "trade_path": "童鞋/亲子鞋 / 女童鞋 / 棉鞋",
+      "third_platforms": "ALIBABA,JD,VIP,DOUYIN,WEIXINXIAODIAN,TMALL,PDD,KUAISHOU,HAOYK,DOUYINXSG,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10178",
+      "parent_trade_id": "10160",
+      "trade_name": "雪地靴",
+      "trade_path": "童鞋/亲子鞋 / 女童鞋 / 雪地靴",
+      "third_platforms": "ALIBABA,JD,DOUYIN,VIP,DOUYINXSG,HAOYK,WEIXINXIAODIAN,PDD,KUAISHOU,XIAOHONGSHU,KAOLA,TAOBAO,TMALL,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10179",
+      "parent_trade_id": "10160",
+      "trade_name": "靴子",
+      "trade_path": "童鞋/亲子鞋 / 女童鞋 / 靴子",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,DOUYIN,PDD,XIAOHONGSHU,KUAISHOU,HAOYK,WEIXINXIAODIAN,VIP,TMALL,DOUYINXSG,KAOLA,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10181",
+      "parent_trade_id": "10160",
+      "trade_name": "拖鞋",
+      "trade_path": "童鞋/亲子鞋 / 女童鞋 / 拖鞋",
+      "third_platforms": "ALIBABA,DOUYIN,JD,VIP,WEIXINXIAODIAN,DOUYINXSG,HAOYK,KAOLA,XIAOHONGSHU,KUAISHOU,PDD,TAOBAO,TMALL,YOUZAN,ALIEXPRESS"
+    },
+    {
+      "trade_id": "10186",
+      "parent_trade_id": "10160",
+      "trade_name": "传统布鞋",
+      "trade_path": "童鞋/亲子鞋 / 女童鞋 / 传统布鞋",
+      "third_platforms": "ALIBABA,JD,VIP,PDD,WEIXINXIAODIAN,TMALL,HAOYK,DOUYIN,DOUYINXSG,KUAISHOU,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10189",
+      "parent_trade_id": "10160",
+      "trade_name": "雨靴",
+      "trade_path": "童鞋/亲子鞋 / 女童鞋 / 雨靴",
+      "third_platforms": "ALIBABA,JD,XIAOHONGSHU,WEIXINXIAODIAN,PDD,DOUYIN,HAOYK,TMALL,VIP,DOUYINXSG,KAOLA,KUAISHOU,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10192",
+      "parent_trade_id": "10160",
+      "trade_name": "亲子鞋",
+      "trade_path": "童鞋/亲子鞋 / 女童鞋 / 亲子鞋",
+      "third_platforms": "ALIBABA,DOUYIN,JD,KUAISHOU,HAOYK,VIP,TMALL,PDD,DOUYINXSG,KAOLA,XIAOHONGSHU,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10188",
+      "parent_trade_id": "10160",
+      "trade_name": "皮鞋",
+      "trade_path": "童鞋/亲子鞋 / 女童鞋 / 皮鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,WEIXINXIAODIAN,TMALL,VIP,PDD,HAOYK,DOUYIN,DOUYINXSG,XIAOHONGSHU,KAOLA,KUAISHOU,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10183",
+      "parent_trade_id": "10160",
+      "trade_name": "学步鞋",
+      "trade_path": "童鞋/亲子鞋 / 女童鞋 / 学步鞋",
+      "third_platforms": "ALIBABA,VIP,DOUYIN,DOUYINXSG,HAOYK,JD,WEIXINXIAODIAN,KAOLA,XIAOHONGSHU,KUAISHOU,PDD,TAOBAO,TMALL,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10177",
+      "parent_trade_id": "10160",
+      "trade_name": "舞蹈鞋",
+      "trade_path": "童鞋/亲子鞋 / 女童鞋 / 舞蹈鞋",
+      "third_platforms": "ALIBABA,JD,VIP,PDD,TMALL,HAOYK,DOUYIN,DOUYINXSG,KUAISHOU,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10190",
+      "parent_trade_id": "10160",
+      "trade_name": "虎头鞋",
+      "trade_path": "童鞋/亲子鞋 / 女童鞋 / 虎头鞋",
+      "third_platforms": "ALIBABA,JD,HAOYK,VIP,KUAISHOU,DOUYIN,TAOBAO,TMALL,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "538",
+      "parent_trade_id": "531",
+      "trade_name": "学步鞋",
+      "trade_path": "童鞋/亲子鞋 / 学步鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,VIP,DOUYIN,DOUYINXSG,HAOYK,JD,WEIXINXIAODIAN,KAOLA,XIAOHONGSHU,KUAISHOU,PDD,TAOBAO,TMALL,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10159",
+      "parent_trade_id": "531",
+      "trade_name": "男童鞋",
+      "trade_path": "童鞋/亲子鞋 / 男童鞋",
+      "third_platforms": ""
+    },
+    {
+      "trade_id": "10163",
+      "parent_trade_id": "10159",
+      "trade_name": "雪地靴",
+      "trade_path": "童鞋/亲子鞋 / 男童鞋 / 雪地靴",
+      "third_platforms": "ALIBABA,JD,DOUYIN,VIP,DOUYINXSG,HAOYK,WEIXINXIAODIAN,PDD,KUAISHOU,XIAOHONGSHU,KAOLA,TAOBAO,TMALL,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10169",
+      "parent_trade_id": "10159",
+      "trade_name": "帆布鞋",
+      "trade_path": "童鞋/亲子鞋 / 男童鞋 / 帆布鞋",
+      "third_platforms": "ALIBABA,DOUYIN,JD,PDD,XIAOHONGSHU,KUAISHOU,WEIXINXIAODIAN,VIP,TMALL,HAOYK,DOUYINXSG,KAOLA,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10167",
+      "parent_trade_id": "10159",
+      "trade_name": "学步鞋",
+      "trade_path": "童鞋/亲子鞋 / 男童鞋 / 学步鞋",
+      "third_platforms": "ALIBABA,VIP,DOUYIN,DOUYINXSG,HAOYK,JD,WEIXINXIAODIAN,YOUZAN,KAOLA,XIAOHONGSHU,KUAISHOU,PDD,TAOBAO,TMALL,ALIEXPRESS"
+    },
+    {
+      "trade_id": "10165",
+      "parent_trade_id": "10159",
+      "trade_name": "拖鞋",
+      "trade_path": "童鞋/亲子鞋 / 男童鞋 / 拖鞋",
+      "third_platforms": "ALIBABA,DOUYIN,JD,VIP,WEIXINXIAODIAN,DOUYINXSG,HAOYK,KAOLA,XIAOHONGSHU,KUAISHOU,PDD,TAOBAO,TMALL,YOUZAN,ALIEXPRESS"
+    },
+    {
+      "trade_id": "10170",
+      "parent_trade_id": "10159",
+      "trade_name": "传统布鞋",
+      "trade_path": "童鞋/亲子鞋 / 男童鞋 / 传统布鞋",
+      "third_platforms": "ALIBABA,JD,VIP,PDD,WEIXINXIAODIAN,TMALL,HAOYK,DOUYIN,DOUYINXSG,KUAISHOU,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10176",
+      "parent_trade_id": "10159",
+      "trade_name": "亲子鞋",
+      "trade_path": "童鞋/亲子鞋 / 男童鞋 / 亲子鞋",
+      "third_platforms": "ALIBABA,DOUYIN,JD,KUAISHOU,HAOYK,VIP,TMALL,PDD,DOUYINXSG,KAOLA,XIAOHONGSHU,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10162",
+      "parent_trade_id": "10159",
+      "trade_name": "靴子",
+      "trade_path": "童鞋/亲子鞋 / 男童鞋 / 靴子",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,DOUYIN,PDD,XIAOHONGSHU,KUAISHOU,HAOYK,WEIXINXIAODIAN,VIP,TMALL,DOUYINXSG,KAOLA,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10161",
+      "parent_trade_id": "10159",
+      "trade_name": "舞蹈鞋",
+      "trade_path": "童鞋/亲子鞋 / 男童鞋 / 舞蹈鞋",
+      "third_platforms": "ALIBABA,JD,VIP,PDD,TMALL,HAOYK,DOUYIN,DOUYINXSG,KUAISHOU,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10172",
+      "parent_trade_id": "10159",
+      "trade_name": "皮鞋",
+      "trade_path": "童鞋/亲子鞋 / 男童鞋 / 皮鞋",
+      "third_platforms": "ALIBABA,JD,WEIXINXIAODIAN,TMALL,VIP,PDD,HAOYK,DOUYIN,DOUYINXSG,XIAOHONGSHU,KAOLA,KUAISHOU,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10174",
+      "parent_trade_id": "10159",
+      "trade_name": "虎头鞋",
+      "trade_path": "童鞋/亲子鞋 / 男童鞋 / 虎头鞋",
+      "third_platforms": "ALIBABA,JD,HAOYK,VIP,KUAISHOU,DOUYIN,TAOBAO,TMALL,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10164",
+      "parent_trade_id": "10159",
+      "trade_name": "棉鞋",
+      "trade_path": "童鞋/亲子鞋 / 男童鞋 / 棉鞋",
+      "third_platforms": "ALIBABA,JD,VIP,DOUYIN,WEIXINXIAODIAN,TMALL,PDD,KUAISHOU,HAOYK,DOUYINXSG,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10166",
+      "parent_trade_id": "10159",
+      "trade_name": "凉鞋",
+      "trade_path": "童鞋/亲子鞋 / 男童鞋 / 凉鞋",
+      "third_platforms": "ALIBABA,JD,PDD,XIAOHONGSHU,KUAISHOU,HAOYK,WEIXINXIAODIAN,VIP,DOUYIN,TMALL,DOUYINXSG,KAOLA,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "10175",
+      "parent_trade_id": "10159",
+      "trade_name": "运动鞋",
+      "trade_path": "童鞋/亲子鞋 / 男童鞋 / 运动鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,DOUYIN,JD,VIP,YOUZAN,PDD,TMALL,HAOYK,DOUYINXSG,XIAOHONGSHU,KAOLA,KUAISHOU,TAOBAO,WEIXINXIAODIAN,ALIEXPRESS"
+    },
+    {
+      "trade_id": "10173",
+      "parent_trade_id": "10159",
+      "trade_name": "雨靴",
+      "trade_path": "童鞋/亲子鞋 / 男童鞋 / 雨靴",
+      "third_platforms": "ALIBABA,JD,XIAOHONGSHU,WEIXINXIAODIAN,PDD,DOUYIN,HAOYK,TMALL,VIP,DOUYINXSG,KAOLA,KUAISHOU,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "14548",
+      "parent_trade_id": "531",
+      "trade_name": "水晶/水钻鞋",
+      "trade_path": "童鞋/亲子鞋 / 水晶/水钻鞋",
+      "third_platforms": "ALIBABA,JD,VIP,DOUYIN,PDD,DOUYINXSG,HAOYK,WEIXINXIAODIAN,XIAOHONGSHU,KAOLA,TAOBAO,TMALL,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "536",
+      "parent_trade_id": "531",
+      "trade_name": "拖鞋",
+      "trade_path": "童鞋/亲子鞋 / 拖鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,DOUYIN,JD,VIP,DOUYINXSG,HAOYK,KAOLA,XIAOHONGSHU,KUAISHOU,PDD,TAOBAO,TMALL,WEIXINXIAODIAN,YOUZAN,ALIEXPRESS"
+    },
+    {
+      "trade_id": "533",
+      "parent_trade_id": "531",
+      "trade_name": "靴子",
+      "trade_path": "童鞋/亲子鞋 / 靴子",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,DOUYIN,PDD,XIAOHONGSHU,KUAISHOU,HAOYK,WEIXINXIAODIAN,VIP,TMALL,DOUYINXSG,KAOLA,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "540",
+      "parent_trade_id": "531",
+      "trade_name": "帆布鞋",
+      "trade_path": "童鞋/亲子鞋 / 帆布鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,DOUYIN,JD,PDD,XIAOHONGSHU,KUAISHOU,WEIXINXIAODIAN,VIP,TMALL,HAOYK,DOUYINXSG,KAOLA,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "542",
+      "parent_trade_id": "531",
+      "trade_name": "手工编织鞋",
+      "trade_path": "童鞋/亲子鞋 / 手工编织鞋",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,PDD,WEIXINXIAODIAN,TMALL,HAOYK,DOUYIN,DOUYINXSG,KUAISHOU,TAOBAO,ALIEXPRESS,VIP,YOUZAN"
+    },
+    {
+      "trade_id": "534",
+      "parent_trade_id": "531",
+      "trade_name": "雪地靴",
+      "trade_path": "童鞋/亲子鞋 / 雪地靴",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,DOUYIN,VIP,DOUYINXSG,HAOYK,WEIXINXIAODIAN,PDD,KUAISHOU,XIAOHONGSHU,KAOLA,TAOBAO,TMALL,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "547",
+      "parent_trade_id": "531",
+      "trade_name": "亲子鞋",
+      "trade_path": "童鞋/亲子鞋 / 亲子鞋",
+      "third_platforms": "ALIBABA,DOUYIN,WEIXINXIAODIAN,JD,KUAISHOU,HAOYK,VIP,TMALL,PDD,DOUYINXSG,KAOLA,XIAOHONGSHU,TAOBAO,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "648",
+      "parent_trade_id": "1101",
+      "trade_name": "包包",
+      "trade_path": "童装婴幼儿服装 / 婴童配件 / 包包",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,VIP,DOUYIN,DOUYINXSG,PDD,KUAISHOU,TAOBAO,TMALL,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "14945",
+      "parent_trade_id": "531",
+      "trade_name": "棉靴",
+      "trade_path": "童鞋/亲子鞋 / 棉靴",
+      "third_platforms": "AIKUCUN,ALIBABA,JD,DOUYIN,VIP,XIAOHONGSHU,WEIXINXIAODIAN,DOUYINXSG,HAOYK,KAOLA,KUAISHOU,PDD,TAOBAO,TMALL,ALIEXPRESS,YOUZAN"
+    },
+    {
+      "trade_id": "7",
+      "parent_trade_id": null,
+      "trade_name": "童装婴幼儿服装",
+      "trade_path": "童装婴幼儿服装",
+      "third_platforms": ""
+    }
+  ],
+  "cases": [
+    {
+      "spu": "204426141134",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "休闲靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204426141011",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>雪地靴",
+        "发布类目 (唯品)": "儿童雪地靴",
+        "主款式 （唯品四级品类）": "雪地靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "534"
+    },
+    {
+      "spu": "204426140138",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>运动鞋",
+        "发布类目 (唯品)": "儿童运动鞋",
+        "主款式 （唯品四级品类）": "运动休闲鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>休闲鞋",
+        "品类": "运动鞋",
+        "小类": "运动生活鞋"
+      },
+      "expectedTradeId": "546"
+    },
+    {
+      "spu": "204426141001",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "马丁靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204426141020",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "休闲靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204426141012",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>运动鞋（新）>>儿童户外鞋",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "休闲靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "16608"
+    },
+    {
+      "spu": "204426141013",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "休闲靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204426141125",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "休闲靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204426141027",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "休闲靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204426141038",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "休闲靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204426141017",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "休闲靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204426141039",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "休闲靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204426141101",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>运动鞋（新）>>儿童户外鞋",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "雪地靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "16608"
+    },
+    {
+      "spu": "204426141124",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "休闲靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204426141119",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "休闲靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204426141029",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>板鞋",
+        "发布类目 (唯品)": "儿童板鞋/休闲鞋",
+        "主款式 （唯品四级品类）": "板鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>休闲鞋",
+        "品类": "休闲鞋",
+        "小类": "板鞋"
+      },
+      "expectedTradeId": "10381"
+    },
+    {
+      "spu": "204426146114",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>婴幼童鞋>>学步鞋",
+        "发布类目 (唯品)": "学步鞋",
+        "主款式 （唯品四级品类）": "运动休闲鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>儿童学步鞋",
+        "品类": "宝宝鞋",
+        "小类": "稳步鞋"
+      },
+      "expectedTradeId": "538"
+    },
+    {
+      "spu": "204426146128",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>婴幼童鞋>>学步鞋",
+        "发布类目 (唯品)": "婴幼步前鞋/袜鞋",
+        "主款式 （唯品四级品类）": "婴幼鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>婴儿步前鞋/袜鞋",
+        "品类": "宝宝鞋",
+        "小类": "步前鞋"
+      },
+      "expectedTradeId": "538"
+    },
+    {
+      "spu": "204425140017",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>棉鞋",
+        "发布类目 (唯品)": "儿童运动鞋",
+        "主款式 （唯品四级品类）": "功能鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>休闲鞋",
+        "品类": "运动鞋",
+        "小类": "运动生活鞋"
+      },
+      "expectedTradeId": "535"
+    },
+    {
+      "spu": "204425141105",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "棉拖",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204425141033",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "时尚靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204425141035",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "时尚靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204425141025",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "时尚靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204425149201",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>鞋配件>>鞋垫",
+        "发布类目 (唯品)": "儿童配饰配件",
+        "主款式 （唯品四级品类）": "儿童鞋垫",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>休闲鞋",
+        "品类": "其他",
+        "小类": "其他"
+      },
+      "expectedTradeId": "9599"
+    },
+    {
+      "spu": "204425144006",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>雪地靴",
+        "发布类目 (唯品)": "学步鞋",
+        "主款式 （唯品四级品类）": "儿童皮靴/棉靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "宝宝鞋",
+        "小类": "学步鞋"
+      },
+      "expectedTradeId": "534"
+    },
+    {
+      "spu": "204425145009",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>板鞋",
+        "发布类目 (唯品)": "儿童板鞋/休闲鞋",
+        "主款式 （唯品四级品类）": "运动休闲鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>儿童学步鞋",
+        "品类": "宝宝鞋",
+        "小类": "稳步鞋"
+      },
+      "expectedTradeId": "10381"
+    },
+    {
+      "spu": "208426141208",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>拖鞋>>儿童棉拖鞋",
+        "发布类目 (唯品)": "儿童板鞋/休闲鞋",
+        "主款式 （唯品四级品类）": "棉鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>棉鞋",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "16719"
+    },
+    {
+      "spu": "208426146219",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>运动鞋",
+        "发布类目 (唯品)": "学步鞋",
+        "主款式 （唯品四级品类）": "运动休闲鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>儿童学步鞋",
+        "品类": "宝宝鞋",
+        "小类": "稳步鞋"
+      },
+      "expectedTradeId": "546"
+    },
+    {
+      "spu": "208426146014",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "学步鞋",
+        "主款式 （唯品四级品类）": "运动休闲鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>靴子",
+        "品类": "宝宝鞋",
+        "小类": "稳步鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204426141002",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>雪地靴",
+        "发布类目 (唯品)": "儿童皮靴/棉靴",
+        "主款式 （唯品四级品类）": "雪地靴",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>皮鞋",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "534"
+    },
+    {
+      "spu": "206426171111",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>拖鞋>儿童凉拖鞋",
+        "发布类目 (唯品)": "儿童袜子",
+        "主款式 （唯品四级品类）": "浅口袜",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>婴儿步前鞋/袜鞋",
+        "品类": "家居服",
+        "小类": "其他家居"
+      },
+      "expectedTradeId": "536"
+    },
+    {
+      "spu": "208426172022",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋/\n婴幼童鞋/\n婴儿步前鞋/袜鞋",
+        "发布类目 (唯品)": "婴儿袜子",
+        "主款式 （唯品四级品类）": "浅口袜",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>婴儿步前鞋/袜鞋",
+        "品类": "袜子",
+        "小类": "学步袜"
+      },
+      "expectedTradeId": "539"
+    },
+    {
+      "spu": "204326141096",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>皮鞋/演出鞋/舞蹈鞋>>皮鞋",
+        "发布类目 (唯品)": "儿童皮鞋/时装鞋",
+        "主款式 （唯品四级品类）": "公主鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>皮鞋",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "543"
+    },
+    {
+      "spu": "204326141019",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>儿童靴子>>皮靴",
+        "发布类目 (唯品)": "儿童皮鞋/时装鞋",
+        "主款式 （唯品四级品类）": "公主鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>皮鞋",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "533"
+    },
+    {
+      "spu": "204326146021",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>运动鞋（新）>儿童户外鞋",
+        "发布类目 (唯品)": "学步鞋",
+        "主款式 （唯品四级品类）": "运动休闲鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>儿童学步鞋",
+        "品类": "宝宝鞋",
+        "小类": "稳步鞋"
+      },
+      "expectedTradeId": "16608"
+    },
+    {
+      "spu": "204326146011",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>运动鞋；童鞋/婴儿鞋/亲子鞋>>婴幼童鞋>>学步鞋",
+        "发布类目 (唯品)": "学步鞋",
+        "主款式 （唯品四级品类）": "运动休闲鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>儿童学步鞋",
+        "品类": "宝宝鞋",
+        "小类": "稳步鞋"
+      },
+      "expectedTradeId": null
+    },
+    {
+      "spu": "204326146110",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>运动鞋（新）>儿童户外鞋；童鞋/婴儿鞋/亲子鞋>>运动鞋",
+        "发布类目 (唯品)": "学步鞋",
+        "主款式 （唯品四级品类）": "运动休闲鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>儿童学步鞋",
+        "品类": "宝宝鞋",
+        "小类": "稳步鞋"
+      },
+      "expectedTradeId": null
+    },
+    {
+      "spu": "2083261412D7",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>运动鞋",
+        "发布类目 (唯品)": "儿童板鞋/休闲鞋",
+        "主款式 （唯品四级品类）": "运动休闲鞋",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "546"
+    },
+    {
+      "spu": "204325145102",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>婴幼童鞋>>学步鞋",
+        "发布类目 (唯品)": "唯品已上市",
+        "主款式 （唯品四级品类）": "唯品已上市",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>休闲鞋",
+        "品类": "稳步鞋",
+        "小类": "稳步鞋"
+      },
+      "expectedTradeId": "538"
+    },
+    {
+      "spu": "208326141011",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>>皮鞋/演出鞋/舞蹈鞋>>皮鞋",
+        "发布类目 (唯品)": "儿童皮鞋/时装鞋",
+        "主款式 （唯品四级品类）": "公主鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>拖鞋",
+        "品类": "休闲鞋",
+        "小类": "时尚生活鞋"
+      },
+      "expectedTradeId": "543"
+    },
+    {
+      "spu": "208326141002",
+      "row": {
+        "官方发布类目": "童鞋/婴儿鞋/亲子鞋>运动鞋（新）>儿童户外鞋",
+        "发布类目 (唯品)": "儿童板鞋/休闲鞋",
+        "主款式 （唯品四级品类）": "运动休闲鞋",
+        "发布类目 (抖音)": "鞋靴箱包>鞋靴>童鞋>休闲鞋",
+        "品类": "休闲鞋",
+        "小类": "板鞋"
+      },
+      "expectedTradeId": "16608"
+    }
+  ]
+}

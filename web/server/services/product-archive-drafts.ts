@@ -5373,6 +5373,32 @@ function officialCategoryLeafTerms(value: string) {
   )
 }
 
+function isOfficialShoeCategory(category: { field: string; value: string }) {
+  return category.field.includes("官方") && /鞋|靴/.test(category.value)
+}
+
+function officialShoeTradeName(value: string) {
+  const text = normalizeOfficialTradeSearchText(value).replace(/[＞〉》]/g, ">")
+  // Some imported paths use slashes/newlines, including a slash inside the leaf.
+  const aliases: Array<[string, string]> = [
+    ["婴儿步前鞋/袜鞋", "婴儿步前鞋"],
+    ["婴幼步前鞋/袜鞋", "婴儿步前鞋"],
+    ["儿童棉拖鞋", "棉拖鞋"],
+    ["儿童凉拖鞋", "拖鞋"],
+    ["儿童户外鞋", "户外鞋"],
+    ["儿童学步鞋", "学步鞋"],
+    ["皮靴", "靴子"],
+    ["休闲靴", "靴子"],
+    ["时装靴", "靴子"],
+    ["时尚靴", "靴子"],
+    ["马丁靴", "靴子"],
+  ]
+  for (const [leaf, name] of aliases) {
+    if (text === leaf || text.endsWith(`>${leaf}`) || text.endsWith(`/${leaf}`)) return name
+  }
+  return text.split(/[>/]+/).filter(Boolean).at(-1) ?? ""
+}
+
 const LAUNCH_PLAN_CATEGORY_MATCH_ALIASES: Array<{ patterns: string[]; aliases: string[] }> = [
   { patterns: ["毛衫"], aliases: ["毛衣", "针织衫"] },
   { patterns: ["便服"], aliases: ["T恤"] },
@@ -5645,6 +5671,7 @@ function scoreTradeMatchValue(
 }
 
 function scoreTradeMatch(trade: JsonRecord, category: { field: string; value: string }) {
+  if (isOfficialShoeCategory(category)) return scoreOfficialCategoryLeafSearch(trade, category)
   return launchPlanCategorySearchValues(category.value)
     .map((searchValue, index) => scoreTradeMatchValue(trade, category, searchValue, index === 0 ? 0 : 90))
     .reduce((best, score) => Math.max(best, score), 0)
@@ -5972,6 +5999,10 @@ function tradeMatchesRequiredSizes(trade: JsonRecord, requiredSizes: string[]) {
 
 function scoreOfficialCategoryLeafSearch(trade: JsonRecord, category: { field: string; value: string }) {
   if (!category.field.includes("官方")) return 0
+  if (isOfficialShoeCategory(category)) {
+    const name = normalizeOfficialTradeSearchText(stringValue(trade.trade_name) || tradeLeaf(stringValue(trade.trade_path)))
+    return name === officialShoeTradeName(category.value) ? 1400 : 0
+  }
   const leaf = officialCategoryLeaf(category.value)
   const leafText = normalizeOfficialTradeSearchText(leaf)
   const candidatePathText = normalizeOfficialTradeSearchText(stringValue(trade.trade_path))
@@ -6117,6 +6148,7 @@ function launchPlanCategorySourceConflict(sourceRows: JsonRecord[]) {
 
 function manualTradeSelectionDecision(input: {
   reasonCode: Extract<TradeSelectionReasonCode,
+    | "source_category_conflict"
     | "missing_source_category"
     | "missing_platform_coverage"
     | "missing_size_template_coverage"
@@ -6156,11 +6188,21 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
     skus?: JsonRecord[]
   } = {},
 ): TradeSelectionDecision {
-  const categories = launchPlanCategoryValues(sourceRows)
+  const sourceCategories = launchPlanCategoryValues(sourceRows)
+  const officialCategories = sourceCategories.filter((category) => category.field.includes("官方"))
+    .flatMap((category) => category.value.split(/[;；]/).map((value) => ({ ...category, value: value.trim() })).filter((item) => item.value))
+  const officialShoeCategories = officialCategories.some(isOfficialShoeCategory) ? officialCategories : []
+  const officialShoeNames = uniqueTextValues(officialShoeCategories.map((category) => officialShoeTradeName(category.value)))
+  // Channel and planning categories remain visible as evidence, but cannot
+  // replace an official shoe category or introduce another shoe family.
+  const categories = officialShoeCategories.length > 0 ? officialShoeCategories : sourceCategories
+  const officialShoeAuthority = officialShoeCategories.length > 0
   const evaluatedAt = input.evaluatedAt ?? nowIso()
   const appliedTrade = input.appliedTrade ?? null
-  const sourceConflict = launchPlanCategorySourceConflict(sourceRows)
-  const platformGroups = requiredLaunchPlanPlatformGroups(categories)
+  const sourceConflict = officialShoeAuthority
+    ? officialShoeNames.length > 1
+    : launchPlanCategorySourceConflict(sourceRows)
+  const platformGroups = requiredLaunchPlanPlatformGroups(sourceCategories)
   const requiredPlatforms = platformGroups.map((group) => group.join("|"))
   if (categories.length === 0) {
     return manualTradeSelectionDecision({
@@ -6172,9 +6214,28 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
       evaluatedAt,
     })
   }
-  const shoeCategory = categories.some((category) => normalizeOfficialTradeSearchText(category.value).includes("鞋"))
-  const rawCandidateTiers = deepdrawTradePriorityTiers(stringValue(input.tenantName), trades)
+  if (officialShoeAuthority && sourceConflict) {
+    return manualTradeSelectionDecision({
+      reasonCode: "source_category_conflict",
+      reason: "官方发布类目存在多个不同鞋类，需要确认官方类目，不能由其他渠道类目代替。",
+      appliedTrade, requiredPlatforms, sourceConflict, evaluatedAt,
+    })
+  }
+  const shoeCategory = officialShoeAuthority || categories.some((category) => normalizeOfficialTradeSearchText(category.value).includes("鞋"))
+  const rawCandidateTiers = deepdrawTradePriorityTiers(stringValue(input.tenantName), trades).map((tier) => ({
+    ...tier,
+    candidates: officialShoeAuthority
+      ? tier.candidates.filter((candidate) => officialShoeCategories.some((category) => scoreOfficialCategoryLeafSearch(candidate.trade, category) > 0))
+      : tier.candidates,
+  }))
   const rawSelectableCandidates = rawCandidateTiers.flatMap((tier) => tier.candidates)
+  if (officialShoeAuthority && rawSelectableCandidates.length === 0) {
+    return manualTradeSelectionDecision({
+      reasonCode: "missing_semantic_match",
+      reason: "未找到与官方发布类目匹配的深绘鞋类，需要同步或人工选择，不能改用其他渠道类目。",
+      appliedTrade, requiredPlatforms, sourceConflict, evaluatedAt,
+    })
+  }
   const hasPlatformMetadata = rawSelectableCandidates.some((candidate) => hasTradePlatformMetadata(candidate.trade))
   const allowUnspecifiedPlatformMetadata = input.allowUnspecifiedPlatformMetadata === true && !hasPlatformMetadata
   const requiredSizes = skuSizeRequirements(input.skus ?? [])
@@ -6206,9 +6267,6 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
   let foundPlatformEligibleTrade = false
   let foundSizeIncompatibleTrade = false
   for (const tier of candidateTiers) {
-    const officialLeafMatch = bestOfficialCategoryLeafTradeMatch(tier, categories, contextTerms, requiredSizes)
-    if (officialLeafMatch.sizeIncompatible) foundSizeIncompatibleTrade = true
-
     const platformEligibleCandidates = allowUnspecifiedPlatformMetadata
       ? tier.candidates
       : hasPlatformMetadata
@@ -6217,6 +6275,11 @@ export function evaluateDeepdrawTradeSelectionFromLaunchPlanRows(
             && tradeCoversPlatformGroups(candidate.trade, platformGroups)
           ))
         : []
+    const officialLeafMatch = bestOfficialCategoryLeafTradeMatch(
+      officialShoeAuthority ? { ...tier, candidates: platformEligibleCandidates } : tier,
+      categories, contextTerms, requiredSizes,
+    )
+    if (officialLeafMatch.sizeIncompatible) foundSizeIncompatibleTrade = true
     const eligibleCandidates = platformEligibleCandidates.filter((candidate) => {
       const compatible = tradeMatchesRequiredSizes(candidate.trade, requiredSizes)
       if (!compatible) foundSizeIncompatibleTrade = true
