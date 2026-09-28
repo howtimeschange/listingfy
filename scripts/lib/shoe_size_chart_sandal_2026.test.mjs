@@ -50,5 +50,5 @@ test("unified sandal data reaches every chart and SDK create/follow-up/full upda
   assert.deepEqual(update.fields["唯品会尺码表"],values["唯品会尺码表"].valueJson);
   assert.deepEqual(update.fields["多平台尺码"],create.fields["多平台尺码"]);
   assert.equal(update.fields["多平台尺码"]["28码"],"28,28码(脚长17-17.7/内长17.8),28码(脚长17-17.7/内长17.8)");
-  assert.equal(payload.sizeRemarks["28"],"脚长(17-17.7/内长17.8)");
+  assert.equal(payload.sizeRemarks["28"],"(脚长17-17.7/内长17.8)");
 });

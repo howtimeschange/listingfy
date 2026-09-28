@@ -4128,9 +4128,9 @@ test("product archive payload preserves forced main size-chart columns with blan
   });
 });
 
-test("prepared product-archive snapshots invalidate after the apparel main-size payload revision", async () => {
+test("prepared product-archive snapshots invalidate after the shoe remarks and main down-fill payload revision", async () => {
   const preparedDraftService = await readFile(files.preparedDraftService, "utf8");
-  assert.match(preparedDraftService, /PRODUCT_ARCHIVE_PREPARATION_RULESET_REVISION = "2026-09-05-apparel-main-size-row-key-v1"/);
+  assert.match(preparedDraftService, /PRODUCT_ARCHIVE_PREPARATION_RULESET_REVISION = "2026-09-28-shoe-remarks-main-down-fill-v1"/);
 });
 
 test("shoe main size-chart manual overrides with old foot-length columns are rebuilt by rules", async () => {
@@ -6707,7 +6707,7 @@ test("product archive down-fill text normalizes scalar text and populates matchi
   ]);
 });
 
-test("product archive down-fill size-chart sync appends platform columns without changing fixed main table columns", async () => {
+test("product archive down-fill size-chart sync appends main and platform down-fill columns", async () => {
   const service = await import("../../web/server/services/product-archive-drafts.ts");
   const updates = service.buildProductArchiveDownFillWeightSizeChartUpdates([
     {
@@ -6755,6 +6755,17 @@ test("product archive down-fill size-chart sync appends platform columns without
   ]);
 
   assert.deepEqual(updates, [
+    {
+      fieldId: 2,
+      fieldName: "尺码表",
+      valueJson: {
+        title: "尺码,尺码,衣长,肩宽,胸围,袖长,身高,体重,充绒量(g)",
+        "140cm": "140cm,140,51.5,34.5,89,48.5,140,31,100",
+        "150cm": "150cm,150,55,36,93,51,150,37,120",
+      },
+      sourceType: "washlabel_ocr",
+      sourceRef: "202426107128洗唛.jpg",
+    },
     {
       fieldId: 3,
       fieldName: "唯品会尺码表",
@@ -9977,4 +9988,17 @@ test("filler selection combines duck colors across separate source rows", async 
     sourceRows: ["白鸭绒", "灰鸭绒"].map((filler) => ({source_type: "copywriting", row_json: {"面料成分": `面料:100%聚酯纤维\n填充物:${filler}`}})),
   });
   assert.equal(service.normalizeProductArchiveDeepdrawFieldValue("填充物(多选)", value, ["灰鸭绒", "白鸭绒", "鸭绒"]), "鸭绒");
+});
+
+
+test("main down-fill column uses matching size evidence, leaves missing sizes blank and is idempotent", async () => {
+  const { buildProductArchiveDownFillWeightSizeChartUpdates: build } = await import("../../web/server/services/product-archive-drafts.ts");
+  const source = { id: 1, field_name: "充绒量", value_text: "140码195克；150码222克" };
+  const table = { id: 2, field_name: "尺码表", value_json: { title: "尺码,衣长", "140cm": "140,88", "150cm": "150,94.5", "160cm": "160,101" } };
+  const [update] = build([source, table]);
+  assert.deepEqual(update.valueJson, { title: "尺码,衣长,充绒量(g)", "140cm": "140,88,195", "150cm": "150,94.5,222", "160cm": "160,101," });
+  assert.deepEqual(build([source, { ...table, value_json: update.valueJson }]), []);
+  assert.deepEqual(build([table]), []);
+  assert.deepEqual(build([{ ...source, value_text: "90%以上" }, table]), []);
+  assert.deepEqual(build([{ ...source, value_text: "100码20克" }, table]), []);
 });

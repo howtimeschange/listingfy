@@ -24,7 +24,7 @@ test('2026 shoe values survive create follow-up and covering update SDK construc
   assert.equal(values['淘宝尺码表'].valueJson['28'],'17-17.7');
   assert.equal(values['抖音尺码表'].valueJson['28'],'17.35,脚长17-17.7/内长18.3');
   const sizeRemarks=buildShoeSizeRemarks({rows:[row],skuSizes:['28码']});
-  assert.equal(sizeRemarks['28'],'脚长(17-17.7/内长18.3)');
+  assert.equal(sizeRemarks['28'],'(脚长17-17.7/内长18.3)');
   const fields=Object.entries(values).map(([name,v])=>({name,fieldType:'MULTI_TEXT',value:v.valueJson}));
   const createFields=selectDeepdrawLegacyShoeCreateFields(fields);
   const legacyUpdateFields=selectDeepdrawLegacyShoeUpdateFields(fields,{includeMultiPlatformSizeField:true});

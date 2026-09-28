@@ -4394,8 +4394,9 @@ export function buildProductArchiveDownFillWeightSizeChartUpdates(fields: JsonRe
     const multiPlatformSizeChart = fieldKey === "多平台尺码"
     const douyinSizeChart = fieldKey === "抖音尺码表"
     const mainSizeChart = isProductArchiveMainSizeChartFieldName(field.field_name)
-    if (columnIndex < 0 && mainSizeChart) continue
-    let nextTitles = titles
+    let nextTitles = columnIndex < 0 && mainSizeChart
+      ? appendProductArchiveSizeChartTitle(titles, "充绒量(g)")
+      : titles
     let dropDouyinRemarkColumnIndex = -1
     let dropDouyinDownFillColumnIndex = -1
     if (columnIndex < 0 && vipSizeChart) {

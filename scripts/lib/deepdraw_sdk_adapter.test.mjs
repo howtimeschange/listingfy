@@ -920,7 +920,7 @@ test("buildDeepdrawSdkProductInput can inline shoe size remarks when requested",
     },
   });
 
-  assert.equal(input.product.fields["尺码"], "26码*脚长15.8-16.2/内长17;27码*脚长16.3-16.7/内长17.7");
+  assert.equal(input.product.fields["尺码"], "26码*(脚长15.8-16.2/内长17);27码*(脚长16.3-16.7/内长17.7)");
 });
 
 test("buildDeepdrawProductFullUpdateInput includes isolated multi-platform size updates only for probes", () => {
@@ -1025,7 +1025,7 @@ test("buildDeepdrawSdkProductInput can preserve unit-bearing table keys while sa
     },
   });
 
-  assert.equal(input.product.fields["尺码"], "26*脚长15.8-16.2/内长17;27*脚长16.3-16.7/内长17.7");
+  assert.equal(input.product.fields["尺码"], "26*(脚长15.8-16.2/内长17);27*(脚长16.3-16.7/内长17.7)");
   assert.deepEqual(Object.keys(input.product.fields["商家SKU"]["黑色"]), ["26", "27"]);
   assert.deepEqual(Object.keys(input.product.fields["尺码表"]), ["title", "26码", "27码"]);
   assert.deepEqual(Object.keys(input.product.fields["唯品会尺码表"]), ["title", "26码", "27码"]);

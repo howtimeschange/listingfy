@@ -203,6 +203,7 @@ function normalizeSizeRemarkText(value) {
   const normalized = stringValue(bracketed ? bracketed[1] : text)
     .replace(/[;；]+/g, "/")
     .replace(/\*/g, "");
+  if (/^脚长/.test(normalized)) return `(${normalized.replace(/^脚长[（(](.*)[）)]$/, "脚长$1")})`;
   return /^充绒量\s*\d+(?:\.\d+)?g$/.test(normalized) ? `(${normalized})` : normalized;
 }
 
@@ -564,7 +565,7 @@ function shoeMultiPlatformCellValue({ column, cell, size, options = {} }) {
   const displaySize = shoeMultiPlatformSizeText(size);
   const remark = sizeRemarkForPayload(displaySize, options.sizeRemarks);
   if (text && (!remark || /(?:脚长|内长)/.test(text))) return text;
-  const platformRemark = remark.replace(/^脚长[（(](.*)[）)]$/, "脚长$1");
+  const platformRemark = remark.replace(/^[（(](.*)[）)]$/, "$1").replace(/^脚长[（(](.*)[）)]$/, "脚长$1");
   return platformRemark ? `${displaySize}(${platformRemark})` : "";
 }
 

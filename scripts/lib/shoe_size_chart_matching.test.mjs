@@ -165,9 +165,9 @@ test("shoe size remarks preserve the template foot-length and inner-length paren
     rows: shoeRows,
     skuSizes: ["21码", "26", "38cm"],
   }), {
-    "21": "脚长(12.8-13.2/内长14.2)",
-    "26": "脚长(15.8-16.2/内长17)",
-    "38": "脚长(23.8-24.2/内长25)",
+    "21": "(脚长12.8-13.2/内长14.2)",
+    "26": "(脚长15.8-16.2/内长17)",
+    "38": "(脚长23.8-24.2/内长25)",
   });
 });
 
@@ -471,7 +471,7 @@ test("shoe remarks normalize old, new and missing mapping text without nested pa
   const service = await import("../../web/server/services/shoe-size-chart-matching.ts");
   for (const mapping of ["脚长15.8-16.2/内长17", "(脚长15.8-16.2/内长17)", "脚长(15.8-16.2/内长17)", "脚长（15.8-16.2/内长17）", null]) {
     const row = { ...shoeRows.find((row) => String(row.size_value) === "26"), general_mapping_text: mapping, douyin_mapping_text: null };
-    assert.deepEqual(service.buildShoeSizeRemarks({ rows: [row], skuSizes: ["26码"] }), { "26": "脚长(15.8-16.2/内长17)" });
+    assert.deepEqual(service.buildShoeSizeRemarks({ rows: [row], skuSizes: ["26码"] }), { "26": "(脚长15.8-16.2/内长17)" });
   }
 });
 
@@ -497,7 +497,7 @@ test("generated shoe remarks survive SDK update while Vipshop rows retain sale-s
       legacyUpdateFields: [{ name: "尺码", value: "26码" }, { name: "唯品会尺码表", fieldType: "MULTI_TEXT", value: table }],
     },
   });
-  assert.equal(input.product.fields["尺码"], "26码*脚长(15.8-16.2/内长17)");
+  assert.equal(input.product.fields["尺码"], "26码*(脚长15.8-16.2/内长17)");
   assert.deepEqual(input.product.fields["唯品会尺码表"], {
     title: "欧洲码,脚长,鞋内长", "26码": "26,160,170.32",
   });

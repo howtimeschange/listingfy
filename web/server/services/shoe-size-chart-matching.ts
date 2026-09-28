@@ -100,7 +100,7 @@ function shoeSizeRemarkSuffix(row: ShoeSizeChartRow) {
 
 function shoeSaleSizeRemark(row: ShoeSizeChartRow) {
   const text = shoeSizeRemarkSuffix(row)
-  return text.startsWith("脚长") ? `脚长(${text.slice(2)})` : parenthesizedShoeSizeRemark(text)
+  return parenthesizedShoeSizeRemark(text)
 }
 
 function shoePlatformSizeRemark(row: ShoeSizeChartRow) {
