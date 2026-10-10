@@ -295,10 +295,38 @@ test("forces denim pants main size chart to the eight business columns", () => {
   });
 
   assert.deepEqual(result.valueJson, {
-    title: "尺码,裤长,腰围,臀围,脚口,身高,体重",
+    title: "尺码,裤长,腰围,臀围,脚围,身高,体重",
     "140cm": "140,82,55,80,46.4,140,31",
   });
   assert.equal(result.unmatchedTargets.includes("脚口翻折高"), false);
+});
+
+test("forces pants main size chart to business columns and merges leg opening aliases", () => {
+  const result = buildSizeChartForTemplate({
+    rows: [
+      { "款号": "202426108049", "测量点": "1/2腰围（平量）", "尺码": "140/", "尺码值": "29" },
+      { "款号": "202426108049", "测量点": "1/2臀围（平量）", "尺码": "140/", "尺码值": "44" },
+      { "款号": "202426108049", "测量点": "后浪（弯量）", "尺码": "140/", "尺码值": "36" },
+      { "款号": "202426108049", "测量点": "1/2脾围", "尺码": "140/", "尺码值": "27.8" },
+      { "款号": "202426108049", "测量点": "1/2脚口（平量）", "尺码": "140/", "尺码值": "12" },
+      { "款号": "202426108049", "测量点": "裤长", "尺码": "140/", "尺码值": "82.5" },
+      { "款号": "202426108049", "测量点": "前浪（弯量）", "尺码": "140/", "尺码值": "28" },
+    ],
+    spuCode: "202426108049",
+    template: {
+      fieldName: "尺码表",
+      options: ["安全等级", "腰围", "臀围", "尺码", "后裆", "大腿围", "脚口", "裤长", "身高", "体重", "前档", "裤口围"],
+    },
+    gender: "女童",
+    garmentType: "长裤",
+  });
+
+  assert.deepEqual(result.valueJson, {
+    title: "尺码,腰围,臀围,大腿围,脚围,裤长,身高,体重",
+    "140cm": "140,58,88,27.8,24,82.5,140,31",
+  });
+  assert.equal(result.unmatchedTargets.includes("脚口"), false);
+  assert.equal(result.unmatchedTargets.includes("裤口围"), false);
 });
 
 test("uses one bare apparel size column for non-denim bottom main size charts", () => {

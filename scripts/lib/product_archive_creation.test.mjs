@@ -4128,9 +4128,9 @@ test("product archive payload preserves forced main size-chart columns with blan
   });
 });
 
-test("prepared product-archive snapshots invalidate after the shoe remarks and main down-fill payload revision", async () => {
+test("prepared product-archive snapshots invalidate after the pants main size-column payload revision", async () => {
   const preparedDraftService = await readFile(files.preparedDraftService, "utf8");
-  assert.match(preparedDraftService, /PRODUCT_ARCHIVE_PREPARATION_RULESET_REVISION = "2026-09-28-shoe-remarks-main-down-fill-v1"/);
+  assert.match(preparedDraftService, /PRODUCT_ARCHIVE_PREPARATION_RULESET_REVISION = "2026-10-10-pants-main-size-columns-v2"/);
 });
 
 test("shoe main size-chart manual overrides with old foot-length columns are rebuilt by rules", async () => {
@@ -4142,6 +4142,18 @@ test("shoe main size-chart manual overrides with old foot-length columns are reb
   assert.match(
     serviceSource,
     /isStaleStructuredSizeChartManualOverride[\s\S]*productArchiveShoeMainSizeChartNeedsRuleRebuild[\s\S]*return true/,
+  );
+});
+
+test("main apparel size-chart manual overrides rebuild when the size title column is displaced or missing", async () => {
+  const serviceSource = await readFile(files.draftService, "utf8");
+
+  assert.match(serviceSource, /function productArchiveMainSizeChartFirstSizeColumnNeedsBareValue/);
+  assert.match(serviceSource, /if \(firstSizeColumnIndex > 0\) return true/);
+  assert.match(serviceSource, /productArchiveMainPantsSizeChartNeedsRuleRebuild[\s\S]*if \(!titleKeys\.some\(\(title\) => \["尺码", "尺寸"\]\.includes\(title\)\)\) return true/);
+  assert.match(
+    serviceSource,
+    /isStaleStructuredSizeChartManualOverride[\s\S]*productArchiveMainSizeChartFirstSizeColumnNeedsBareValue\(input\.fieldName, valueJson\)[\s\S]*return true/,
   );
 });
 

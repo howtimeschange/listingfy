@@ -3876,7 +3876,7 @@ function productArchiveShoeMainSizeChartNeedsRuleRebuild(input: {
 function shouldPreserveProductArchiveFixedMainSizeChartColumns(fieldName: unknown, valueJson: unknown) {
   if (compactFieldKey(fieldName) !== compactFieldKey("尺码表")) return false
   const title = sizeChartTitleOptions(valueJson).join(",")
-  return title === "尺码,裤长,腰围,臀围,脚口,身高,体重"
+  return title === "尺码,裤长,腰围,臀围,脚围,身高,体重"
     || title === "尺码,衣长,肩宽,胸围,袖长,身高,体重"
 }
 
@@ -3900,7 +3900,7 @@ function productArchiveFixedMainSizeChartTitleForContext(
 ) {
   if (compactFieldKey(fieldName) !== compactFieldKey("尺码表")) return ""
   const text = productArchiveSizeChartContextText(spu, sourceRows, draft).replace(/\s+/g, "")
-  if (/牛仔(?:裤|长裤|短裤|中裤)/.test(text)) return "尺码,裤长,腰围,臀围,脚口,身高,体重"
+  if (/牛仔(?:裤|长裤|短裤|中裤)/.test(text)) return "尺码,裤长,腰围,臀围,脚围,身高,体重"
   if (/上装|衣|衫|外套|卫衣|夹克|大衣|马甲|背心|羽绒服|棉服|冲锋衣|防晒服|功能中间层/.test(text)) {
     return "尺码,衣长,肩宽,胸围,袖长,身高,体重"
   }
@@ -4033,6 +4033,7 @@ function productArchiveMainSizeChartFirstSizeColumnNeedsBareValue(fieldName: unk
   const titles = sizeChartTitleOptions(valueJson)
   const firstSizeColumnIndex = titles.findIndex((title) => ["尺码", "尺寸"].includes(compactFieldKey(title)))
   if (firstSizeColumnIndex < 0) return false
+  if (firstSizeColumnIndex > 0) return true
   for (const [rawSize, rawValues] of sizeChartDataEntries(valueJson)) {
     const expected = deepdrawSizeValue(rawSize)
     if (!/cm$/i.test(expected)) continue
@@ -4055,6 +4056,29 @@ function productArchiveMainSizeChartHasApparelDuplicateSizeColumns(input: {
     .filter((title) => ["尺码", "尺寸"].includes(compactFieldKey(title)))
     .length
   return genericSizeColumnCount >= 2
+}
+
+function productArchiveMainPantsSizeChartNeedsRuleRebuild(input: {
+  fieldName: unknown
+  valueJson: unknown
+  spu: JsonRecord
+  sourceRows: JsonRecord[]
+  draft: JsonRecord
+}) {
+  if (!isProductArchiveMainSizeChartFieldName(input.fieldName)) return false
+  if (!isApparelProduct(input.spu, input.sourceRows)) return false
+  const contextText = productArchiveSizeChartContextText(input.spu, input.sourceRows, input.draft).replace(/\s+/g, "")
+  if (!/裤/.test(contextText)) return false
+  const titleKeys = sizeChartTitleOptions(input.valueJson).map(compactFieldKey)
+  if (!titleKeys.some((title) => ["尺码", "尺寸"].includes(title))) return true
+  const excluded = new Set(["前浪", "前档", "前裆", "后浪", "后档", "后裆"].map(compactFieldKey))
+  if (titleKeys.some((title) => excluded.has(title))) return true
+  const footAliasCount = titleKeys.filter((title) => (
+    title === compactFieldKey("脚口")
+    || title === compactFieldKey("裤口围")
+    || title === compactFieldKey("脚围")
+  )).length
+  return footAliasCount > 1 || titleKeys.includes(compactFieldKey("脚口")) || titleKeys.includes(compactFieldKey("裤口围"))
 }
 
 function isStaleStructuredSizeChartManualOverride(input: {
@@ -4100,6 +4124,13 @@ function isStaleStructuredSizeChartManualOverride(input: {
     valueJson,
     spu: input.spu,
     sourceRows: input.sourceRows,
+  })) return true
+  if (productArchiveMainPantsSizeChartNeedsRuleRebuild({
+    fieldName: input.fieldName,
+    valueJson,
+    spu: input.spu,
+    sourceRows: input.sourceRows,
+    draft: input.draft,
   })) return true
   return isZeroPaddedProductArchiveSizeChartValue(valueJson)
 }

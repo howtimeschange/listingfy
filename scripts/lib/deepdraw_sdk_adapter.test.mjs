@@ -515,6 +515,137 @@ test("buildDeepdrawSdkProductInput keeps the 1688 price range as quantity:tag-pr
   assert.equal(input.product.fields["价格区间"], "1:999.9");
 });
 
+test("buildDeepdrawSdkProductInput remaps apparel pants main size-table title to legacy physical slots without mutating payload", () => {
+  const sizeTable = {
+    title: "尺码,腰围,臀围,大腿围,脚围,裤长,身高,体重",
+    "140cm": "140,58,88,27.8,24,82.5,140,31",
+  };
+  const payload = {
+    code: "202426108049-test",
+    title: "女童长裤",
+    tradeId: "9659",
+    retailPrice: 269.9,
+    fields: [
+      { name: "尺码", value: "140cm" },
+      {
+        name: "尺码表",
+        fieldType: "MULTI_TEXT",
+        options: ["腰围", "臀围", "直裆", "脚围", "裤长", "身高", "体重"],
+        value: sizeTable,
+      },
+    ],
+    skus: [{ skuCode: "sku-140", color: "粉紫", size: "140cm" }],
+  };
+  const before = JSON.stringify(payload);
+
+  const input = buildDeepdrawSdkProductInput({ config: {}, payload });
+
+  assert.deepEqual(input.product.fields["尺码表"], {
+    title: "尺码,腰围(cm),臀围(cm),大腿围,脚围,裤长,身高,体重",
+    "140cm": "140,58,88,27.8,24,82.5,140,31",
+  });
+  assert.equal(JSON.stringify(payload), before);
+});
+
+test("buildDeepdrawProductFullUpdateInput applies the apparel pants physical-slot title remap", () => {
+  const payload = {
+    code: "202426108049-test",
+    title: "女童长裤",
+    tradeId: "9659",
+    retailPrice: 269.9,
+    fields: [],
+    legacyUpdateFields: [
+      { name: "尺码", value: "140cm" },
+      {
+        name: "尺码表",
+        fieldType: "MULTI_TEXT",
+        options: ["腰围", "臀围", "直裆", "脚围", "裤长", "身高", "体重"],
+        value: {
+          title: "尺码,腰围,臀围,大腿围,脚围,裤长,身高,体重",
+          "140cm": "140,58,88,27.8,24,82.5,140,31",
+        },
+      },
+    ],
+    skus: [{ skuCode: "sku-140", color: "粉紫", size: "140cm" }],
+  };
+
+  const input = buildDeepdrawProductFullUpdateInput({ config: {}, productId: "6578293", payload });
+
+  assert.deepEqual(input.product.fields["尺码表"], {
+    title: "尺码,腰围(cm),臀围(cm),大腿围,脚围,裤长,身高,体重",
+    "140cm": "140,58,88,27.8,24,82.5,140,31",
+  });
+});
+
+test("buildDeepdrawSdkProductInput keeps pants size-table columns in place when adding waist and hip units", () => {
+  const input = buildDeepdrawSdkProductInput({
+    config: {},
+    payload: {
+      code: "202426108049-test",
+      title: "女童长裤",
+      fields: [
+        { name: "尺码", value: "140cm" },
+        {
+          name: "尺码表",
+          fieldType: "MULTI_TEXT",
+          options: ["腰围", "臀围", "直裆", "脚围", "裤长", "身高", "体重"],
+          value: {
+            title: "尺码,腰围,臀围,大腿围,脚围,裤长,身高,体重",
+            "140cm": "140,,88,27.8,24,82.5,140,31",
+          },
+        },
+      ],
+      skus: [{ skuCode: "sku-140", color: "粉紫", size: "140cm" }],
+    },
+  });
+
+  assert.deepEqual(input.product.fields["尺码表"], {
+    title: "尺码,腰围(cm),臀围(cm),大腿围,脚围,裤长,身高,体重",
+    "140cm": "140,,88,27.8,24,82.5,140,31",
+  });
+});
+
+test("buildDeepdrawSdkProductInput keeps non-pants templates and shoe main size tables on their existing title paths", () => {
+  const nonPants = buildDeepdrawSdkProductInput({
+    config: {},
+    payload: {
+      code: "top-1",
+      title: "儿童卫衣",
+      fields: [
+        { name: "尺码", value: "140cm" },
+        {
+          name: "尺码表",
+          fieldType: "MULTI_TEXT",
+          options: ["衣长", "胸围", "袖长"],
+          value: { title: "尺码,衣长,胸围", "140cm": "140,52,88" },
+        },
+      ],
+      skus: [{ skuCode: "sku-top", color: "红色", size: "140cm" }],
+    },
+  });
+  assert.deepEqual(nonPants.product.fields["尺码表"], { title: "尺码,衣长,胸围", "140cm": "140,52,88" });
+
+  const shoe = buildDeepdrawSdkProductInput({
+    config: {},
+    payload: {
+      code: "shoe-1",
+      title: "儿童运动鞋",
+      shoeSizes: true,
+      fields: [
+        { name: "尺码", value: "26码" },
+        {
+          name: "尺码表",
+          fieldType: "MULTI_TEXT",
+          options: ["腰围", "臀围", "直裆"],
+          value: { title: "尺码,适合脚长", "26码": "26,16" },
+        },
+      ],
+      skus: [{ skuCode: "sku-shoe", color: "红色", size: "26码" }],
+    },
+  });
+  assert.deepEqual(shoe.product.fields["尺码表"], { title: "脚长", "26码": "16" });
+});
+
 test("buildDeepdrawSdkProductInput normalizes size table keys to SDK size values", () => {
   const input = buildDeepdrawSdkProductInput({
     config: {
@@ -1444,6 +1575,127 @@ test("compareDeepdrawProductPayloadToResource resolves DeepDraw size-table optio
   assert.equal(match.needsUiVerification, false);
   assert.equal(match.sections.find((section) => section.name === "尺码表")?.ok, true);
   assert.equal(match.sections.find((section) => section.name === "抖音尺码表")?.ok, true);
+});
+
+test("compareDeepdrawProductPayloadToResource fails when pants bare size lands in the legacy rise slot", () => {
+  const payload = {
+    fields: [
+      { name: "尺码", value: "140cm" },
+      {
+        name: "尺码表",
+        fieldType: "MULTI_TEXT",
+        options: ["腰围", "臀围", "直裆", "脚围", "大腿围", "裤长", "身高", "体重"],
+        value: {
+          title: "尺码,腰围,臀围,大腿围,脚围,裤长,身高,体重",
+          "140cm": "140,58,88,27.8,24,82.5,140,31",
+        },
+      },
+    ],
+    skus: [],
+  };
+  const resourceBody = {
+    sizes: { options: ["140cm"] },
+    skus: { skuItems: [] },
+    sizeTables: [
+      {
+        field: { name: "尺码表" },
+        optionAliases: {
+          "腰围": "腰围(cm)",
+          "臀围": "臀围(cm)",
+          "直裆": "尺码",
+          "脚围": "脚围",
+          "大腿围": "大腿围",
+          "裤长": "裤长",
+          "身高": "身高",
+          "体重": "体重",
+        },
+        sizeTableItems: [
+          {
+            size: "140cm",
+            values: {
+              "腰围": "58",
+              "臀围": "88",
+              "直裆": "140",
+              "脚围": "24",
+              "大腿围": "27.8",
+              "裤长": "82.5",
+              "身高": "140",
+              "体重": "31",
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  const match = compareDeepdrawProductPayloadToResource({ payload, resourceBody });
+
+  assert.equal(match.ok, false);
+  const section = match.sections.find((item) => item.name === "尺码表");
+  assert.equal(section?.ok, false);
+  assert.deepEqual(section?.mismatchedCells, []);
+  assert.deepEqual(section?.mismatchedColumnSlots, [
+    { slot: "腰围", expectedAlias: "尺码", actualAlias: "腰围(cm)" },
+  ]);
+});
+
+test("compareDeepdrawProductPayloadToResource accepts pants legacy transport when waist slot aliases to size", () => {
+  const payload = {
+    fields: [
+      { name: "尺码", value: "140cm" },
+      {
+        name: "尺码表",
+        fieldType: "MULTI_TEXT",
+        options: ["腰围", "臀围", "直裆", "脚围", "大腿围", "裤长", "身高", "体重"],
+        value: {
+          title: "尺码,腰围,臀围,大腿围,脚围,裤长,身高,体重",
+          "140cm": "140,58,88,27.8,24,82.5,140,31",
+        },
+      },
+    ],
+    skus: [],
+  };
+  const resourceBody = {
+    sizes: { options: ["140cm"] },
+    skus: { skuItems: [] },
+    sizeTables: [
+      {
+        field: { name: "尺码表" },
+        optionAliases: {
+          "腰围": "尺码",
+          "臀围": "腰围(cm)",
+          "直裆": "臀围(cm)",
+          "脚围": "脚围",
+          "大腿围": "大腿围",
+          "裤长": "裤长",
+          "身高": "身高",
+          "体重": "体重",
+        },
+        sizeTableItems: [
+          {
+            size: "140cm",
+            values: {
+              "腰围": "140",
+              "臀围": "58",
+              "直裆": "88",
+              "脚围": "24",
+              "大腿围": "27.8",
+              "裤长": "82.5",
+              "身高": "140",
+              "体重": "31",
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  const match = compareDeepdrawProductPayloadToResource({ payload, resourceBody });
+
+  assert.equal(match.ok, true);
+  const section = match.sections.find((item) => item.name === "尺码表");
+  assert.equal(section?.ok, true);
+  assert.deepEqual(section?.mismatchedColumnSlots, []);
 });
 
 test("compareDeepdrawProductPayloadToResource reads multi-platform sizes from DeepDraw size texts", () => {

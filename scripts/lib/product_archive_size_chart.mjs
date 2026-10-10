@@ -127,6 +127,7 @@ export const HIGH_CONFIDENCE_SIZE_CHART_RULES = [
   ["腰围", ["全腰围（平量）", "腰围", "1/2腰围（平量）", "1/2腰围"]],
   ["臀围", ["臀围", "臀围（平量）", "1/2臀围（平量）", "1/2臀围"]],
   ["脚口", ["1/2脚口（平量）"]],
+  ["脚围", ["1/2脚口（平量）"]],
   ["裤口围", ["1/2脚口（平量）"]],
   ["下摆围", ["下摆围（平量）", "下摆围（弧量）", "裙摆围"]],
   ["下摆", ["下摆围（平量）", "下摆围（弧量）", "裙摆围"]],
@@ -370,7 +371,8 @@ function multiPlatformSizeTargetFields() {
 function mainSizeChartTargetFields(rawTargetFields = [], garmentType = "", options = {}) {
   const garmentKey = apparelGarmentKey(garmentType);
   const text = stringValue(garmentType).replace(/\s+/g, "");
-  if (/牛仔(?:裤|长裤|短裤|中裤)/.test(text)) return ["尺码", "裤长", "腰围", "臀围", "脚口", "身高", "体重"];
+  if (/牛仔(?:裤|长裤|短裤|中裤)/.test(text)) return ["尺码", "裤长", "腰围", "臀围", "脚围", "身高", "体重"];
+  if (/裤/.test(text)) return pantsMainSizeChartTargetFields(rawTargetFields);
   if (garmentKey === "top") return ["尺码", "衣长", "肩宽", "胸围", "袖长", "身高", "体重"];
   if (garmentKey === "bottom") {
     return [
@@ -385,6 +387,22 @@ function mainSizeChartTargetFields(rawTargetFields = [], garmentType = "", optio
     ];
   }
   return rawTargetFields;
+}
+
+function pantsMainSizeChartTargetFields(rawTargetFields = []) {
+  const output = [];
+  const seen = new Set();
+  for (const field of rawTargetFields) {
+    if (isGenericBareSizeTargetFieldName(field)) continue;
+    const key = compactKey(field);
+    if (["前浪", "前档", "前裆", "后浪", "后档", "后裆"].some((excluded) => key === compactKey(excluded))) continue;
+    const normalized = [compactKey("脚口"), compactKey("裤口围")].includes(key) ? "脚围" : stringValue(field);
+    const normalizedKey = compactKey(normalized);
+    if (!normalized || seen.has(normalizedKey)) continue;
+    seen.add(normalizedKey);
+    output.push(normalized);
+  }
+  return output;
 }
 
 function shouldForceMainSizeChartColumns(garmentType = "", businessTargetFields = [], rawTargetFields = []) {
@@ -607,7 +625,7 @@ function mappedSizeChartValue(mapping, value) {
   if (!text) return text;
   const target = compactKey(mapping?.targetField);
   const source = stringValue(mapping?.sourcePoint).replace(/\s+/g, "");
-  const doublesHalfWidth = ["胸围", "腰围", "臀围", "脚口", "裤口围"].some((field) => target === compactKey(field))
+  const doublesHalfWidth = ["胸围", "腰围", "臀围", "脚口", "脚围", "裤口围"].some((field) => target === compactKey(field))
     && /1\/2/.test(source);
   if (!doublesHalfWidth) return text;
   const number = Number(text);

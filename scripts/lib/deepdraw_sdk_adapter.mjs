@@ -589,6 +589,32 @@ function normalizeShoeMultiPlatformSizeField(value, sizeValues = [], options = {
   return output;
 }
 
+function isLegacyPantsMainSizeTablePhysicalSlotTemplate(fieldOptions = []) {
+  const titles = arrayValue(fieldOptions).map((option) => {
+    const row = recordValue(option);
+    return stringValue(row.label ?? row.name ?? row.value ?? option);
+  }).filter(Boolean);
+  const keys = titles.map(compactKey);
+  return keys[0] === compactKey("腰围")
+    && keys[1] === compactKey("臀围")
+    && keys[2] === compactKey("直裆");
+}
+
+function normalizeApparelPantsMainSizeTableTitleForLegacyPayload(title, name = "", options = {}) {
+  if (options.shoeSizes || compactKey(name) !== compactKey("尺码表")) return title;
+  const columns = stringValue(title).split(",").map((column) => column.trim());
+  if (!columns.length || !["尺码", "尺寸"].includes(compactKey(columns[0]))) return title;
+  if (!isLegacyPantsMainSizeTablePhysicalSlotTemplate(options.fieldOptions)) return title;
+  // Legacy DeepDraw matches native measurement names before allocating unknown
+  // columns. Unit aliases free the first slot for bare size without moving cells.
+  return columns.map((column) => {
+    const key = compactKey(column);
+    if (key === compactKey("腰围")) return "腰围(cm)";
+    if (key === compactKey("臀围")) return "臀围(cm)";
+    return column;
+  }).join(",");
+}
+
 function normalizeSizeTableField(value, sizeValues = [], name = "", options = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   if (Object.keys(value).length === 0) return {};
@@ -600,7 +626,8 @@ function normalizeSizeTableField(value, sizeValues = [], name = "", options = {}
   }
   const output = {};
   const sourceTitle = value.title;
-  const title = normalizeSizeTableTitleForPayload(sourceTitle, name, options);
+  const payloadTitle = normalizeApparelPantsMainSizeTableTitleForLegacyPayload(sourceTitle, name, options);
+  const title = normalizeSizeTableTitleForPayload(payloadTitle, name, options);
   for (const [size, rowValue] of Object.entries(value)) {
     if (size === "title") {
       output[size] = title;
@@ -979,7 +1006,10 @@ function resourceSkuIdentity(color, size, colorAliases = new Map(), sizeAliases 
 
 function legacyExpectedSizeTable(field, selectedSizes, { shoeSizes = false } = {}) {
   const name = normalizeSdkFieldName(fieldName(field));
-  const normalized = recordValue(normalizeSizeTableField(fieldValue(field), selectedSizes, name, { shoeSizes }));
+  const normalized = recordValue(normalizeSizeTableField(fieldValue(field), selectedSizes, name, {
+    shoeSizes,
+    fieldOptions: field.options,
+  }));
   const columns = stringValue(normalized.title).split(",").map((column) => column.trim()).filter(Boolean);
   const rowEntries = {};
   const rows = Object.fromEntries(Object.entries(normalized)
@@ -995,7 +1025,13 @@ function legacyExpectedSizeTable(field, selectedSizes, { shoeSizes = false } = {
       return [sizeKey, Object.fromEntries(entries.map((entry) => [entry.column, entry.value]))];
     })
     .filter(([size, values]) => size && hasValue(values)));
-  return { name, rows, rowEntries };
+  const leadingSizeColumn = !shoeSizes
+    && compactKey(name) === compactKey("尺码表")
+    && ["尺码", "尺寸"].includes(compactKey(columns[0]))
+    && isLegacyPantsMainSizeTablePhysicalSlotTemplate(field.options)
+      ? { slot: "腰围", alias: columns[0] }
+      : null;
+  return { name, rows, rowEntries, leadingSizeColumn };
 }
 
 function legacyActualSizeTableOptionAliases(table) {
@@ -1057,7 +1093,7 @@ function legacyActualSizeTables(resource, { shoeSizes = false, sizeAliases = new
     const name = normalizeSdkFieldName(recordValue(table.field).name ?? table.name);
     if (!name || tables.has(compactKey(name))) continue;
     const rows = legacyActualSizeTableRows(table, { shoeSizes, sizeAliases });
-    tables.set(compactKey(name), { name, rows });
+    tables.set(compactKey(name), { name, rows, aliases: legacyActualSizeTableOptionAliases(table) });
   }
   const multiPlatformRows = legacyActualMultiPlatformRowsFromSizeTexts(source, { shoeSizes, sizeAliases });
   if (hasValue(multiPlatformRows) && !tables.has(compactKey("多平台尺码"))) {
@@ -1110,6 +1146,14 @@ function compareLegacySizeTable(expected, actual, { shoeSizes = false } = {}) {
   const missingSizes = expectedSizes.filter((size) => !Object.prototype.hasOwnProperty.call(actual?.rows ?? {}, size));
   const unexpectedSizes = actualSizes.filter((size) => !Object.prototype.hasOwnProperty.call(expected.rows, size));
   const mismatchedCells = [];
+  const mismatchedColumnSlots = [];
+  if (expected.leadingSizeColumn) {
+    const { slot, alias } = expected.leadingSizeColumn;
+    const actualAlias = stringValue(actual?.aliases?.[slot]);
+    if (compactKey(actualAlias) !== compactKey(alias)) {
+      mismatchedColumnSlots.push({ slot, expectedAlias: alias, actualAlias });
+    }
+  }
   for (const size of expectedSizes) {
     const expectedEntriesByColumn = new Map();
     for (const entry of expectedSizeTableRowEntries(expected, size)) {
@@ -1145,12 +1189,14 @@ function compareLegacySizeTable(expected, actual, { shoeSizes = false } = {}) {
     ok: Boolean(actual)
       && missingSizes.length === 0
       && unexpectedSizes.length === 0
-      && mismatchedCells.length === 0,
+      && mismatchedCells.length === 0
+      && mismatchedColumnSlots.length === 0,
     expectedCount: expectedSizes.length,
     actualCount: actualSizes.length,
     missingSizes,
     unexpectedSizes,
     mismatchedCells: mismatchedCells.slice(0, 20),
+    ...(expected.leadingSizeColumn ? { mismatchedColumnSlots } : {}),
   };
 }
 
@@ -1320,6 +1366,7 @@ export function buildDeepdrawSdkProductInput({ config, payload = {} }) {
             shoeMultiPlatformRowKey: payload.shoeMultiPlatformRowKey,
             preserveStructuredSizeRowKeysForProbe: payload.preserveStructuredSizeRowKeysForProbe,
             sizeRemarks,
+            fieldOptions: arrayValue(field.options ?? field.options_json),
           })
         : key === compactKey("抖音面料材质")
           ? normalizeDouyinMaterialFieldValue(value)
