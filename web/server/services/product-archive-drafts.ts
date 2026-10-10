@@ -11992,7 +11992,13 @@ function buildSizeChartPreviewsForMappings(
   sourceRows: JsonRecord[],
   mappings: JsonRecord[],
 ) {
-  const allowedSizes = productArchiveSizeChartAllowedSizes(sourceRows, mdmSkuRowsForSpu(db, stringValue(draft.spu_code)))
+  const spu = resolveProductArchiveDraftSpu(db, draft)
+  const draftSkus = draftSkusForDraft(db, numberValue(draft.id) ?? 0)
+  const liveMdmSkus = mdmSkuRowsForSpu(db, stringValue(draft.spu_code))
+  const mdmSkus = liveMdmSkus.length > 0
+    ? liveMdmSkus
+    : productArchiveDraftSkuRowsAsMdmRows(draftSkus)
+  const allowedSizes = productArchiveSizeChartAllowedSizes(sourceRows, mdmSkus)
   return sizeChartTemplateFieldsForDraft(db, draft).map((template) => buildProductArchiveSizeChartFieldValue({
     fieldName: template.fieldName,
     spuCode: stringValue(draft.spu_code),
@@ -12000,6 +12006,9 @@ function buildSizeChartPreviewsForMappings(
     templateOptions: template.options,
     mappings: mappings.filter((mapping) => stringValue(mapping.fieldName ?? mapping.field_name) === template.fieldName),
     allowedSizes,
+    spu,
+    draftTitle: draft.title,
+    tradePath: draft.trade_path,
   }))
 }
 

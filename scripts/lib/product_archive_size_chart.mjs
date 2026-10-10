@@ -1,5 +1,6 @@
 import { readSpreadsheetSheetsFromFile } from "./listing_launch_plan_importer.mjs";
 import { normalizeSpreadsheetRows } from "./product_archive_source_importer.mjs";
+import { pantsMainSizeChartColumns } from "../../web/src/lib/pants-size-chart-schema.mjs";
 
 const SPU_KEYS = ["spuCode", "spu_code", "款号", "大货款号", "货号", "商品品种编号"];
 const MEASUREMENT_KEYS = ["measurementPoint", "measurement_point", "测量点", "量点", "部位", "项目"];
@@ -371,8 +372,7 @@ function multiPlatformSizeTargetFields() {
 function mainSizeChartTargetFields(rawTargetFields = [], garmentType = "", options = {}) {
   const garmentKey = apparelGarmentKey(garmentType);
   const text = stringValue(garmentType).replace(/\s+/g, "");
-  if (/牛仔(?:裤|长裤|短裤|中裤)/.test(text)) return ["尺码", "裤长", "腰围", "臀围", "脚围", "身高", "体重"];
-  if (/裤/.test(text)) return pantsMainSizeChartTargetFields(rawTargetFields);
+  if (/裤/.test(text)) return pantsMainSizeChartColumns(rawTargetFields, garmentType);
   if (garmentKey === "top") return ["尺码", "衣长", "肩宽", "胸围", "袖长", "身高", "体重"];
   if (garmentKey === "bottom") {
     return [
@@ -387,22 +387,6 @@ function mainSizeChartTargetFields(rawTargetFields = [], garmentType = "", optio
     ];
   }
   return rawTargetFields;
-}
-
-function pantsMainSizeChartTargetFields(rawTargetFields = []) {
-  const output = [];
-  const seen = new Set();
-  for (const field of rawTargetFields) {
-    if (isGenericBareSizeTargetFieldName(field)) continue;
-    const key = compactKey(field);
-    if (["前浪", "前档", "前裆", "后浪", "后档", "后裆"].some((excluded) => key === compactKey(excluded))) continue;
-    const normalized = [compactKey("脚口"), compactKey("裤口围")].includes(key) ? "脚围" : stringValue(field);
-    const normalizedKey = compactKey(normalized);
-    if (!normalized || seen.has(normalizedKey)) continue;
-    seen.add(normalizedKey);
-    output.push(normalized);
-  }
-  return output;
 }
 
 function shouldForceMainSizeChartColumns(garmentType = "", businessTargetFields = [], rawTargetFields = []) {

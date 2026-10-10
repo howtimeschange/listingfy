@@ -10,6 +10,7 @@ import { useAuth } from "@/lib/auth-context"
 import { formatDateTime, formatNumber } from "@/lib/format"
 import { useDebounce } from "@/hooks/use-debounce"
 import { cn } from "@/lib/utils"
+import { normalizePantsMainSizeChartDraft, sameSizeChartTable } from "@/lib/pants-size-chart-schema.mjs"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
 import { Badge } from "@/components/ui/badge"
@@ -292,6 +293,8 @@ interface SizeChartPreviewItem {
   persistedValueJson: Record<string, unknown>
   rows: Array<{ size: string; values: string[] }>
   titles: string[]
+  mergeConflicts?: Array<{ size: string; values: Array<{ title: string; value: string }> }>
+  projectionErrors?: string[]
 }
 
 interface SizeChartSourceMatrix {
@@ -1896,15 +1899,21 @@ export default function ProductArchiveDraftDetailPage() {
           : hasStructuredSizeChartValue(persistedValueJson)
             ? persistedValueJson
             : defaultSizeChartValueJson(field, detailData?.skus ?? [])
-        const parsed = sizeChartRows(valueJson)
+        const normalized = normalizePantsMainSizeChartDraft(valueJson, {
+          fieldName: field.field_name,
+          context: `${detailData?.draft.trade_path ?? ""} ${detailData?.draft.title ?? ""}`,
+        })
+        const parsed = sizeChartRows(normalized.valueJson)
         return {
           fieldId: field.id,
           fieldName: field.field_name,
           expectedUpdatedAt: field.updated_at,
-          valueJson,
+          valueJson: normalized.valueJson,
           persistedValueJson,
           rows: parsed.rows,
           titles: parsed.titles,
+          mergeConflicts: normalized.conflicts,
+          projectionErrors: normalized.errors,
         }
       })
   }, [detailData, sizeChartRecommendation?.previews])
@@ -1920,7 +1929,7 @@ export default function ProductArchiveDraftDetailPage() {
       .map((preview) => {
         const nextValueJson = sizeChartValueJson(preview, sizeChartCellValues)
         const currentValueJson = preview.persistedValueJson
-        if (JSON.stringify(nextValueJson) === JSON.stringify(currentValueJson)) return null
+        if (sameSizeChartTable(nextValueJson, currentValueJson)) return null
         return {
           id: preview.fieldId,
           fieldName: preview.fieldName,
@@ -1931,6 +1940,12 @@ export default function ProductArchiveDraftDetailPage() {
       })
       .filter(Boolean) as DraftFieldPatch[]
   }, [sizeChartCellValues, sizeChartPreview])
+  const unresolvedFootMergeConflicts = sizeChartPreview.flatMap((preview) => (
+    (preview.mergeConflicts ?? []).filter((conflict) => (
+      sizeChartCellValues[sizeChartCellKey(preview.fieldName, conflict.size, "脚围")] === undefined
+    ))
+  ))
+  const sizeChartProjectionErrors = sizeChartPreview.flatMap((preview) => preview.projectionErrors ?? [])
 
   const invalidateDraftSummary = () => {
     queryClient.invalidateQueries({ queryKey: ["product-archive-draft-summary", draftId] })
@@ -2218,6 +2233,7 @@ export default function ProductArchiveDraftDetailPage() {
     onSuccess: () => {
       toast.success("已生成提交预览")
       invalidateDraftSummary()
+      invalidateDraftFields()
       invalidateDraftActivity()
       invalidateDraftSource()
     },
@@ -2245,6 +2261,7 @@ export default function ProductArchiveDraftDetailPage() {
         toast.error(`深绘已受理但回读未确认，当前状态：${result.status || "unknown"}`)
       }
       invalidateDraftSummary()
+      invalidateDraftFields()
       invalidateDraftActivity()
       invalidateDraftSource()
     },
@@ -3102,7 +3119,7 @@ export default function ProductArchiveDraftDetailPage() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    disabled={!canWrite || sizeChartChangedFields.length === 0 || saveSizeChartValues.isPending}
+                    disabled={!canWrite || sizeChartChangedFields.length === 0 || unresolvedFootMergeConflicts.length > 0 || sizeChartProjectionErrors.length > 0 || saveSizeChartValues.isPending}
                     onClick={() => {
                       if (!draft?.updated_at) return
                       saveSizeChartValues.mutate({
@@ -3232,13 +3249,32 @@ export default function ProductArchiveDraftDetailPage() {
                           </div>
                         </div>
                         <Badge variant="outline">
-                          {Object.keys(preview.persistedValueJson).length > 0
+                          {sizeChartChangedFields.some((field) => field.id === preview.fieldId)
+                            ? "待保存"
+                            : Object.keys(preview.persistedValueJson).length > 0
                             ? "已保存"
                             : Object.keys(preview.valueJson).length > 0
                               ? "待保存"
                               : "未生成"}
                         </Badge>
                       </div>
+                      {preview.projectionErrors?.length ? (
+                        <div className="border-b px-4 py-3 text-sm text-amber-700" role="alert">
+                          {preview.projectionErrors.join("；")}
+                        </div>
+                      ) : null}
+                      {(preview.mergeConflicts ?? []).some((conflict) => (
+                        sizeChartCellValues[sizeChartCellKey(preview.fieldName, conflict.size, "脚围")] === undefined
+                      )) ? (
+                        <div className="border-b px-4 py-3 text-sm text-amber-700" role="alert">
+                          脚口与裤口围的数值不一致，请核对并填写脚围后保存：
+                          {(preview.mergeConflicts ?? []).map((conflict) => (
+                            <span key={conflict.size} className="ml-2">
+                              {conflict.size}（{conflict.values.map((cell) => `${cell.title} ${cell.value}`).join("、")}）
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
                       {preview.rows.length > 0 ? (
                         <Table className="w-max min-w-full">
                           <TableHeader>
@@ -3270,6 +3306,7 @@ export default function ProductArchiveDraftDetailPage() {
                                   return (
                                     <TableCell key={`${row.size}-${title}`} className="min-w-[150px]">
                                       <Input
+                                        aria-label={`${preview.fieldName} ${row.size} ${title}`}
                                         value={value}
                                         disabled={!canWrite}
                                         onChange={(event) => setSizeChartCellValues((current) => ({
