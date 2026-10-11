@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import readline from "node:readline";
 import { createRequire } from "node:module";
+import { createUtf8WorkbookReader } from "./utf8_workbook_reader.mjs";
 import {
   normalizeSpreadsheetRows,
   normalizeSpreadsheetRowsInChunks,
@@ -247,7 +248,7 @@ class UnresolvedSharedStringError extends Error {}
 
 async function streamXlsxSheets(filePath, options, limits) {
   const tracker = createSpreadsheetResourceTracker(limits);
-  const workbookReader = new (getExcelJS().stream.xlsx.WorkbookReader)(filePath, {
+  const workbookReader = createUtf8WorkbookReader(getExcelJS(), filePath, {
     entries: "emit",
     sharedStrings: "cache",
     hyperlinks: "ignore",
@@ -354,7 +355,7 @@ async function readXlsxSheetsInMemory(filePath) {
 }
 
 async function readXlsxSheetsStreaming(filePath) {
-  const workbookReader = new (getExcelJS().stream.xlsx.WorkbookReader)(filePath, {
+  const workbookReader = createUtf8WorkbookReader(getExcelJS(), filePath, {
     entries: "emit",
     sharedStrings: "cache",
     hyperlinks: "ignore",

@@ -1,5 +1,6 @@
 import fs from "node:fs"
 import { createHash, randomUUID } from "node:crypto"
+import iconv from "iconv-lite"
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import {
   loadCurrentReusablePreparedProductArchiveDraft,
@@ -95,6 +96,12 @@ interface PatchFieldInput {
     valueJson?: unknown
     value_json?: unknown
   }>
+}
+
+interface PatchTitleInput {
+  title?: string | null
+  expectedDraftUpdatedAt?: string | null
+  expected_draft_updated_at?: string | null
 }
 
 interface ApplyTradeInput {
@@ -338,6 +345,25 @@ function nextTimestampIso(values: unknown[]) {
     ...values.map((value) => new Date(timestampIsoValue(value)).getTime()).filter(Number.isFinite),
   )
   return new Date(Math.max(Date.now(), latest + 1)).toISOString()
+}
+
+export function deepdrawProductTitleGbkByteLength(title: unknown) {
+  const text = stringValue(title)
+  if (text.includes("\ufffd")) throw new Error("产品标题含有乱码替换符，请修正后再保存")
+  const encoded = iconv.encode(text, "gbk")
+  const decoded = iconv.decode(encoded, "gbk")
+  if (decoded !== text) throw new Error("产品标题含有 GBK 不支持的字符，请修正后再保存")
+  return encoded.length
+}
+
+export function validateDeepdrawProductTitle(title: unknown) {
+  const text = stringValue(title)
+  if (!text) throw new Error("产品标题不能为空")
+  const gbkByteLength = deepdrawProductTitleGbkByteLength(text)
+  if (gbkByteLength > 60) {
+    throw new Error(`产品标题 GBK 长度不能超过 60 字节，当前 ${gbkByteLength} 字节`)
+  }
+  return text
 }
 
 function wait(ms = 0) {
@@ -11628,6 +11654,34 @@ export function patchProductArchiveDraftFields(db: SyncPostgresDatabase, draftId
     if (Number(draftUpdate?.changes ?? 0) !== 1) {
       throw new Error("草稿数据已更新，请刷新后重试")
     }
+    return validateProductArchiveDraft(db, draftId, { updatedAt: now })
+  })()
+}
+
+export function patchProductArchiveDraftTitle(db: SyncPostgresDatabase, draftId: number, input: PatchTitleInput) {
+  const expectedDraftUpdatedAt = timestampIsoValue(input.expectedDraftUpdatedAt ?? input.expected_draft_updated_at)
+  const title = validateDeepdrawProductTitle(input.title)
+  const now = nextTimestampIso([expectedDraftUpdatedAt])
+  return db.transaction(() => {
+    const draft = assertProductArchiveDraftMutable(db, draftId)
+    if (!expectedDraftUpdatedAt || timestampIsoValue(draft.updated_at) !== expectedDraftUpdatedAt) {
+      throw new Error("草稿数据已更新，请刷新后重试")
+    }
+    // PostgreSQL can retain microseconds that the API's ISO timestamp omits.
+    // Compare the client's visible version above, then fence the locked row with its exact value.
+    const exactVersion = db.prepare("select updated_at::text as updated_at from product_archive_draft where id = ?")
+      .get(draftId) as { updated_at: string }
+    const update = db.prepare(`
+      update product_archive_draft
+      set title = ?,
+        updated_at = ?::timestamptz
+      where id = ?
+        and updated_at is not distinct from ?::timestamptz
+    `).run(title, now, draftId, exactVersion.updated_at)
+    if (Number(update?.changes ?? 0) !== 1) {
+      throw new Error("草稿数据已更新，请刷新后重试")
+    }
+    db.prepare("delete from product_archive_draft_preparation where draft_id = ?").run(draftId)
     return validateProductArchiveDraft(db, draftId, { updatedAt: now })
   })()
 }

@@ -186,7 +186,7 @@ test("listing launch plan importer loads ExcelJS lazily and exposes chunked norm
 
   assert.match(source, /function getExcelJS\(\)/);
   assert.doesNotMatch(source, /const ExcelJS = requireFromWeb\("exceljs"\)/);
-  assert.match(source, /getExcelJS\(\)\.stream\.xlsx\.WorkbookReader/);
+  assert.match(source, /createUtf8WorkbookReader\(getExcelJS\(\), filePath,/);
   assert.match(source, /export async function normalizeListingLaunchPlanRowsInChunks/);
 
   const rows = await normalizeListingLaunchPlanRowsInChunks([

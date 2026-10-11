@@ -3,7 +3,7 @@ import { AiTradeAdvicePanel } from '@/components/product-archive/ai-trade-advice
 import { Fragment, useMemo, useRef, useState, type ReactNode } from "react"
 import { Link, useParams } from "react-router"
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, ClipboardCheck, ExternalLink, FileText, Images, ListTree, Loader2, Maximize2, Pin, PinOff, RefreshCw, Save, Search, Send, Sparkles, Trash2, Upload, X } from "lucide-react"
+import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, ClipboardCheck, ExternalLink, FileText, Images, ListTree, Loader2, Maximize2, Pencil, Pin, PinOff, RefreshCw, Save, Search, Send, Sparkles, Trash2, Upload, X } from "lucide-react"
 import { toast } from "sonner"
 import { api, ApiError } from "@/lib/api-client"
 import { useAuth } from "@/lib/auth-context"
@@ -68,6 +68,7 @@ interface Draft {
   duplicate_result_json?: unknown
   created_product_id: string | null
   updated_at: string
+  submit_state?: "idle" | "submitting"
 }
 
 interface DraftField {
@@ -218,6 +219,11 @@ interface DraftFieldPatch {
 interface DraftFieldPatchRequest {
   expectedDraftUpdatedAt: string
   fields: DraftFieldPatch[]
+}
+
+interface DraftTitlePatchRequest {
+  title: string
+  expectedDraftUpdatedAt: string
 }
 
 interface SizeChartFieldPatchRequest extends DraftFieldPatchRequest {
@@ -1742,6 +1748,9 @@ export default function ProductArchiveDraftDetailPage() {
   const fieldRowRefs = useRef<Record<string, HTMLTableRowElement | null>>({})
   const fieldGroupRefs = useRef<Record<string, HTMLElement | null>>({})
   const [fieldValues, setFieldValues] = useState<Record<number, string>>({})
+  const [titleDialogOpen, setTitleDialogOpen] = useState(false)
+  const [titleValue, setTitleValue] = useState("")
+  const [titleDraftVersion, setTitleDraftVersion] = useState("")
   const [tradeDialogOpen, setTradeDialogOpen] = useState(false)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
   const [publishSubmitMode, setPublishSubmitMode] = useState<DraftSubmitMode>("create")
@@ -1814,6 +1823,7 @@ export default function ProductArchiveDraftDetailPage() {
   const detail = { ...summaryQuery, data: detailData }
   const draft = detail.data?.draft
   const summary = draft?.validation_summary_json ?? {}
+  const draftSubmitting = draft?.submit_state === "submitting"
   const deepdrawSkuPresentation = useMemo(
     () => buildDeepdrawSkuPresentation(detailData?.fields ?? [], detailData?.skus ?? []),
     [detailData?.fields, detailData?.skus],
@@ -2010,6 +2020,26 @@ export default function ProductArchiveDraftDetailPage() {
       })
     })
   }
+
+  const saveTitle = useMutation({
+    mutationFn: (request: DraftTitlePatchRequest) =>
+      api.patch<DraftDetail>(`/product-archive-drafts/${draftId}/title`, request),
+    onSuccess: (result) => {
+      queryClient.setQueryData(["product-archive-draft-summary", draftId], result)
+      queryClient.setQueryData(["product-archive-drafts", draftId], result)
+      setTitleDialogOpen(false)
+      setTitleValue("")
+      setTitleDraftVersion("")
+      toast.success("标题已保存")
+      invalidateDraftSummary()
+      invalidateDraftFields()
+      invalidateDraftIssues()
+      queryClient.invalidateQueries({ queryKey: ["product-archive-drafts"] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "保存标题失败")
+    },
+  })
 
   const saveFields = useMutation({
     mutationFn: (request: DraftFieldPatchRequest) =>
@@ -2320,6 +2350,71 @@ export default function ProductArchiveDraftDetailPage() {
             </Button>
           )}
         >
+        <Dialog
+          open={titleDialogOpen}
+          onOpenChange={(open) => {
+            setTitleDialogOpen(open)
+            if (!open) {
+              setTitleValue("")
+              setTitleDraftVersion("")
+            }
+          }}
+        >
+          <DialogTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!canWrite || draftSubmitting || saveTitle.isPending}
+              onClick={() => {
+                setTitleValue(draft.title || "")
+                setTitleDraftVersion(draft.updated_at)
+              }}
+            >
+              <Pencil className="size-4" />
+              修改标题
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="sm:max-w-xl">
+            <DialogHeader>
+              <DialogTitle>修改产品标题</DialogTitle>
+              <DialogDescription>
+                这里保存的是提交到深绘的主标题，保存后会重新校验草稿并刷新提交预览。
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-2">
+              <label htmlFor="product-archive-draft-title-input" className="sr-only">
+                深绘产品标题
+              </label>
+              <Input
+                id="product-archive-draft-title-input"
+                value={titleValue}
+                onChange={(event) => setTitleValue(event.target.value)}
+                placeholder="输入深绘产品标题"
+                autoFocus
+              />
+              <div className="text-xs text-muted-foreground">
+                深绘标题按 GBK 字节校验，最多 60 字节；请不要保留乱码替换符。
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setTitleDialogOpen(false)}>
+                取消
+              </Button>
+              <Button
+                type="button"
+                disabled={!canWrite || draftSubmitting || saveTitle.isPending || !titleValue.trim() || titleValue.trim() === (draft.title || "")}
+                onClick={() => saveTitle.mutate({
+                  title: titleValue,
+                  expectedDraftUpdatedAt: titleDraftVersion,
+                })}
+              >
+                {saveTitle.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+                保存标题
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
         <Dialog
           open={tradeDialogOpen}
           onOpenChange={(open) => {

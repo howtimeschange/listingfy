@@ -70,6 +70,7 @@ import {
   listProductArchiveSubmitLogs,
   missingDraftSpuCodes,
   patchProductArchiveDraftFields,
+  patchProductArchiveDraftTitle,
   productArchiveImageHasModelShot,
   prepareProductArchiveDraftForSubmit,
   readbackProductArchiveDraft,
@@ -3080,6 +3081,9 @@ function productArchiveDraftMutationException(error: unknown) {
   if (isProductArchiveDraftMutationConflictMessage(message)) {
     return new HTTPException(409, { message })
   }
+  if (/产品标题/.test(message)) {
+    return new HTTPException(400, { message })
+  }
   return error
 }
 
@@ -5654,6 +5658,26 @@ productArchiveDrafts.patch("/:draftId/fields", async (c) => {
     entityType: "product_archive_draft",
     entityId: draftId,
     summary: `更新深绘建档草稿字段 ${draftId}`,
+  })
+  return c.json(result.detail)
+})
+
+productArchiveDrafts.patch("/:draftId/title", async (c) => {
+  requirePermission(c, "PRODUCT_ARCHIVE_DRAFT_WRITE")
+  const db = getDb()
+  const draftId = readId(c.req.param("draftId"))
+  let result
+  try {
+    result = patchProductArchiveDraftTitle(db, draftId, await readJson(c))
+  } catch (error) {
+    throw productArchiveDraftMutationException(error)
+  }
+  auditFromContext(c, {
+    action: "draft.title.updated",
+    module: "PRODUCT_ARCHIVE_DRAFT",
+    entityType: "product_archive_draft",
+    entityId: draftId,
+    summary: `更新深绘建档草稿主标题 ${draftId}`,
   })
   return c.json(result.detail)
 })
