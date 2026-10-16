@@ -1,3 +1,4 @@
+import { normalizeLightSupplyShoeDocument } from "../../../scripts/lib/product_archive_light_supply_shoes.mjs"
 import type { SyncPostgresDatabase } from "../../../scripts/lib/postgres_db.mjs"
 import {
   assertProductArchiveDraftMutable,
@@ -254,6 +255,17 @@ function ocrFieldMatchesDraftField(field: OcrField, draftFieldName: unknown, dra
   const key = stringValue(field.key)
   const name = compactFieldKey(draftFieldName)
   if (!key || !name) return false
+  const shoeNames: Record<string, string[]> = {
+    supplierArticleNo: ["供应商款号", "供应商货号", "厂家货号"],
+    upperMaterial: ["帮面材质", "帮面材料", "鞋面材质", "鞋面材料"],
+    liningMaterial: ["里料材质", "内里材质", "鞋内里材质"],
+    soleMaterial: ["鞋底材质", "鞋底材料"],
+    insoleMaterial: ["鞋垫材质", "鞋垫材料"],
+    origin: ["产地", "生产地"],
+  }
+  if (shoeNames[key]) return shoeNames[key].includes(name)
+  // Label colour/size describe one SKU, not every SKU in this SPU draft.
+  if (key === "labelColor" || key === "shoeSize") return false
   if (key === "executionStandard") return name.includes("执行标准") || name.includes("执行规范")
   if (key === "safetyCategory") {
     return name === "安全等级"
@@ -305,8 +317,9 @@ function ocrFieldForRawText(document: OcrDocument): OcrField | null {
 }
 
 function normalizedOcrFields(document: OcrDocument) {
-  const fields = Array.isArray(document.fields) ? document.fields : []
-  return [...fields, ocrFieldForRawText(document)].filter((field): field is OcrField => Boolean(field?.key && stringValue(field.value)))
+  const normalized = normalizeLightSupplyShoeDocument(document)
+  const fields = Array.isArray(normalized.fields) ? normalized.fields : []
+  return [...fields, ocrFieldForRawText(normalized)].filter((field): field is OcrField => Boolean(field?.key && stringValue(field.value)))
 }
 
 function betterTarget(left: JsonRecord, right: JsonRecord) {

@@ -1,3 +1,4 @@
+import { lightSupplyShoeCode, SHOE_FIELD_LABELS, normalizeLightSupplyShoeDocument } from "./product_archive_light_supply_shoes.mjs";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -19,6 +20,7 @@ const STYLE_CODE_RE = /(?<![A-Za-z0-9])20[A-Za-z0-9]{10}(?![A-Za-z0-9])/g;
 const STANDARD_RE = /\b(?:Q\s*\/\s*[A-Z0-9\u4e00-\u9fa5._-]+(?:\s+\d{2,4})?-\d{2,4}|(?:GB|FZ|QB)\s*\/\s*T\s*\d+(?:[./ -]\d+)*)/i;
 const SAFETY_RE = /(?:符合\s*)?GB\s*31701\s*[ABCＡＢＣ]\s*类/i;
 const FIELD_LABELS = {
+  ...SHOE_FIELD_LABELS,
   productName: ["产品名称", "品名", "名称"],
   articleNo: ["产品货号", "货号", "款号", "产品款号"],
   executionStandard: ["执行标准", "执行标准号", "产品执行标准"],
@@ -431,6 +433,7 @@ export function extractHangtagWashlabelFieldsFromOcrText(text, options = {}) {
   const fields = [];
 
   for (const [key, labels] of Object.entries(FIELD_LABELS)) {
+    if (SHOE_FIELD_LABELS[key] && !options.lightSupplyShoe) continue;
     const labeled = extractLabelValue(lines, labels, key);
     const fallback = labeled ? null : extractFallbackField(normalizedText, key);
     const extracted = labeled ?? fallback;
@@ -474,7 +477,7 @@ export function analyzeProductArchiveOcrDocument(input = {}) {
   const filenameStyleCodes = extractStyleCodesFromText(fileName);
   const pageResults = pages.map((page, index) => extractHangtagWashlabelFieldsFromOcrText(
     page.text ?? page,
-    { pageNumber: page.pageNumber ?? index + 1, sourceKind },
+    { pageNumber: page.pageNumber ?? index + 1, sourceKind, lightSupplyShoe: Boolean(lightSupplyShoeCode(fileName)) },
   ));
   const pageStyleCodes = uniqueTextValues(pageResults.flatMap((result) => result.styleCodes));
   const styleCodes = uniqueTextValues([...filenameStyleCodes, ...pageStyleCodes]);
@@ -740,6 +743,10 @@ function visionFallbackReason(document = {}) {
       return "洗唛包含填充物成分证据，但 OCR 未提取面料成分";
     }
   }
+  if (lightSupplyShoeCode(document.fileName) && document.sourceKind === "hangtag") {
+    const keys = new Set((document.fields ?? []).map(field => field.key));
+    if (["productName", "supplierArticleNo", "upperMaterial", "soleMaterial", "productGrade"].some(key => !keys.has(key))) return "轻供鞋品标签关键字段缺失，需要视觉复核";
+  }
   if (ocrTextLooksUnusable(document.rawText)) return "OCR 文本质量较差";
   return "";
 }
@@ -973,7 +980,8 @@ function buildOcrQualityPrompt({ fileName, sourceKind, rawText, fields }) {
       "充绒量必须是可读的尺码与克数对应表，不能接受 NZ: 0 = :、零散数字、英文/俄文噪声或只有标题没有数值。",
       "执行标准必须是清晰标准号，例如 Q/BALABALA 103-2021、Q/BALABALA 104-2022、GB/T、FZ/T、QB/T 开头的标准；重复标签或后缀乱码判 reject。",
       "安全类别必须能看到 GB 31701 与 A/B/C 类；仅有安全字样但无类别判 reject。",
-      "成分必须能看到纤维名称和百分比；如果只是乱码或百分比无法归属纤维，相关字段判 reject。",
+      "服装纤维成分需要名称和百分比；鞋品帮面、里料、鞋底、鞋垫材料允许织物、德绒、EVA 等无百分比文字，但必须明确对应部位；乱码判 reject。",
+      "轻供鞋品的内部款号字段若证据注明图包内部款号目录，仅核对与 file_name 的完整款号一致；标签产品货号属于 supplierArticleNo，不能替代内部款号。",
       "如果任一已抽取字段判 reject，fallback_required 设为 true。",
     ],
     allowed_field_keys: Object.keys(FIELD_LABELS),
@@ -1161,6 +1169,8 @@ function fieldKeyFromVision(value, label = "") {
     washcare: "washCare",
     washing: "washCare",
   };
+  const shoeKey = Object.keys(SHOE_FIELD_LABELS).find(key => key.toLowerCase() === compact);
+  if (shoeKey) return shoeKey;
   if (direct[compact]) return direct[compact];
   const compactLabel = compactLine(label || value);
   for (const [key, labels] of Object.entries(FIELD_LABELS)) {
@@ -1207,11 +1217,11 @@ function visionFieldRows(json) {
   return rows;
 }
 
-function normalizeVisionField(row, pageNumber, sourceKind) {
+function normalizeVisionField(row, pageNumber, sourceKind, lightSupplyShoe = false) {
   const key = fieldKeyFromVision(row.key ?? row.field_key ?? row.name, row.label ?? row.field_label);
   if (!key || !FIELD_LABELS[key]) return null;
   const rawValue = stringValue(row.value ?? row.field_value ?? row.text);
-  const value = cleanLabelValue(rawValue, key);
+  const value = key === "executionStandard" && lightSupplyShoe ? rawValue : cleanLabelValue(rawValue, key);
   if (!value) return null;
   return {
     key,
@@ -1263,7 +1273,11 @@ function analyzeVisionOcrDocument({
 }) {
   const parsed = recordValue(json);
   const fields = visionFieldRows(parsed)
-    .map((row) => normalizeVisionField(row, 1, sourceKind))
+    .map((row) => {
+      const field = normalizeVisionField(row, 1, sourceKind, Boolean(lightSupplyShoeCode(fileName)));
+      if (field && SHOE_FIELD_LABELS[field.key] && !lightSupplyShoeCode(fileName)) return null;
+      return field;
+    })
     .filter(Boolean);
   const rawText = visionRawText(parsed, fields);
   const analyzed = analyzeProductArchiveOcrDocument({
@@ -1308,11 +1322,11 @@ function buildVisionOcrPrompt({ fileName, sourceKind, fallbackReason }) {
     source_kind: sourceKind,
     fallback_reason: fallbackReason,
     output_schema: {
-      style_code: "图片中可见的 12 位 20 开头款号；没有则为 null",
+      style_code: "图片中可见的 12 位 20 开头内部款号（可含字母）；没有则为 null，供应商款号不得当作内部款号",
       raw_text: "按原图从上到下转写出的主要中文文字；看不清则为空字符串",
       fields: [
         {
-          key: "只能是 productName/articleNo/executionStandard/safetyCategory/productGrade/materialComposition/downFillWeight/washCare",
+          key: Object.keys(FIELD_LABELS).join("/"),
           label: "中文字段名",
           value: "字段值；表格字段保留尺码行和克数行",
           confidence: "high/medium/low",
@@ -1327,6 +1341,9 @@ function buildVisionOcrPrompt({ fileName, sourceKind, fallbackReason }) {
       "看不清、被遮挡、没有出现的字段直接省略，不要猜测。",
       "充绒量表格要保留尺码和克数的对应关系，例如第一行尺码、第二行克数；不要只写一个总克数。",
       "成分和洗涤说明保留换行，便于后续字段映射。",
+      "轻供鞋品：BaHF-1775 等标签产品货号属于供应商，填 supplierArticleNo；内部款号由目录关联。帮面、里料、鞋底、鞋垫分别填 upperMaterial/liningMaterial/soleMaterial/insoleMaterial，不得跨部位推断。",
+      "保留同一行全部执行标准，例如 QB/T 4552-2020；GB 30585-2024。鞋品未标 A/B/C 类时不得套用服装安全类别。",
+      "鞋材织物、德绒、EVA 无需百分比；颜色、鞋号和产地只代表标签所示单个款色尺码，不能扩展成全款规格。",
     ],
     allowed_field_keys: Object.keys(FIELD_LABELS),
   }, null, 2);
@@ -1656,6 +1673,38 @@ export async function readScmHangtagWashlabelSupplementWorkbook(filePath, option
   };
 }
 
+// This layout pass is restricted to the identified light-supply electronic shoe label.
+// Keep the original full-image text for audit and use line crops to avoid barcodes.
+async function recognizeLightSupplyShoeRows(filePath, document, options) {
+  if (options.provider || !lightSupplyShoeCode(document.fileName) || document.sourceKind !== "hangtag"
+    || !/Ba[A-Za-z]+-\d+/.test(document.rawText) || !/4552\s*-\s*2020/.test(document.rawText)) return document;
+  const sharp = requireFromWeb("sharp");
+  const meta = await sharp(filePath).metadata();
+  const ratio = meta.width / meta.height;
+  if (ratio < 1.6 || ratio > 2.0) return document;
+  const runtime = await createTesseractJsProvider({ ...options, psm: "7" });
+  const workDir = await mkdtemp(path.join(os.tmpdir(), "listingify-shoe-label-"));
+  const lines = [];
+  try {
+    const regions = [[.13,.10,.52],[.25,.09,.52],[.35,.09,.52],[.45,.10,.75],[.55,.08,.72],[.63,.08,.46],[.71,.08,.46],[.80,.08,.46],[.89,.08,.46]];
+    for (const [index, [top, height, width]] of regions.entries()) {
+      throwIfAborted(options.signal);
+      const output = path.join(workDir, `${index}.png`);
+      await sharp(filePath).extract({left: 0, top: Math.round(meta.height * top), width: Math.round(meta.width * width), height: Math.round(meta.height * height)})
+        .resize({width: 1800}).png().toFile(output);
+      lines.push((await runtime.recognize(output)).trim().replace(/(?<=[\u4e00-\u9fff]) +(?=[\u4e00-\u9fff])/g, ""));
+    }
+    const regionalText = lines.join("\n");
+    const regional = analyzeProductArchiveOcrDocument({fileName: document.fileName, sourceKind: document.sourceKind, fileType: document.fileType, pages: [{text: regionalText}]});
+    const fields = new Map(document.fields.map(field => [field.key, field]));
+    for (const field of regional.fields) fields.set(field.key, field);
+    return {...document, fields: [...fields.values()], rawText: regionalText + "\n\n[原始全图 OCR]\n" + document.rawText};
+  } finally {
+    await runtime.dispose();
+    await rm(workDir, {recursive: true, force: true});
+  }
+}
+
 export async function recognizeProductArchiveOcrFile(file, options = {}) {
   throwIfAborted(options.signal);
   const filePath = stringValue(file.filePath);
@@ -1699,13 +1748,21 @@ export async function recognizeProductArchiveOcrFile(file, options = {}) {
       };
     }
 
+    if (fileType === "image" && document.status !== "ocr_failed") {
+      try { document = await recognizeLightSupplyShoeRows(filePath, document, options); }
+      catch (error) {
+        throwIfAborted(options.signal);
+        document.warnings = [...document.warnings, `轻供鞋品分区 OCR 失败：${errorText(error)}`];
+      }
+    }
+    document = normalizeLightSupplyShoeDocument(document);
     const localFallbackReason = visionFallbackReason(document);
     throwIfAborted(options.signal);
     const quality = localFallbackReason
       ? { document, fallbackReason: localFallbackReason }
       : await applyOcrQualityGate(document, options);
     throwIfAborted(options.signal);
-    if (!quality.fallbackReason) return quality.document;
+    if (!quality.fallbackReason) return normalizeLightSupplyShoeDocument(quality.document);
     const visionDocument = await applyVisionFallback(quality.document, {
       filePath,
       fileName,
@@ -1716,7 +1773,7 @@ export async function recognizeProductArchiveOcrFile(file, options = {}) {
       fallbackReason: quality.fallbackReason,
     });
     throwIfAborted(options.signal);
-    return visionDocument;
+    return normalizeLightSupplyShoeDocument(visionDocument);
   } finally {
     if (dispose) await dispose(providerOptions);
     if (imageWorkDir) await rm(imageWorkDir, { recursive: true, force: true });

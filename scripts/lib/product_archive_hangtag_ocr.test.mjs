@@ -907,3 +907,37 @@ test("SCM composition text normalizer formats dense Chinese composition text", (
     "主面料: 100%聚酯纤维\n(装饰部分除外)\n下摆罗纹: 96.4%聚酯纤维\n3.2%锦纶\n0.4%氨纶",
   );
 });
+
+test("light supply shoe vision fallback preserves supplier identity and material compartments", async () => {
+  const workDir = await mkdtemp(path.join(os.tmpdir(), "listingify-light-shoe-"));
+  try {
+    const filePath = path.join(workDir, "label.jpg");
+    await writeFile(filePath, await simpleJpegBuffer());
+    let calls = 0;
+    const result = await recognizeProductArchiveOcrFile({filePath, fileName:"2084261412A7/吊牌.jpg"}, {
+      provider: async () => "产品货号: BaHF-1775\n执行标准: QB/T 4552-2020 GB30585-2024",
+      ocrQualityGate: false,
+      visionProvider: async ({messages}) => {
+        calls++;
+        assert.match(JSON.stringify(messages), /supplierArticleNo/);
+        return {json:{style_code:"BaHF-1775", fields:[
+          {key:"productName",value:"儿童家居鞋",confidence:"high"},
+          {key:"articleNo",value:"BaHF-1775",confidence:"high"},
+          {key:"upperMaterial",value:"织物",confidence:"high"},
+          {key:"soleMaterial",value:"EVA",confidence:"high"},
+          {key:"executionStandard",value:"QB/T 4552-2020；GB 30585-2024",confidence:"high"},
+          {key:"productGrade",value:"合格品",confidence:"high"},
+        ]}};
+      },
+    });
+    const fields=Object.fromEntries(result.fields.map(field=>[field.key,field.value]));
+    assert.equal(calls,1);
+    assert.equal(result.detectedSpuCode,"2084261412A7");
+    assert.equal(fields.articleNo,"2084261412A7");
+    assert.equal(fields.supplierArticleNo,"BaHF-1775");
+    assert.equal(fields.upperMaterial,"织物");
+    assert.equal(fields.soleMaterial,"EVA");
+    assert.equal(fields.insoleMaterial,undefined);
+    assert.equal(fields.executionStandard,"QB/T 4552-2020；GB 30585-2024");
+  } finally { await rm(workDir,{recursive:true,force:true}); }
+});
