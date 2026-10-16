@@ -4,6 +4,25 @@ import test from "node:test";
 
 const SERVICE_FILE = new URL("../../web/server/services/product-archive-hangtag-ocr.ts", import.meta.url);
 
+test("alphanumeric OCR evidence fills only the matching complete style code", async () => {
+  const service = await import("../../web/server/services/product-archive-hangtag-ocr.ts");
+  const { analyzeProductArchiveOcrDocument } = await import("./product_archive_hangtag_ocr.mjs");
+  const document = analyzeProductArchiveOcrDocument({
+    fileName: "2084261412A7/2084261412A7_吊牌.png",
+    pages: [{ text: "产品货号：2084261412A7\n执行标准：QB/T 4331-2021" }],
+  });
+  const input = {
+    draftId: 918,
+    fields: [{ id: 1, field_name: "执行标准", value_text: "", value_json: {}, source_type: "manual", manual_override: false, validation_status: "missing", options_json: [] }],
+    documents: [document],
+  };
+  const fills = service.buildProductArchiveAiFillOcrEvidenceFills({ ...input, spuCode: "2084261412A7" });
+  assert.deepEqual(fills.map((fill) => fill.field_value), ["QB/T 4331-2021"]);
+  for (const spuCode of ["2084261412A9", "2084261412"]) {
+    assert.deepEqual(service.buildProductArchiveAiFillOcrEvidenceFills({ ...input, spuCode }), []);
+  }
+});
+
 test("AI fill OCR evidence maps apparel compliance fields without overwriting confirmed values", async () => {
   const service = await import("../../web/server/services/product-archive-hangtag-ocr.ts");
   const fills = service.buildProductArchiveAiFillOcrEvidenceFills({

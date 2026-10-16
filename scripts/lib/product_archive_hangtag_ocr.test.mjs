@@ -287,6 +287,23 @@ test("hangtag OCR helpers classify batch file names", () => {
   assert.deepEqual(extractStyleCodesFromText("x 208426103215 y 208426103215"), ["208426103215"]);
 });
 
+test("OCR preserves alphanumeric style codes in labels, paths and document matching", () => {
+  const codes = ["2084261410B6", "2084261410C6", "2084261412A7", "2084261412A9", "2084261412B1", "2084261412B3", "2084261412C2", "2084261412C3", "2084261412C4", "2084261412C8", "2084261412C9", "2084261400U6"];
+  for (const code of codes) {
+    assert.deepEqual(extractStyleCodesFromText(`款号：${code}；${code}_吊牌.png`), [code]);
+    const document = analyzeProductArchiveOcrDocument({
+      fileName: `轻供鞋品/${code}/${code}_吊牌.png`,
+      pages: [{ text: `产品货号：${code}\n产品名称：童鞋` }],
+    });
+    assert.equal(document.detectedSpuCode, code);
+    assert.deepEqual(document.styleCodes, [code]);
+    assert.equal(document.fields.find((field) => field.key === "articleNo")?.value, code);
+    assert.ok(!document.warnings.some((warning) => warning.includes("不一致")));
+  }
+  assert.deepEqual(extractStyleCodesFromText("2084261412A7-90001"), ["2084261412A7"]);
+  assert.deepEqual(extractStyleCodesFromText("2084261412A77 X2084261412A7 2084261032159"), []);
+});
+
 test("OCR file recognizer accepts an injected provider for deterministic tests", async () => {
   const result = await recognizeProductArchiveOcrFile(
     { filePath: "/tmp/208426103215洗唛.jpg", fileName: "208426103215洗唛.jpg", fileType: "image" },

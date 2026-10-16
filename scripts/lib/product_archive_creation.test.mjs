@@ -9123,6 +9123,17 @@ test("product archive draft reference image upload extracts style codes from fol
   assert.equal(service.extractProductArchiveImageSpuCode("208426103215/主图1.jpg"), "208426103215");
   assert.equal(service.extractProductArchiveImageSpuCode("SCM全链路冒烟_20260805/208426103215/front.png"), "208426103215");
   assert.equal(service.extractProductArchiveImageSpuCode("no-style-image.png"), "");
+  const codes = ["2084261410B6", "2084261410C6", "2084261412A7", "2084261412A9", "2084261412B1", "2084261412B3", "2084261412C2", "2084261412C3", "2084261412C4", "2084261412C8", "2084261412C9", "2084261400U6"];
+  for (const code of codes) {
+    assert.equal(service.extractProductArchiveImageSpuCode(`轻供鞋品素材_12款复跑/${code}/31.jpg`), code);
+    assert.equal(service.extractProductArchiveImageSpuCode(`${code}_吊牌_01.png`), code);
+    assert.equal(service.extractProductArchiveImageSpuCode(`图包\\${code}\\1200-4.jpg`), code);
+  }
+  assert.equal(service.extractProductArchiveImageSpuCode("2084261412A7-90001_平铺图.jpg"), "2084261412A7");
+  assert.equal(service.extractProductArchiveImageSpuCode("2084261412A7/123456789.jpg"), "2084261412A7");
+  assert.equal(service.extractProductArchiveImageSpuCode("2084261412A77/主图.jpg"), "");
+  assert.equal(service.extractProductArchiveImageSpuCode("X2084261412A7.jpg"), "");
+  assert.equal(service.extractProductArchiveImageSpuCode("123456789/主图.jpg"), "123456789");
 });
 
 test("product archive SKU color validation accepts AI-filled DeepDraw color aliases", async () => {

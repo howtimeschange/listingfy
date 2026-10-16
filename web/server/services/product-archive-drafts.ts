@@ -10015,9 +10015,9 @@ function rebuildProductArchiveDraftFields(
 
 export function extractProductArchiveImageSpuCode(value: unknown) {
   const text = stringValue(value).replace(/\\/g, "/")
-  const exact = Array.from(text.matchAll(/(?:^|[^0-9])([0-9]{12})(?=[^0-9]|$)/g)).map((match) => match[1])
+  const exact = Array.from(text.matchAll(/(?<![A-Za-z0-9])(20[A-Za-z0-9]{10}|[0-9]{12})(?![A-Za-z0-9])/g)).map((match) => match[1])
   if (exact.length > 0) return exact.at(-1) ?? ""
-  const fallback = Array.from(text.matchAll(/(?:^|[^0-9])([0-9]{9,15})(?=[^0-9]|$)/g)).map((match) => match[1])
+  const fallback = Array.from(text.matchAll(/(?<![A-Za-z0-9])([0-9]{9,15})(?![A-Za-z0-9])/g)).map((match) => match[1])
   return fallback.at(-1) ?? ""
 }
 

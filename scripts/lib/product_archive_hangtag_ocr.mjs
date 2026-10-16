@@ -13,7 +13,9 @@ const WEB_PACKAGE_JSON = path.join(PROJECT_ROOT, "web", "package.json");
 const requireFromWeb = createRequire(WEB_PACKAGE_JSON);
 const BUNDLED_TESSERACT_LANG_PATH = path.join(PROJECT_ROOT, "vendor", "tesseract", "lang");
 
-const STYLE_CODE_RE = /(?<!\d)20\d{10}(?!\d)/g;
+// Internal style codes include letters (for example 2084261412A7).
+// Alphanumeric boundaries prevent matching a truncated code inside an ID.
+const STYLE_CODE_RE = /(?<![A-Za-z0-9])20[A-Za-z0-9]{10}(?![A-Za-z0-9])/g;
 const STANDARD_RE = /\b(?:Q\s*\/\s*[A-Z0-9\u4e00-\u9fa5._-]+(?:\s+\d{2,4})?-\d{2,4}|(?:GB|FZ|QB)\s*\/\s*T\s*\d+(?:[./ -]\d+)*)/i;
 const SAFETY_RE = /(?:符合\s*)?GB\s*31701\s*[ABCＡＢＣ]\s*类/i;
 const FIELD_LABELS = {
