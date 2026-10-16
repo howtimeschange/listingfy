@@ -257,13 +257,13 @@ function ocrFieldMatchesDraftField(field: OcrField, draftFieldName: unknown, dra
   if (!key || !name) return false
   const shoeNames: Record<string, string[]> = {
     supplierArticleNo: ["供应商款号", "供应商货号", "厂家货号"],
-    upperMaterial: ["帮面材质", "帮面材料", "鞋面材质", "鞋面材料"],
-    liningMaterial: ["里料材质", "内里材质", "鞋内里材质"],
-    soleMaterial: ["鞋底材质", "鞋底材料"],
+    upperMaterial: ["帮面材质", "帮面材料", "鞋面材质", "鞋面材料", "鞋面", "22q1鞋面", "22q4-童鞋鞋面"],
+    liningMaterial: ["里料材质", "内里材质", "鞋内里材质", "22q4-童鞋内里"],
+    soleMaterial: ["鞋底材质", "鞋底材料", "22q1鞋底", "22q4-童鞋鞋底"],
     insoleMaterial: ["鞋垫材质", "鞋垫材料"],
     origin: ["产地", "生产地"],
   }
-  if (shoeNames[key]) return shoeNames[key].includes(name)
+  if (shoeNames[key]) return shoeNames[key].includes(name.replace(/多选$/, ""))
   // Label colour/size describe one SKU, not every SKU in this SPU draft.
   if (key === "labelColor" || key === "shoeSize") return false
   if (key === "executionStandard") return name.includes("执行标准") || name.includes("执行规范")
@@ -275,7 +275,7 @@ function ocrFieldMatchesDraftField(field: OcrField, draftFieldName: unknown, dra
       || name.includes("安全技术要求")
   }
   if (key === "productGrade") return name.includes("产品等级") || name.includes("质量等级")
-  if (key === "productName") return name === "产品名称" || name === "商品名称" || name === "品名"
+  if (key === "productName") return name === "产品名称" || name === "商品名称" || name === "品名" || name === "25产品名称" || /童鞋品名$/.test(name)
   if (key === "articleNo") return name === "产品货号" || name === "商品货号" || name === "货号" || name === "款号"
   if (key === "materialComposition") {
     if (name.includes("材质成分") || name.includes("面料成分") || name.includes("成分含量文本")) return true
@@ -412,7 +412,10 @@ function normalizeOcrValueForDraftField(draftField: JsonRecord, ocrField: OcrFie
     optionCompatible: true,
   }
   const fieldName = stringValue(draftField.field_name)
-  const normalizedValue = normalizeProductArchiveDeepdrawFieldValue(fieldName, rawValue, options)
+  // 德绒 is a textile trade name, not a fibre percentage or an insole material.
+  const materialValue = stringValue(ocrField.key) === "upperMaterial" && rawValue === "德绒"
+    && options.some((option) => stringValue(recordValue(option).value) === "织物") ? "织物" : rawValue
+  const normalizedValue = normalizeProductArchiveDeepdrawFieldValue(fieldName, materialValue, options)
   return {
     valueText: normalizedValue,
     optionCompatible: productArchiveFieldValueMatchesOptions(normalizedValue, options),

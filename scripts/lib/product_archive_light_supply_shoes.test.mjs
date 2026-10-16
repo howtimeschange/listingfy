@@ -46,3 +46,18 @@ test('shoe OCR noise is not mapped as material and model supplier identity canno
   assert.equal(result.detectedSpuCode,'2084261412A7');
   assert.equal(result.fields.some(field=>field.key==='upperMaterial'),false);
 });
+
+test('shoe evidence maps actual DeepDraw single/multi and detail field names', async () => {
+  const {buildProductArchiveAiFillOcrEvidenceFills} = await import('../../web/server/services/product-archive-hangtag-ocr.ts');
+  const names=['鞋面','鞋面材质(多选)','鞋底材质(多选)','22Q1鞋面','22Q4-童鞋鞋底','25产品名称','22Q4-童鞋品名'];
+  const fields=names.map((name,index)=>({id:index+1,field_name:name,value_text:'',options_json:index<3?[{value:'织物'},{value:'EVA'}]:[]}));
+  const doc=document();doc.rawText=doc.rawText.replace('织物','德绒');
+  const values=Object.fromEntries(buildProductArchiveAiFillOcrEvidenceFills({draftId:1,spuCode:'2084261412A7',documents:[doc],fields}).map(f=>[f.field_name,f.field_value]));
+  assert.equal(values['鞋面'],'织物');
+  assert.equal(values['鞋面材质(多选)'],'织物');
+  assert.equal(values['鞋底材质(多选)'],'EVA');
+  assert.equal(values['22Q1鞋面'],'德绒');
+  assert.equal(values['22Q4-童鞋鞋底'],'EVA');
+  assert.equal(values['25产品名称'],'儿童家居鞋');
+  assert.equal(values['22Q4-童鞋品名'],'儿童家居鞋');
+});
